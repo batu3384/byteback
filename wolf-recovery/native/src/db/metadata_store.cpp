@@ -1,8 +1,16 @@
 #include "wolf_db.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
+#include <cstdio>
 
 namespace wolf {
+
+namespace {
+std::string safe_column_text(sqlite3_stmt* stmt, int col) {
+    const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+    return txt ? txt : "";
+}
+} // namespace
 
 MetadataStore::MetadataStore() : db_(nullptr) {}
 
@@ -18,6 +26,7 @@ bool MetadataStore::open(const std::string& dbPath) {
     // Enable WAL mode for concurrent reads
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
     return createTables();
 }
 
@@ -83,7 +92,10 @@ int64_t MetadataStore::insertFile(const FileRecord& r) {
     )";
 
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return -1;
+    }
 
     sqlite3_bind_int64(stmt, 1, r.id); // scan_id passed via id field temporarily
     sqlite3_bind_int64(stmt, 2, r.parentId);
@@ -114,7 +126,10 @@ int64_t MetadataStore::createScan(int driveIndex, const std::string& scanType, u
 
     int64_t now = static_cast<int64_t>(std::time(nullptr));
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return -1;
+    }
     sqlite3_bind_int(stmt, 1, driveIndex);
     sqlite3_bind_text(stmt, 2, scanType.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(totalSectors));
@@ -131,7 +146,10 @@ bool MetadataStore::updateScanProgress(int64_t scanId, uint64_t scannedSectors) 
     const char* sql = "UPDATE scans SET scanned_sectors = ?, updated_at = ? WHERE id = ?";
     int64_t now = static_cast<int64_t>(std::time(nullptr));
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return false;
+    }
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(scannedSectors));
     sqlite3_bind_int64(stmt, 2, now);
     sqlite3_bind_int64(stmt, 3, scanId);
@@ -144,7 +162,10 @@ bool MetadataStore::completeScan(int64_t scanId, int status) {
     const char* sql = "UPDATE scans SET status = ?, updated_at = ? WHERE id = ?";
     int64_t now = static_cast<int64_t>(std::time(nullptr));
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return false;
+    }
     sqlite3_bind_int(stmt, 1, status);
     sqlite3_bind_int64(stmt, 2, now);
     sqlite3_bind_int64(stmt, 3, scanId);
@@ -163,7 +184,10 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
 
     std::vector<FileRecord> records;
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return records;
+    }
     sqlite3_bind_int64(stmt, 1, scanId);
     sqlite3_bind_int(stmt, 2, limit);
     sqlite3_bind_int(stmt, 3, offset);
@@ -172,16 +196,16 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         FileRecord r;
         r.id = sqlite3_column_int64(stmt, 0);
         r.parentId = sqlite3_column_int64(stmt, 1);
-        r.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        r.extension = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3) ? sqlite3_column_text(stmt, 3) : reinterpret_cast<const unsigned char*>(""));
-        r.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4) ? sqlite3_column_text(stmt, 4) : reinterpret_cast<const unsigned char*>(""));
+        r.name = safe_column_text(stmt, 2);
+        r.extension = safe_column_text(stmt, 3);
+        r.path = safe_column_text(stmt, 4);
         r.sizeBytes = static_cast<uint64_t>(sqlite3_column_int64(stmt, 5));
         r.startSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 6));
         r.endSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
         r.status = sqlite3_column_int(stmt, 8);
         r.confidence = sqlite3_column_int(stmt, 9);
-        r.category = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10) ? sqlite3_column_text(stmt, 10) : reinterpret_cast<const unsigned char*>(""));
-        r.source = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11) ? sqlite3_column_text(stmt, 11) : reinterpret_cast<const unsigned char*>(""));
+        r.category = safe_column_text(stmt, 10);
+        r.source = safe_column_text(stmt, 11);
         r.createdAt = sqlite3_column_int64(stmt, 12);
         r.modifiedAt = sqlite3_column_int64(stmt, 13);
         records.push_back(r);
@@ -194,7 +218,10 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
 int64_t MetadataStore::getFileCount(int64_t scanId) {
     const char* sql = "SELECT COUNT(*) FROM files WHERE scan_id = ?";
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return -1;
+    }
     sqlite3_bind_int64(stmt, 1, scanId);
     int64_t count = 0;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -208,12 +235,15 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
     const char* sql = "SELECT * FROM scans WHERE id = ?";
     ScanState state = {};
     sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return state;
+    }
     sqlite3_bind_int64(stmt, 1, scanId);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         state.id = sqlite3_column_int64(stmt, 0);
         state.driveIndex = sqlite3_column_int(stmt, 1);
-        state.scanType = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        state.scanType = safe_column_text(stmt, 2);
         state.totalSectors = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
         state.scannedSectors = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
         state.status = sqlite3_column_int(stmt, 5);
@@ -225,3 +255,4 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
 }
 
 } // namespace wolf
+
