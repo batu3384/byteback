@@ -1,0 +1,173 @@
+.drive-card {
+  background-color: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all var(--transition);
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn var(--transition);
+}
+
+.drive-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--border-light);
+}
+
+.drive-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.drive-icon-container {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.drive-icon-container svg {
+  width: 24px;
+  height: 24px;
+}
+
+.drive-info {
+  flex: 1;
+  min-width: 0; /* for text truncation */
+}
+
+.drive-model {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 6px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.drive-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drive-type {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.type-ssd { background-color: rgba(88, 166, 255, 0.15); color: var(--info); border: 1px solid rgba(88, 166, 255, 0.3); }
+.type-hdd { background-color: rgba(139, 148, 158, 0.15); color: var(--text-secondary); border: 1px solid rgba(139, 148, 158, 0.3); }
+.type-usb { background-color: rgba(210, 153, 34, 0.15); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.3); }
+.type-unknown { background-color: rgba(248, 81, 73, 0.15); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.3); }
+
+.drive-index {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.drive-health {
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.health-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.bg-success { background-color: var(--success); color: var(--success); }
+.bg-warning { background-color: var(--warning); color: var(--warning); }
+.bg-danger { background-color: var(--danger); color: var(--danger); }
+
+.drive-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background-color: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.detail-label {
+  color: var(--text-secondary);
+}
+
+.detail-value {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.detail-value.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.drive-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: auto;
+}
+
+.btn {
+  flex: 1;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+
+.btn-primary {
+  background-color: var(--accent);
+  color: #000;
+}
+
+.btn-primary:hover {
+  background-color: var(--accent-hover);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.btn-secondary {
+  background-color: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background-color: var(--bg-tertiary);
+  border-color: var(--text-secondary);
+}

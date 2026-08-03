@@ -1,0 +1,75 @@
+.header {
+  height: 56px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-light);
+  background-color: var(--bg-primary);
+  /* Make header draggable like a native titlebar */
+  -webkit-app-region: drag;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-left: 24px;
+}
+
+.header-title h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: var(--radius-xl);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-admin {
+  background-color: rgba(63, 185, 80, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.badge-user {
+  background-color: rgba(210, 153, 34, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.window-control {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: background-color 0.1s;
+}
+
+.window-control:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.window-control.close:hover {
+  background-color: var(--danger);
+  color: white;
+}
+
+.window-control svg {
+  width: 10px;
+  height: 10px;
+}
