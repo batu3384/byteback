@@ -56,12 +56,22 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
+    if (info.Length() < 3) {
+        Napi::TypeError::New(env, "Wrong number of arguments: expected driveIndex, offset, and size").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (!info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Invalid argument types: expected numbers for driveIndex, offset, and size").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     double offset = info[1].As<Napi::Number>().DoubleValue();
     uint32_t size = info[2].As<Napi::Number>().Uint32Value();
 
     auto& diskReader = engine->getDiskReader();
-    if (!diskReader.isOpen()) {
+    if (!diskReader.isOpen() || diskReader.getDriveIndex() != driveIndex) {
         diskReader.openDrive(driveIndex);
     }
 
@@ -80,11 +90,15 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     obj.Set("error", Napi::String::New(env, result.error));
 
     if (result.success && result.bytesRead > 0) {
-        Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, buffer, result.bytesRead);
+        Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(
+            env, buffer, result.bytesRead,
+            [](Napi::Env, uint8_t* data) { _aligned_free(data); }
+        );
         obj.Set("data", buf);
+    } else {
+        _aligned_free(buffer);
     }
 
-    _aligned_free(buffer);
     return obj;
 }
 

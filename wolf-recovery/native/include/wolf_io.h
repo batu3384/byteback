@@ -27,6 +27,9 @@ public:
     DiskReader();
     ~DiskReader();
 
+    DiskReader(const DiskReader&) = delete;
+    DiskReader& operator=(const DiskReader&) = delete;
+
     // Enumerate all physical drives
     std::vector<DriveInfo> enumerateDrives();
 
@@ -43,6 +46,7 @@ public:
     // Get disk geometry of opened drive
     uint64_t getDiskSize() const;
     uint32_t getSectorSize() const;
+    int getDriveIndex() const;
 
     bool isOpen() const;
 
@@ -50,6 +54,7 @@ private:
     void* handle_; // HANDLE on Windows
     uint64_t diskSize_;
     uint32_t sectorSize_;
+    int currentDriveIndex_ = -1;
 };
 
 } // namespace wolf
