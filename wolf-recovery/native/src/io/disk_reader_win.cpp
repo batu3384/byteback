@@ -11,7 +11,7 @@
 namespace wolf {
 
 DiskReader::DiskReader()
-    : handle_(INVALID_HANDLE_VALUE), diskSize_(0), sectorSize_(512) {}
+    : handle_(INVALID_HANDLE_VALUE), diskSize_(0), sectorSize_(512), currentDriveIndex_(-1) {}
 
 DiskReader::~DiskReader() {
     closeDrive();
@@ -111,6 +111,8 @@ bool DiskReader::openDrive(int driveIndex) {
 
     if (handle_ == INVALID_HANDLE_VALUE) return false;
 
+    currentDriveIndex_ = driveIndex;
+
     // Get geometry
     DISK_GEOMETRY_EX geo;
     DWORD bytesReturned = 0;
@@ -129,6 +131,7 @@ void DiskReader::closeDrive() {
         handle_ = INVALID_HANDLE_VALUE;
     }
     diskSize_ = 0;
+    currentDriveIndex_ = -1;
 }
 
 ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
@@ -173,6 +176,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
 
 uint64_t DiskReader::getDiskSize() const { return diskSize_; }
 uint32_t DiskReader::getSectorSize() const { return sectorSize_; }
+int DiskReader::getDriveIndex() const { return currentDriveIndex_; }
 bool DiskReader::isOpen() const { return handle_ != INVALID_HANDLE_VALUE; }
 
 } // namespace wolf
