@@ -1,0 +1,26 @@
+import { join } from 'path'
+
+interface WolfEngine {
+  getVersion(): string
+  isAdministrator(): boolean
+  listDrives(): Array<{
+    index: number
+    model: string
+    serial: string
+    sizeBytes: number
+    sectorSize: number
+    type: string
+  }>
+  initDatabase(path: string): boolean
+  getFileCount(scanId: number): number
+}
+
+let engine: WolfEngine | null = null
+
+export function getEngine(): WolfEngine {
+  if (!engine) {
+    const nativePath = join(__dirname, '../../native/build/Release/wolf_engine.node')
+    engine = require(nativePath) as WolfEngine
+  }
+  return engine
+}
