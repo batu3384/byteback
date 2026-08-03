@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import './Sidebar.css';
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart';
@@ -9,6 +9,15 @@ interface SidebarProps {
 }
 
 function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
+  const [engineVersion, setEngineVersion] = useState<string>('v1.0.0-alpha');
+
+  useEffect(() => {
+    if (window.api && window.api.getEngineVersion) {
+      window.api.getEngineVersion()
+        .then(setEngineVersion)
+        .catch(console.error);
+    }
+  }, []);
   const navItems: { id: Page; label: string; icon: React.ReactNode } = [
     {
       id: 'dashboard',
@@ -89,7 +98,7 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
         </div>
         <div className="brand-text">
           <h1>Wolf Recovery</h1>
-          <span className="version">v1.0.0-alpha</span>
+          <span className="version">{engineVersion}</span>
         </div>
       </div>
       
