@@ -10,13 +10,19 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('start-scan', { driveIndex, scanType }),
   stopScan: (): void => ipcRenderer.send('stop-scan'),
 
-  onScanProgress: (callback: (data: unknown) => void): void => {
-    ipcRenderer.on('scan-progress', (_event, data) => callback(data))
+  onScanProgress: (callback: (data: unknown) => void): (() => void) => {
+    const listener = (_event: any, data: unknown) => callback(data)
+    ipcRenderer.on('scan-progress', listener)
+    return () => ipcRenderer.removeListener('scan-progress', listener)
   },
-  onFileFound: (callback: (data: unknown) => void): void => {
-    ipcRenderer.on('file-found', (_event, data) => callback(data))
+  onFileFound: (callback: (data: unknown) => void): (() => void) => {
+    const listener = (_event: any, data: unknown) => callback(data)
+    ipcRenderer.on('file-found', listener)
+    return () => ipcRenderer.removeListener('file-found', listener)
   },
-  onScanComplete: (callback: (data: unknown) => void): void => {
-    ipcRenderer.on('scan-complete', (_event, data) => callback(data))
+  onScanComplete: (callback: (data: unknown) => void): (() => void) => {
+    const listener = (_event: any, data: unknown) => callback(data)
+    ipcRenderer.on('scan-complete', listener)
+    return () => ipcRenderer.removeListener('scan-complete', listener)
   }
 })

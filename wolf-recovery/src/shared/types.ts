@@ -37,9 +37,9 @@ export interface WolfAPI {
   listDrives(): Promise<DriveInfo[]>
   startScan(driveIndex: number, scanType: string): void
   stopScan(): void
-  onScanProgress(callback: (data: ScanProgress) => void): void
-  onFileFound(callback: (data: FileRecord[]) => void): void
-  onScanComplete(callback: (data: ScanProgress) => void): void
+  onScanProgress(callback: (data: ScanProgress) => void): () => void
+  onFileFound(callback: (data: FileRecord[]) => void): () => void
+  onScanComplete(callback: (data: ScanProgress) => void): () => void
 }
 
 declare global {

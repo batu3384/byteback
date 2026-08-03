@@ -5,8 +5,8 @@ function App(): React.ReactElement {
   const [isAdmin, setIsAdmin] = useState(false)
 
   useEffect(() => {
-    window.api.getEngineVersion().then(setVersion)
-    window.api.isAdministrator().then(setIsAdmin)
+    window.api.getEngineVersion().then(setVersion).catch(console.error)
+    window.api.isAdministrator().then(setIsAdmin).catch(console.error)
   }, [])
 
   return (
