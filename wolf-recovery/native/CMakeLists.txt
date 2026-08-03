@@ -22,14 +22,20 @@ include_directories(${NODE_ADDON_API_DIR})
 add_definitions(-DNAPI_VERSION=8)
 
 # Source files
+set(SQLITE_SOURCES third_party/sqlite3.c)
+set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
+
 set(SOURCES
   src/bridge/napi_bridge.cpp
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
+  src/db/metadata_store.cpp
+  ${SQLITE_SOURCES}
 )
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party)
 
 # Build the addon
 add_library(${PROJECT_NAME} SHARED ${SOURCES} ${CMAKE_JS_SRC})
