@@ -102,6 +102,42 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    if (!engine) {
+        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected a string argument for database path").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string dbPath = info[0].As<Napi::String>().Utf8Value();
+    bool ok = engine->getMetadataStore().open(dbPath);
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    if (!engine) {
+        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected a number argument for scan ID").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    int64_t count = engine->getMetadataStore().getFileCount(scanId);
+    return Napi::Number::New(env, static_cast<double>(count));
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     env.SetInstanceData<wolf::Engine>(new wolf::Engine());
 
@@ -109,6 +145,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("isAdministrator", Napi::Function::New(env, IsAdministrator));
     exports.Set("listDrives", Napi::Function::New(env, ListDrives));
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
+    exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
+    exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
 
     return exports;
 }
