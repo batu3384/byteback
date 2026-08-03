@@ -4,15 +4,18 @@
   "description": "Wolf Recovery — Professional Disk Data Recovery Application",
   "main": "./out/main/main.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build:native": "cmake-js compile -d native -O native/build -T electron -r 31.0.0",
+    "dev": "npm run build:native && electron-vite dev",
+    "build": "npm run build:native && electron-vite build",
     "preview": "electron-vite preview"
   },
   "dependencies": {
+    "node-addon-api": "^8.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "cmake-js": "^7.3.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
