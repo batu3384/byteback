@@ -25,6 +25,7 @@ add_definitions(-DNAPI_VERSION=8)
 set(SOURCES
   src/bridge/napi_bridge.cpp
   src/wolf_engine.cpp
+  src/io/disk_reader_win.cpp
 )
 
 # Include directories

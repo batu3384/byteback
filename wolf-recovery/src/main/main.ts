@@ -9,6 +9,9 @@ const wolfEngine = require(nativePath)
 console.log('Wolf Engine version:', wolfEngine.getVersion())
 console.log('Running as admin:', wolfEngine.isAdministrator())
 
+const drives = wolfEngine.listDrives()
+console.log('Detected drives:', JSON.stringify(drives, null, 2))
+
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
