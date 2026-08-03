@@ -1,18 +1,34 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
+import Sidebar from './components/Layout/Sidebar'
+import Header from './components/Layout/Header'
+import Dashboard from './components/Dashboard/Dashboard'
+
+type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart'
 
 function App(): React.ReactElement {
-  const [version, setVersion] = useState('')
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [activePage, setActivePage] = useState<Page>('dashboard')
 
-  useEffect(() => {
-    window.api.getEngineVersion().then(setVersion).catch(console.error)
-    window.api.isAdministrator().then(setIsAdmin).catch(console.error)
-  }, [])
+  const renderPage = () => {
+    switch (activePage) {
+      case 'dashboard': return <Dashboard />
+      default: return (
+        <div className="placeholder-page">
+          <h2>{activePage.toUpperCase()}</h2>
+          <p>Coming in Phase 2</p>
+        </div>
+      )
+    }
+  }
 
   return (
-    <div className="app">
-      <h1>🐺 Wolf Recovery</h1>
-      <p>Engine v{version} | Admin: {isAdmin ? '✅' : '❌'}</p>
+    <div className="app-layout">
+      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <div className="app-main">
+        <Header title={activePage} />
+        <main className="app-content">
+          {renderPage()}
+        </main>
+      </div>
     </div>
   )
 }
