@@ -30,6 +30,7 @@ set(SOURCES
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
+  src/fs/ntfs_parser.cpp
   ${SQLITE_SOURCES}
 )
 
