@@ -103,14 +103,26 @@ struct DataRun {
 static std::string utf16le_to_utf8(const uint16_t* utf16_str, size_t len) {
     std::string utf8_str;
     for (size_t i = 0; i < len; ++i) {
-        uint16_t wc = utf16_str[i];
+        uint32_t wc = utf16_str[i];
+        if (wc >= 0xD800 && wc <= 0xDBFF && i + 1 < len) {
+            uint32_t wc2 = utf16_str[i + 1];
+            if (wc2 >= 0xDC00 && wc2 <= 0xDFFF) {
+                wc = 0x10000 + ((wc - 0xD800) << 10) + (wc2 - 0xDC00);
+                ++i;
+            }
+        }
         if (wc < 0x80) {
             utf8_str.push_back(static_cast<char>(wc));
         } else if (wc < 0x800) {
             utf8_str.push_back(static_cast<char>(0xC0 | (wc >> 6)));
             utf8_str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
-        } else {
+        } else if (wc < 0x10000) {
             utf8_str.push_back(static_cast<char>(0xE0 | (wc >> 12)));
+            utf8_str.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+            utf8_str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+        } else {
+            utf8_str.push_back(static_cast<char>(0xF0 | (wc >> 18)));
+            utf8_str.push_back(static_cast<char>(0x80 | ((wc >> 12) & 0x3F)));
             utf8_str.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
             utf8_str.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
         }
@@ -136,19 +148,23 @@ static std::vector<DataRun> parseDataRuns(const uint8_t* runData, size_t maxSize
             length |= (static_cast<uint64_t>(runData[pos++]) << (i * 8));
         }
 
-        int64_t offset = 0;
-        for (int i = 0; i < offsetSize; ++i) {
-            offset |= (static_cast<int64_t>(runData[pos++]) << (i * 8));
-        }
-        
-        if (offsetSize > 0 && (runData[pos - 1] & 0x80)) {
-            for (int i = offsetSize; i < 8; ++i) {
-                offset |= (static_cast<int64_t>(0xFF) << (i * 8));
+        if (offsetSize > 0) {
+            int64_t offset = 0;
+            for (int i = 0; i < offsetSize; ++i) {
+                offset |= (static_cast<int64_t>(runData[pos++]) << (i * 8));
             }
-        }
+            
+            if (runData[pos - 1] & 0x80) {
+                for (int i = offsetSize; i < 8; ++i) {
+                    offset |= (static_cast<int64_t>(0xFF) << (i * 8));
+                }
+            }
 
-        currentLcn += offset;
-        runs.push_back({length, offset, static_cast<uint64_t>(currentLcn)});
+            currentLcn += offset;
+            runs.push_back({length, offset, static_cast<uint64_t>(currentLcn)});
+        } else {
+            runs.push_back({length, 0, static_cast<uint64_t>(-1)});
+        }
     }
     return runs;
 }
@@ -173,7 +189,7 @@ static void parseMFTRecord(const uint8_t* recordData, uint32_t recordSize, uint6
     fr.parentId = 0;
     
     uint32_t attrOff = header->attr_offset;
-    while (attrOff + sizeof(ATTR_HEADER) <= header->bytes_in_use && attrOff < recordSize) {
+    while (attrOff + sizeof(ATTR_HEADER) <= recordSize) {
         const ATTR_HEADER* attrHeader = reinterpret_cast<const ATTR_HEADER*>(recordData + attrOff);
         if (attrHeader->type == 0xFFFFFFFF) break; 
         if (attrHeader->length == 0 || attrOff + attrHeader->length > recordSize) break; 
@@ -181,7 +197,7 @@ static void parseMFTRecord(const uint8_t* recordData, uint32_t recordSize, uint6
         if (attrHeader->type == 0x10) { // STANDARD_INFORMATION
             if (!attrHeader->non_resident && attrOff + sizeof(ATTR_RESIDENT) <= recordSize) {
                 const ATTR_RESIDENT* res = reinterpret_cast<const ATTR_RESIDENT*>(attrHeader);
-                if (attrOff + res->attr_offset + 32 <= recordSize) { 
+                if (attrOff + static_cast<uint64_t>(res->attr_offset) + 32 <= recordSize) { 
                     const uint64_t* timestamps = reinterpret_cast<const uint64_t*>(recordData + attrOff + res->attr_offset);
                     auto filetime_to_unix = [](uint64_t ft) -> int64_t {
                         if (ft < 116444736000000000ULL) return 0;
@@ -194,21 +210,23 @@ static void parseMFTRecord(const uint8_t* recordData, uint32_t recordSize, uint6
         } else if (attrHeader->type == 0x30) { // FILE_NAME
             if (!attrHeader->non_resident && attrOff + sizeof(ATTR_RESIDENT) <= recordSize) {
                 const ATTR_RESIDENT* res = reinterpret_cast<const ATTR_RESIDENT*>(attrHeader);
-                if (attrOff + res->attr_offset + sizeof(FILE_NAME_ATTR) <= recordSize) {
+                if (attrOff + static_cast<uint64_t>(res->attr_offset) + sizeof(FILE_NAME_ATTR) <= recordSize) {
                     const FILE_NAME_ATTR* fn = reinterpret_cast<const FILE_NAME_ATTR*>(recordData + attrOff + res->attr_offset);
                     
-                    if (fr.name.empty() || fn->namespace_type == 1 || fn->namespace_type == 3) {
-                        fr.parentId = fn->parent_directory & 0xFFFFFFFFFFFF;
-                        if (fr.sizeBytes == 0) fr.sizeBytes = fn->real_size; 
-                        
-                        const uint16_t* nameStr = reinterpret_cast<const uint16_t*>(recordData + attrOff + res->attr_offset + sizeof(FILE_NAME_ATTR));
-                        fr.name = utf16le_to_utf8(nameStr, fn->name_length);
-                        
-                        size_t extPos = fr.name.find_last_of('.');
-                        if (extPos != std::string::npos && extPos + 1 < fr.name.length()) {
-                            fr.extension = fr.name.substr(extPos + 1);
-                        } else {
-                            fr.extension = "";
+                    if (attrOff + static_cast<uint64_t>(res->attr_offset) + sizeof(FILE_NAME_ATTR) + (fn->name_length * 2ULL) <= recordSize) {
+                        if (fr.name.empty() || fn->namespace_type == 1 || fn->namespace_type == 3) {
+                            fr.parentId = fn->parent_directory & 0xFFFFFFFFFFFF;
+                            if (fr.sizeBytes == 0) fr.sizeBytes = fn->real_size; 
+                            
+                            const uint16_t* nameStr = reinterpret_cast<const uint16_t*>(recordData + attrOff + res->attr_offset + sizeof(FILE_NAME_ATTR));
+                            fr.name = utf16le_to_utf8(nameStr, fn->name_length);
+                            
+                            size_t extPos = fr.name.find_last_of('.');
+                            if (extPos != std::string::npos && extPos + 1 < fr.name.length()) {
+                                fr.extension = fr.name.substr(extPos + 1);
+                            } else {
+                                fr.extension = "";
+                            }
                         }
                     }
                 }
@@ -267,13 +285,14 @@ bool NTFSParser::scan(DiskReader& reader, FileSystemParser::FileRecordCallback c
 
     uint32_t attrOff = mftHeader->attr_offset;
     std::vector<DataRun> mftRuns;
-    while (attrOff + sizeof(ATTR_HEADER) <= mftHeader->bytes_in_use && attrOff < mftRecordSize) {
+    while (attrOff + sizeof(ATTR_HEADER) <= mftRecordSize) {
         const ATTR_HEADER* attrHeader = reinterpret_cast<const ATTR_HEADER*>(mftRecordBuf.data() + attrOff);
         if (attrHeader->type == 0xFFFFFFFF) break;
         if (attrHeader->length == 0 || attrOff + attrHeader->length > mftRecordSize) break;
 
         if (attrHeader->type == 0x80 && attrHeader->non_resident) { 
             const ATTR_NON_RESIDENT* nonRes = reinterpret_cast<const ATTR_NON_RESIDENT*>(attrHeader);
+            if (nonRes->data_runs_offset >= attrHeader->length || attrOff + nonRes->data_runs_offset > mftRecordSize) break;
             uint32_t runsOff = attrOff + nonRes->data_runs_offset;
             mftRuns = parseDataRuns(mftRecordBuf.data() + runsOff, attrHeader->length - nonRes->data_runs_offset);
             break; 
@@ -285,17 +304,22 @@ bool NTFSParser::scan(DiskReader& reader, FileSystemParser::FileRecordCallback c
 
     std::vector<uint8_t> clusterBuf;
     for (const auto& run : mftRuns) {
+        if (run.lcn == static_cast<uint64_t>(-1)) continue;
+
         uint64_t runOffsetBytes = run.lcn * bytesPerCluster;
         uint64_t runSizeBytes = run.lengthClusters * bytesPerCluster;
         
         uint64_t chunkSize = 1024 * 1024; // 1MB chunks
-        clusterBuf.resize(chunkSize);
 
         uint64_t bytesRead = 0;
         while (bytesRead < runSizeBytes) {
             uint64_t toRead = std::min(chunkSize, runSizeBytes - bytesRead);
             uint32_t sectorAlignedToRead = (static_cast<uint32_t>(toRead) + 511) / 512 * 512;
             
+            if (clusterBuf.size() < sectorAlignedToRead) {
+                clusterBuf.resize(sectorAlignedToRead);
+            }
+
             auto runRes = reader.readSectors(runOffsetBytes + bytesRead, sectorAlignedToRead, clusterBuf.data());
             if (!runRes.success) break;
 
