@@ -3,6 +3,7 @@
 #include "wolf_db.h"
 #include "wolf_io.h"
 #include <functional>
+#include "wolf_fs.h"
 #include <vector>
 #include <string>
 
@@ -19,7 +20,7 @@ struct FileSignature {
 
 class EntropyAnalyzer {
 public:
-    static double calculateShannonEntropy(const std::vector<uint8_t>& buffer, size_t offset, size_t length);
+    static double calculateShannonEntropy(const uint8_t* buffer, size_t offset, size_t length);
 };
 
 class CarvingEngine {
@@ -37,4 +38,6 @@ private:
 };
 
 } // namespace wolf
+
+
 

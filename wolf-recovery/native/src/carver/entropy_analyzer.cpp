@@ -3,8 +3,8 @@
 
 namespace wolf {
 
-double EntropyAnalyzer::calculateShannonEntropy(const std::vector<uint8_t>& buffer, size_t offset, size_t length) {
-    if (length == 0 || offset + length > buffer.size()) return 0.0;
+double EntropyAnalyzer::calculateShannonEntropy(const uint8_t* buffer, size_t offset, size_t length) {
+    if (length == 0 || offset + length > length) return 0.0;
 
     size_t counts[256] = {0};
     for (size_t i = offset; i < offset + length; ++i) {
@@ -23,3 +23,5 @@ double EntropyAnalyzer::calculateShannonEntropy(const std::vector<uint8_t>& buff
 }
 
 } // namespace wolf
+
+

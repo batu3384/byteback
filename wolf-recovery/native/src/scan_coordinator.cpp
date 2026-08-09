@@ -31,13 +31,15 @@ void ScanCoordinator::stopScan() {
 void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType, 
                                 FileSystemParser::FileRecordCallback onFileFound,
                                 ProgressCallback onProgress) {
-    DiskReader reader(drivePath);
-    if (!reader.open()) {
+    DiskReader reader;
+    int driveIndex = 0;
+    try { driveIndex = std::stoi(drivePath); } catch(...) {}
+    if (!reader.openDrive(driveIndex)) {
         isRunning = false;
         return;
     }
 
-    uint64_t totalSectors = reader.getDiskSize() / 512;
+    uint64_t totalSectors = reader.getDiskSize() / reader.getSectorSize();
     
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (!isRunning) return;
@@ -68,6 +70,7 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
 }
 
 } // namespace wolf
+
 
 
 
