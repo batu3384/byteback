@@ -1,4 +1,5 @@
 #include "wolf_carver.h"
+#include "wolf_memory.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -76,7 +77,8 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
     
     const uint32_t chunkSectors = 2048; // 1MB chunks
     const uint32_t chunkSize = chunkSectors * sectorSize;
-    std::vector<uint8_t> buffer(chunkSize);
+    auto* poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
+        auto& buffer = *poolBuf;
     
     // Very limited maxSector for quick mock test
     uint64_t maxSector = std::min(diskSize / sectorSize, (uint64_t)1000000); 
@@ -128,4 +130,5 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
 }
 
 } // namespace wolf
+
 
