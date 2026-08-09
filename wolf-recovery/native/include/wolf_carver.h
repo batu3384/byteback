@@ -17,6 +17,11 @@ struct FileSignature {
     uint64_t maxSize;
 };
 
+class EntropyAnalyzer {
+public:
+    static double calculateShannonEntropy(const std::vector<uint8_t>& buffer, size_t offset, size_t length);
+};
+
 class CarvingEngine {
 public:
     CarvingEngine();
@@ -32,3 +37,4 @@ private:
 };
 
 } // namespace wolf
+
