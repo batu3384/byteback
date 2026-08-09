@@ -50,5 +50,22 @@ public:
     bool scan(DiskReader& reader, FileRecordCallback callback) override;
 };
 
+class HFSParser : public FileSystemParser {
+public:
+    HFSParser();
+    ~HFSParser() override;
+
+    bool scan(DiskReader& reader, FileRecordCallback callback) override;
+};
+
+class APFSParser : public FileSystemParser {
+public:
+    APFSParser();
+    ~APFSParser() override;
+
+    bool scan(DiskReader& reader, FileRecordCallback callback) override;
+};
+
 } // namespace wolf
+
 

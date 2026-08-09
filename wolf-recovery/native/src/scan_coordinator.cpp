@@ -69,3 +69,4 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
 
 } // namespace wolf
 
+
