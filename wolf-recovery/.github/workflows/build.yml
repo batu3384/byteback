@@ -1,0 +1,34 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build Native Modules (C++)
+      run: npm run build:native
+
+    - name: Build Electron App
+      run: npm run build
+      
+    - name: Package with Electron Builder
+      run: npx electron-builder --win --x64
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
