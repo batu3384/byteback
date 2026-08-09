@@ -4,8 +4,9 @@ import Header from './components/Layout/Header'
 import Dashboard from './components/Dashboard/Dashboard'
 import ScanView from './components/ScanView/ScanView'
 import ResultsView from './components/ResultsView/ResultsView'
+import HexEditor from './components/HexEditor/HexEditor'
 
-type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart'
+type Page = 'dashboard' | 'scan' | 'results' | 'hex'|type Page = 'dashboard' | 'scan' | 'results' | 'hex'|type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'hex' | 'imager' | 'smart'
 
 function App(): React.ReactElement {
   const [activePage, setActivePage] = useState<Page>('dashboard')
@@ -27,7 +28,7 @@ function App(): React.ReactElement {
                  onCancel={() => setActivePage('dashboard')} 
                  onViewResults={() => setActivePage('results')}
                />
-      case 'results':
+      casetype Page = 'dashboard' | 'scan' | 'results' | 'hex':
         return <ResultsView />
                />
       default: return (
@@ -53,5 +54,6 @@ function App(): React.ReactElement {
 }
 
 export default App
+
 
 
