@@ -1,0 +1,52 @@
+{
+  "signatures": [
+    {
+      "format": "JPEG",
+      "extension": ".jpg",
+      "category": "Image",
+      "header": "FFD8FF",
+      "footer": "FFD9",
+      "max_size": 52428800
+    },
+    {
+      "format": "PNG",
+      "extension": ".png",
+      "category": "Image",
+      "header": "89504E470D0A1A0A",
+      "footer": "49454E44AE426082",
+      "max_size": 104857600
+    },
+    {
+      "format": "PDF",
+      "extension": ".pdf",
+      "category": "Document",
+      "header": "25504446",
+      "footer": "2525454F46",
+      "max_size": 1073741824
+    },
+    {
+      "format": "ZIP",
+      "extension": ".zip",
+      "category": "Archive",
+      "header": "504B0304",
+      "footer": "504B0506",
+      "max_size": 5368709120
+    },
+    {
+      "format": "MP4",
+      "extension": ".mp4",
+      "category": "Video",
+      "header": "00000018667479706D703432",
+      "footer": "",
+      "max_size": 10737418240
+    },
+    {
+      "format": "MP3",
+      "extension": ".mp3",
+      "category": "Audio",
+      "header": "494433",
+      "footer": "",
+      "max_size": 104857600
+    }
+  ]
+}
