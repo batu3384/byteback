@@ -1,6 +1,7 @@
 #include <napi.h>
 #include "wolf_engine.h"
 #include "scan_coordinator.h"
+#include "wolf_smart.h"
 #include <cstdlib>
 
 struct ScanContext {
@@ -75,6 +76,27 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         obj.Set("data", buf);
     } else {
         _aligned_free(buffer);
+    }
+    return obj;
+}
+
+Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) return env.Undefined();
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+
+    wolf::SmartMonitor monitor;
+    auto status = monitor.getSmartStatus(driveIndex);
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("isValid", Napi::Boolean::New(env, status.isValid));
+    if (status.isValid) {
+        obj.Set("driveModel", Napi::String::New(env, status.driveModel));
+        obj.Set("healthScore", Napi::String::New(env, status.healthScore));
+        obj.Set("temperatureC", Napi::Number::New(env, status.temperatureC));
+        obj.Set("powerOnHours", Napi::Number::New(env, status.powerOnHours));
+        obj.Set("reallocatedSectors", Napi::Number::New(env, status.reallocatedSectors));
+        obj.Set("pendingSectors", Napi::Number::New(env, status.pendingSectors));
     }
     return obj;
 }
@@ -178,6 +200,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
+    exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     
     exports.Set("startScan", Napi::Function::New(env, StartScan));
     exports.Set("stopScan", Napi::Function::New(env, StopScan));
@@ -186,3 +209,4 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 }
 
 NODE_API_MODULE(wolf_engine, Init)
+
