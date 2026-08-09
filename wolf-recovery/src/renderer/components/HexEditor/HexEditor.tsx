@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import './HexEditor.css'
 
 function HexEditor(): React.ReactElement {
@@ -25,9 +25,21 @@ function HexEditor(): React.ReactElement {
     }
   }
 
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
-    fetchHexData()
-  }, [driveIndex, sectorOffset])
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    // Adversarial Fix: Debounce to prevent IPC spam
+    timeoutRef.current = setTimeout(() => {
+      fetchHexData();
+    }, 150);
+
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, [driveIndex, sectorOffset]);
 
   const renderHexRow = (offset: number, rowData: number[]) => {
     const hexString = rowData.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
@@ -94,3 +106,4 @@ function HexEditor(): React.ReactElement {
 }
 
 export default HexEditor
+
