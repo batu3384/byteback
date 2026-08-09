@@ -40,6 +40,7 @@ set(SOURCES
     src/carver/entropy_analyzer.cpp
     src/smart/smart_monitor.cpp
     src/validator/file_validator.cpp
+    src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
   ${SQLITE_SOURCES}
 )
@@ -57,6 +58,7 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} setupapi)
 endif()
+
 
 
 
