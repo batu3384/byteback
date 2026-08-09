@@ -1,35 +1,31 @@
 #include <napi.h>
 #include "wolf_engine.h"
-#include <cstdlib> // For _aligned_malloc and _aligned_free
+#include "scan_coordinator.h"
+#include <cstdlib>
 
+struct ScanContext {
+    wolf::ScanCoordinator coordinator;
+    Napi::ThreadSafeFunction tsfn;
+};
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine) return Napi::String::New(env, "unknown");
     return Napi::String::New(env, engine->getVersion());
 }
 
 Napi::Value IsAdministrator(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine) return Napi::Boolean::New(env, false);
     return Napi::Boolean::New(env, engine->isAdministrator());
 }
 
 Napi::Value ListDrives(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine) return env.Undefined();
 
     auto drives = engine->getDiskReader().enumerateDrives();
     Napi::Array result = Napi::Array::New(env, drives.size());
@@ -44,27 +40,13 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info) {
         drive.Set("type", Napi::String::New(env, drives[i].type));
         result[i] = drive;
     }
-
     return result;
 }
 
 Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    if (info.Length() < 3) {
-        Napi::TypeError::New(env, "Wrong number of arguments: expected driveIndex, offset, and size").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    if (!info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
-        Napi::TypeError::New(env, "Invalid argument types: expected numbers for driveIndex, offset, and size").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine || info.Length() < 3) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     double offset = info[1].As<Napi::Number>().DoubleValue();
@@ -75,12 +57,8 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         diskReader.openDrive(driveIndex);
     }
 
-    // Allocate sector-aligned buffer
     uint8_t* buffer = static_cast<uint8_t*>(_aligned_malloc(size, 4096));
-    if (!buffer) {
-        Napi::Error::New(env, "Failed to allocate aligned buffer").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!buffer) return env.Undefined();
 
     auto result = diskReader.readSectors(static_cast<uint64_t>(offset), size, buffer);
 
@@ -98,22 +76,13 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     } else {
         _aligned_free(buffer);
     }
-
     return obj;
 }
 
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    if (info.Length() < 1 || !info[0].IsString()) {
-        Napi::TypeError::New(env, "Expected a string argument for database path").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine || info.Length() < 1) return env.Undefined();
 
     std::string dbPath = info[0].As<Napi::String>().Utf8Value();
     bool ok = engine->getMetadataStore().open(dbPath);
@@ -123,19 +92,81 @@ Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
 Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
-    if (!engine) {
-        Napi::Error::New(env, "Engine not initialized").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    if (info.Length() < 1 || !info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Expected a number argument for scan ID").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
+    if (!engine || info.Length() < 1) return env.Undefined();
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     int64_t count = engine->getMetadataStore().getFileCount(scanId);
     return Napi::Number::New(env, static_cast<double>(count));
+}
+
+// ---------------- Scan Coordinator ----------------
+
+ScanContext* g_scanContext = nullptr;
+
+Napi::Value StartScan(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {
+        Napi::TypeError::New(env, "Expected drivePath, scanType, callback").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    
+    if (g_scanContext) {
+        g_scanContext->coordinator.stopScan();
+        delete g_scanContext;
+        g_scanContext = nullptr;
+    }
+    
+    std::string drivePath = info[0].As<Napi::String>().Utf8Value();
+    std::string scanType = info[1].As<Napi::String>().Utf8Value();
+    Napi::Function cb = info[2].As<Napi::Function>();
+    
+    g_scanContext = new ScanContext();
+    g_scanContext->tsfn = Napi::ThreadSafeFunction::New(
+        env, cb, "ScanCallback", 0, 1, 
+        [](Napi::Env) {
+            // cleanup
+        }
+    );
+
+    auto onFileFound = [](const wolf::FileRecord& fr) {
+        if (!g_scanContext) return;
+        auto callback = [fr](Napi::Env env, Napi::Function jsCallback) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("type", Napi::String::New(env, "file"));
+            obj.Set("name", Napi::String::New(env, fr.name));
+            obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
+            jsCallback.Call({obj});
+        };
+        g_scanContext->tsfn.BlockingCall(callback);
+    };
+
+    auto onProgress = [](uint64_t current, uint64_t total) {
+        if (!g_scanContext) return;
+        auto callback = [current, total](Napi::Env env, Napi::Function jsCallback) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("type", Napi::String::New(env, "progress"));
+            obj.Set("current", Napi::Number::New(env, static_cast<double>(current)));
+            obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
+            jsCallback.Call({obj});
+        };
+        g_scanContext->tsfn.BlockingCall(callback);
+    };
+
+    g_scanContext->coordinator.startScan(drivePath, scanType, onFileFound, onProgress);
+    
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value StopScan(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (g_scanContext) {
+        g_scanContext->coordinator.stopScan();
+        g_scanContext->tsfn.Release();
+        delete g_scanContext;
+        g_scanContext = nullptr;
+    }
+    return env.Undefined();
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -147,6 +178,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
+    
+    exports.Set("startScan", Napi::Function::New(env, StartScan));
+    exports.Set("stopScan", Napi::Function::New(env, StopScan));
 
     return exports;
 }
