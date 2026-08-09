@@ -34,4 +34,21 @@ public:
     bool scan(DiskReader& reader, FileRecordCallback callback) override;
 };
 
+class Ext4Parser : public FileSystemParser {
+public:
+    Ext4Parser();
+    ~Ext4Parser() override;
+
+    bool scan(DiskReader& reader, FileRecordCallback callback) override;
+};
+
+class ExFATParser : public FileSystemParser {
+public:
+    ExFATParser();
+    ~ExFATParser() override;
+
+    bool scan(DiskReader& reader, FileRecordCallback callback) override;
+};
+
 } // namespace wolf
+
