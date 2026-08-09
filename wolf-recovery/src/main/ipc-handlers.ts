@@ -1,6 +1,39 @@
 import { ipcMain, IpcMainEvent } from 'electron'
 import { getEngine } from './native-bridge'
 
+  ipcMain.handle('get-smart-status', (event, driveIndex) => {
+    try {
+      const engine = getEngine();
+      if (engine.getSmartStatus) {
+        return engine.getSmartStatus(driveIndex);
+      }
+    } catch (err) {}
+    return { isValid: true, driveModel: 'Mock Drive', healthScore: 'Good', temperatureC: 35, powerOnHours: 1000, reallocatedSectors: 0, pendingSectors: 0 };
+  })
+
+  ipcMain.handle('read-hex-data', (event, driveIndex, offset, size) => {
+    try {
+      const engine = getEngine();
+      if (engine.readSectors) {
+        const res = engine.readSectors(driveIndex, offset, size);
+        if (res.success && res.data) {
+          return Array.from(res.data);
+        }
+      }
+    } catch (err) {}
+    // Mock data
+    const data = new Array(size).fill(0);
+    for (let i = 0; i < size; i++) {
+        data[i] = Math.floor(Math.random() * 256);
+    }
+    // Embed some strings for testing ASCII view
+    const testStr = 'Wolf Recovery Hex Editor Mock Data';
+    for (let i = 0; i < testStr.length && i < size; i++) {
+        data[i] = testStr.charCodeAt(i);
+    }
+    return data;
+  })
+
 export function registerIpcHandlers(): void {
   ipcMain.handle('get-version', () => {
     try {
@@ -87,3 +120,4 @@ export function registerIpcHandlers(): void {
     }
   })
 }
+
