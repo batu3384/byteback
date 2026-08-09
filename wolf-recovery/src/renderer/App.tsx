@@ -3,6 +3,7 @@ import Sidebar from './components/Layout/Sidebar'
 import Header from './components/Layout/Header'
 import Dashboard from './components/Dashboard/Dashboard'
 import ScanView from './components/ScanView/ScanView'
+import ResultsView from './components/ResultsView/ResultsView'
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart'
 
@@ -24,6 +25,10 @@ function App(): React.ReactElement {
                  driveIndex={scanConfig.driveIndex} 
                  scanType={scanConfig.scanType} 
                  onCancel={() => setActivePage('dashboard')} 
+                 onViewResults={() => setActivePage('results')}
+               />
+      case 'results':
+        return <ResultsView />
                />
       default: return (
         <div className="placeholder-page">
@@ -48,3 +53,5 @@ function App(): React.ReactElement {
 }
 
 export default App
+
+
