@@ -5,6 +5,7 @@ interface ScanViewProps {
   driveIndex: number | null
   scanType: string
   onCancel: () => void
+  onViewResults?: () => void
 }
 
 interface FoundFile {
@@ -12,7 +13,7 @@ interface FoundFile {
   size: number
 }
 
-function ScanView({ driveIndex, scanType, onCancel }: ScanViewProps): React.ReactElement {
+function ScanView({ driveIndex, scanType, onCancel, onViewResults }: ScanViewProps): React.ReactElement {
   const [progress, setProgress] = useState(0)
   const [currentSector, setCurrentSector] = useState(0)
   const [totalSectors, setTotalSectors] = useState(1)
@@ -89,7 +90,7 @@ function ScanView({ driveIndex, scanType, onCancel }: ScanViewProps): React.Reac
         {isScanning ? (
           <button className="btn-danger" onClick={handleStop}>Stop Scan</button>
         ) : (
-          <button className="btn-primary" onClick={onCancel}>View Results</button>
+          <button className="btn-primary" onClick={onViewResults || onCancel}>View Results</button>
         )}
       </div>
 
@@ -115,3 +116,4 @@ function ScanView({ driveIndex, scanType, onCancel }: ScanViewProps): React.Reac
 }
 
 export default ScanView
+
