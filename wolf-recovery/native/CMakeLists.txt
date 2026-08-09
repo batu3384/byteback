@@ -34,6 +34,8 @@ set(SOURCES
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
     src/fs/exfat_parser.cpp
+    src/fs/hfs_parser.cpp
+    src/fs/apfs_parser.cpp
     src/carver/signature_engine.cpp
     src/scan_coordinator.cpp
   ${SQLITE_SOURCES}
@@ -52,6 +54,7 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} setupapi)
 endif()
+
 
 
 
