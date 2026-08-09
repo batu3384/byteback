@@ -19,6 +19,9 @@ declare global {
       onScanProgress: (callback: (data: { current: number, total: number }) => void) => void
       onScanFileFound: (callback: (data: { name: string, size: number }) => void) => void
       removeAllScanListeners: () => void
+      getSmartStatus: (driveIndex: number) => Promise<any>
+      readHexData: (driveIndex: number, offset: number, size: number) => Promise<any>
     }
   }
 }
+
