@@ -26,4 +26,12 @@ public:
     bool scan(DiskReader& reader, FileRecordCallback callback) override;
 };
 
+class FATParser : public FileSystemParser {
+public:
+    FATParser();
+    ~FATParser() override;
+
+    bool scan(DiskReader& reader, FileRecordCallback callback) override;
+};
+
 } // namespace wolf
