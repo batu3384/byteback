@@ -77,7 +77,7 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
     
     const uint32_t chunkSectors = 2048; // 1MB chunks
     const uint32_t chunkSize = chunkSectors * sectorSize;
-    auto* poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
+    auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
         auto& buffer = *poolBuf;
     
     // Very limited maxSector for quick mock test
@@ -130,5 +130,6 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
 }
 
 } // namespace wolf
+
 
 
