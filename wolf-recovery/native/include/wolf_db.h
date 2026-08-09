@@ -17,6 +17,12 @@ struct FileRecord {
     uint64_t sizeBytes;
     uint64_t startSector;
     uint64_t endSector;
+
+    struct DataRun {
+        uint64_t startSector;
+        uint64_t sectorCount;
+    };
+    std::vector<DataRun> runs;
     int status;            // 0=Intact, 1=PartialOverwrite, 2=FullOverwrite, 3=Unknown
     int confidence;        // 0-100
     std::string category;  // "Image", "Document", "Video", etc.
@@ -62,3 +68,5 @@ private:
 };
 
 } // namespace wolf
+
+
