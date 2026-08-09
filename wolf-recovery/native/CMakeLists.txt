@@ -31,6 +31,7 @@ set(SOURCES
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
   src/fs/ntfs_parser.cpp
+    src/fs/fat_parser.cpp
   ${SQLITE_SOURCES}
 )
 
@@ -47,3 +48,4 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} setupapi)
 endif()
+
