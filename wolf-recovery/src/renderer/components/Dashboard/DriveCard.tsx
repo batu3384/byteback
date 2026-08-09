@@ -4,9 +4,10 @@ import './DriveCard.css';
 
 interface DriveCardProps {
   drive: DriveInfo;
+  onStartScan?: (driveIndex: number, scanType: string) => void;
 }
 
-function DriveCard({ drive }: DriveCardProps): React.ReactElement {
+function DriveCard({ drive, onStartScan }: DriveCardProps): React.ReactElement {
   const formatSize = (bytes: number): string => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -50,7 +51,7 @@ function DriveCard({ drive }: DriveCardProps): React.ReactElement {
     }
   };
 
-  // Mock health for now (could be green, yellow, red)
+  // Mock health for now
   const healthClass = drive.type === 'USB' ? 'warning' : 'success';
 
   return (
@@ -89,8 +90,18 @@ function DriveCard({ drive }: DriveCardProps): React.ReactElement {
       </div>
 
       <div className="drive-actions">
-        <button className="btn btn-secondary">Quick Scan</button>
-        <button className="btn btn-primary">Deep Scan</button>
+        <button 
+          className="btn btn-secondary" 
+          onClick={() => onStartScan && onStartScan(drive.index, 'quick')}
+        >
+          Quick Scan
+        </button>
+        <button 
+          className="btn btn-primary" 
+          onClick={() => onStartScan && onStartScan(drive.index, 'deep')}
+        >
+          Deep Scan
+        </button>
       </div>
     </div>
   );

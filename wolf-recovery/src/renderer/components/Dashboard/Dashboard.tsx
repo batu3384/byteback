@@ -3,7 +3,11 @@ import DriveCard from './DriveCard'
 import type { DriveInfo } from '../../../shared/types'
 import './Dashboard.css'
 
-function Dashboard(): React.ReactElement {
+interface DashboardProps {
+  onStartScan?: (driveIndex: number, scanType: string) => void
+}
+
+function Dashboard({ onStartScan }: DashboardProps): React.ReactElement {
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -48,7 +52,7 @@ function Dashboard(): React.ReactElement {
       ) : (
         <div className="drive-grid">
           {drives.map((drive) => (
-            <DriveCard key={drive.index} drive={drive} />
+            <DriveCard key={drive.index} drive={drive} onStartScan={onStartScan} />
           ))}
         </div>
       )}
