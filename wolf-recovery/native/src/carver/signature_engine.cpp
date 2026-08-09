@@ -100,6 +100,8 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                 }
                 
                 if (match) {
+                    double entropy = EntropyAnalyzer::calculateShannonEntropy(buffer, i, std::min((uint32_t)4096, res.bytesRead - i));
+                    if (entropy < 1.0 && sig.category == "Archive") continue; // Zip files shouldn't have zero entropy
                     FileRecord fr;
                     fr.id = 0;
                     fr.parentId = 0;
@@ -126,3 +128,4 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
 }
 
 } // namespace wolf
+

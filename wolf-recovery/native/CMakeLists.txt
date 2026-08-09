@@ -37,6 +37,7 @@ set(SOURCES
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
     src/carver/signature_engine.cpp
+    src/carver/entropy_analyzer.cpp
     src/scan_coordinator.cpp
   ${SQLITE_SOURCES}
 )
@@ -54,6 +55,7 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} setupapi)
 endif()
+
 
 
 
