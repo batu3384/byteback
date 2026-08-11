@@ -25,6 +25,10 @@ function ScanView({
   onCancel, onViewResults 
 }: ScanViewProps): React.ReactElement {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [page, setPage] = useState(0)
+  const [totalFiles, setTotalFiles] = useState(0)
+  const limit = 50
 
   useEffect(() => {
     if (driveIndex === null) return
@@ -49,7 +53,8 @@ function ScanView({
 
     if (window.api && window.api.onScanFileFound) {
       cleanupFileFound = window.api.onScanFileFound((fileData: { name: string, size: number }) => {
-        setFilesFound((prev) => [...prev, fileData])
+        // We still listen to live events for quick UI updates but real data comes from DB polling
+        setTotalFiles(prev => prev + 1)
       })
     }
 
@@ -57,12 +62,31 @@ function ScanView({
       window.api.startScan(driveIndex, scanType)
     }
 
+    // Polling DB for pagination data every second
+    pollRef.current = setInterval(async () => {
+      if (window.api && window.api.getFileCount && window.api.getFilesPage) {
+        try {
+          const scanId = 1 // Assuming first scan for now
+          const count = await window.api.getFileCount(scanId)
+          setTotalFiles(count)
+          
+          const pageData = await window.api.getFilesPage(scanId, page * limit, limit)
+          if (pageData && pageData.length > 0) {
+            setFilesFound(pageData)
+          }
+        } catch (e) {
+          console.error("Pagination error", e)
+        }
+      }
+    }, 1500)
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
+      if (pollRef.current) clearInterval(pollRef.current)
       if (cleanupProgress) cleanupProgress()
       if (cleanupFileFound) cleanupFileFound()
     }
-  }, [driveIndex, scanType])
+  }, [driveIndex, scanType, page])
 
   const handleStop = () => {
     if (window.api && window.api.stopScan) {
@@ -115,18 +139,37 @@ function ScanView({
       </div>
 
       <div className="scan-live-results glass-panel">
-        <div className="live-header">
-          <h3>Canlı Dosya Akışı</h3>
+        <div className="live-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3>Bulunan Dosyalar (Sayfa {page + 1})</h3>
+          <div className="pagination-controls">
+            <button 
+              className="btn-secondary" 
+              style={{ padding: '4px 8px', marginRight: '5px', fontSize: '12px' }}
+              disabled={page === 0} 
+              onClick={() => setPage(p => p - 1)}
+            >
+              ◀ Önceki
+            </button>
+            <button 
+              className="btn-secondary"
+              style={{ padding: '4px 8px', fontSize: '12px' }}
+              disabled={(page + 1) * limit >= totalFiles}
+              onClick={() => setPage(p => p + 1)}
+            >
+              Sonraki ▶
+            </button>
+          </div>
         </div>
         <div className="live-files">
           {filesFound.length === 0 ? (
             <div className="empty-files">Henüz dosya bulunamadı...</div>
           ) : (
-            filesFound.slice(-20).reverse().map((f, i) => (
+            filesFound.map((f, i) => (
               <div key={i} className="live-file-item">
                 <span className="file-icon">📄</span>
                 <span className="file-name">{f.name}</span>
-                <span className="file-size">{(f.size / 1024).toFixed(2)} KB</span>
+                <span className="file-category" style={{ opacity: 0.6, fontSize: '0.8em', marginLeft: '10px' }}>{f.category}</span>
+                <span className="file-size" style={{ marginLeft: 'auto' }}>{(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB</span>
               </div>
             ))
           )}

@@ -116,5 +116,35 @@ export function registerIpcHandlers(): void {
       console.error('[IPC] stop-imaging error:', err)
     }
   })
+
+  ipcMain.handle('get-file-count', (_event, scanId: number) => {
+    try {
+      const engine = getEngine()
+      return engine.getFileCount(scanId)
+    } catch (err) {
+      console.error('[IPC] get-file-count error:', err)
+      return 0
+    }
+  })
+
+  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number) => {
+    try {
+      const engine = getEngine()
+      return engine.getFilesPage(scanId, offset, limit)
+    } catch (err) {
+      console.error('[IPC] get-files-page error:', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('get-scan-state', (_event, scanId: number) => {
+    try {
+      const engine = getEngine()
+      return engine.getScanState(scanId)
+    } catch (err) {
+      console.error('[IPC] get-scan-state error:', err)
+      return null
+    }
+  })
 }
 
