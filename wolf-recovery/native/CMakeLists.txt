@@ -36,6 +36,7 @@ set(SOURCES
     src/fs/exfat_parser.cpp
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
+    src/imager/disk_imager.cpp
     src/carver/signature_engine.cpp
     src/carver/entropy_analyzer.cpp
     src/smart/smart_monitor.cpp

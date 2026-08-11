@@ -88,5 +88,33 @@ export function registerIpcHandlers(): void {
     }
     return []
   })
+
+  ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string) => {
+    try {
+      const engine = getEngine()
+      
+      const callback = (data: any) => {
+        if (data.type === 'progress') {
+          event.reply('imaging-progress', { current: data.current, total: data.total })
+        }
+      }
+      
+      console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath)
+      engine.startImaging(driveIndex, destPath, callback)
+
+    } catch (err) {
+      console.error('[IPC] start-imaging error:', err)
+    }
+  })
+  
+  ipcMain.on('stop-imaging', () => {
+    try {
+      const engine = getEngine()
+      engine.stopImaging()
+      console.log('[IPC] stop-imaging')
+    } catch (err) {
+      console.error('[IPC] stop-imaging error:', err)
+    }
+  })
 }
 

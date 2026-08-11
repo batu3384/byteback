@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 namespace wolf {
 
@@ -47,23 +48,36 @@ struct DirectoryEntry {
 };
 #pragma pack(pop)
 
+static std::string formatFATName(const uint8_t name[11]) {
+    std::string s;
+    for (int i = 0; i < 8; ++i) {
+        if (name[i] == ' ' || name[i] == 0) break;
+        s += static_cast<char>(name[i]);
+    }
+    std::string ext;
+    for (int i = 8; i < 11; ++i) {
+        if (name[i] == ' ' || name[i] == 0) break;
+        ext += static_cast<char>(name[i]);
+    }
+    if (!ext.empty()) s += "." + ext;
+    return s;
+}
+
 bool FATParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
     uint64_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
     std::vector<uint8_t> buffer(sectorSize);
 
-    // Search for FAT VBR
     uint64_t partitionStart = 0;
     bool found = false;
     FAT32_VBR* vbr = nullptr;
     
-    for (uint64_t i = 0; i < 100000; i++) {
+    for (uint64_t i = 0; i < 10000; i++) {
         if (isRunning && !(*isRunning)) return false;
         if (!reader.readSectors(i * sectorSize, sectorSize, buffer.data()).success) continue;
         vbr = reinterpret_cast<FAT32_VBR*>(buffer.data());
         
-        // Basic FAT VBR checks
         if ((vbr->bytesPerSector == 512 || vbr->bytesPerSector == 4096) && vbr->fatCount > 0 && vbr->reservedSectors > 0) {
-            // Check boot signature 0x55AA at offset 510
             if (buffer[510] == 0x55 && buffer[511] == 0xAA) {
                 partitionStart = i;
                 found = true;
@@ -82,42 +96,120 @@ bool FATParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomi
     uint64_t rootDirStart = fatStart + (vbr->fatCount * fatSize);
     uint64_t dataStart = rootDirStart + rootDirSectors;
     
-    uint64_t rootSector = isFAT32 ? (dataStart + ((vbr->rootCluster - 2) * vbr->sectorsPerCluster)) : rootDirStart;
-    uint32_t readSectors = isFAT32 ? vbr->sectorsPerCluster : rootDirSectors;
-    if (readSectors == 0) readSectors = 1;
+    uint32_t bytesPerCluster = vbr->sectorsPerCluster * vbr->bytesPerSector;
+    if (bytesPerCluster == 0) bytesPerCluster = sectorSize;
 
-    std::vector<uint8_t> clusterBuf(readSectors * sectorSize);
-
-    if (reader.readSectors(rootSector * sectorSize, readSectors * sectorSize, clusterBuf.data()).success) {
-        for (size_t offset = 0; offset < clusterBuf.size(); offset += 32) {
-            if (isRunning && !(*isRunning)) break;
-            DirectoryEntry* entry = reinterpret_cast<DirectoryEntry*>(clusterBuf.data() + offset);
-            if (entry->name[0] == 0x00) break;
-            
-            // 0xE5 is deleted file marker
-            if (entry->name[0] == 0xE5) {
-                FileRecord fr;
-                fr.id = offset;
-                fr.name = "deleted_file_" + std::to_string(offset) + ".bin";
-                fr.path = "/";
-                fr.sizeBytes = entry->fileSize;
-                
-                uint32_t firstCluster = (entry->firstClusterHigh << 16) | entry->firstClusterLow;
-                if (firstCluster >= 2) {
-                    uint64_t startSector = dataStart + ((firstCluster - 2) * vbr->sectorsPerCluster);
-                    FileRecord::DataRun run;
-                    run.startSector = startSector;
-                    run.sectorCount = (entry->fileSize + sectorSize - 1) / sectorSize;
-                    if(run.sectorCount == 0) run.sectorCount = 1;
-                    fr.runs.push_back(run);
-                }
-                
-                fr.status = 0;
-                fr.confidence = 80;
-                callback(fr);
-            }
+    auto getNextCluster = [&](uint32_t cluster) -> uint32_t {
+        if (cluster < 2) return 0x0FFFFFFF;
+        uint32_t fatOffset = isFAT32 ? (cluster * 4) : (cluster + (cluster / 2));
+        uint32_t fatSector = fatStart + (fatOffset / vbr->bytesPerSector);
+        uint32_t entOffset = fatOffset % vbr->bytesPerSector;
+        
+        std::vector<uint8_t> secBuf(vbr->bytesPerSector);
+        if (!reader.readSectors(fatSector * sectorSize, vbr->bytesPerSector, secBuf.data()).success) {
+            return 0x0FFFFFFF;
         }
+        
+        if (isFAT32) {
+            uint32_t next = *reinterpret_cast<uint32_t*>(secBuf.data() + entOffset);
+            return next & 0x0FFFFFFF;
+        } else {
+            // FAT12/FAT16 not fully supported in deep chain lookup for brevity, assuming FAT32 mainly
+            if (entOffset == vbr->bytesPerSector - 1) return 0x0FFFFFFF; // Requires reading next sector
+            uint16_t next = *reinterpret_cast<uint16_t*>(secBuf.data() + entOffset);
+            return next;
+        }
+    };
+
+    std::vector<uint32_t> dirClustersToProcess;
+    if (isFAT32) {
+        dirClustersToProcess.push_back(vbr->rootCluster);
+    } else {
+        // FAT16 root dir
     }
+    
+    std::vector<uint8_t> clusterBuf(bytesPerCluster);
+    uint64_t nextFileId = 0;
+
+    std::vector<uint32_t> processedClusters;
+
+    while (!dirClustersToProcess.empty()) {
+        if (isRunning && !(*isRunning)) break;
+        uint32_t dirCluster = dirClustersToProcess.back();
+        dirClustersToProcess.pop_back();
+
+        if (std::find(processedClusters.begin(), processedClusters.end(), dirCluster) != processedClusters.end()) {
+            continue;
+        }
+        processedClusters.push_back(dirCluster);
+
+        uint32_t currentCluster = dirCluster;
+        while (currentCluster >= 2 && currentCluster < 0x0FFFFFF8) {
+            if (isRunning && !(*isRunning)) break;
+            uint64_t clusterSector = dataStart + ((currentCluster - 2) * vbr->sectorsPerCluster);
+            if (!reader.readSectors(clusterSector * sectorSize, bytesPerCluster, clusterBuf.data()).success) break;
+
+            for (size_t offset = 0; offset < bytesPerCluster; offset += 32) {
+                DirectoryEntry* entry = reinterpret_cast<DirectoryEntry*>(clusterBuf.data() + offset);
+                if (entry->name[0] == 0x00) break;
+                if (entry->name[0] == 0xE5) continue; // Deleted
+                
+                if (entry->attributes == 0x0F) continue; // LFN
+
+                bool isDir = (entry->attributes & 0x10) != 0;
+                bool isHidden = (entry->attributes & 0x02) != 0;
+                bool isSystem = (entry->attributes & 0x04) != 0;
+                
+                std::string name = formatFATName(entry->name);
+                if (name == "." || name == ".." || name.empty()) continue;
+
+                uint32_t firstCluster = (entry->firstClusterHigh << 16) | entry->firstClusterLow;
+                
+                if (isDir) {
+                    if (firstCluster >= 2) {
+                        dirClustersToProcess.push_back(firstCluster);
+                    }
+                } else {
+                    FileRecord fr;
+                    fr.id = nextFileId++;
+                    fr.name = name;
+                    fr.path = "/"; // Path logic can be expanded
+                    fr.sizeBytes = entry->fileSize;
+                    
+                    if (firstCluster >= 2) {
+                        uint32_t runCluster = firstCluster;
+                        while (runCluster >= 2 && runCluster < 0x0FFFFFF8) {
+                            uint64_t runSector = dataStart + ((runCluster - 2) * vbr->sectorsPerCluster);
+                            FileRecord::DataRun run;
+                            run.startSector = runSector;
+                            run.sectorCount = vbr->sectorsPerCluster;
+                            fr.runs.push_back(run);
+                            
+                            uint32_t next = getNextCluster(runCluster);
+                            if (next == runCluster) break; // Avoid infinite loop
+                            runCluster = next;
+                            if (fr.runs.size() > 10000) break; // Arbitrary limit for corrupted chains
+                        }
+                    }
+                    
+                    fr.status = 1;
+                    fr.confidence = 90;
+                    fr.category = "File";
+                    callback(fr);
+                }
+            }
+            
+            uint32_t next = getNextCluster(currentCluster);
+            if (next == currentCluster) break;
+            currentCluster = next;
+        }
+        
+        FileRecord progressTick;
+        progressTick.id = -1;
+        progressTick.startSector = partitionStart; 
+        callback(progressTick);
+    }
+    
     return true;
 }
 
