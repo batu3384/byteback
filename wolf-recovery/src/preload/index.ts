@@ -9,10 +9,14 @@ contextBridge.exposeInMainWorld('api', {
   stopScan: () => ipcRenderer.send('stop-scan'),
   
   onScanProgress: (callback: (data: { current: number, total: number }) => void) => {
-    ipcRenderer.on('scan-progress', (event: IpcRendererEvent, data) => callback(data))
+    const handler = (event: IpcRendererEvent, data: any) => callback(data)
+    ipcRenderer.on('scan-progress', handler)
+    return () => ipcRenderer.removeListener('scan-progress', handler)
   },
   onScanFileFound: (callback: (data: { name: string, size: number }) => void) => {
-    ipcRenderer.on('scan-file-found', (event: IpcRendererEvent, data) => callback(data))
+    const handler = (event: IpcRendererEvent, data: any) => callback(data)
+    ipcRenderer.on('scan-file-found', handler)
+    return () => ipcRenderer.removeListener('scan-file-found', handler)
   },
   
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
