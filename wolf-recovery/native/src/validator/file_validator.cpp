@@ -11,16 +11,17 @@ void FileValidator::validateFile(FileRecord& record, DiskReader& reader) {
         return;
     }
 
-    uint32_t sectorSize = 512;
-    std::vector<uint8_t> header(512);
-    std::vector<uint8_t> footer(512);
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    std::vector<uint8_t> header(sectorSize);
+    std::vector<uint8_t> footer(sectorSize);
 
     // Read header (first sector)
-    auto resHeader = reader.readSectors(record.startSector, sectorSize, header.data());
+    auto resHeader = reader.readSectors(record.startSector * sectorSize, sectorSize, header.data());
     
     // Read footer (last sector)
-    uint64_t lastSector = record.endSector - 1;
-    auto resFooter = reader.readSectors(lastSector, sectorSize, footer.data());
+    uint64_t lastSector = record.endSector > 0 ? record.endSector - 1 : 0;
+    auto resFooter = reader.readSectors(lastSector * sectorSize, sectorSize, footer.data());
 
     if (!resHeader.success) {
         record.confidence = 10;

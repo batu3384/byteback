@@ -43,26 +43,26 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
     
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (!isRunning) return;
-        onFileFound(fr);
         
-        // Mock progress update periodically
-        static int count = 0;
-        if (++count % 100 == 0) {
-            onProgress(fr.startSector, totalSectors);
+        if (fr.id != -1) {
+            onFileFound(fr);
         }
+        
+        // Progress update based on sector
+        onProgress(fr.startSector, totalSectors);
     };
 
     if (scanType == "quick") {
         NTFSParser ntfs;
-        if (!ntfs.scan(reader, callbackWrapper)) {
+        if (!ntfs.scan(reader, callbackWrapper, &isRunning)) {
             FATParser fat;
-            fat.scan(reader, callbackWrapper);
+            fat.scan(reader, callbackWrapper, &isRunning);
         }
     } else if (scanType == "deep") {
         CarvingEngine carver;
         // In a real app, path is constructed robustly
         carver.loadSignatures("signatures.json"); 
-        carver.scan(reader, callbackWrapper);
+        carver.scan(reader, callbackWrapper, &isRunning);
     }
     
     onProgress(totalSectors, totalSectors); // Complete

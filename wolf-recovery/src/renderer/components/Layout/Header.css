@@ -1,75 +1,51 @@
-.header {
-  height: 56px;
+.app-header {
+  height: 70px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--border-light);
-  background-color: var(--bg-primary);
-  /* Make header draggable like a native titlebar */
-  -webkit-app-region: drag;
-}
-
-.header-title {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding-left: 24px;
+  padding: 0 var(--space-xl);
+  background-color: rgba(11, 15, 25, 0.8);
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  border-bottom: 1px solid rgba(41, 98, 255, 0.2);
+  z-index: 5;
 }
 
 .header-title h2 {
-  font-size: 1.25rem;
+  font-size: 1.3rem;
+  color: var(--text-main);
   font-weight: 600;
-  margin: 0;
-}
-
-.badge {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 8px;
-  border-radius: var(--radius-xl);
-  text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-.badge-admin {
-  background-color: rgba(63, 185, 80, 0.15);
-  color: var(--success);
-  border: 1px solid rgba(63, 185, 80, 0.3);
-}
-
-.badge-user {
-  background-color: rgba(210, 153, 34, 0.15);
-  color: var(--warning);
-  border: 1px solid rgba(210, 153, 34, 0.3);
-}
-
-.window-controls {
+.header-actions {
   display: flex;
-  height: 100%;
-  -webkit-app-region: no-drag;
+  gap: var(--space-md);
 }
 
-.window-control {
-  width: 46px;
-  height: 100%;
+.icon-btn {
+  background: rgba(41, 98, 255, 0.1);
+  color: var(--neon-cyan);
+  font-size: 1.2rem;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-secondary);
-  transition: background-color 0.1s;
+  transition: var(--transition-smooth);
+  border: 1px solid rgba(41, 98, 255, 0.2);
+  cursor: pointer;
 }
 
-.window-control:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
+.icon-btn:hover {
+  background: rgba(0, 229, 255, 0.2);
+  color: #FFFFFF;
+  border-color: var(--neon-cyan);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.3);
 }
 
-.window-control.close:hover {
-  background-color: var(--danger);
-  color: white;
-}
-
-.window-control svg {
-  width: 10px;
-  height: 10px;
+.icon-btn:active {
+  transform: translateY(1px);
 }

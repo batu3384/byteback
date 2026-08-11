@@ -1,155 +1,187 @@
 .scan-view {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-xl);
   height: 100%;
+  animation: fadeIn 0.4s ease-out;
 }
 
 .scan-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-lg);
 }
 
-.scan-status {
-  font-weight: 500;
-  color: var(--accent);
+.scan-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
 }
 
-.scan-progress-container {
+.scan-info h2 {
+  color: var(--text-main);
+  font-size: 1.8rem;
+  margin-bottom: 4px;
+  text-shadow: 0 0 15px rgba(0, 229, 255, 0.2);
+}
+
+.scan-info p {
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.scan-icon {
+  font-size: 2.5rem;
+  filter: drop-shadow(0 0 10px rgba(0, 229, 255, 0.6));
+}
+
+.scan-stats {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.stat-pill {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  background: rgba(11, 15, 25, 0.6);
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(41, 98, 255, 0.3);
+  text-align: center;
+  min-width: 120px;
+}
+
+.stat-pill .label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.stat-pill .value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-main);
+  font-family: monospace;
+}
+
+.scan-progress-card {
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-main);
+  font-weight: 600;
+  font-family: monospace;
+  font-size: 1rem;
 }
 
 .progress-bar-bg {
   width: 100%;
   height: 24px;
-  background-color: var(--bg-tertiary);
-  border-radius: var(--radius-lg);
+  background-color: rgba(11, 15, 25, 0.8);
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.8);
 }
 
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 100%);
-  transition: width 0.3s ease-out;
+  background-color: var(--neon-cyan);
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.6), inset 0 0 10px rgba(255, 255, 255, 0.4);
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
 }
 
-.progress-stats {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  color: var(--text-secondary);
+.progress-bar-fill::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+  animation: shimmer 1.5s infinite linear;
 }
 
-.pulse {
-  animation: pulse-glow 2s infinite;
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
-@keyframes pulse-glow {
-  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
-  70% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
-}
-
-.scan-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.found-files-panel {
+.scan-live-results {
   flex: 1;
-  background-color: var(--bg-glass);
-  backdrop-filter: blur(10px);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  padding: 16px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.found-files-panel h3 {
-  margin-top: 0;
-  margin-bottom: 16px;
-  color: var(--text-primary);
+.live-header {
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid rgba(41, 98, 255, 0.2);
+  background: rgba(11, 15, 25, 0.4);
+}
+
+.live-header h3 {
+  color: var(--text-main);
   font-size: 1.1rem;
 }
 
-.files-list {
+.live-files {
   flex: 1;
   overflow-y: auto;
+  padding: var(--space-md);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-sm);
+  background-color: rgba(11, 15, 25, 0.3);
 }
 
-.file-item {
+.live-file-item {
   display: flex;
   align-items: center;
-  padding: 12px;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: transform var(--transition);
+  gap: var(--space-md);
+  padding: 10px var(--space-md);
+  background: rgba(41, 98, 255, 0.1);
+  border-radius: 8px;
+  border: 1px solid rgba(41, 98, 255, 0.15);
+  animation: slideIn 0.3s ease-out;
 }
 
-.file-item:hover {
-  transform: translateX(4px);
-  background-color: var(--bg-tertiary);
-  border-color: var(--accent);
-}
-
-.file-icon {
-  font-size: 1.2rem;
-  margin-right: 12px;
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-15px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .file-name {
   flex: 1;
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  color: var(--text-primary);
+  color: var(--text-main);
+  font-family: monospace;
+  font-size: 0.95rem;
 }
 
 .file-size {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--text-secondary);
+  color: var(--neon-cyan);
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .empty-files {
-  color: var(--text-secondary);
-  font-style: italic;
   text-align: center;
-  margin-top: 24px;
+  color: var(--text-muted);
+  padding: 3rem;
+  font-size: 1.1rem;
 }
 
-.slide-in {
-  animation: slide-in 0.3s ease-out;
-}
-
-@keyframes slide-in {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.files-list::-webkit-scrollbar {
-  width: 8px;
-}
-.files-list::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
-  border-radius: 4px;
-}
-.files-list::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
-.files-list::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+.scan-actions {
+  display: flex;
+  gap: var(--space-md);
+  justify-content: flex-end;
 }

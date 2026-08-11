@@ -13,6 +13,23 @@ interface WolfEngine {
   }>
   initDatabase(path: string): boolean
   getFileCount(scanId: number): number
+  readSectors(driveIndex: number, offset: number, size: number): {
+    success: boolean
+    bytesRead: number
+    error: string
+    data?: Buffer
+  }
+  getSmartStatus(driveIndex: number): {
+    isValid: boolean
+    driveModel?: string
+    healthScore?: string
+    temperatureC?: number
+    powerOnHours?: number
+    reallocatedSectors?: number
+    pendingSectors?: number
+  }
+  startScan(drivePath: string, scanType: string, callback: (data: any) => void): boolean
+  stopScan(): void
 }
 
 let engine: WolfEngine | null = null
@@ -24,3 +41,4 @@ export function getEngine(): WolfEngine {
   }
   return engine
 }
+

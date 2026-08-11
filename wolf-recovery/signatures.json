@@ -1,0 +1,130 @@
+[
+  {
+    "format": "JPEG",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffe0",
+    "footer": "ffd9",
+    "max_size": 10485760
+  },
+  {
+    "format": "JPEG/EXIF",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffe1",
+    "footer": "ffd9",
+    "max_size": 10485760
+  },
+  {
+    "format": "PNG",
+    "extension": ".png",
+    "category": "Image",
+    "header": "89504e470d0a1a0a",
+    "footer": "49454e44ae426082",
+    "max_size": 10485760
+  },
+  {
+    "format": "GIF",
+    "extension": ".gif",
+    "category": "Image",
+    "header": "474946383961",
+    "footer": "003b",
+    "max_size": 10485760
+  },
+  {
+    "format": "BMP",
+    "extension": ".bmp",
+    "category": "Image",
+    "header": "424d",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "PDF",
+    "extension": ".pdf",
+    "category": "Document",
+    "header": "255044462d",
+    "footer": "25454f46",
+    "max_size": 52428800
+  },
+  {
+    "format": "ZIP",
+    "extension": ".zip",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "504b0506",
+    "max_size": 104857600
+  },
+  {
+    "format": "DOCX/XLSX/PPTX",
+    "extension": ".docx",
+    "category": "Document",
+    "header": "504b030414000600",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "RAR",
+    "extension": ".rar",
+    "category": "Archive",
+    "header": "526172211a0700",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "7z",
+    "extension": ".7z",
+    "category": "Archive",
+    "header": "377abcaf271c",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "MP3",
+    "extension": ".mp3",
+    "category": "Audio",
+    "header": "494433",
+    "footer": "",
+    "max_size": 20971520
+  },
+  {
+    "format": "MP4",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "0000001866747970",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "AVI",
+    "extension": ".avi",
+    "category": "Video",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "WAV",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "EXE/DLL",
+    "extension": ".exe",
+    "category": "Executable",
+    "header": "4d5a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "SQLite",
+    "extension": ".db",
+    "category": "Database",
+    "header": "53514c69746520666f726d6174203300",
+    "footer": "",
+    "max_size": 104857600
+  }
+]

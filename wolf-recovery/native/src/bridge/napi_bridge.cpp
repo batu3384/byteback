@@ -9,23 +9,32 @@ struct ScanContext {
     Napi::ThreadSafeFunction tsfn;
 };
 
+struct BridgeData {
+    wolf::Engine engine;
+    ScanContext* scanContext = nullptr;
+    ~BridgeData() { if (scanContext) delete scanContext; }
+};
+
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return Napi::String::New(env, "unknown");
     return Napi::String::New(env, engine->getVersion());
 }
 
 Napi::Value IsAdministrator(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return Napi::Boolean::New(env, false);
     return Napi::Boolean::New(env, engine->isAdministrator());
 }
 
 Napi::Value ListDrives(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return env.Undefined();
 
     auto drives = engine->getDiskReader().enumerateDrives();
@@ -46,7 +55,8 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info) {
 
 Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 3) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
@@ -103,7 +113,8 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
 
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 1) return env.Undefined();
 
     std::string dbPath = info[0].As<Napi::String>().Utf8Value();
@@ -113,7 +124,8 @@ Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
 
 Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    wolf::Engine* engine = env.GetInstanceData<wolf::Engine>();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 1) return env.Undefined();
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
@@ -123,8 +135,6 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
 
 // ---------------- Scan Coordinator ----------------
 
-ScanContext* g_scanContext = nullptr;
-
 Napi::Value StartScan(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
@@ -133,26 +143,27 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
     
-    if (g_scanContext) {
-        g_scanContext->coordinator.stopScan();
-        delete g_scanContext;
-        g_scanContext = nullptr;
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return env.Undefined();
+
+    if (bdata->scanContext) {
+        bdata->scanContext->coordinator.stopScan();
+        delete bdata->scanContext;
+        bdata->scanContext = nullptr;
     }
     
     std::string drivePath = info[0].As<Napi::String>().Utf8Value();
     std::string scanType = info[1].As<Napi::String>().Utf8Value();
     Napi::Function cb = info[2].As<Napi::Function>();
     
-    g_scanContext = new ScanContext();
-    g_scanContext->tsfn = Napi::ThreadSafeFunction::New(
+    bdata->scanContext = new ScanContext();
+    bdata->scanContext->tsfn = Napi::ThreadSafeFunction::New(
         env, cb, "ScanCallback", 0, 1, 
-        [](Napi::Env) {
-            // cleanup
-        }
+        [](Napi::Env) {}
     );
 
-    auto onFileFound = [](const wolf::FileRecord& fr) {
-        if (!g_scanContext) return;
+    auto onFileFound = [bdata](const wolf::FileRecord& fr) {
+        if (!bdata->scanContext) return;
         auto callback = [fr](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "file"));
@@ -160,11 +171,11 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
             jsCallback.Call({obj});
         };
-        g_scanContext->tsfn.BlockingCall(callback);
+        bdata->scanContext->tsfn.BlockingCall(callback);
     };
 
-    auto onProgress = [](uint64_t current, uint64_t total) {
-        if (!g_scanContext) return;
+    auto onProgress = [bdata](uint64_t current, uint64_t total) {
+        if (!bdata->scanContext) return;
         auto callback = [current, total](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));
@@ -172,27 +183,29 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             jsCallback.Call({obj});
         };
-        g_scanContext->tsfn.BlockingCall(callback);
+        bdata->scanContext->tsfn.BlockingCall(callback);
     };
 
-    g_scanContext->coordinator.startScan(drivePath, scanType, onFileFound, onProgress);
+    bdata->scanContext->coordinator.startScan(drivePath, scanType, onFileFound, onProgress);
     
     return Napi::Boolean::New(env, true);
 }
 
 Napi::Value StopScan(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (g_scanContext) {
-        g_scanContext->coordinator.stopScan();
-        g_scanContext->tsfn.Release();
-        delete g_scanContext;
-        g_scanContext = nullptr;
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    
+    if (bdata && bdata->scanContext) {
+        bdata->scanContext->coordinator.stopScan();
+        bdata->scanContext->tsfn.Release();
+        delete bdata->scanContext;
+        bdata->scanContext = nullptr;
     }
     return env.Undefined();
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    env.SetInstanceData<wolf::Engine>(new wolf::Engine());
+    env.SetInstanceData<BridgeData>(new BridgeData());
 
     exports.Set("getVersion", Napi::Function::New(env, GetVersion));
     exports.Set("isAdministrator", Napi::Function::New(env, IsAdministrator));

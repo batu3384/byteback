@@ -1,173 +1,170 @@
 .drive-card {
-  background-color: var(--bg-glass);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  transition: all var(--transition);
-  box-shadow: var(--shadow-sm);
-  animation: fadeIn var(--transition);
+  padding: var(--space-lg);
+  transition: transform var(--transition-smooth), box-shadow var(--transition-smooth);
+  border: 1px solid rgba(41, 98, 255, 0.2);
+  background: linear-gradient(145deg, rgba(19, 25, 41, 0.6) 0%, rgba(19, 25, 41, 0.9) 100%);
 }
 
 .drive-card:hover {
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-lg);
-  border-color: var(--border-light);
+  transform: translateY(-6px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 229, 255, 0.2);
+  border-color: rgba(0, 229, 255, 0.5);
 }
 
-.drive-header {
+.drive-card-header {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid rgba(41, 98, 255, 0.2);
 }
 
 .drive-icon-container {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-lg);
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-light);
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: rgba(0, 229, 255, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent);
-  flex-shrink: 0;
+  font-size: 1.8rem;
+  color: var(--neon-cyan);
+  box-shadow: inset 0 0 15px rgba(0, 229, 255, 0.1);
+  border: 1px solid rgba(0, 229, 255, 0.2);
 }
 
-.drive-icon-container svg {
-  width: 24px;
-  height: 24px;
-}
-
-.drive-info {
-  flex: 1;
-  min-width: 0; /* for text truncation */
+.drive-title h3 {
+  font-size: 1.2rem;
+  margin-bottom: 2px;
+  color: var(--text-main);
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.1);
 }
 
 .drive-model {
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin: 0 0 6px 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-primary);
+  max-width: 200px;
 }
-
-.drive-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.drive-type {
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-
-.type-ssd { background-color: rgba(88, 166, 255, 0.15); color: var(--info); border: 1px solid rgba(88, 166, 255, 0.3); }
-.type-hdd { background-color: rgba(139, 148, 158, 0.15); color: var(--text-secondary); border: 1px solid rgba(139, 148, 158, 0.3); }
-.type-usb { background-color: rgba(210, 153, 34, 0.15); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.3); }
-.type-unknown { background-color: rgba(248, 81, 73, 0.15); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.3); }
-
-.drive-index {
-  font-size: 0.8rem;
-  color: var(--text-tertiary);
-  font-weight: 500;
-}
-
-.drive-health {
-  width: 12px;
-  height: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.health-indicator {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  box-shadow: 0 0 8px currentColor;
-}
-
-.bg-success { background-color: var(--success); color: var(--success); }
-.bg-warning { background-color: var(--warning); color: var(--warning); }
-.bg-danger { background-color: var(--danger); color: var(--danger); }
 
 .drive-details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-light);
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xl);
+  flex: 1;
 }
 
 .detail-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
+.detail-row:last-child {
+  border-bottom: none;
 }
 
 .detail-label {
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
 
 .detail-value {
+  color: var(--text-main);
   font-weight: 500;
-  color: var(--text-primary);
+  font-family: monospace;
 }
 
-.detail-value.mono {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
+.detail-value.highlight {
+  color: var(--success-green);
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(0, 230, 118, 0.3);
 }
 
 .drive-actions {
   display: flex;
-  gap: 12px;
+  gap: var(--space-sm);
   margin-top: auto;
+  flex-wrap: wrap;
 }
 
-.btn {
-  flex: 1;
-  padding: 8px 16px;
-  border-radius: var(--radius);
-  font-weight: 600;
-  font-size: 0.9rem;
-  display: flex;
+.drive-actions button {
+  flex: 1 1 calc(50% - var(--space-sm));
+  padding: 10px 0;
+}
+
+.drive-type-badge {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+}
+
+.drive-type-badge.hdd {
+  background: rgba(41, 98, 255, 0.15);
+  color: #64B5F6;
+  border: 1px solid rgba(41, 98, 255, 0.4);
+}
+
+.drive-type-badge.ssd {
+  background: rgba(0, 230, 118, 0.15);
+  color: var(--success-green);
+  border: 1px solid rgba(0, 230, 118, 0.4);
+}
+
+.drive-type-badge.usb {
+  background: rgba(255, 171, 0, 0.15);
+  color: #FFD600;
+  border: 1px solid rgba(255, 171, 0, 0.4);
+}
+
+.drive-type-badge.unknown {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
+.btn-accent {
+  background: linear-gradient(135deg, #FF1744 0%, #D50000 100%);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 8px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition);
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(255, 23, 68, 0.4);
+  transition: var(--transition-smooth);
 }
 
-.btn-primary {
-  background-color: var(--accent);
-  color: #000;
+.btn-accent:hover {
+  background: linear-gradient(135deg, #FF5252 0%, #FF1744 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 23, 68, 0.6);
 }
 
-.btn-primary:hover {
-  background-color: var(--accent-hover);
-  box-shadow: 0 0 12px var(--accent-glow);
+.btn-accent:active {
+  transform: translateY(1px);
 }
 
-.btn-secondary {
-  background-color: transparent;
-  color: var(--text-primary);
-  border: 1px solid var(--border);
+.btn-icon {
+  font-size: 1.1rem;
 }
 
-.btn-secondary:hover {
-  background-color: var(--bg-tertiary);
-  border-color: var(--text-secondary);
-}

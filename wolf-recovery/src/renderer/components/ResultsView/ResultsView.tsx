@@ -1,34 +1,24 @@
 import React, { useState } from 'react'
 import './ResultsView.css'
 
-interface RecoveredFile {
-  id: string
-  name: string
-  path: string
-  sizeBytes: number
-  confidence: number
-  category: string
-  source: string
+interface ResultsViewProps {
+  filesFound: any[]
 }
 
-const MOCK_FILES: RecoveredFile[] = [
-  { id: '1', name: 'vacation_photo.jpg', path: '/Recovered/Images', sizeBytes: 2450000, confidence: 98, category: 'Image', source: 'ext4_inode' },
-  { id: '2', name: 'financial_report_Q3.pdf', path: '/Recovered/Documents', sizeBytes: 1250000, confidence: 95, category: 'Document', source: 'hfs_catalog' },
-  { id: '3', name: 'family_video.mp4', path: '/Recovered/Videos', sizeBytes: 250420000, confidence: 85, category: 'Video', source: 'exfat_dir' },
-  { id: '4', name: 'project_backup.zip', path: '/Recovered/Archives', sizeBytes: 45000000, confidence: 100, category: 'Archive', source: 'ntfs_mft' },
-  { id: '5', name: 'unknown_carved_1.png', path: '/Recovered/Raw', sizeBytes: 1024000, confidence: 60, category: 'Image', source: 'carver' },
-  { id: '6', name: 'presentation_draft.pptx', path: '/Recovered/Documents', sizeBytes: 5400000, confidence: 92, category: 'Document', source: 'apfs_object' },
-]
+function ResultsView({ filesFound }: ResultsViewProps): React.ReactElement {
+  const [filter, setFilter] = useState('all')
 
-function ResultsView(): React.ReactElement {
-  const [selectedFile, setSelectedFile] = useState<RecoveredFile | null>(null)
-  const [activeCategory, setActiveCategory] = useState<string>('All')
+  const getExtension = (filename: string) => {
+    const parts = filename.split('.')
+    return parts.length > 1 ? parts.pop()?.toLowerCase() || '' : ''
+  }
 
-  const categories = ['All', ...Array.from(new Set(MOCK_FILES.map(f => f.category)))]
-  
-  const filteredFiles = activeCategory === 'All' 
-    ? MOCK_FILES 
-    : MOCK_FILES.filter(f => f.category === activeCategory)
+  const getFileType = (ext: string) => {
+    if (['jpg', 'png', 'gif', 'jpeg', 'bmp'].includes(ext)) return 'img'
+    if (['doc', 'docx', 'pdf', 'txt', 'xls', 'xlsx'].includes(ext)) return 'doc'
+    if (['mp4', 'avi', 'mkv', 'mov'].includes(ext)) return 'video'
+    return 'other'
+  }
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return bytes + ' B'
@@ -37,85 +27,75 @@ function ResultsView(): React.ReactElement {
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
   }
 
-  const getConfidenceColor = (score: number) => {
-    if (score >= 90) return 'var(--success)'
-    if (score >= 70) return 'var(--warning)'
-    return 'var(--danger)'
-  }
+  const mappedFiles = filesFound.map((f, i) => ({
+    id: i,
+    name: f.name,
+    size: formatSize(f.size),
+    path: 'Recovered',
+    status: 'Kurtarılabilir', // Mock status for now, since native doesn't provide it yet
+    type: getFileType(getExtension(f.name))
+  }))
+
+  const filteredFiles = mappedFiles.filter(f => filter === 'all' || f.type === filter)
 
   return (
     <div className="results-view">
-      <div className="results-sidebar">
-        <h3>Categories</h3>
-        <ul className="category-list">
-          {categories.map(cat => (
-            <li 
-              key={cat} 
-              className={activeCategory === cat ? 'active' : ''}
-              onClick={() => setActiveCategory(cat)}
-            >
-              {cat}
-            </li>
-          ))}
-        </ul>
-      </div>
-      
-      <div className="results-main">
-        <div className="results-toolbar">
-          <h3>Recovered Files ({filteredFiles.length})</h3>
-          <button className="btn-primary">Export Selected</button>
+      <div className="results-header glass-panel">
+        <div className="results-info">
+          <h2>Kurtarma Sonuçları</h2>
+          <p>Taranan disk üzerinde tespit edilen {filesFound.length} dosya</p>
         </div>
-        
-        <div className="files-grid">
-          <div className="files-header">
-            <span>Name</span>
-            <span>Path</span>
-            <span>Size</span>
-            <span>Confidence</span>
-          </div>
-          <div className="files-body">
-            {filteredFiles.map(file => (
-              <div 
-                key={file.id} 
-                className={`file-row ${selectedFile?.id === file.id ? 'selected' : ''}`}
-                onClick={() => setSelectedFile(file)}
-              >
-                <span className="file-name">{file.name}</span>
-                <span className="file-path">{file.path}</span>
-                <span className="file-size">{formatSize(file.sizeBytes)}</span>
-                <span className="file-confidence">
-                  <span 
-                    className="confidence-dot" 
-                    style={{ backgroundColor: getConfidenceColor(file.confidence) }}
-                  />
-                  {file.confidence}%
-                </span>
-              </div>
-            ))}
-          </div>
+        <div className="results-actions">
+          <button className="btn-secondary">Dışa Aktar</button>
+          <button className="btn-primary">Seçilenleri Kurtar</button>
         </div>
       </div>
 
-      <div className="results-preview">
-        <h3>Preview</h3>
-        {selectedFile ? (
-          <div className="preview-content">
-            <div className="preview-placeholder">
-              <span>{selectedFile.category} Preview</span>
-              <p className="preview-note">Preview engine loading...</p>
-            </div>
-            <div className="preview-metadata">
-              <p><strong>Name:</strong> {selectedFile.name}</p>
-              <p><strong>Size:</strong> {formatSize(selectedFile.sizeBytes)}</p>
-              <p><strong>Source:</strong> <span className="mono">{selectedFile.source}</span></p>
-              <p><strong>Integrity:</strong> {selectedFile.confidence}%</p>
-            </div>
-          </div>
-        ) : (
-          <div className="preview-empty">
-            <p>Select a file to preview its contents and metadata.</p>
-          </div>
-        )}
+      <div className="results-content glass-panel">
+        <div className="filters">
+          <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>Tümü</button>
+          <button className={`filter-btn ${filter === 'img' ? 'active' : ''}`} onClick={() => setFilter('img')}>Resimler</button>
+          <button className={`filter-btn ${filter === 'doc' ? 'active' : ''}`} onClick={() => setFilter('doc')}>Belgeler</button>
+          <button className={`filter-btn ${filter === 'video' ? 'active' : ''}`} onClick={() => setFilter('video')}>Videolar</button>
+        </div>
+
+        <table className="results-table">
+          <thead>
+            <tr>
+              <th style={{ width: '40px' }}><input type="checkbox" /></th>
+              <th>Dosya Adı</th>
+              <th>Boyut</th>
+              <th>Konum</th>
+              <th>Durum</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredFiles.length === 0 ? (
+              <tr>
+                <td colSpan={5} style={{ textAlign: 'center', padding: '2rem' }}>
+                  Bu kategoride dosya bulunamadı.
+                </td>
+              </tr>
+            ) : (
+              filteredFiles.map((f) => (
+                <tr key={f.id}>
+                  <td><input type="checkbox" /></td>
+                  <td className="file-name-cell">
+                    <span className="file-icon">📄</span>
+                    {f.name}
+                  </td>
+                  <td>{f.size}</td>
+                  <td>{f.path}</td>
+                  <td>
+                    <span className={`status-badge ${f.status === 'Kurtarılabilir' ? 'success' : f.status === 'Kısmen Bozuk' ? 'warning' : 'danger'}`}>
+                      {f.status}
+                    </span>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   )

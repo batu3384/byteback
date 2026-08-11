@@ -4,112 +4,140 @@ import './ScanView.css'
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
+  filesFound: any[]
+  setFilesFound: React.Dispatch<React.SetStateAction<any[]>>
+  progress: { current: number, total: number }
+  setProgress: React.Dispatch<React.SetStateAction<{ current: number, total: number }>>
+  status: string
+  setStatus: React.Dispatch<React.SetStateAction<string>>
+  elapsed: number
+  setElapsed: React.Dispatch<React.SetStateAction<number>>
   onCancel: () => void
-  onViewResults?: () => void
+  onViewResults: () => void
 }
 
-interface FoundFile {
-  name: string
-  size: number
-}
-
-function ScanView({ driveIndex, scanType, onCancel, onViewResults }: ScanViewProps): React.ReactElement {
-  const [progress, setProgress] = useState(0)
-  const [currentSector, setCurrentSector] = useState(0)
-  const [totalSectors, setTotalSectors] = useState(1)
-  const [foundFiles, setFoundFiles] = useState<FoundFile[]>([])
-  const [isScanning, setIsScanning] = useState(false)
-  
-  const filesEndRef = useRef<HTMLDivElement>(null)
+function ScanView({ 
+  driveIndex, scanType, 
+  filesFound, setFilesFound,
+  progress, setProgress,
+  status, setStatus,
+  elapsed, setElapsed,
+  onCancel, onViewResults 
+}: ScanViewProps): React.ReactElement {
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     if (driveIndex === null) return
-    
-    setIsScanning(true)
-    
-    window.api.onScanProgress((data) => {
-      setCurrentSector(data.current)
-      setTotalSectors(data.total)
-      setProgress(Math.floor((data.current / data.total) * 100))
-      
-      if (data.current >= data.total) {
-        setIsScanning(false)
-      }
-    })
 
-    window.api.onScanFileFound((data) => {
-      setFoundFiles(prev => [...prev, data])
-    })
+    // Start elapsed timer
+    timerRef.current = setInterval(() => {
+      setElapsed(prev => prev + 1)
+    }, 1000)
 
-    window.api.startScan(driveIndex, scanType)
+    if (window.api && window.api.onScanProgress) {
+      window.api.onScanProgress((data: { current: number, total: number }) => {
+        setProgress(data)
+        if (data.current >= data.total && data.total > 0) {
+          setStatus('Tarama Tamamlandı')
+          if (timerRef.current) clearInterval(timerRef.current)
+        }
+      })
+    }
+
+    if (window.api && window.api.onScanFileFound) {
+      window.api.onScanFileFound((fileData: { name: string, size: number }) => {
+        setFilesFound((prev) => [...prev, fileData])
+      })
+    }
+
+    if (window.api && window.api.startScan) {
+      window.api.startScan(driveIndex, scanType)
+    }
 
     return () => {
-      window.api.removeAllScanListeners()
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (window.api && window.api.removeAllScanListeners) {
+        window.api.removeAllScanListeners()
+      }
     }
   }, [driveIndex, scanType])
 
-  useEffect(() => {
-    filesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [foundFiles])
-
   const handleStop = () => {
-    window.api.stopScan()
-    setIsScanning(false)
+    if (window.api && window.api.stopScan) {
+      window.api.stopScan()
+    }
+    if (timerRef.current) clearInterval(timerRef.current)
+    setStatus('Tarama İptal Edildi')
   }
 
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600)
+    const m = Math.floor((seconds % 3600) / 60)
+    const s = seconds % 60
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
+
+  const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
+  const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
 
   return (
     <div className="scan-view">
-      <div className="scan-header">
-        <h2>{scanType === 'quick' ? 'Quick Scan' : 'Deep Scan'} 🐺</h2>
-        <p className="scan-status">
-          {isScanning ? 'Scanning...' : 'Scan Complete'}
-        </p>
+      <div className="scan-header glass-panel">
+        <div className="scan-info">
+          <div className={`scan-icon ${isFinished ? '' : 'spinner'}`}>{isFinished ? '✅' : '🔍'}</div>
+          <div>
+            <h2>Sürücü {driveIndex} Taranıyor</h2>
+            <p>{scanType === 'quick' ? 'Hızlı Tarama (MFT Kayıtları)' : 'Derin Tarama (Sektör Bazlı)'} • {status}</p>
+          </div>
+        </div>
+        <div className="scan-stats">
+          <div className="stat-pill">
+            <span className="label">Bulunan</span>
+            <span className="value">{filesFound.length}</span>
+          </div>
+          <div className="stat-pill">
+            <span className="label">Geçen Süre</span>
+            <span className="value">{formatTime(elapsed)}</span>
+          </div>
+        </div>
       </div>
 
-      <div className="scan-progress-container">
-        <div className="progress-bar-bg">
-          <div 
-            className={`progress-bar-fill ${isScanning ? 'pulse' : ''}`}
-            style={{ width: `${progress}%` }}
-          ></div>
+      <div className="scan-progress-card glass-panel">
+        <div className="progress-labels">
+          <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
+          <span>%{percent}</span>
         </div>
-        <div className="progress-stats">
-          <span>{progress}% Complete</span>
-          <span>Sectors: {currentSector.toLocaleString()} / {totalSectors.toLocaleString()}</span>
+        <div className="progress-bar-bg">
+          <div className="progress-bar-fill" style={{ width: `${percent}%` }}></div>
+        </div>
+      </div>
+
+      <div className="scan-live-results glass-panel">
+        <div className="live-header">
+          <h3>Canlı Dosya Akışı</h3>
+        </div>
+        <div className="live-files">
+          {filesFound.length === 0 ? (
+            <div className="empty-files">Henüz dosya bulunamadı...</div>
+          ) : (
+            filesFound.slice(-20).reverse().map((f, i) => (
+              <div key={i} className="live-file-item">
+                <span className="file-icon">📄</span>
+                <span className="file-name">{f.name}</span>
+                <span className="file-size">{(f.size / 1024).toFixed(2)} KB</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
       <div className="scan-actions">
-        {isScanning ? (
-          <button className="btn-danger" onClick={handleStop}>Stop Scan</button>
+        {isFinished ? (
+          <button className="btn-primary" onClick={onViewResults}>Sonuçları Görüntüle</button>
         ) : (
-          <button className="btn-primary" onClick={onViewResults || onCancel}>View Results</button>
+          <button className="btn-secondary" onClick={handleStop}>Durdur</button>
         )}
-      </div>
-
-      <div className="found-files-panel">
-        <h3>Recovered Files ({foundFiles.length})</h3>
-        <div className="files-list">
-          {foundFiles.length === 0 ? (
-            <div className="empty-files">No files found yet...</div>
-          ) : (
-            foundFiles.map((f, i) => (
-              <div key={i} className="file-item slide-in">
-                <span className="file-icon">📄</span>
-                <span className="file-name">{f.name}</span>
-                <span className="file-size">{formatSize(f.size)}</span>
-              </div>
-            ))
-          )}
-          <div ref={filesEndRef} />
-        </div>
+        <button className="btn-secondary" onClick={onCancel}>Geri Dön</button>
       </div>
     </div>
   )

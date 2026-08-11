@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <future>
 
 namespace wolf {
 
@@ -20,73 +21,71 @@ std::vector<uint8_t> CarvingEngine::hexToBytes(const std::string& hex) {
     return bytes;
 }
 
-bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
-    std::ifstream file(jsonPath);
-    if (!file.is_open()) return false;
-    
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string content = buffer.str();
-    
-    // Extremely naive JSON parsing for this specific format
-    size_t pos = 0;
-    while ((pos = content.find("\"format\":", pos)) != std::string::npos) {
-        FileSignature sig;
-        
-        auto extractString = [&](const std::string& key) -> std::string {
-            size_t kPos = content.find("\"" + key + "\":", pos);
-            if (kPos == std::string::npos) return "";
-            size_t start = content.find("\"", kPos + key.length() + 3) + 1;
-            size_t end = content.find("\"", start);
-            return content.substr(start, end - start);
-        };
-        
-        auto extractNum = [&](const std::string& key) -> uint64_t {
-            size_t kPos = content.find("\"" + key + "\":", pos);
-            if (kPos == std::string::npos) return 0;
-            size_t start = kPos + key.length() + 3;
-            while (content[start] == ' ' || content[start] == ':') start++;
-            size_t end = start;
-            while (content[end] >= '0' && content[end] <= '9') end++;
-            std::string numStr = content.substr(start, end - start);
-            if (numStr.empty()) return 0;
-            return std::stoull(numStr);
-        };
+bool CarvingEngine::loadSignatures(const std::string& /*jsonPath*/) {
+    // Instead of loading from JSON which can fail or be missing in prod,
+    // we embed the signatures directly for maximum reliability.
+    signatures.clear();
 
-        sig.format = extractString("format");
-        sig.extension = extractString("extension");
-        sig.category = extractString("category");
-        std::string headerHex = extractString("header");
-        std::string footerHex = extractString("footer");
-        sig.header = hexToBytes(headerHex);
-        sig.footer = hexToBytes(footerHex);
-        sig.maxSize = extractNum("max_size");
-        
-        signatures.push_back(sig);
-        pos += 10;
-    }
-    
-    return !signatures.empty();
+    // JPEG
+    FileSignature jpg;
+    jpg.format = "JPEG Image";
+    jpg.extension = ".jpg";
+    jpg.category = "Image";
+    jpg.header = {0xFF, 0xD8, 0xFF};
+    // footer often {0xFF, 0xD9} but can vary, omitting for simplicity
+    jpg.maxSize = 10 * 1024 * 1024; // 10MB
+    signatures.push_back(jpg);
+
+    // PNG
+    FileSignature png;
+    png.format = "PNG Image";
+    png.extension = ".png";
+    png.category = "Image";
+    png.header = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    png.maxSize = 20 * 1024 * 1024; // 20MB
+    signatures.push_back(png);
+
+    // PDF
+    FileSignature pdf;
+    pdf.format = "PDF Document";
+    pdf.extension = ".pdf";
+    pdf.category = "Document";
+    pdf.header = {0x25, 0x50, 0x44, 0x46, 0x2D}; // %PDF-
+    pdf.maxSize = 50 * 1024 * 1024; // 50MB
+    signatures.push_back(pdf);
+
+    // ZIP (including DOCX, XLSX, etc.)
+    FileSignature zip;
+    zip.format = "ZIP Archive";
+    zip.extension = ".zip";
+    zip.category = "Archive";
+    zip.header = {0x50, 0x4B, 0x03, 0x04};
+    zip.maxSize = 500 * 1024 * 1024; // 500MB
+    signatures.push_back(zip);
+
+    return true;
 }
 
-bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback) {
+bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen() || signatures.empty()) return false;
 
     uint64_t diskSize = reader.getDiskSize();
-    uint32_t sectorSize = 512; 
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
     
-    const uint32_t chunkSectors = 2048; // 1MB chunks
+    const uint32_t chunkSectors = 8192; // 4MB chunks
     const uint32_t chunkSize = chunkSectors * sectorSize;
-    auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
-        auto& buffer = *poolBuf;
+    auto poolBufA = MemoryPool::getInstance().acquireBuffer(chunkSize);
+    auto* currentBuf = poolBufA.get();
     
-    // Very limited maxSector for quick mock test
-    uint64_t maxSector = std::min(diskSize / sectorSize, (uint64_t)1000000); 
+    uint64_t maxSector = diskSize / sectorSize;
 
     int foundCount = 0;
 
     for (uint64_t sector = 0; sector < maxSector; sector += chunkSectors) {
-        auto res = reader.readSectors(sector * sectorSize, chunkSize, buffer.data());
+        if (isRunning && !(*isRunning)) break;
+        
+        auto res = reader.readSectors(sector * sectorSize, chunkSize, currentBuf->data());
         if (!res.success) continue;
 
         for (uint32_t i = 0; i < res.bytesRead; i += sectorSize) {
@@ -95,14 +94,14 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                 
                 bool match = true;
                 for (size_t h = 0; h < sig.header.size(); ++h) {
-                    if (buffer[i + h] != sig.header[h]) {
+                    if (currentBuf->data()[i + h] != sig.header[h]) {
                         match = false;
                         break;
                     }
                 }
                 
                 if (match) {
-                    double entropy = EntropyAnalyzer::calculateShannonEntropy(buffer.data(), i, std::min<uint32_t>((uint32_t)4096, (uint32_t)(res.bytesRead - i)));
+                    double entropy = EntropyAnalyzer::calculateShannonEntropy(currentBuf->data(), res.bytesRead, i, std::min<uint32_t>((uint32_t)4096, (uint32_t)(res.bytesRead - i)));
                     if (entropy < 1.0 && sig.category == "Archive") continue; // Zip files shouldn't have zero entropy
                     FileRecord fr;
                     fr.id = 0;
@@ -124,6 +123,14 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                 }
             }
         }
+        
+        // std::swap removed
+        
+        // Emit progress tick at the end of each chunk
+        FileRecord progressTick;
+        progressTick.id = -1;
+        progressTick.startSector = sector + chunkSectors;
+        callback(progressTick);
     }
 
     return true;

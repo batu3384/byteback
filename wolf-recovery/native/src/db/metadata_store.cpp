@@ -83,7 +83,7 @@ bool MetadataStore::createTables() {
     return rc == SQLITE_OK;
 }
 
-int64_t MetadataStore::insertFile(const FileRecord& r) {
+int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, confidence, category, source,
@@ -97,7 +97,7 @@ int64_t MetadataStore::insertFile(const FileRecord& r) {
         return -1;
     }
 
-    sqlite3_bind_int64(stmt, 1, r.id); // scan_id passed via id field temporarily
+    sqlite3_bind_int64(stmt, 1, scanId);
     sqlite3_bind_int64(stmt, 2, r.parentId);
     sqlite3_bind_text(stmt, 3, r.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, r.extension.c_str(), -1, SQLITE_TRANSIENT);

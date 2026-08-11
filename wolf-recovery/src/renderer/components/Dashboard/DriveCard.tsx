@@ -1,110 +1,90 @@
-import React from 'react';
-import type { DriveInfo } from '../../../shared/types';
-import './DriveCard.css';
+import React from 'react'
+import type { DriveInfo } from '../../../shared/types'
+import './DriveCard.css'
 
 interface DriveCardProps {
-  drive: DriveInfo;
-  onStartScan?: (driveIndex: number, scanType: string) => void;
+  drive: DriveInfo
+  onStartScan?: (driveIndex: number, scanType: string) => void
+  onAction?: (page: any, data?: any) => void
+  isAdmin?: boolean
 }
 
-function DriveCard({ drive, onStartScan }: DriveCardProps): React.ReactElement {
-  const formatSize = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
 
-  const getDriveIcon = (type: string) => {
-    switch (type) {
-      case 'USB':
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="6" y="2" width="12" height="6" rx="1"></rect>
-            <path d="M10 2v6"></path>
-            <path d="M14 2v6"></path>
-            <rect x="4" y="8" width="16" height="14" rx="2"></rect>
-            <circle cx="12" cy="15" r="2"></circle>
-          </svg>
-        );
-      case 'SSD':
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
-            <line x1="6" y1="8" x2="6.01" y2="8"></line>
-            <line x1="10" y1="8" x2="10.01" y2="8"></line>
-            <line x1="14" y1="8" x2="14.01" y2="8"></line>
-            <line x1="18" y1="8" x2="18.01" y2="8"></line>
-            <rect x="6" y="12" width="12" height="4"></rect>
-          </svg>
-        );
-      case 'HDD':
-      default:
-        return (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-          </svg>
-        );
+function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): React.ReactElement {
+  const handleScan = (scanType: string) => {
+    if (!isAdmin) {
+      alert('Tarama başlatmak için uygulamayı Yönetici olarak çalıştırmalısınız.')
+      return
     }
-  };
-
-  // Mock health for now
-  const healthClass = drive.type === 'USB' ? 'warning' : 'success';
+    onStartScan && onStartScan(drive.index, scanType)
+  }
 
   return (
-    <div className="drive-card">
-      <div className="drive-header">
+    <div className="drive-card glass-panel">
+      <div className="drive-card-header">
         <div className="drive-icon-container">
-          {getDriveIcon(drive.type)}
+          <span className="drive-icon">{drive.type === 'SSD' ? '⚡' : drive.type === 'USB' ? '🔌' : '💽'}</span>
         </div>
-        <div className="drive-info">
-          <h3 className="drive-model">{drive.model || 'Unknown Drive'}</h3>
-          <div className="drive-meta">
-            <span className={`drive-type type-${drive.type.toLowerCase()}`}>
-              {drive.type}
-            </span>
-            <span className="drive-index">Drive {drive.index}</span>
-          </div>
+        <div className="drive-title">
+          <h3>Fiziksel Sürücü {drive.index}</h3>
+          <span className="drive-model">{drive.model || 'Bilinmeyen Model'}</span>
         </div>
-        <div className="drive-health" title={`Health: ${healthClass}`}>
-          <div className={`health-indicator bg-${healthClass}`}></div>
-        </div>
+        <span className={`drive-type-badge ${drive.type.toLowerCase()}`}>{drive.type}</span>
       </div>
-
+      
       <div className="drive-details">
         <div className="detail-row">
-          <span className="detail-label">Size</span>
-          <span className="detail-value">{formatSize(drive.sizeBytes)}</span>
+          <span className="detail-label">Seri No</span>
+          <span className="detail-value">{drive.serial || 'N/A'}</span>
         </div>
         <div className="detail-row">
-          <span className="detail-label">Sector Size</span>
-          <span className="detail-value">{drive.sectorSize} B</span>
+          <span className="detail-label">Kapasite</span>
+          <span className="detail-value highlight">{formatBytes(drive.sizeBytes)}</span>
         </div>
         <div className="detail-row">
-          <span className="detail-label">Serial</span>
-          <span className="detail-value mono">{drive.serial || 'N/A'}</span>
+          <span className="detail-label">Sektör Boyutu</span>
+          <span className="detail-value">{drive.sectorSize} Bayt</span>
         </div>
       </div>
 
       <div className="drive-actions">
         <button 
-          className="btn btn-secondary" 
-          onClick={() => onStartScan && onStartScan(drive.index, 'quick')}
+          className="btn-primary" 
+          onClick={() => handleScan('quick')}
         >
-          Quick Scan
+          <span className="btn-icon">⚡</span> Hızlı Tarama
         </button>
         <button 
-          className="btn btn-primary" 
-          onClick={() => onStartScan && onStartScan(drive.index, 'deep')}
+          className="btn-accent" 
+          onClick={() => handleScan('deep')}
         >
-          Deep Scan
+          <span className="btn-icon">🧬</span> Derin Tarama
+        </button>
+        <button 
+          className="btn-secondary" 
+          onClick={() => onAction && onAction('hex', { driveIndex: drive.index, sectorSize: drive.sectorSize })}
+          title="Sektörleri Hex formatında incele"
+        >
+          Hex
+        </button>
+        <button 
+          className="btn-secondary" 
+          onClick={() => onAction && onAction('smart', { driveIndex: drive.index })}
+          title="SMART Sağlık Durumu"
+        >
+          SMART
         </button>
       </div>
     </div>
-  );
+  )
 }
 
-export default DriveCard;
+export default DriveCard
+
