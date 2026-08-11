@@ -34,8 +34,11 @@ function ScanView({
       setElapsed(prev => prev + 1)
     }, 1000)
 
+    let cleanupProgress: (() => void) | undefined
+    let cleanupFileFound: (() => void) | undefined
+
     if (window.api && window.api.onScanProgress) {
-      window.api.onScanProgress((data: { current: number, total: number }) => {
+      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number }) => {
         setProgress(data)
         if (data.current >= data.total && data.total > 0) {
           setStatus('Tarama Tamamlandı')
@@ -45,7 +48,7 @@ function ScanView({
     }
 
     if (window.api && window.api.onScanFileFound) {
-      window.api.onScanFileFound((fileData: { name: string, size: number }) => {
+      cleanupFileFound = window.api.onScanFileFound((fileData: { name: string, size: number }) => {
         setFilesFound((prev) => [...prev, fileData])
       })
     }
@@ -56,9 +59,8 @@ function ScanView({
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
-      if (window.api && window.api.removeAllScanListeners) {
-        window.api.removeAllScanListeners()
-      }
+      if (cleanupProgress) cleanupProgress()
+      if (cleanupFileFound) cleanupFileFound()
     }
   }, [driveIndex, scanType])
 

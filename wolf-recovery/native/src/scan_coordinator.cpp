@@ -33,7 +33,10 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 ProgressCallback onProgress) {
     DiskReader reader;
     int driveIndex = 0;
-    try { driveIndex = std::stoi(drivePath); } catch(...) {}
+    try { driveIndex = std::stoi(drivePath); } catch(...) {
+        isRunning = false;
+        return;
+    }
     if (!reader.openDrive(driveIndex)) {
         isRunning = false;
         return;
