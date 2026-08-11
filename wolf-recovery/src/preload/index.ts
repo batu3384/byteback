@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld('api', {
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
   readHexData: (driveIndex: number, offset: number, size: number) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size),
 
+  getFileCount: (scanId: number) => ipcRenderer.invoke('get-file-count', scanId),
+  getFilesPage: (scanId: number, offset: number, limit: number) => ipcRenderer.invoke('get-files-page', scanId, offset, limit),
+  getScanState: (scanId: number) => ipcRenderer.invoke('get-scan-state', scanId),
+
   removeAllScanListeners: () => {
     ipcRenderer.removeAllListeners('scan-progress')
     ipcRenderer.removeAllListeners('scan-file-found')

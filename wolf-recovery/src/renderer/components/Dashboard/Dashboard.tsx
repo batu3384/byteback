@@ -13,6 +13,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [activeSession, setActiveSession] = useState<any>(null)
 
   const fetchDrives = async () => {
     setLoading(true)
@@ -40,8 +41,22 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
     }
   }
 
+  const checkActiveSession = async () => {
+    if (window.api && window.api.getScanState) {
+      try {
+        const state = await window.api.getScanState(1) // hardcoded scanId=1 for MVP
+        if (state && (state.status === 0 || state.status === 1)) {
+          setActiveSession(state)
+        }
+      } catch (err) {
+        console.error("No active session found")
+      }
+    }
+  }
+
   useEffect(() => {
     fetchDrives()
+    checkActiveSession()
   }, [])
 
   return (
@@ -52,6 +67,18 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
           <div className="admin-banner-text">
             <strong>Yönetici İzni Yok</strong> — Sürücüler listelenebilir ancak tarama ve sektör okuma gibi işlemler için uygulamayı <em>Yönetici Olarak Çalıştır</em> ile yeniden başlatmanız gerekir.
           </div>
+        </div>
+      )}
+
+      {activeSession && (
+        <div className="resume-banner glass-panel" style={{ borderLeft: '4px solid #00f3ff', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3>Yarım Kalan Tarama Bulundu</h3>
+            <p>Sürücü {activeSession.driveIndex} üzerinde {activeSession.scanType} taraması yapılıyordu. ({activeSession.scannedSectors} / {activeSession.totalSectors} sektör)</p>
+          </div>
+          <button className="btn-primary" onClick={() => onAction && onAction('scan', { driveIndex: activeSession.driveIndex, scanType: activeSession.scanType })}>
+            Devam Et
+          </button>
         </div>
       )}
 

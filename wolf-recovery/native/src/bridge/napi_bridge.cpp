@@ -143,6 +143,54 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     return Napi::Number::New(env, static_cast<double>(count));
 }
 
+Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
+    if (!engine || info.Length() < 3) return env.Undefined();
+
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    int offset = info[1].As<Napi::Number>().Int32Value();
+    int limit = info[2].As<Napi::Number>().Int32Value();
+
+    auto files = engine->getMetadataStore().getFiles(scanId, offset, limit);
+    Napi::Array result = Napi::Array::New(env, files.size());
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        Napi::Object fileObj = Napi::Object::New(env);
+        fileObj.Set("id", Napi::Number::New(env, static_cast<double>(files[i].id)));
+        fileObj.Set("parentId", Napi::Number::New(env, static_cast<double>(files[i].parentId)));
+        fileObj.Set("name", Napi::String::New(env, files[i].name));
+        fileObj.Set("extension", Napi::String::New(env, files[i].extension));
+        fileObj.Set("path", Napi::String::New(env, files[i].path));
+        fileObj.Set("sizeBytes", Napi::Number::New(env, static_cast<double>(files[i].sizeBytes)));
+        fileObj.Set("status", Napi::Number::New(env, files[i].status));
+        fileObj.Set("confidence", Napi::Number::New(env, files[i].confidence));
+        fileObj.Set("category", Napi::String::New(env, files[i].category));
+        result[i] = fileObj;
+    }
+    return result;
+}
+
+Napi::Value GetScanState(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
+    if (!engine || info.Length() < 1) return env.Undefined();
+
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    auto state = engine->getMetadataStore().getScanState(scanId);
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("id", Napi::Number::New(env, static_cast<double>(state.id)));
+    obj.Set("driveIndex", Napi::Number::New(env, state.driveIndex));
+    obj.Set("scanType", Napi::String::New(env, state.scanType));
+    obj.Set("totalSectors", Napi::Number::New(env, static_cast<double>(state.totalSectors)));
+    obj.Set("scannedSectors", Napi::Number::New(env, static_cast<double>(state.scannedSectors)));
+    obj.Set("status", Napi::Number::New(env, state.status));
+    return obj;
+}
+
 // ---------------- Scan Coordinator ----------------
 
 Napi::Value StartScan(const Napi::CallbackInfo& info) {
@@ -282,6 +330,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
+    exports.Set("getFilesPage", Napi::Function::New(env, GetFilesPage));
+    exports.Set("getScanState", Napi::Function::New(env, GetScanState));
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     
     exports.Set("startScan", Napi::Function::New(env, StartScan));

@@ -107,7 +107,7 @@ bool DiskReader::openDrive(int driveIndex) {
     handle_ = CreateFileW(path, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
         NULL);
 
     if (handle_ == INVALID_HANDLE_VALUE) return false;
@@ -149,25 +149,58 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         return result;
     }
 
-    // Read atomically using OVERLAPPED structure (Thread-safe)
+    HANDLE hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!hEvent) {
+        result.error = "Failed to create event";
+        return result;
+    }
+
     OVERLAPPED ol = {0};
     ol.Offset = static_cast<DWORD>(offsetBytes & 0xFFFFFFFF);
     ol.OffsetHigh = static_cast<DWORD>(offsetBytes >> 32);
+    ol.hEvent = hEvent;
 
+    BOOL bRead = ReadFile(static_cast<HANDLE>(handle_), buffer, sizeBytes, NULL, &ol);
+    DWORD err = bRead ? ERROR_SUCCESS : GetLastError();
     DWORD bytesRead = 0;
-    if (ReadFile(static_cast<HANDLE>(handle_), buffer, sizeBytes, &bytesRead, &ol)) {
+
+    if (!bRead && err == ERROR_IO_PENDING) {
+        DWORD waitRes = WaitForSingleObject(hEvent, 500);
+        if (waitRes == WAIT_TIMEOUT) {
+            CancelIoEx(static_cast<HANDLE>(handle_), &ol);
+            GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, TRUE);
+            result.error = "Read timed out (500ms)";
+            result.success = false;
+            CloseHandle(hEvent);
+            return result;
+        } else if (waitRes == WAIT_OBJECT_0) {
+            bRead = GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, FALSE);
+            if (!bRead) err = GetLastError();
+        } else {
+            CancelIoEx(static_cast<HANDLE>(handle_), &ol);
+            GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, TRUE);
+            result.error = "Wait failed: " + std::to_string(GetLastError());
+            result.success = false;
+            CloseHandle(hEvent);
+            return result;
+        }
+    } else if (bRead) {
+        bRead = GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, FALSE);
+        if (!bRead) err = GetLastError();
+    }
+
+    if (bRead) {
         result.success = true;
         result.bytesRead = bytesRead;
     } else {
-        DWORD err = GetLastError();
         result.error = "ReadFile failed: error " + std::to_string(err);
-        // Bad sector — partial success
         if (err == ERROR_CRC || err == ERROR_IO_DEVICE) {
             result.bytesRead = 0;
             result.error += " (bad sector)";
         }
     }
 
+    CloseHandle(hEvent);
     return result;
 }
 
@@ -178,3 +211,4 @@ bool DiskReader::isOpen() const { return handle_ != INVALID_HANDLE_VALUE; }
 
 } // namespace wolf
 #endif
+
