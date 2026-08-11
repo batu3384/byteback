@@ -45,6 +45,7 @@ PoolBufferPtr MemoryPool::acquireBuffer(size_t size) {
 void MemoryPool::releaseBuffer(std::vector<uint8_t>* buffer) {
     if (!buffer) return;
     std::lock_guard<std::mutex> lock(m_mutex);
+    std::memset(buffer->data(), 0, buffer->size());
     m_availableBuffers.insert({buffer->capacity(), buffer});
 }
 

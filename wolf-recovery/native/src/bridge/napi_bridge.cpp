@@ -2,6 +2,7 @@
 #include "wolf_engine.h"
 #include "scan_coordinator.h"
 #include "wolf_smart.h"
+#include "wolf_imager.h"
 #include <cstdlib>
 
 struct ScanContext {
@@ -9,10 +10,19 @@ struct ScanContext {
     Napi::ThreadSafeFunction tsfn;
 };
 
+struct ImagerContext {
+    wolf::DiskImager imager;
+    Napi::ThreadSafeFunction tsfn;
+};
+
 struct BridgeData {
     wolf::Engine engine;
     ScanContext* scanContext = nullptr;
-    ~BridgeData() { if (scanContext) delete scanContext; }
+    ImagerContext* imagerContext = nullptr;
+    ~BridgeData() { 
+        if (scanContext) delete scanContext; 
+        if (imagerContext) delete imagerContext;
+    }
 };
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
@@ -204,6 +214,65 @@ Napi::Value StopScan(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// ---------------- Imager ----------------
+
+Napi::Value StartImaging(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsFunction()) {
+        Napi::TypeError::New(env, "Expected driveIndex, destPath, callback").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return env.Undefined();
+
+    if (bdata->imagerContext) {
+        bdata->imagerContext->imager.stopImaging();
+        delete bdata->imagerContext;
+        bdata->imagerContext = nullptr;
+    }
+    
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    std::string destPath = info[1].As<Napi::String>().Utf8Value();
+    Napi::Function cb = info[2].As<Napi::Function>();
+    
+    bdata->imagerContext = new ImagerContext();
+    bdata->imagerContext->tsfn = Napi::ThreadSafeFunction::New(
+        env, cb, "ImagingCallback", 0, 1, 
+        [](Napi::Env) {}
+    );
+
+    auto onProgress = [bdata](uint64_t current, uint64_t total) {
+        if (!bdata->imagerContext) return;
+        auto callback = [current, total](Napi::Env env, Napi::Function jsCallback) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("type", Napi::String::New(env, "progress"));
+            obj.Set("current", Napi::Number::New(env, static_cast<double>(current)));
+            obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
+            jsCallback.Call({obj});
+        };
+        bdata->imagerContext->tsfn.BlockingCall(callback);
+    };
+
+    bdata->imagerContext->imager.startImaging(driveIndex, destPath, onProgress);
+    
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value StopImaging(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    
+    if (bdata && bdata->imagerContext) {
+        bdata->imagerContext->imager.stopImaging();
+        bdata->imagerContext->tsfn.Release();
+        delete bdata->imagerContext;
+        bdata->imagerContext = nullptr;
+    }
+    return env.Undefined();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     env.SetInstanceData<BridgeData>(new BridgeData());
 
@@ -217,6 +286,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     
     exports.Set("startScan", Napi::Function::New(env, StartScan));
     exports.Set("stopScan", Napi::Function::New(env, StopScan));
+    
+    exports.Set("startImaging", Napi::Function::New(env, StartImaging));
+    exports.Set("stopImaging", Napi::Function::New(env, StopImaging));
 
     return exports;
 }

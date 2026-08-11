@@ -19,6 +19,15 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('scan-file-found', handler)
   },
   
+  startImaging: (driveIndex: number, destPath: string) => ipcRenderer.send('start-imaging', driveIndex, destPath),
+  stopImaging: () => ipcRenderer.send('stop-imaging'),
+  
+  onImagingProgress: (callback: (data: { current: number, total: number }) => void) => {
+    const handler = (event: IpcRendererEvent, data: any) => callback(data)
+    ipcRenderer.on('imaging-progress', handler)
+    return () => ipcRenderer.removeListener('imaging-progress', handler)
+  },
+  
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
   readHexData: (driveIndex: number, offset: number, size: number) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size),
 
