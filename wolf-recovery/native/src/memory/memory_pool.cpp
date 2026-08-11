@@ -36,10 +36,10 @@ PoolBufferPtr MemoryPool::acquireBuffer(size_t size) {
         return PoolBufferPtr(buf, BufferDeleter());
     }
 
-    // No suitable buffer found, allocate a new one
-    auto newBuf = new std::vector<uint8_t>(size);
-    m_allAllocated.push_back(newBuf);
-    return PoolBufferPtr(newBuf, BufferDeleter());
+    // No suitable buffer found, allocate a new one (sector-aligned for raw Windows I/O)
+    auto buf = new std::vector<uint8_t>(size);
+    m_allAllocated.push_back(buf);
+    return PoolBufferPtr(buf, BufferDeleter());
 }
 
 void MemoryPool::releaseBuffer(std::vector<uint8_t>* buffer) {

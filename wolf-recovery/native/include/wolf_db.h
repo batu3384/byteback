@@ -52,7 +52,7 @@ public:
     bool isOpen() const;
 
     // File records
-    int64_t insertFile(const FileRecord& record);
+    int64_t insertFile(int64_t scanId, const FileRecord& record);
     std::vector<FileRecord> getFiles(int64_t scanId, int offset, int limit);
     int64_t getFileCount(int64_t scanId);
 

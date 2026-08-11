@@ -1,115 +1,142 @@
 .hex-editor {
   display: flex;
   flex-direction: column;
+  gap: var(--space-xl);
   height: 100%;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
+  animation: fadeIn 0.4s ease-out;
+}
+
+.hex-editor.empty {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-muted);
 }
 
 .hex-toolbar {
   display: flex;
-  gap: 16px;
-  padding: 16px;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  justify-content: space-between;
   align-items: center;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid rgba(41, 98, 255, 0.2);
+  background: rgba(11, 15, 25, 0.4);
 }
 
-.toolbar-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.toolbar-info h3 {
+  color: var(--text-main);
+  margin-bottom: 4px;
+  font-size: 1.2rem;
 }
 
-.toolbar-group label {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-}
-
-.toolbar-group input {
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
+.badge {
+  background: rgba(255, 171, 0, 0.15);
+  color: #FFD600;
   padding: 4px 8px;
-  border-radius: var(--radius);
-  width: 100px;
-  font-family: var(--font-mono);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid rgba(255, 171, 0, 0.4);
+  box-shadow: 0 0 10px rgba(255, 171, 0, 0.2);
 }
 
-.hex-content-container {
-  flex: 1;
-  padding: 16px;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-}
-
-.hex-loading {
+.sector-navigation {
   display: flex;
   align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-secondary);
+  gap: var(--space-md);
+}
+
+.sector-input-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.sector-input {
+  width: 120px;
+  background: rgba(11, 15, 25, 0.8);
+  border: 1px solid rgba(41, 98, 255, 0.3);
+  color: var(--text-main);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-family: monospace;
+  outline: none;
+  text-align: right;
+  transition: var(--transition-smooth);
+}
+
+.sector-input:focus {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+}
+
+.hex-view {
+  flex: 1;
+  padding: var(--space-lg);
+  font-family: monospace;
+  overflow-y: auto;
 }
 
 .hex-grid {
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 16px;
-  width: max-content;
+  min-width: max-content;
+  background: rgba(11, 15, 25, 0.5);
+  border-radius: 8px;
+  border: 1px solid rgba(41, 98, 255, 0.1);
+  padding: var(--space-sm);
 }
 
-.hex-header-row {
+.hex-header, .hex-row {
   display: flex;
-  color: var(--text-tertiary);
-  padding-bottom: 8px;
-  border-bottom: 1px dashed var(--border);
-  margin-bottom: 8px;
+  gap: var(--space-xl);
+  padding: 4px 8px;
+  border-radius: 4px;
 }
 
-.hex-offset-header {
-  width: 100px;
+.hex-header {
+  color: var(--tech-blue);
+  font-weight: 700;
+  border-bottom: 1px solid rgba(41, 98, 255, 0.3);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-sm);
 }
 
-.hex-bytes-header {
-  width: 400px;
+.offset-col {
+  color: var(--neon-cyan);
+  font-weight: 600;
+  width: 70px;
+  user-select: none;
+  text-shadow: 0 0 5px rgba(0, 229, 255, 0.3);
 }
 
-.hex-ascii-header {
-  width: 200px;
-  padding-left: 16px;
-}
-
-.hex-rows {
+.data-col {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 
-.hex-row {
+.data-col span {
+  width: 24px;
+  text-align: center;
+  transition: var(--transition-smooth);
+}
+
+.ascii-col {
   display: flex;
+  color: var(--text-muted);
+  letter-spacing: 2px;
 }
 
 .hex-row:hover {
-  background-color: var(--bg-tertiary);
+  background: rgba(41, 98, 255, 0.15);
 }
 
-.hex-offset {
-  width: 100px;
-  color: var(--accent);
+.zero-byte {
+  color: rgba(148, 163, 184, 0.4);
 }
 
-.hex-bytes {
-  width: 400px;
-  color: var(--text-secondary);
-}
-
-.hex-ascii {
-  width: 200px;
-  padding-left: 16px;
-  color: var(--text-primary);
-  white-space: pre;
+.active-byte {
+  color: var(--text-main);
+  font-weight: 500;
 }

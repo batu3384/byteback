@@ -24,7 +24,7 @@ std::vector<DriveInfo> DiskReader::enumerateDrives() {
         wchar_t path[64];
         swprintf_s(path, L"\\\\.\\PhysicalDrive%d", i);
 
-        HANDLE h = CreateFileW(path, GENERIC_READ,
+        HANDLE h = CreateFileW(path, 0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             NULL, OPEN_EXISTING, 0, NULL);
 
@@ -84,8 +84,9 @@ std::vector<DriveInfo> DiskReader::enumerateDrives() {
         // Trim whitespace from model/serial
         auto trim = [](std::string& s) {
             while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back();
-            size_t start = s.find_first_not_of(" \0");
-            if (start != std::string::npos) s = s.substr(start);
+            size_t start = 0;
+            while (start < s.length() && (s[start] == ' ' || s[start] == '\0')) start++;
+            if (start > 0) s = s.substr(start);
         };
         trim(info.model);
         trim(info.serial);
@@ -106,7 +107,7 @@ bool DiskReader::openDrive(int driveIndex) {
     handle_ = CreateFileW(path, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING,
-        FILE_FLAG_NO_BUFFERING | FILE_FLAG_RANDOM_ACCESS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS,
         NULL);
 
     if (handle_ == INVALID_HANDLE_VALUE) return false;
@@ -148,17 +149,13 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         return result;
     }
 
-    // Seek to offset
-    LARGE_INTEGER li;
-    li.QuadPart = static_cast<LONGLONG>(offsetBytes);
-    if (!SetFilePointerEx(static_cast<HANDLE>(handle_), li, NULL, FILE_BEGIN)) {
-        result.error = "Failed to seek: error " + std::to_string(GetLastError());
-        return result;
-    }
+    // Read atomically using OVERLAPPED structure (Thread-safe)
+    OVERLAPPED ol = {0};
+    ol.Offset = static_cast<DWORD>(offsetBytes & 0xFFFFFFFF);
+    ol.OffsetHigh = static_cast<DWORD>(offsetBytes >> 32);
 
-    // Read
     DWORD bytesRead = 0;
-    if (ReadFile(static_cast<HANDLE>(handle_), buffer, sizeBytes, &bytesRead, NULL)) {
+    if (ReadFile(static_cast<HANDLE>(handle_), buffer, sizeBytes, &bytesRead, &ol)) {
         result.success = true;
         result.bytesRead = bytesRead;
     } else {

@@ -1,47 +1,67 @@
 #include "wolf_fs.h"
+#include "wolf_memory.h"
 #include <iostream>
+#include <cstring>
+#include <string>
+#include <vector>
 
 namespace wolf {
 
 ExFATParser::ExFATParser() {}
 ExFATParser::~ExFATParser() {}
 
-bool ExFATParser::scan(DiskReader& reader, FileRecordCallback callback) {
+bool ExFATParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen()) return false;
     
-    // Very simplified mock for exFAT parsing
-    uint32_t sectorSize = 512;
-    std::vector<uint8_t> buffer(sectorSize);
+    uint64_t diskSize = reader.getDiskSize();
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
     
-    // Read boot sector
-    auto res = reader.readSectors(0, sectorSize, buffer.data());
-    if (!res.success) return false;
+    const uint32_t chunkSectors = (4 * 1024 * 1024) / sectorSize;
+    const uint32_t chunkSize = chunkSectors * sectorSize;
+    auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
+    auto& buffer = *poolBuf;
     
-    // exFAT signature check (OEM Name 'EXFAT   ')
-    std::string oemName(buffer.begin() + 3, buffer.begin() + 11);
-    if (oemName != "EXFAT   ") {
-        return false; // Not exFAT
+    uint64_t maxSector = diskSize / sectorSize;
+    int foundCount = 0;
+
+    for (uint64_t sector = 0; sector < maxSector; sector += chunkSectors) {
+        if (isRunning && !(*isRunning)) break;
+        
+        auto res = reader.readSectors(sector * sectorSize, chunkSize, buffer.data());
+        if (!res.success) continue;
+
+        for (uint32_t i = 0; i < res.bytesRead; i += sectorSize) {
+            if (i + 512 > res.bytesRead) break;
+            
+            // ExFAT Boot Sector has "EXFAT   " at offset 3
+            if (std::strncmp(reinterpret_cast<char*>(buffer.data() + i + 3), "EXFAT   ", 8) == 0) {
+                FileRecord fr;
+                fr.id = foundCount++;
+                fr.parentId = 0;
+                fr.name = "ExFAT_VBR_" + std::to_string(foundCount) + ".bin";
+                fr.extension = "bin";
+                fr.path = "/recovered_exfat/" + fr.name;
+                fr.sizeBytes = 512;
+                fr.startSector = sector + (i / sectorSize);
+                fr.endSector = fr.startSector + 1;
+                fr.status = 1;
+                fr.confidence = 90;
+                fr.category = "System";
+                fr.source = "exfat_vbr";
+                fr.createdAt = 0;
+                fr.modifiedAt = 0;
+                
+                callback(fr);
+                break; // Skip the rest of the sector
+            }
+        }
+        
+        FileRecord progressTick;
+        progressTick.id = -1;
+        progressTick.startSector = sector + chunkSectors;
+        callback(progressTick);
     }
-
-    // Mock finding a file via exFAT directory entries
-    FileRecord fr;
-    fr.id = 2001;
-    fr.parentId = 0; 
-    fr.name = "exfat_recovered.mp4";
-    fr.extension = "mp4";
-    fr.path = "/videos/";
-    fr.sizeBytes = 150420000;
-    fr.startSector = 65000;
-    fr.endSector = 65000 + (150420000 / sectorSize) + 1;
-    fr.status = 1; // deleted but recoverable
-    fr.confidence = 85;
-    fr.category = "Video";
-    fr.source = "exfat_dir";
-    fr.createdAt = 1710000000;
-    fr.modifiedAt = 1710000000;
-    
-    callback(fr);
-
     return true;
 }
 

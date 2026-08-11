@@ -6,6 +6,7 @@
 #include "wolf_fs.h"
 #include <vector>
 #include <string>
+#include <atomic>
 
 namespace wolf {
 
@@ -20,7 +21,7 @@ struct FileSignature {
 
 class EntropyAnalyzer {
 public:
-    static double calculateShannonEntropy(const uint8_t* buffer, size_t offset, size_t length);
+    static double calculateShannonEntropy(const uint8_t* buffer, size_t bufferSize, size_t offset, size_t length);
 };
 
 class CarvingEngine {
@@ -29,7 +30,7 @@ public:
     ~CarvingEngine();
 
     bool loadSignatures(const std::string& jsonPath);
-    bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback);
+    bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);
 
 private:
     std::vector<FileSignature> signatures;
