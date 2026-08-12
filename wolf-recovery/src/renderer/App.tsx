@@ -7,8 +7,12 @@ import ResultsView from './components/ResultsView/ResultsView'
 import HexEditor from './components/HexEditor/HexEditor'
 import SmartView from './components/SmartView/SmartView'
 import ImagerView from './components/ImagerView/ImagerView'
+import ShredderView from './components/ShredderView/ShredderView'
+import RaidBuilder from './components/VirtualRaid/RaidBuilder'
+import ReportGenerator from './components/ReportView/ReportGenerator'
+import KeywordSearch from './components/SearchView/KeywordSearch'
 
-type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart'
+type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search'
 
 function App(): React.ReactElement {
   const [activePage, setActivePage] = useState<Page>('dashboard')
@@ -62,12 +66,20 @@ function App(): React.ReactElement {
                />
       case 'results':
         return <ResultsView filesFound={filesFound} />
+      case 'search':
+        return <KeywordSearch filesFound={filesFound} />
+      case 'report':
+        return <ReportGenerator scanResults={{ totalFiles: filesFound.length, recoverableFiles: filesFound.filter(f => f.status === 0).length, partialFiles: filesFound.filter(f => f.status !== 0).length, duration: scanElapsed + ' sn' }} filesFound={filesFound} />
       case 'hex':
         return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} />
       case 'smart':
         return <SmartView driveIndex={selectedDrive} />
       case 'imager':
         return <ImagerView />
+      case 'shredder':
+        return <ShredderView drives={[]} /> // Will fetch drives via Dashboard or pass down
+      case 'raid':
+        return <RaidBuilder />
       default: 
         return <Dashboard onStartScan={handleStartScan} onAction={handleAction} />
     }

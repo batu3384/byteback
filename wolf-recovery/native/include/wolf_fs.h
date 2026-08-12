@@ -34,6 +34,10 @@ public:
     ~FATParser() override;
 
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
+
+private:
+    void parseFAT(DiskReader& reader, uint64_t partitionOffset, FileRecordCallback callback, std::atomic<bool>* isRunning);
+    void parseExFAT(DiskReader& reader, uint64_t partitionOffset, FileRecordCallback callback, std::atomic<bool>* isRunning);
 };
 
 class Ext4Parser : public FileSystemParser {

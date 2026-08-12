@@ -2,6 +2,9 @@
 #include "wolf_memory.h"
 #include <fstream>
 #include <iostream>
+#include <chrono>
+#include <vector>
+#include <algorithm>
 
 namespace wolf {
 
@@ -50,25 +53,57 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
         return;
     }
 
-    for (uint64_t sector = 0; sector < totalSectors; sector += chunkSectors) {
+    uint64_t sector = 0;
+    int highLatencyCount = 0;
+    
+    while (sector < totalSectors) {
         if (!isRunning_) break;
 
         uint32_t sectorsToRead = std::min<uint64_t>(chunkSectors, totalSectors - sector);
         uint32_t bytesToRead = sectorsToRead * sectorSize;
 
+        auto t1 = std::chrono::high_resolution_clock::now();
         auto res = reader.readSectors(sector * sectorSize, bytesToRead, poolBuf->data());
+        auto t2 = std::chrono::high_resolution_clock::now();
+        
+        auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
         
         if (res.success && res.bytesRead > 0) {
             outFile.write(reinterpret_cast<const char*>(poolBuf->data()), res.bytesRead);
         } else {
             // Write zeros for bad sectors to maintain image geometry
-            // In a real scenario we'd do this sector by sector, but for simplicity:
             std::vector<char> zeros(bytesToRead, 0);
             outFile.write(zeros.data(), zeros.size());
         }
+        
+        sector += sectorsToRead;
+
+        if (latencyMs > 150) {
+            highLatencyCount++;
+            if (highLatencyCount >= 3) {
+                // Predictive Latency Jump: jump reading sector by 10MB to avoid hardware crash
+                uint64_t jumpBytes = 10ULL * 1024 * 1024;
+                uint64_t jumpSectors = jumpBytes / sectorSize;
+                
+                if (sector + jumpSectors > totalSectors) {
+                    jumpSectors = totalSectors - sector;
+                    jumpBytes = jumpSectors * sectorSize;
+                }
+                
+                if (jumpSectors > 0) {
+                    std::vector<char> zeros(jumpBytes, 0);
+                    outFile.write(zeros.data(), zeros.size());
+                    sector += jumpSectors;
+                }
+                
+                highLatencyCount = 0;
+            }
+        } else {
+            highLatencyCount = 0;
+        }
 
         // Report progress
-        onProgress(sector + sectorsToRead, totalSectors);
+        onProgress(sector, totalSectors);
     }
 
     outFile.close();

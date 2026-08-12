@@ -1,0 +1,133 @@
+.raid-builder-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  height: 100%;
+}
+
+.raid-header h2 {
+  font-size: 2rem;
+  color: var(--neon-cyan);
+}
+
+.raid-header p {
+  color: var(--text-muted);
+}
+
+.raid-workspace {
+  display: flex;
+  gap: var(--space-xl);
+  flex: 1;
+  min-height: 400px;
+}
+
+.raid-column {
+  flex: 1;
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  border: 1px dashed transparent;
+  transition: var(--transition-smooth);
+}
+
+.available-column {
+  border-right: 1px solid var(--border-subtle);
+}
+
+.array-column {
+  background: rgba(0, 229, 255, 0.02);
+  border: 1px dashed var(--neon-cyan);
+}
+
+.array-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.raid-type-select {
+  padding: 8px 12px;
+  background: var(--bg-color);
+  color: var(--neon-cyan);
+  border: 1px solid var(--neon-cyan);
+  border-radius: 4px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  outline: none;
+}
+
+.disk-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1;
+  min-height: 200px;
+}
+
+.disk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: rgba(11, 15, 25, 0.8);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  cursor: grab;
+  transition: var(--transition-smooth);
+}
+
+.disk-item:active {
+  cursor: grabbing;
+  transform: scale(0.98);
+}
+
+.disk-item:hover {
+  border-color: var(--tech-blue);
+  box-shadow: 0 4px 15px rgba(41, 98, 255, 0.2);
+}
+
+.disk-item.in-array {
+  border-color: var(--success-green);
+  background: rgba(0, 230, 118, 0.05);
+}
+
+.disk-slot-number {
+  font-size: 0.75rem;
+  color: var(--success-green);
+  font-weight: bold;
+  padding: 2px 6px;
+  border: 1px solid var(--success-green);
+  border-radius: 4px;
+}
+
+.disk-icon {
+  font-size: 1.5rem;
+}
+
+.disk-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.disk-name {
+  font-weight: 600;
+}
+
+.disk-capacity {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: var(--space-xl);
+}
+
+.build-btn {
+  margin-top: auto;
+  padding: 16px;
+  font-size: 1.1rem;
+}

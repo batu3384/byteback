@@ -38,6 +38,27 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
     }
   }, [driveIndex, sector])
 
+  // Shannon Entropy Calculation
+  const calculateEntropy = (buffer: number[]) => {
+    if (buffer.length === 0) return 0;
+    const freq: Record<number, number> = {};
+    for (let b of buffer) {
+      freq[b] = (freq[b] || 0) + 1;
+    }
+    let entropy = 0;
+    for (let key in freq) {
+      const p = freq[key] / buffer.length;
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
+  };
+
+  const currentEntropy = calculateEntropy(data);
+  const entropyRatio = (currentEntropy / 8) * 100;
+  let entropyClass = 'entropy-low';
+  if (currentEntropy > 4.5) entropyClass = 'entropy-mid';
+  if (currentEntropy > 7.0) entropyClass = 'entropy-high';
+
   const toHex = (num: number, padding: number = 2) => num.toString(16).toUpperCase().padStart(padding, '0')
   const toAscii = (num: number) => (num >= 32 && num <= 126 ? String.fromCharCode(num) : '.')
 
@@ -75,7 +96,20 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
         </div>
       </div>
 
-      <div className="hex-view glass-panel">
+      <div className="entropy-indicator">
+        <span style={{ fontWeight: 'bold', color: 'var(--text-main)' }}>Sector Entropy:</span>
+        <div className="entropy-bar-bg">
+          <div className={`entropy-bar-fill ${entropyClass}`} style={{ width: `${entropyRatio}%` }}></div>
+        </div>
+        <span style={{ minWidth: '60px', textAlign: 'right', color: 'var(--text-muted)' }}>
+          {currentEntropy.toFixed(2)} / 8
+        </span>
+        <span style={{ fontSize: '0.8rem', color: currentEntropy > 7.0 ? 'var(--alert-red)' : 'var(--text-muted)' }}>
+          {currentEntropy > 7.0 ? '(Encrypted/Compressed)' : '(Plain/Structured)'}
+        </span>
+      </div>
+
+      <div className={`hex-view glass-panel ${currentEntropy > 7.0 ? 'entropy-mode' : ''}`}>
         {loading ? (
           <div className="loading-state">
             <div className="spinner"></div>

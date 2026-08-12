@@ -14,9 +14,11 @@ function ResultsView({ filesFound }: ResultsViewProps): React.ReactElement {
   }
 
   const getFileType = (ext: string) => {
-    if (['jpg', 'png', 'gif', 'jpeg', 'bmp'].includes(ext)) return 'img'
-    if (['doc', 'docx', 'pdf', 'txt', 'xls', 'xlsx'].includes(ext)) return 'doc'
-    if (['mp4', 'avi', 'mkv', 'mov'].includes(ext)) return 'video'
+    if (['jpg', 'png', 'gif', 'jpeg', 'bmp', 'webp', 'heic', 'tiff', 'svg'].includes(ext)) return 'img'
+    if (['doc', 'docx', 'pdf', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'doc'
+    if (['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv'].includes(ext)) return 'video'
+    if (['mp3', 'wav', 'flac', 'ogg', 'aac'].includes(ext)) return 'audio'
+    if (['zip', 'rar', '7z', 'gz', 'tar', 'iso'].includes(ext)) return 'archive'
     return 'other'
   }
 
@@ -30,9 +32,9 @@ function ResultsView({ filesFound }: ResultsViewProps): React.ReactElement {
   const mappedFiles = filesFound.map((f, i) => ({
     id: i,
     name: f.name,
-    size: formatSize(f.size),
+    size: formatSize(f.sizeBytes || f.size),
     path: 'Recovered',
-    status: 'Kurtarılabilir', // Mock status for now, since native doesn't provide it yet
+    status: f.status === 0 ? 'Kurtarılabilir' : 'Kısmen Bozuk',
     type: getFileType(getExtension(f.name))
   }))
 
@@ -46,17 +48,19 @@ function ResultsView({ filesFound }: ResultsViewProps): React.ReactElement {
           <p>Taranan disk üzerinde tespit edilen {filesFound.length} dosya</p>
         </div>
         <div className="results-actions">
-          <button className="btn-secondary">Dışa Aktar</button>
+          <button className="btn-secondary">Dışa Aktar (CSV/PDF)</button>
           <button className="btn-primary">Seçilenleri Kurtar</button>
         </div>
       </div>
 
       <div className="results-content glass-panel">
         <div className="filters">
-          <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>Tümü</button>
-          <button className={`filter-btn ${filter === 'img' ? 'active' : ''}`} onClick={() => setFilter('img')}>Resimler</button>
-          <button className={`filter-btn ${filter === 'doc' ? 'active' : ''}`} onClick={() => setFilter('doc')}>Belgeler</button>
-          <button className={`filter-btn ${filter === 'video' ? 'active' : ''}`} onClick={() => setFilter('video')}>Videolar</button>
+          <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>📁 Tümü</button>
+          <button className={`filter-btn ${filter === 'img' ? 'active' : ''}`} onClick={() => setFilter('img')}>📸 Resimler</button>
+          <button className={`filter-btn ${filter === 'doc' ? 'active' : ''}`} onClick={() => setFilter('doc')}>📄 Belgeler</button>
+          <button className={`filter-btn ${filter === 'video' ? 'active' : ''}`} onClick={() => setFilter('video')}>🎬 Videolar</button>
+          <button className={`filter-btn ${filter === 'audio' ? 'active' : ''}`} onClick={() => setFilter('audio')}>🎵 Ses</button>
+          <button className={`filter-btn ${filter === 'archive' ? 'active' : ''}`} onClick={() => setFilter('archive')}>📦 Arşivler</button>
         </div>
 
         <table className="results-table">

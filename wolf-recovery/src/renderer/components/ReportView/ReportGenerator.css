@@ -1,0 +1,50 @@
+.report-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  height: 100%;
+}
+
+.report-header h2 {
+  font-size: 2rem;
+  color: var(--neon-cyan);
+}
+
+.report-header .subtitle {
+  color: var(--text-muted);
+}
+
+.report-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-xl);
+  gap: var(--space-md);
+}
+
+.report-icon-wrapper {
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+  background: rgba(0, 229, 255, 0.08);
+  border-radius: 50%;
+  border: 2px solid var(--neon-cyan);
+}
+
+.generating-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--neon-cyan);
+}
+
+.report-ready {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+}
