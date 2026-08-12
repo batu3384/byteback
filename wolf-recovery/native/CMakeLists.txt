@@ -30,6 +30,7 @@ set(SOURCES
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
+  src/db/scan_session.cpp
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
