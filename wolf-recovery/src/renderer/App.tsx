@@ -25,6 +25,17 @@ function App(): React.ReactElement {
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 100 })
   const [scanStatus, setScanStatus] = useState('Bekliyor')
   const [scanElapsed, setScanElapsed] = useState(0)
+  const [engineReady, setEngineReady] = useState(false)
+
+  React.useEffect(() => {
+    // Basic health check to Native Engine via IPC
+    if (window.api && window.api.getVersion) {
+      window.api.getVersion().then((ver: string) => {
+        console.log("Wolf Engine Ready. Version:", ver);
+        setEngineReady(true);
+      }).catch((e: Error) => console.error("Engine failure:", e));
+    }
+  }, []);
 
   const handleStartScan = (driveIndex: number, scanType: string) => {
     setSelectedDrive(driveIndex)

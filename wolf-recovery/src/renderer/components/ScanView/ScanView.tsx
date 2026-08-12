@@ -27,11 +27,16 @@ function ScanView({
 }: ScanViewProps): React.ReactElement {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pageRef = useRef(0)
   const [page, setPage] = useState(0)
   const [totalFiles, setTotalFiles] = useState(0)
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const limit = 50
 
+  // Keep pageRef in sync
+  useEffect(() => { pageRef.current = page }, [page])
+
+  // Effect 1: Scan lifecycle (start scan, listeners, timer) — only on mount
   useEffect(() => {
     if (driveIndex === null) return
 
@@ -55,7 +60,6 @@ function ScanView({
 
     if (window.api && window.api.onScanFileFound) {
       cleanupFileFound = window.api.onScanFileFound((fileData: { name: string, size: number }) => {
-        // We still listen to live events for quick UI updates but real data comes from DB polling
         setTotalFiles(prev => prev + 1)
       })
     }
@@ -64,15 +68,29 @@ function ScanView({
       window.api.startScan(driveIndex, scanType)
     }
 
-    // Polling DB for pagination data every second
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (cleanupProgress) cleanupProgress()
+      if (cleanupFileFound) cleanupFileFound()
+      // Stop scan when leaving ScanView
+      if (window.api && window.api.stopScan) {
+        window.api.stopScan()
+      }
+    }
+  }, [driveIndex, scanType])
+
+  // Effect 2: DB polling for paginated results (separate so page changes don't restart scan)
+  useEffect(() => {
+    if (driveIndex === null) return
+
     pollRef.current = setInterval(async () => {
       if (window.api && window.api.getFileCount && window.api.getFilesPage) {
         try {
-          const scanId = 1 // Assuming first scan for now
+          const scanId = 1
           const count = await window.api.getFileCount(scanId)
           setTotalFiles(count)
           
-          const pageData = await window.api.getFilesPage(scanId, page * limit, limit)
+          const pageData = await window.api.getFilesPage(scanId, pageRef.current * limit, limit)
           if (pageData && pageData.length > 0) {
             setFilesFound(pageData)
           }
@@ -83,12 +101,10 @@ function ScanView({
     }, 1500)
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
       if (pollRef.current) clearInterval(pollRef.current)
-      if (cleanupProgress) cleanupProgress()
-      if (cleanupFileFound) cleanupFileFound()
     }
-  }, [driveIndex, scanType, page])
+  }, [driveIndex])
+
 
   const handleStop = () => {
     if (window.api && window.api.stopScan) {

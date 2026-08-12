@@ -1,7 +1,18 @@
-import { ipcMain, IpcMainEvent } from 'electron'
+import { ipcMain, IpcMainEvent, app } from 'electron'
+import { join } from 'path'
 import { getEngine } from './native-bridge'
 
 export function registerIpcHandlers(): void {
+  // Initialize SQLite database on startup
+  try {
+    const engine = getEngine()
+    const dbPath = join(app.getPath('userData'), 'wolf_recovery.db')
+    const ok = engine.initDatabase(dbPath)
+    console.log('[IPC] Database initialized:', ok, 'at', dbPath)
+  } catch (err) {
+    console.error('[IPC] Database init failed:', err)
+  }
+
   ipcMain.handle('get-version', () => {
     try {
       const engine = getEngine()
