@@ -30,20 +30,25 @@ set(SOURCES
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
+  src/db/scan_session.cpp
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
     src/fs/exfat_parser.cpp
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
+    src/fs/partition_scanner.cpp
+    src/fs/virtual_raid.cpp
     src/imager/disk_imager.cpp
     src/carver/signature_engine.cpp
     src/carver/entropy_analyzer.cpp
+    src/math/entropy.cpp
     src/smart/smart_monitor.cpp
     src/validator/file_validator.cpp
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
     src/forensic/audit_logger.cpp
+    src/security/data_shredder.cpp
   ${SQLITE_SOURCES}
 )
 
