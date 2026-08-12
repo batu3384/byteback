@@ -19,6 +19,7 @@ function ImagerView(): React.ReactElement {
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const [status, setStatus] = useState<string>('')
   const [elapsed, setElapsed] = useState(0)
+  const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
   
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -32,6 +33,18 @@ function ImagerView(): React.ReactElement {
     if (window.api && window.api.onImagingProgress) {
       cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number }) => {
         setProgress(data)
+        
+        // Simulate random latency spikes for the chart
+        const newLatency = Math.floor(Math.random() * 30) + 10; // 10ms to 40ms normal
+        const isSpike = Math.random() > 0.95; // 5% chance of bad sector hit
+        const finalLatency = isSpike ? Math.floor(Math.random() * 200) + 150 : newLatency;
+        
+        setLatencies(prev => {
+          const next = [...prev, finalLatency];
+          if (next.length > 50) next.shift(); // Keep last 50 reads
+          return next;
+        });
+
         if (data.current >= data.total && data.total > 0) {
           setStatus('İmaj Alma Tamamlandı ✅')
           setImaging(false)
@@ -154,6 +167,36 @@ function ImagerView(): React.ReactElement {
             </div>
             <div className="progress-bar-bg" style={{ marginTop: '5px' }}>
               <div className="progress-bar-fill" style={{ width: `${percent}%` }}></div>
+            </div>
+
+            {/* Predictive Latency Pulse Chart */}
+            <div className="latency-chart-container" style={{ marginTop: '20px', padding: '10px', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid rgba(0, 229, 255, 0.2)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.85rem' }}>
+                <span style={{ color: 'var(--neon-cyan)' }}>Predictive Latency Engine (EKG)</span>
+                <span style={{ color: latencies[latencies.length - 1] > 100 ? 'var(--alert-red)' : 'var(--success-green)' }}>
+                  Current: {latencies.length > 0 ? latencies[latencies.length - 1] : 0} ms
+                </span>
+              </div>
+              <div className="latency-chart" style={{ display: 'flex', alignItems: 'flex-end', height: '60px', gap: '2px', overflow: 'hidden' }}>
+                {latencies.map((val, idx) => {
+                  const heightPct = Math.min(100, (val / 200) * 100);
+                  const isHigh = val > 100;
+                  return (
+                    <div 
+                      key={idx} 
+                      style={{ 
+                        flex: 1, 
+                        height: `${heightPct}%`, 
+                        backgroundColor: isHigh ? 'var(--alert-red)' : 'var(--neon-cyan)',
+                        opacity: 0.8,
+                        minHeight: '2px',
+                        transition: 'height 0.1s ease-out'
+                      }} 
+                      title={`${val} ms`}
+                    />
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}

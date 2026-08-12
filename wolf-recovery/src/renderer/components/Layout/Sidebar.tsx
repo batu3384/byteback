@@ -11,9 +11,13 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
     { id: 'dashboard', label: 'Ana Ekran', icon: '📊' },
     { id: 'scan', label: 'Aktif Tarama', icon: '🔍' },
     { id: 'results', label: 'Kurtarma Sonuçları', icon: '📂' },
+    { id: 'search', label: 'Kelime Arama', icon: '🔎' },
     { id: 'hex', label: 'Hex İnceleyici', icon: '💻' },
     { id: 'imager', label: 'Disk İmajı', icon: '💿' },
     { id: 'smart', label: 'SMART Durumu', icon: '🩺' },
+    { id: 'shredder', label: 'Data Shredder', icon: '☣️' },
+    { id: 'raid', label: 'Sanal RAID (VRAID)', icon: '🧱' },
+    { id: 'report', label: 'Adli Rapor (PDF)', icon: '📋' },
   ]
 
   return (
