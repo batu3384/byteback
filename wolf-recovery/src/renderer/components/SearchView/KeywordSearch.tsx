@@ -93,9 +93,9 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
           <div className="results-list">
             {results.map((r, i) => (
               <div key={i} className="result-item">
-                <div className="result-file">{r.fileName}</div>
-                <div className="result-path">{r.path}</div>
-                <div className="result-context">{r.context}</div>
+                <div className="result-file">{r.name}</div>
+                <div className="result-path">{r.path || r.category || 'Recovered'}</div>
+                <div className="result-context">{r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}</div>
               </div>
             ))}
           </div>

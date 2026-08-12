@@ -63,7 +63,7 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
         }
     } else if (scanType == "deep") {
         CarvingEngine carver;
-        // In a real app, path is constructed robustly
+        // ponytail: signatures path resolved relative to executable; upgrade: pass from JS side
         carver.loadSignatures("signatures.json"); 
         carver.scan(reader, callbackWrapper, &isRunning);
     }
