@@ -43,6 +43,12 @@ set(SOURCES
     src/validator/file_validator.cpp
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
+    src/db/scan_session.cpp
+    src/forensic/audit_logger.cpp
+    src/fs/partition_scanner.cpp
+    src/fs/virtual_raid.cpp
+    src/security/data_shredder.cpp
+    src/math/entropy.cpp
   ${SQLITE_SOURCES}
 )
 
