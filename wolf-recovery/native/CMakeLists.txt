@@ -44,6 +44,7 @@ set(SOURCES
     src/fs/virtual_raid.cpp
     src/imager/disk_imager.cpp
     src/carver/signature_engine.cpp
+    src/carver/bgc.cpp
     src/carver/entropy_analyzer.cpp
     src/math/entropy.cpp
     src/smart/smart_monitor.cpp
@@ -98,12 +99,15 @@ if(WOLF_BUILD_TESTS)
     tests/test_ntfs_util.cpp
     tests/test_lznt1.cpp
     tests/test_usn.cpp
+    tests/test_validators.cpp
+    tests/test_bgc.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
     # leave symbols unresolved. Compiling the sources into the test gives full
     # coverage without forcing a public export surface on the addon.
     src/math/entropy.cpp
+    src/carver/bgc.cpp
   )
   target_link_libraries(wolf_tests
     PRIVATE
