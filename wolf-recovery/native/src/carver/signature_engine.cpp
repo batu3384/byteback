@@ -1,5 +1,6 @@
 #include "wolf_carver.h"
 #include "wolf_memory.h"
+#include "carver/file_validators.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -9,6 +10,24 @@
 #include <regex>
 
 namespace wolf {
+
+namespace {
+// Dispatch a carved buffer to the right Fast Object Validator based on the
+// signature's extension. Returns the validator's [0,100] confidence, or a
+// neutral 90 if no structural validator exists for this type (so unknown
+// types keep their header/footer score instead of being penalised).
+int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) {
+    using namespace wolf::carver;
+    if (ext == "jpg" || ext == "jpeg") return validateJpeg(data, size);
+    if (ext == "png")                   return validatePng(data, size);
+    if (ext == "zip" || ext == "docx" || ext == "xlsx" || ext == "pptx" ||
+        ext == "odt" || ext == "ods" || ext == "odp" || ext == "epub" ||
+        ext == "jar")                   return validateZip(data, size);
+    if (ext == "pdf")                   return validatePdf(data, size);
+    if (ext == "gz" || ext == "gzip" || ext == "tgz") return validateGzip(data, size);
+    return 90; // no structural validator — trust the header/footer match
+}
+} // namespace
 
 CarvingEngine::CarvingEngine() {}
 CarvingEngine::~CarvingEngine() {}
@@ -202,6 +221,29 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("vCard Contact", ".vcf", "Misc", {0x42, 0x45, 0x47, 0x49, 0x4E, 0x3A, 0x56, 0x43, 0x41, 0x52, 0x44}, {}, 1 * 1024 * 1024);
     addSig("GPX GPS Data", ".gpx", "Misc", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 10 * 1024 * 1024);
     addSig("KML Google Earth", ".kml", "Misc", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 10 * 1024 * 1024);
+
+    // ============================================================
+    // Extended signatures — high-value formats missing from the base set
+    // ============================================================
+    // Camera RAW (distinct magics; TIFF-based RAWs share II*\0 and are
+    // already covered by the TIFF signature, so only non-TIFF RAWs here).
+    addSig("Fuji RAF RAW", ".raf", "Image", {0x46, 0x55, 0x4A, 0x49, 0x46, 0x49, 0x4C, 0x4D, 0x43, 0x43, 0x44, 0x44, 0x2D, 0x52, 0x41, 0x57}, {}, 100 * 1024 * 1024);
+    addSig("JPEG2000 JP2", ".jp2", "Image", {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 50 * 1024 * 1024);
+    addSig("Canon CR3 RAW", ".cr3", "Image", {0x66, 0x74, 0x79, 0x70, 0x63, 0x72, 0x78, 0x20}, {}, 100 * 1024 * 1024);
+    // Documents
+    addSig("Apple Pages", ".pages", "Document", {0x50, 0x4B, 0x03, 0x04}, {}, 100 * 1024 * 1024); // ZIP-based; viewer disambiguates
+    addSig("Windows EDB", ".edb", "Database", {0xEF, 0xCD, 0xAB, 0x89}, {}, 500 * 1024 * 1024);
+    addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 50 * 1024 * 1024);
+    // Archives / containers
+    addSig("Apple DMG UDIF", ".dmg", "DiskImage", {0x78, 0x01, 0x73, 0x0D, 0x62, 0x70, 0x69, 0x73, 0x74}, {}, 50 * 1024 * 1024); // kolye block
+    addSig("Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);
+    // Audio
+    addSig("Opus Audio", ".opus", "Audio", {0x4F, 0x67, 0x67, 0x53}, {}, 50 * 1024 * 1024); // OGG container
+    addSig("Musepack MPC", ".mpc", "Audio", {0x4D, 0x50, 0x2B, 0x05}, {}, 50 * 1024 * 1024);
+    // Misc forensic artifacts
+    addSig("Windows Prefetch", ".pf", "Misc", {0x4D, 0x41, 0x4D, 0x04}, {}, 1024 * 1024); // MAMx (Win10/11)
+    addSig("LNK Shortcut", ".lnk", "Misc", {0x4C, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00}, {}, 1024 * 1024);
+    addSig("EVTX Log", ".evtx", "Misc", {0x65, 0x6C, 0x69, 0x66}, {}, 100 * 1024 * 1024); // "elf" magic
     } // End of if (signatures.empty())
 
     buildAhoCorasick();
@@ -354,18 +396,37 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                         uint64_t fileEndOffset = currentAbsoluteOffset + 1; // End of footer
                         if (fileEndOffset <= it->endOffsetLimit) {
                             uint64_t actualSize = fileEndOffset - it->startOffset;
-                            
+                            std::string ext = sig.extension.empty() ? "" : sig.extension.substr(1);
+
+                            // Fast Object Validation: read the carved span back
+                            // from disk and run the structural validator for this
+                            // type. A high score confirms the header/footer match
+                            // was a real file; a low score means the magic bytes
+                            // coincidentally appeared in unrelated data and the
+                            // candidate should be down-ranked. Capped at 1 MiB so
+                            // very large carves do not stall the scan.
+                            int confidence = 95; // header+footer baseline
+                            if (actualSize > 0 && actualSize <= (1u << 20)) {
+                                std::vector<uint8_t> probe(static_cast<size_t>(actualSize));
+                                uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
+                                std::vector<uint8_t> alignedBuf(alignedSize);
+                                auto rres = reader.readSectors(it->startOffset, alignedSize, alignedBuf.data());
+                                if (rres.success && rres.bytesRead >= actualSize) {
+                                    confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
+                                }
+                            }
+
                             FileRecord fr;
                             fr.id = 0;
                             fr.parentId = 0;
                             fr.name = it->filename;
-                            fr.extension = sig.extension.empty() ? "" : sig.extension.substr(1);
+                            fr.extension = ext;
                             fr.path = "/recovered_raw/" + fr.name;
                             fr.sizeBytes = actualSize;
                             fr.startSector = it->startSector;
                             fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                             fr.status = 0;
-                            fr.confidence = 95; // Footer matched perfectly
+                            fr.confidence = confidence;
                             fr.category = sig.category;
                             fr.source = "carver";
                             fr.createdAt = 0;
