@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Sidebar from './components/Layout/Sidebar'
 import Header from './components/Layout/Header'
 import Dashboard from './components/Dashboard/Dashboard'
@@ -20,32 +20,89 @@ function App(): React.ReactElement {
   const [selectedDrive, setSelectedDrive] = useState<number | null>(null)
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
   
-  // Lifted Scan State
+  // Global Scan State (Persists across tab changes)
   const [filesFound, setFilesFound] = useState<any[]>([])
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 100 })
-  const [scanStatus, setScanStatus] = useState('Bekliyor')
+  const [scanStatus, setScanStatus] = useState('Bekleniyor...')
   const [scanElapsed, setScanElapsed] = useState(0)
-  const [engineReady, setEngineReady] = useState(false)
+  const [activeScanId, setActiveScanId] = useState<number>(-1)
+  
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  React.useEffect(() => {
-    // Basic health check to Native Engine via IPC
+  // System Engine Ready
+  useEffect(() => {
     if (window.api && window.api.getVersion) {
       window.api.getVersion().then((ver: string) => {
         console.log("Wolf Engine Ready. Version:", ver);
-        setEngineReady(true);
       }).catch((e: Error) => console.error("Engine failure:", e));
+    }
+    
+    // Setup Global IPC Listeners ONLY ONCE
+    let cleanupProgress: (() => void) | undefined
+    let cleanupFileFound: (() => void) | undefined
+
+    if (window.api && window.api.onScanProgress) {
+      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number }) => {
+        setScanProgress(data)
+        if (data.current >= data.total && data.total > 0) {
+          setScanStatus('Tarama Tamamlandı')
+          if (timerRef.current) clearInterval(timerRef.current)
+        }
+      })
+    }
+
+    if (window.api && window.api.onScanFileFound) {
+      // Live file-found stream from the scan engine. We de-duplicate by file id
+      // (the engine emits a record per discovered file) and cap the in-memory
+      // buffer to avoid unbounded growth during huge scans; ScanView/ResultsView
+      // continue to paginate authoritative data from the SQLite store, this list
+      // is for instant UI feedback during scanning.
+      cleanupFileFound = window.api.onScanFileFound((data: { name: string, size: number }) => {
+        setFilesFound(prev => {
+          if (prev.length >= 5000) return prev // soft cap; DB remains source of truth
+          return [...prev, { name: data.name, sizeBytes: data.size, status: 0 }]
+        })
+      })
+    }
+
+    return () => {
+      if (cleanupProgress) cleanupProgress()
+      if (cleanupFileFound) cleanupFileFound()
     }
   }, []);
 
   const handleStartScan = (driveIndex: number, scanType: string) => {
     setSelectedDrive(driveIndex)
     setScanConfig({ driveIndex, scanType })
-    // Reset state for new scan
+    
+    // Reset Global State
     setFilesFound([])
     setScanProgress({ current: 0, total: 100 })
     setScanStatus('Tarama Sürüyor...')
     setScanElapsed(0)
     setActivePage('scan')
+    
+    // Start Engine Scan
+    if (window.api && window.api.startScan) {
+      window.api.startScan(driveIndex, scanType).then(id => {
+        if (id > 0) setActiveScanId(id)
+      })
+    }
+
+    // Start Timer
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => {
+      setScanElapsed(prev => prev + 1)
+    }, 1000)
+  }
+
+  const handleStopScan = () => {
+    if (window.api && window.api.stopScan) {
+      window.api.stopScan()
+    }
+    if (timerRef.current) clearInterval(timerRef.current)
+    setScanStatus('Tarama İptal Edildi')
+    setActiveScanId(-1)
   }
 
   const handleAction = (page: Page, data?: any) => {
@@ -67,16 +124,15 @@ function App(): React.ReactElement {
                  filesFound={filesFound}
                  setFilesFound={setFilesFound}
                  progress={scanProgress}
-                 setProgress={setScanProgress}
                  status={scanStatus}
-                 setStatus={setScanStatus}
                  elapsed={scanElapsed}
-                 setElapsed={setScanElapsed}
+                 activeScanId={activeScanId}
+                 onStop={handleStopScan}
                  onCancel={() => setActivePage('dashboard')} 
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
-        return <ResultsView filesFound={filesFound} />
+        return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} />
       case 'search':
         return <KeywordSearch filesFound={filesFound} />
       case 'report':

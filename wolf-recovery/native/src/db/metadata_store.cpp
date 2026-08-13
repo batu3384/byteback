@@ -118,6 +118,49 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     return rowId;
 }
 
+bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecord>& records) {
+    if (records.empty()) return true;
+
+    sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
+
+    const char* sql = R"(
+        INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
+            start_sector, end_sector, status, confidence, category, source,
+            created_at, modified_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    for (const auto& r : records) {
+        sqlite3_bind_int64(stmt, 1, scanId);
+        sqlite3_bind_int64(stmt, 2, r.parentId);
+        sqlite3_bind_text(stmt, 3, r.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, r.extension.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, r.path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.sizeBytes));
+        sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
+        sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
+        sqlite3_bind_int(stmt, 9, r.status);
+        sqlite3_bind_int(stmt, 10, r.confidence);
+        sqlite3_bind_text(stmt, 11, r.category.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 12, r.source.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 13, r.createdAt);
+        sqlite3_bind_int64(stmt, 14, r.modifiedAt);
+
+        sqlite3_step(stmt);
+        sqlite3_reset(stmt);
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+    return true;
+}
+
 int64_t MetadataStore::createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors) {
     const char* sql = R"(
         INSERT INTO scans (drive_index, scan_type, total_sectors, status, started_at, updated_at)

@@ -8,9 +8,15 @@
 #include <string>
 #include <atomic>
 
+#include <queue>
+#include <map>
+#include <unordered_map>
+#include <memory>
+
 namespace wolf {
 
 struct FileSignature {
+    int id; // Used to uniquely identify signatures in the state machine
     std::string format;
     std::string extension;
     std::string category;
@@ -24,6 +30,21 @@ public:
     static double calculateShannonEntropy(const uint8_t* buffer, size_t bufferSize, size_t offset, size_t length);
 };
 
+struct ACTrieNode {
+    std::map<uint8_t, int> children;
+    int fail = 0;
+    std::vector<int> headerMatches; // IDs of signatures where this node is the end of a header
+    std::vector<int> footerMatches; // IDs of signatures where this node is the end of a footer
+};
+
+struct ActiveCarve {
+    int sigId;
+    uint64_t startOffset;
+    uint64_t startSector;
+    uint64_t endOffsetLimit;
+    std::string filename;
+};
+
 class CarvingEngine {
 public:
     CarvingEngine();
@@ -34,11 +55,12 @@ public:
 
 private:
     std::vector<FileSignature> signatures;
+    std::vector<ACTrieNode> acNodes;
     
     std::vector<uint8_t> hexToBytes(const std::string& hex);
+    
+    void buildAhoCorasick();
 };
 
 } // namespace wolf
-
-
 

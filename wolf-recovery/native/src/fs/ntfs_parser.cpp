@@ -81,6 +81,17 @@ struct NTFS_FileNameAttribute {
     uint8_t nameType;
     uint16_t name[1]; // UTF-16 LE
 };
+
+struct NTFS_NonResidentHeader {
+    uint64_t startingVCN;
+    uint64_t lastVCN;
+    uint16_t dataRunOffset;
+    uint16_t compressionUnit;
+    uint32_t padding;
+    uint64_t allocatedSize;
+    uint64_t realSize;
+    uint64_t initializedSize;
+};
 #pragma pack(pop)
 
 bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
@@ -89,6 +100,13 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
     uint64_t diskSize = reader.getDiskSize();
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
+    
+    uint32_t sectorsPerCluster = 8;
+    std::vector<uint8_t> bootSector(sectorSize);
+    if (reader.readSectors(0, sectorSize, bootSector.data()).success) {
+        sectorsPerCluster = bootSector[0x0D];
+        if (sectorsPerCluster == 0) sectorsPerCluster = 8;
+    }
     
     // We will scan in 4MB chunks for MFT records (RAW MFT Carving)
     const uint32_t chunkSectors = (4 * 1024 * 1024) / sectorSize;
@@ -135,6 +153,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 std::string filename = "UnknownFile_" + std::to_string(foundCount) + ".bin";
                 uint64_t fileSize = header->usedSize;
                 uint64_t fileParentMftId = 0;
+                std::vector<FileRecord::DataRun> dataRuns;
+                uint64_t finalStartSector = 0;
+                uint64_t finalEndSector = 0;
                 
                 // Parse Attributes
                 uint32_t attrOffset = header->firstAttributeOffset;
@@ -177,7 +198,66 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                         }
                     }
                     
-                    if (nameFound) break; // We got the name, can break early for simple carving
+                    if (attr->type == 0x80) {
+                        if (attr->nonResidentFlag == 0) {
+                            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
+                                NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(currentBuf->data() + i + attrOffset + sizeof(NTFS_AttributeHeader));
+                                fileSize = resAttr->valueLength;
+                                dataRuns.clear();
+                            }
+                        } else {
+                            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <= recordSize) {
+                                NTFS_NonResidentHeader* nonResAttr = reinterpret_cast<NTFS_NonResidentHeader*>(currentBuf->data() + i + attrOffset + sizeof(NTFS_AttributeHeader));
+                                fileSize = nonResAttr->realSize;
+                                
+                                uint16_t runOffset = nonResAttr->dataRunOffset;
+                                size_t currentRunPos = attrOffset + runOffset;
+                                int64_t previousLcn = 0;
+                                dataRuns.clear();
+                                
+                                while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize) {
+                                    uint8_t headerByte = (uint8_t)currentBuf->data()[i + currentRunPos];
+                                    if (headerByte == 0x00) break;
+                                    
+                                    uint8_t lenSize = headerByte & 0x0F;
+                                    uint8_t offSize = (headerByte >> 4) & 0x0F;
+                                    currentRunPos++;
+                                    
+                                    if (currentRunPos + lenSize + offSize > recordSize) break;
+                                    
+                                    uint64_t clusterCount = 0;
+                                    for (int j = 0; j < lenSize; j++) {
+                                        clusterCount |= (uint64_t)((uint8_t)currentBuf->data()[i + currentRunPos + j]) << (j * 8);
+                                    }
+                                    currentRunPos += lenSize;
+                                    
+                                    int64_t lcnOffset = 0;
+                                    for (int j = 0; j < offSize; j++) {
+                                        lcnOffset |= (uint64_t)((uint8_t)currentBuf->data()[i + currentRunPos + j]) << (j * 8);
+                                    }
+                                    if (offSize > 0 && ((uint8_t)currentBuf->data()[i + currentRunPos + offSize - 1] & 0x80)) {
+                                        for (int j = offSize; j < 8; j++) {
+                                            lcnOffset |= (uint64_t)0xFF << (j * 8);
+                                        }
+                                    }
+                                    currentRunPos += offSize;
+                                    
+                                    previousLcn += lcnOffset;
+                                    
+                                    FileRecord::DataRun run;
+                                    run.startSector = previousLcn * sectorsPerCluster;
+                                    run.sectorCount = clusterCount * sectorsPerCluster;
+                                    dataRuns.push_back(run);
+                                    
+                                    if (dataRuns.size() == 1) {
+                                        finalStartSector = run.startSector;
+                                    }
+                                    finalEndSector = run.startSector + run.sectorCount;
+                                }
+                            }
+                        }
+                    }
+                    
                     if (attr->length < sizeof(NTFS_AttributeHeader)) break; // Corrupt attribute, prevent infinite loop
                     attrOffset += attr->length;
                 }
@@ -192,8 +272,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 fr.extension = (dotPos != std::string::npos) ? filename.substr(dotPos + 1) : "";
                 fr.path = "/Recovered/" + filename; // Temp path, will be fixed later
                 fr.sizeBytes = fileSize;
-                fr.startSector = sector + (i / sectorSize);
-                fr.endSector = fr.startSector + (recordSize / sectorSize);
+                fr.startSector = dataRuns.empty() ? sector + (i / sectorSize) : finalStartSector;
+                fr.endSector = dataRuns.empty() ? fr.startSector + (recordSize / sectorSize) : finalEndSector;
+                fr.runs = dataRuns;
                 fr.status = (header->flags & 0x01) ? 1 : 0; // 1 = Allocated, 0 = Deleted
                 fr.confidence = fr.status ? 100 : 80;
                 fr.category = "Document"; // Fallback category

@@ -12,7 +12,7 @@ function createWindow(): void {
     minHeight: 680,
     title: 'Wolf Recovery',
     backgroundColor: '#0D1117',
-    show: false,
+    show: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -24,6 +24,14 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  // Only open DevTools during development. In production builds the DevTools
+  // would otherwise pop open on every launch, which is not acceptable for a
+  // shipped forensic tool.
+  const isDev = !!process.env.ELECTRON_RENDERER_URL
+  if (isDev) {
+    mainWindow.webContents.openDevTools()
+  }
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)

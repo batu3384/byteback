@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   isAdmin: () => ipcRenderer.invoke('is-admin'),
   listDrives: () => ipcRenderer.invoke('list-drives'),
   
-  startScan: (driveIndex: number, scanType: string) => ipcRenderer.send('start-scan', driveIndex, scanType),
+  startScan: (driveIndex: number, scanType: string) => ipcRenderer.invoke('start-scan', driveIndex, scanType),
   stopScan: () => ipcRenderer.send('stop-scan'),
   
   onScanProgress: (callback: (data: { current: number, total: number }) => void) => {
@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('api', {
   getFileCount: (scanId: number) => ipcRenderer.invoke('get-file-count', scanId),
   getFilesPage: (scanId: number, offset: number, limit: number) => ipcRenderer.invoke('get-files-page', scanId, offset, limit),
   getScanState: (scanId: number) => ipcRenderer.invoke('get-scan-state', scanId),
+
+  startWipe: (targetPath: string) => ipcRenderer.invoke('start-wipe', targetPath),
+  reconstructRaid: (driveIndices: number[], raidLevel: number) =>
+    ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
+  recoverFile: (driveIndex: number, fileRecord: any, destDir: string) =>
+    ipcRenderer.invoke('recover-file', driveIndex, fileRecord, destDir),
+  pickDirectory: () => ipcRenderer.invoke('pick-directory'),
 
   removeAllScanListeners: () => {
     ipcRenderer.removeAllListeners('scan-progress')

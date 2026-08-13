@@ -1,4 +1,5 @@
 #include "wolf_validator.h"
+#include "math/entropy_calculator.h"
 
 namespace wolf {
 
@@ -32,27 +33,63 @@ void FileValidator::validateFile(FileRecord& record, DiskReader& reader) {
 }
 
 int FileValidator::calculateConfidence(const FileRecord& record, const std::vector<uint8_t>& header, const std::vector<uint8_t>& footer) {
-    int baseScore = 50;
+    if (header.empty()) return 10;
+    int baseScore = 30;
 
-    // Very naive mock validation
-    if (record.extension == "jpg" || record.extension == "jpeg") {
-        if (header.size() > 2 && header[0] == 0xFF && header[1] == 0xD8) baseScore += 25;
-        if (footer.size() > 2) {
-            // Find FFD9 in the last sector
-            for (size_t i = 0; i < footer.size() - 1; ++i) {
-                if (footer[i] == 0xFF && footer[i+1] == 0xD9) {
-                    baseScore += 25;
-                    break;
+    // Mathematical Entropy Analysis for scientific validation (single source of truth)
+    double entropy = wolf::math::calculateEntropy(header.data(), header.size());
+
+    // High entropy = likely encrypted/compressed, Low entropy = text/zeroed out
+    if (entropy < 0.5) return 0; // Empty or near-empty sector (junk)
+    if (entropy >= 3.0 && entropy <= 7.8) baseScore += 20; // Healthy structured data range
+
+    // Forensic Signature Matching
+    if (header.size() > 8) {
+        if (header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF) {
+            // JPEG Signature
+            if (record.extension == "jpg" || record.extension == "jpeg") baseScore += 40;
+            else baseScore += 20; // Found signature but mismatching extension
+
+            // Footer check for EOI (End of Image)
+            if (!footer.empty()) {
+                for (size_t i = 0; i < footer.size() - 1; ++i) {
+                    if (footer[i] == 0xFF && footer[i+1] == 0xD9) {
+                        baseScore += 10;
+                        break;
+                    }
+                }
+            }
+        } 
+        else if (header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47) {
+            // PNG Signature
+            if (record.extension == "png") baseScore += 50;
+            else baseScore += 25;
+        }
+        else if (header[0] == 0x25 && header[1] == 0x50 && header[2] == 0x44 && header[3] == 0x46) {
+            // PDF Signature (%PDF)
+            if (record.extension == "pdf") baseScore += 50;
+            else baseScore += 25;
+            
+            // Footer check for %%EOF
+            if (!footer.empty() && footer.size() > 5) {
+                for (size_t i = 0; i < footer.size() - 5; ++i) {
+                    if (footer[i] == '%' && footer[i+1] == '%' && footer[i+2] == 'E' && footer[i+3] == 'O' && footer[i+4] == 'F') {
+                        baseScore += 10;
+                        break;
+                    }
                 }
             }
         }
-    } else if (record.extension == "png") {
-        if (header.size() > 8 && header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47) {
-            baseScore += 50;
+        else if (header[0] == 0x50 && header[1] == 0x4B && header[2] == 0x03 && header[3] == 0x04) {
+            // ZIP Signature
+            if (record.extension == "zip" || record.extension == "docx" || record.extension == "xlsx") baseScore += 40;
+            else baseScore += 20;
         }
-    } else {
-        // Unknown format, default base score
-        baseScore += 20;
+        else if (header[0] == 'R' && header[1] == 'a' && header[2] == 'r' && header[3] == '!') {
+            // RAR Signature
+            if (record.extension == "rar") baseScore += 40;
+            else baseScore += 20;
+        }
     }
 
     if (baseScore > 100) baseScore = 100;

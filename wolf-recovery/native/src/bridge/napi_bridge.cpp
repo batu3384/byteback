@@ -3,11 +3,30 @@
 #include "scan_coordinator.h"
 #include "wolf_smart.h"
 #include "wolf_imager.h"
+#include "wolf_shredder.h"
+#include "wolf_recovery.h"
 #include <cstdlib>
+#include <memory>
+#include <exception>
+
+#define NAPI_TRY \
+    try {
+
+#define NAPI_CATCH \
+    } catch (const std::exception& e) { \
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); \
+        return env.Undefined(); \
+    } catch (...) { \
+        Napi::Error::New(env, "Unknown fatal C++ exception").ThrowAsJavaScriptException(); \
+        return env.Undefined(); \
+    }
 
 struct ScanContext {
     wolf::ScanCoordinator coordinator;
     Napi::ThreadSafeFunction tsfn;
+    int64_t scanId = -1;
+    std::vector<wolf::FileRecord> fileBuffer;
+    std::mutex bufferMutex;
 };
 
 struct ImagerContext {
@@ -17,32 +36,33 @@ struct ImagerContext {
 
 struct BridgeData {
     wolf::Engine engine;
-    ScanContext* scanContext = nullptr;
-    ImagerContext* imagerContext = nullptr;
-    ~BridgeData() { 
-        if (scanContext) delete scanContext; 
-        if (imagerContext) delete imagerContext;
-    }
+    std::shared_ptr<ScanContext> scanContext;
+    std::shared_ptr<ImagerContext> imagerContext;
 };
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return Napi::String::New(env, "unknown");
     return Napi::String::New(env, engine->getVersion());
+    NAPI_CATCH
 }
 
 Napi::Value IsAdministrator(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return Napi::Boolean::New(env, false);
     return Napi::Boolean::New(env, engine->isAdministrator());
+    NAPI_CATCH
 }
 
 Napi::Value ListDrives(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine) return env.Undefined();
@@ -61,10 +81,12 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info) {
         result[i] = drive;
     }
     return result;
+    NAPI_CATCH
 }
 
 Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 3) return env.Undefined();
@@ -98,10 +120,12 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         _aligned_free(buffer);
     }
     return obj;
+    NAPI_CATCH
 }
 
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     if (info.Length() < 1) return env.Undefined();
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
 
@@ -119,10 +143,12 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
         obj.Set("pendingSectors", Napi::Number::New(env, status.pendingSectors));
     }
     return obj;
+    NAPI_CATCH
 }
 
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 1) return env.Undefined();
@@ -130,10 +156,12 @@ Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     std::string dbPath = info[0].As<Napi::String>().Utf8Value();
     bool ok = engine->getMetadataStore().open(dbPath);
     return Napi::Boolean::New(env, ok);
+    NAPI_CATCH
 }
 
 Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 1) return env.Undefined();
@@ -141,10 +169,12 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     int64_t count = engine->getMetadataStore().getFileCount(scanId);
     return Napi::Number::New(env, static_cast<double>(count));
+    NAPI_CATCH
 }
 
 Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 3) return env.Undefined();
@@ -170,10 +200,12 @@ Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
         result[i] = fileObj;
     }
     return result;
+    NAPI_CATCH
 }
 
 Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     wolf::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 1) return env.Undefined();
@@ -189,13 +221,14 @@ Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     obj.Set("scannedSectors", Napi::Number::New(env, static_cast<double>(state.scannedSectors)));
     obj.Set("status", Napi::Number::New(env, state.status));
     return obj;
+    NAPI_CATCH
 }
 
 // ---------------- Scan Coordinator ----------------
 
 Napi::Value StartScan(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    
+    NAPI_TRY
     if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {
         Napi::TypeError::New(env, "Expected drivePath, scanType, callback").ThrowAsJavaScriptException();
         return env.Undefined();
@@ -206,22 +239,35 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
     if (bdata->scanContext) {
         bdata->scanContext->coordinator.stopScan();
-        delete bdata->scanContext;
-        bdata->scanContext = nullptr;
+        bdata->scanContext.reset();
     }
     
     std::string drivePath = info[0].As<Napi::String>().Utf8Value();
     std::string scanType = info[1].As<Napi::String>().Utf8Value();
     Napi::Function cb = info[2].As<Napi::Function>();
     
-    bdata->scanContext = new ScanContext();
-    bdata->scanContext->tsfn = Napi::ThreadSafeFunction::New(
+    auto context = std::make_shared<ScanContext>();
+    bdata->scanContext = context;
+    
+    int driveIndex = 0;
+    try { driveIndex = std::stoi(drivePath); } catch(...) {}
+    context->scanId = bdata->engine.getMetadataStore().createScan(driveIndex, scanType, 0);
+
+    context->tsfn = Napi::ThreadSafeFunction::New(
         env, cb, "ScanCallback", 0, 1, 
         [](Napi::Env) {}
     );
 
-    auto onFileFound = [bdata](const wolf::FileRecord& fr) {
-        if (!bdata->scanContext) return;
+    auto onFileFound = [context, engine = &bdata->engine](const wolf::FileRecord& fr) {
+        {
+            std::lock_guard<std::mutex> lock(context->bufferMutex);
+            context->fileBuffer.push_back(fr);
+            if (context->fileBuffer.size() >= 500) {
+                engine->getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer);
+                context->fileBuffer.clear();
+            }
+        }
+        
         auto callback = [fr](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "file"));
@@ -229,11 +275,17 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
             jsCallback.Call({obj});
         };
-        bdata->scanContext->tsfn.BlockingCall(callback);
+        context->tsfn.BlockingCall(callback);
     };
 
-    auto onProgress = [bdata](uint64_t current, uint64_t total) {
-        if (!bdata->scanContext) return;
+    auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+    auto onProgress = [context, lastProgress](uint64_t current, uint64_t total) {
+        auto now = std::chrono::steady_clock::now();
+        if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 100) {
+            return;
+        }
+        *lastProgress = now;
+        
         auto callback = [current, total](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));
@@ -241,32 +293,44 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             jsCallback.Call({obj});
         };
-        bdata->scanContext->tsfn.BlockingCall(callback);
+        context->tsfn.BlockingCall(callback);
     };
 
-    bdata->scanContext->coordinator.startScan(drivePath, scanType, onFileFound, onProgress);
+    context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress);
     
-    return Napi::Boolean::New(env, true);
+    return Napi::Number::New(env, static_cast<double>(context->scanId));
+    NAPI_CATCH
 }
 
 Napi::Value StopScan(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     
     if (bdata && bdata->scanContext) {
         bdata->scanContext->coordinator.stopScan();
+        // Flush remaining buffer
+        {
+            std::lock_guard<std::mutex> lock(bdata->scanContext->bufferMutex);
+            if (!bdata->scanContext->fileBuffer.empty()) {
+                bdata->engine.getMetadataStore().insertFilesBatch(bdata->scanContext->scanId, bdata->scanContext->fileBuffer);
+                bdata->scanContext->fileBuffer.clear();
+            }
+        }
+        bdata->engine.getMetadataStore().completeScan(bdata->scanContext->scanId, 2); // 2 = Complete/Stopped
+        
         bdata->scanContext->tsfn.Release();
-        delete bdata->scanContext;
-        bdata->scanContext = nullptr;
+        bdata->scanContext.reset();
     }
     return env.Undefined();
+    NAPI_CATCH
 }
 
 // ---------------- Imager ----------------
 
 Napi::Value StartImaging(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    
+    NAPI_TRY
     if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsFunction()) {
         Napi::TypeError::New(env, "Expected driveIndex, destPath, callback").ThrowAsJavaScriptException();
         return env.Undefined();
@@ -277,22 +341,29 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
 
     if (bdata->imagerContext) {
         bdata->imagerContext->imager.stopImaging();
-        delete bdata->imagerContext;
-        bdata->imagerContext = nullptr;
+        bdata->imagerContext.reset();
     }
     
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     std::string destPath = info[1].As<Napi::String>().Utf8Value();
     Napi::Function cb = info[2].As<Napi::Function>();
     
-    bdata->imagerContext = new ImagerContext();
-    bdata->imagerContext->tsfn = Napi::ThreadSafeFunction::New(
+    auto context = std::make_shared<ImagerContext>();
+    bdata->imagerContext = context;
+
+    context->tsfn = Napi::ThreadSafeFunction::New(
         env, cb, "ImagingCallback", 0, 1, 
         [](Napi::Env) {}
     );
 
-    auto onProgress = [bdata](uint64_t current, uint64_t total) {
-        if (!bdata->imagerContext) return;
+    auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+    auto onProgress = [context, lastProgress](uint64_t current, uint64_t total) {
+        auto now = std::chrono::steady_clock::now();
+        if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 100) {
+            return;
+        }
+        *lastProgress = now;
+        
         auto callback = [current, total](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));
@@ -300,25 +371,213 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             jsCallback.Call({obj});
         };
-        bdata->imagerContext->tsfn.BlockingCall(callback);
+        context->tsfn.BlockingCall(callback);
     };
 
-    bdata->imagerContext->imager.startImaging(driveIndex, destPath, onProgress);
+    context->imager.startImaging(driveIndex, destPath, onProgress);
     
     return Napi::Boolean::New(env, true);
+    NAPI_CATCH
 }
 
 Napi::Value StopImaging(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     
     if (bdata && bdata->imagerContext) {
         bdata->imagerContext->imager.stopImaging();
         bdata->imagerContext->tsfn.Release();
-        delete bdata->imagerContext;
-        bdata->imagerContext = nullptr;
+        bdata->imagerContext.reset();
     }
     return env.Undefined();
+    NAPI_CATCH
+}
+
+
+// ---------------- Wipe (Shredder) ----------------
+class WipeWorker : public Napi::AsyncWorker {
+public:
+    WipeWorker(Napi::Env& env, const std::string& path, Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), path_(path), deferred_(deferred), success_(false) {}
+
+    void Execute() override {
+        try {
+            std::string finalPath = path_;
+            
+            bool isNumber = !path_.empty() && std::all_of(path_.begin(), path_.end(), ::isdigit);
+            if (isNumber) {
+                finalPath = "\\\\.\\PhysicalDrive" + path_;
+            }
+
+            security::DataShredder shredder;
+            success_ = shredder.shred_file(finalPath);
+        } catch (...) {
+            success_ = false;
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        deferred_.Resolve(Napi::Boolean::New(env, success_));
+    }
+
+    void OnError(const Napi::Error& e) override {
+        Napi::Env env = Env();
+        deferred_.Reject(Napi::Boolean::New(env, false));
+    }
+
+private:
+    std::string path_;
+    Napi::Promise::Deferred deferred_;
+    bool success_;
+};
+
+Napi::Value StartWipe(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected targetPath").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    
+    std::string targetPath = info[0].As<Napi::String>().Utf8Value();
+    
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    
+    WipeWorker* worker = new WipeWorker(env, targetPath, deferred);
+    worker->Queue();
+    
+    return deferred.Promise();
+    NAPI_CATCH
+}
+
+// ---------------- Virtual RAID ----------------
+// Accepts (driveIndices: number[], raidLevel: number). The full VirtualRaid
+// assembly + degraded read path lands in Phase 3; until then we validate the
+// inputs (at least 2 disks, recognised level) so the UI gets honest feedback
+// rather than an unconditional "success".
+Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 2 || !info[0].IsArray() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (driveIndices: number[], raidLevel: number)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Array indicesArr = info[0].As<Napi::Array>();
+    int raidLevel = info[1].As<Napi::Number>().Int32Value();
+
+    if (indicesArr.Length() < 2) {
+        return Napi::Boolean::New(env, false);
+    }
+    // RaidLevel enum (virtual_raid.h): RAID0=0, RAID1=1, RAID5=2
+    if (raidLevel < 0 || raidLevel > 2) {
+        return Napi::Boolean::New(env, false);
+    }
+
+    // TODO(Phase 3): instantiate wolf::VirtualRaid with these drives and
+    // expose it as a scannable virtual device. Until then return false so the
+    // UI reports an honest "not yet implemented" rather than a fake success.
+    return Napi::Boolean::New(env, false);
+    NAPI_CATCH
+}
+
+// ---------------- File Recovery ----------------
+class RecoverWorker : public Napi::AsyncWorker {
+public:
+    RecoverWorker(Napi::Env& env, wolf::Engine* engine, int driveIndex,
+                  const wolf::FileRecord& record, const std::string& destDir,
+                  Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
+          record_(record), destDir_(destDir), deferred_(deferred) {}
+
+    void Execute() override {
+        try {
+            auto& reader = engine_->getDiskReader();
+            if (!reader.isOpen() || reader.getDriveIndex() != driveIndex_) {
+                reader.openDrive(driveIndex_);
+            }
+
+            wolf::RecoveryEngine recovery;
+            result_ = recovery.recoverFile(reader, record_, destDir_);
+        } catch (const std::exception& e) {
+            result_.success = false;
+            result_.error = e.what();
+        } catch (...) {
+            result_.success = false;
+            result_.error = "Unknown recovery error";
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("success", Napi::Boolean::New(env, result_.success));
+        obj.Set("destPath", Napi::String::New(env, result_.destPath));
+        obj.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(result_.bytesRecovered)));
+        obj.Set("error", Napi::String::New(env, result_.error));
+        obj.Set("md5Hash", Napi::String::New(env, result_.md5Hash));
+        deferred_.Resolve(obj);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        deferred_.Reject(Napi::String::New(Env(), e.what()));
+    }
+
+private:
+    wolf::Engine* engine_;
+    int driveIndex_;
+    wolf::FileRecord record_;
+    std::string destDir_;
+    Napi::Promise::Deferred deferred_;
+    wolf::RecoveryResult result_;
+};
+
+Napi::Value RecoverFile(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsObject() || !info[2].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, fileRecord, destDir").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return env.Undefined();
+
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    Napi::Object fileObj = info[1].As<Napi::Object>();
+    std::string destDir = info[2].As<Napi::String>().Utf8Value();
+
+    wolf::FileRecord record;
+    record.id = fileObj.Has("id") ? (int64_t)fileObj.Get("id").As<Napi::Number>().DoubleValue() : 0;
+    record.name = fileObj.Has("name") ? fileObj.Get("name").As<Napi::String>().Utf8Value() : "unknown.bin";
+    record.extension = fileObj.Has("extension") ? fileObj.Get("extension").As<Napi::String>().Utf8Value() : "";
+    record.path = fileObj.Has("path") ? fileObj.Get("path").As<Napi::String>().Utf8Value() : "";
+    record.sizeBytes = fileObj.Has("sizeBytes") ? (uint64_t)fileObj.Get("sizeBytes").As<Napi::Number>().DoubleValue() : 0;
+    record.startSector = fileObj.Has("startSector") ? (uint64_t)fileObj.Get("startSector").As<Napi::Number>().DoubleValue() : 0;
+    record.endSector = fileObj.Has("endSector") ? (uint64_t)fileObj.Get("endSector").As<Napi::Number>().DoubleValue() : 0;
+    record.status = fileObj.Has("status") ? fileObj.Get("status").As<Napi::Number>().Int32Value() : 0;
+    record.source = fileObj.Has("source") ? fileObj.Get("source").As<Napi::String>().Utf8Value() : "";
+
+    // Parse data runs if provided
+    if (fileObj.Has("runs") && fileObj.Get("runs").IsArray()) {
+        Napi::Array runsArr = fileObj.Get("runs").As<Napi::Array>();
+        for (uint32_t i = 0; i < runsArr.Length(); i++) {
+            Napi::Object runObj = runsArr.Get(i).As<Napi::Object>();
+            wolf::FileRecord::DataRun dr;
+            dr.startSector = (uint64_t)runObj.Get("startSector").As<Napi::Number>().DoubleValue();
+            dr.sectorCount = (uint64_t)runObj.Get("sectorCount").As<Napi::Number>().DoubleValue();
+            record.runs.push_back(dr);
+        }
+    }
+
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    RecoverWorker* worker = new RecoverWorker(env, &bdata->engine, driveIndex, record, destDir, deferred);
+    worker->Queue();
+
+    return deferred.Promise();
+    NAPI_CATCH
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -339,6 +598,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     
     exports.Set("startImaging", Napi::Function::New(env, StartImaging));
     exports.Set("stopImaging", Napi::Function::New(env, StopImaging));
+    
+    exports.Set("startWipe", Napi::Function::New(env, StartWipe));
+    exports.Set("reconstructRaid", Napi::Function::New(env, ReconstructRaid));
+    exports.Set("recoverFile", Napi::Function::New(env, RecoverFile));
 
     return exports;
 }

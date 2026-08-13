@@ -1,51 +1,46 @@
 .app-header {
-  height: 70px;
+  height: 64px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0 var(--space-xl);
-  background-color: rgba(11, 15, 25, 0.8);
-  backdrop-filter: blur(15px);
-  -webkit-backdrop-filter: blur(15px);
-  border-bottom: 1px solid rgba(41, 98, 255, 0.2);
+  background-color: var(--bg-color);
+  border-bottom: 1px solid var(--panel-border);
   z-index: 5;
 }
 
 .header-title h2 {
-  font-size: 1.3rem;
+  font-size: 1.1rem;
   color: var(--text-main);
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .header-actions {
   display: flex;
-  gap: var(--space-md);
+  gap: var(--space-sm);
 }
 
 .icon-btn {
-  background: rgba(41, 98, 255, 0.1);
-  color: var(--neon-cyan);
-  font-size: 1.2rem;
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
   transition: var(--transition-smooth);
-  border: 1px solid rgba(41, 98, 255, 0.2);
+  border: 1px solid transparent;
   cursor: pointer;
 }
 
 .icon-btn:hover {
-  background: rgba(0, 229, 255, 0.2);
-  color: #FFFFFF;
-  border-color: var(--neon-cyan);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.3);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  border-color: var(--panel-border);
 }
 
 .icon-btn:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.95);
 }

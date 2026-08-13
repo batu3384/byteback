@@ -1,72 +1,135 @@
 # Wolf Recovery
 
-![Wolf Recovery Logo](https://via.placeholder.com/150x150?text=Wolf+Logo)
+**Profesyonel adli bilişim ve veri kurtarma aracı.** Yüksek performanslı Windows C++ motorunu modern bir Electron/React arayüzüyle birleştirir. Windows API'lerini atlayarak doğrudan ham disk sektörlerini okur; NTFS dosya sistemi yapılarından ve dosya imzalarından (carving) kayıp dosyaları kurtarır.
 
-A high-performance physical data recovery tool utilizing a native Windows C++ engine combined with a modern Electron/React interface. Built to bypass Windows APIs to read raw disk sectors, recovering lost files based on NTFS file system structures and file signatures.
+Hibrit konumlandırma: hem **adli bilişim** (Autopsy/X-Ways seviyesinde kanıt bütünlüğü, zincirleme sorumluluk, E01 imajlama) hem de **veri kurtarma** (R-Studio/DMDE seviyesinde RAID onarımı, bölüm kurtarma, SSD/TRIM farkındalığı) hedefler.
 
-## Features
-- Raw physical disk access
-- MFT (Master File Table) parsing for NTFS
-- Signature-based file recovery (carving)
-- Modern React-based Dashboard
-- High-performance SQLite backing store
-- Electron desktop integration
+## Özellikler
 
-## Tech Stack
-| Component | Technology |
+### Çekirdek Motor (C++)
+- **Doğrudan ham disk erişimi** — `DeviceIoControl` ile Windows fiziksel sürücü erişimi
+- **MFT (Master File Table) parsing** — NTFS dosya kurtarma
+- **İmza tabanlı carving** — Aho-Corasick otomatı, ~100 dosya imzası
+- **SQLite destek deposu** — WAL modu, sayfalama, batch insert
+- **SMART izleme** — ATA/SATA + Weibull arıza tahmini
+- **Disk imajlama** — RAW/DD formatı
+- **Veri parçalama (shredding)** — DoD 5220.22-M
+- **Adli denetim günlüğü** — SHA-256 hash zinciri
+
+### Arayüz (Electron/React)
+- Dashboard, Sürücü kartları
+- Canlı tarama görünümü + disk haritası
+- Hex editör + entropi analizi + veri şablonları
+- Sonuçlar görünümü (filtreleme, sayfalama)
+- SMART sağlık görünümü
+- RAID yapılandırıcı (drag & drop)
+- Disk imajlama + I/O gecikme grafiği
+- Anahtar kelime arama
+- Rapor oluşturucu
+- Veri parçalayıcı
+
+## Teknoloji Yığını
+| Bileşen | Teknoloji |
 | --- | --- |
-| Frontend | React, TypeScript, Tailwind CSS, Vite |
-| Desktop App | Electron, IPC Main/Renderer |
-| Backend Engine | C++, Windows APIs (DeviceIoControl) |
-| Native Bridge | Node-API (N-API) |
-| Database | SQLite |
+| Arayüz | React 18, TypeScript, Vite |
+| Masaüstü | Electron, IPC Main/Renderer |
+| Backend Motor | C++17, Windows API'leri (DeviceIoControl) |
+| Native Bridge | Node-API (N-API), cmake-js |
+| Veritabanı | SQLite (vendored) |
+| Derleme | CMake 3.20+, Visual Studio 2022 |
 
-## Prerequisites
-To build and run Wolf Recovery, you need the following installed:
-- Visual Studio 2022 Build Tools (with "Desktop development with C++" workload)
+## Gereksinimler
+- Visual Studio 2022 Build Tools ("Desktop development with C++" iş yüküyle)
 - Node.js 20+
 - CMake 3.20+
 
-## Build Instructions
+## Kurulum ve Çalıştırma
 ```bash
-# Clone the repository
+# Depoyu klonla
 git clone <repo-url>
 cd wolf-recovery
 
-# Install Node dependencies
+# Node bağımlılıklarını yükle
 npm install
 
-# Build the native engine
+# Native motoru derle
 npm run build:native
 
-# Start the application in development mode
+# Uygulamayı geliştirme modunda başlat
 npm run dev
 ```
 
-## Project Structure
+## Proje Yapısı
 ```
 wolf-recovery/
 ├── src/
-│   ├── main/           # Electron main process (IPC, Native bindings)
-│   ├── preload/        # ContextBridge for secure IPC
-│   ├── renderer/       # React frontend application
-│   │   ├── components/ # Reusable UI components
-│   │   ├── pages/      # Page views (Dashboard)
-│   │   └── App.tsx     # Main React app entry
+│   ├── main/              # Electron main process (yaşam döngüsü, IPC)
+│   │   ├── main.ts
+│   │   ├── ipc-handlers.ts
+│   │   └── native-bridge.ts
+│   ├── preload/
+│   │   └── index.ts       # contextBridge (güvenli IPC)
+│   ├── shared/
+│   │   └── types.ts       # Paylaşılan TypeScript tipleri
+│   └── renderer/
+│       ├── App.tsx        # Ana uygulama + sayfa yönlendirme
+│       └── components/    # UI bileşenleri (görünüme göre klasörlü)
+│           ├── Dashboard/
+│           ├── ScanView/
+│           ├── ResultsView/
+│           ├── HexEditor/
+│           ├── ImagerView/
+│           ├── SmartView/
+│           ├── VirtualRaid/
+│           ├── DiskMap/
+│           ├── SearchView/
+│           ├── ShredderView/
+│           ├── ReportView/
+│           └── Layout/
 ├── native/
-│   ├── engine/         # C++ disk scanning engine
-│   ├── io/             # C++ SQLite output writer
-│   ├── bridge/         # N-API native add-on bindings
-│   └── CMakeLists.txt  # CMake configuration
-└── package.json        # Project metadata and build scripts
+│   ├── include/           # C++ başlık dosyaları (modül bazlı)
+│   │   ├── fs/            # Dosya sistemi parser'ları
+│   │   ├── math/          # Matematik yardımcıları
+│   │   └── forensic/      # Adli bilişim modülleri
+│   ├── src/
+│   │   ├── bridge/        # N-API native add-on bağlayıcıları
+│   │   ├── fs/            # NTFS/FAT/exFAT/ext4/HFS+/APFS parser'ları
+│   │   ├── carver/        # Aho-Corasick imza motoru
+│   │   ├── io/            # Ham disk I/O (Windows)
+│   │   ├── db/            # SQLite metadata deposu
+│   │   ├── smart/         # SMART izleme
+│   │   ├── imager/        # Disk imajlama
+│   │   ├── recovery/      # Dosya kurtarma motoru
+│   │   ├── validator/     # Dosya doğrulama
+│   │   ├── security/      # Veri parçalama
+│   │   ├── forensic/      # Adli denetim günlüğü
+│   │   └── memory/        # Bellek havuzu
+│   ├── third_party/       # sqlite3.c (vendored)
+│   └── CMakeLists.txt     # CMake yapılandırması
+└── package.json           # Proje meta verisi ve derleme scriptleri
 ```
 
-## Development Roadmap
-- **Phase 1**: Foundation (Project scaffold, native engine, I/O layer, SQLite store, IPC, Dashboard UI)
-- **Phase 2**: Deep Scan Engine (MFT parsing, Raw I/O, Node-API streaming)
-- **Phase 3**: File Carving (Signature detection, parallel processing, recovery module)
-- **Phase 4**: Recovery UI & Progress (Live scan view, file preview, detailed progress bars)
-- **Phase 5**: Final Polish (Packaging, error handling, performance tuning, release build)
+## Yol Haritası
+Master geliştirme planı, projeyi endüstri lideri seviyesine taşımak için 8 fazdan oluşur:
 
-## License
+1. **Faz 0** ✅ — Temizlik, stabilite, bug-fix, CI/CD, test altyapısı
+2. **Faz 1** — NTFS derinleştirme ($UsnJrnl, $LogFile, sparse MFT, ADS, UTF-16, ghost-MFT carving)
+3. **Faz 2** — Tiered carving (Fast Object Validation, Bifragmented Gap Carving) + GPU PFAC + imza genişletme (400+)
+4. **Faz 3** — RAID onarımı (6/10, Storage Spaces, LVM2, auto-detect) + E01/AFF4 adli imajlama + on-the-fly hashing
+5. **Faz 4** — Çoklu dosya sistemi (exFAT, Ext2/3/4 journal, APFS, HFS+, ReFS) + bölüm kurtarma
+6. **Faz 5** — NVMe SMART + SSD/TRIM farkındalığı + Bayesian arıza tahmini
+7. **Faz 6** — VSS snapshot analizi + BitLocker çözme + Unified Timeline + artifact ingest (email/browser/registry/memory)
+8. **Faz 7** — Profesyonel UX (ışık teması, önizleme bölmesi, dizin ağacı), gerçek PDF raporlama, vaka yönetimi, paketleme (NSIS installer)
+
+## Geliştirme
+```bash
+# Tip kontrolü (renderer + main)
+npx tsc --noEmit -p tsconfig.web.json
+npx tsc --noEmit -p tsconfig.node.json
+
+# Üretim derlemesi (out/ klasörü)
+npm run build
+```
+
+## Lisans
 MIT License

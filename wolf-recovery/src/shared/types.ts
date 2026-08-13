@@ -1,11 +1,26 @@
-export interface DriveInfo {
-  index: number
-  model: string
-  serial: string
-  sizeBytes: number
-  sectorSize: number
-  type: string
-}
+// Shared type definitions for renderer and main process.
+// Re-exports the canonical types from native-bridge so there is a single
+// source of truth for the IPC contract and native API surface.
+
+export type {
+  DriveInfo,
+  FileRecord,
+  SmartStatus,
+  ScanState,
+  RecoverResult,
+  ProgressCallback,
+  FileFoundCallback,
+} from '../main/native-bridge'
+
+import type {
+  DriveInfo,
+  FileRecord,
+  SmartStatus,
+  ScanState,
+  RecoverResult,
+  ProgressCallback,
+  FileFoundCallback,
+} from '../main/native-bridge'
 
 declare global {
   interface Window {
@@ -13,24 +28,39 @@ declare global {
       getVersion: () => Promise<string>
       isAdmin: () => Promise<boolean>
       listDrives: () => Promise<DriveInfo[]>
-      
-      startScan: (driveIndex: number, scanType: string) => void
+
+      startScan: (driveIndex: number, scanType: string) => Promise<number>
       stopScan: () => void
-      onScanProgress: (callback: (data: { current: number, total: number }) => void) => (() => void)
-      onScanFileFound: (callback: (data: { name: string, size: number }) => void) => (() => void)
+      onScanProgress: (callback: ProgressCallback) => () => void
+      onScanFileFound: (callback: FileFoundCallback) => () => void
       removeAllScanListeners: () => void
 
       startImaging: (driveIndex: number, destPath: string) => void
       stopImaging: () => void
-      onImagingProgress: (callback: (data: { current: number, total: number }) => void) => (() => void)
+      onImagingProgress: (callback: ProgressCallback) => () => void
 
-      getSmartStatus: (driveIndex: number) => Promise<any>
+      getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<number[]>
 
       getFileCount: (scanId: number) => Promise<number>
-      getFilesPage: (scanId: number, offset: number, limit: number) => Promise<any[]>
-      getScanState: (scanId: number) => Promise<any>
+      getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
+      getScanState: (scanId: number) => Promise<ScanState>
+
+      startWipe: (targetPath: string) => Promise<boolean>
+      reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<boolean>
+
+      // File recovery: returns {success, destPath, bytesRecovered, md5Hash}
+      recoverFile: (
+        driveIndex: number,
+        fileRecord: FileRecord,
+        destDir: string,
+      ) => Promise<RecoverResult>
+
+      // Native directory picker (main-process dialog). Resolves to the chosen
+      // path or null if the user cancelled.
+      pickDirectory: () => Promise<string | null>
     }
   }
 }
 
+export {}
