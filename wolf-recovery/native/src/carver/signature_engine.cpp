@@ -448,4 +448,5 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
 
     return true;
 }
+
 } // namespace wolf

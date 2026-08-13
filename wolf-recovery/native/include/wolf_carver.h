@@ -56,11 +56,33 @@ public:
 private:
     std::vector<FileSignature> signatures;
     std::vector<ACTrieNode> acNodes;
-    
+
     std::vector<uint8_t> hexToBytes(const std::string& hex);
-    
+
     void buildAhoCorasick();
 };
+
+// Bifragmented Gap Carving (BGC).
+//
+// When a file is split into exactly two fragments on disk, header/footer
+// carving finds the start and the end but cannot tell where the gap between
+// the two fragments is. Garfinkel's BGC brute-forces every plausible gap
+// position, reassembles the two fragments, and asks a type-specific validator
+// whether the result is structurally sound. The first gap that validates wins.
+//
+// This is expensive (O(disk_size) candidate gaps per file) so it is reserved
+// for the deep-scan path and capped by maxGapBytes. The validator is the same
+// Fast Object Validation used elsewhere (carver/file_validators.h), so a JPEG
+// with a correct marker stream or a ZIP with a valid central directory is
+// accepted with high confidence.
+//
+// Returns the gap offset (bytes from the start of the first fragment) that
+// produced a valid reassembly, or SIZE_MAX if no gap validated. The caller
+// stitches fragments using that offset.
+size_t bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
+                            size_t headerOffset, size_t footerOffset,
+                            size_t maxGapBytes,
+                            int (*validator)(const uint8_t*, size_t));
 
 } // namespace wolf
 
