@@ -24,4 +24,5 @@ Thumbs.db
 *.log
 debug_electron.log
 .zcode/
+.mimosa/
 compile_commands.json

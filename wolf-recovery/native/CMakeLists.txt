@@ -95,6 +95,7 @@ if(WOLF_BUILD_TESTS)
   enable_testing()
   add_executable(wolf_tests
     tests/test_entropy.cpp
+    tests/test_ntfs_util.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
