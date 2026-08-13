@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Export compile_commands.json so clang-tidy / IDE tooling can resolve flags.
+# Configure with: cmake -S native -B native/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # cmake-js injects these variables
 include_directories(${CMAKE_JS_INC})
 
@@ -30,7 +34,6 @@ set(SOURCES
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
-  src/db/scan_session.cpp
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
@@ -49,6 +52,7 @@ set(SOURCES
     src/scan_coordinator.cpp
     src/forensic/audit_logger.cpp
     src/security/data_shredder.cpp
+    src/recovery/recovery_engine.cpp
   ${SQLITE_SOURCES}
 )
 
@@ -64,6 +68,47 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 # Windows-specific libraries
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} setupapi)
+endif()
+
+# ----------------------------------------------------------------------------
+# Native unit tests (GoogleTest)
+#
+# Gated behind WOLF_BUILD_TESTS so production builds and cmake-js (which does
+# not pass this flag) never download or compile the test tree. Enable locally
+# with:
+#   cmake -S native -B native/build -DWOLF_BUILD_TESTS=ON
+#   cmake --build native/build --config Release --target wolf_tests
+#   ctest --test-dir native/build --output-on-failure
+# ----------------------------------------------------------------------------
+option(WOLF_BUILD_TESTS "Build the native GoogleTest suite" OFF)
+if(WOLF_BUILD_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.14.0
+  )
+  # On Windows prevent the shared CRT linkage mismatch between gtest and the app.
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  enable_testing()
+  add_executable(wolf_tests
+    tests/test_entropy.cpp
+    # Compile the units under test directly into the test binary. The engine
+    # itself ships as a .node shared library whose symbols are not exported on
+    # MSVC by default, so linking the test against the shared target would
+    # leave symbols unresolved. Compiling the sources into the test gives full
+    # coverage without forcing a public export surface on the addon.
+    src/math/entropy.cpp
+  )
+  target_link_libraries(wolf_tests
+    PRIVATE
+      GTest::gtest_main
+  )
+  target_include_directories(wolf_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  include(GoogleTest)
+  gtest_discover_tests(wolf_tests)
 endif()
 
 

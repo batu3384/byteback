@@ -1,4 +1,4 @@
-import { ipcMain, IpcMainEvent, app } from 'electron'
+import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { getEngine } from './native-bridge'
 
@@ -45,24 +45,25 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.on('start-scan', (event: IpcMainEvent, driveIndex: number, scanType: string) => {
+  ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string) => {
     try {
       const engine = getEngine()
       
       const callback = (data: any) => {
         if (data.type === 'progress') {
-          event.reply('scan-progress', { current: data.current, total: data.total })
+          event.sender.send('scan-progress', { current: data.current, total: data.total })
         } else if (data.type === 'file') {
-          event.reply('scan-file-found', { name: data.name, size: data.size })
+          event.sender.send('scan-file-found', { name: data.name, size: data.size })
         }
       }
       
       const drivePath = String(driveIndex)
       console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType)
-      engine.startScan(drivePath, scanType, callback)
+      return engine.startScan(drivePath, scanType, callback)
 
     } catch (err) {
       console.error('[IPC] start-scan error:', err)
+      return -1
     }
   })
   
@@ -155,6 +156,58 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] get-scan-state error:', err)
       return null
+    }
+  })
+
+  ipcMain.handle('start-wipe', async (_event, targetPath: string) => {
+    try {
+      const engine = getEngine()
+      return await engine.startWipe(targetPath)
+    } catch (err) {
+      console.error('[IPC] start-wipe error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
+    try {
+      const engine = getEngine()
+      console.log('[IPC] reconstruct-raid drives:', driveIndices, 'level:', raidLevel)
+      return engine.reconstructRaid(driveIndices ?? [], raidLevel ?? 0)
+    } catch (err) {
+      console.error('[IPC] reconstruct-raid error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('pick-directory', async () => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const opts: Electron.OpenDialogOptions = {
+        title: 'Hedef Klasör Seçin',
+        properties: ['openDirectory', 'createDirectory'],
+      }
+      // Bind to the focused window when available so the dialog is modal to it;
+      // otherwise fall back to the windowless overload.
+      const result = focused
+        ? await dialog.showOpenDialog(focused, opts)
+        : await dialog.showOpenDialog(opts)
+      if (result.canceled || result.filePaths.length === 0) return null
+      return result.filePaths[0]
+    } catch (err) {
+      console.error('[IPC] pick-directory error:', err)
+      return null
+    }
+  })
+
+  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileRecord: any, destDir: string) => {
+    try {
+      const engine = getEngine()
+      console.log('[IPC] recover-file drive:', driveIndex, 'file:', fileRecord.name, 'dest:', destDir)
+      return await engine.recoverFile(driveIndex, fileRecord, destDir)
+    } catch (err) {
+      console.error('[IPC] recover-file error:', err)
+      return { success: false, error: String(err) }
     }
   })
 }

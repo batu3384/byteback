@@ -78,29 +78,7 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
         
         sector += sectorsToRead;
 
-        if (latencyMs > 150) {
-            highLatencyCount++;
-            if (highLatencyCount >= 3) {
-                // Predictive Latency Jump: jump reading sector by 10MB to avoid hardware crash
-                uint64_t jumpBytes = 10ULL * 1024 * 1024;
-                uint64_t jumpSectors = jumpBytes / sectorSize;
-                
-                if (sector + jumpSectors > totalSectors) {
-                    jumpSectors = totalSectors - sector;
-                    jumpBytes = jumpSectors * sectorSize;
-                }
-                
-                if (jumpSectors > 0) {
-                    std::vector<char> zeros(jumpBytes, 0);
-                    outFile.write(zeros.data(), zeros.size());
-                    sector += jumpSectors;
-                }
-                
-                highLatencyCount = 0;
-            }
-        } else {
-            highLatencyCount = 0;
-        }
+
 
         // Report progress
         onProgress(sector, totalSectors);

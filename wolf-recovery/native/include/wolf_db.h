@@ -53,6 +53,7 @@ public:
 
     // File records
     int64_t insertFile(int64_t scanId, const FileRecord& record);
+    bool insertFilesBatch(int64_t scanId, const std::vector<FileRecord>& records);
     std::vector<FileRecord> getFiles(int64_t scanId, int offset, int limit);
     int64_t getFileCount(int64_t scanId);
 

@@ -245,10 +245,10 @@ bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 
                 FileRecord fr;
                 fr.id = inode_num;
-                fr.parentId = 0;
-                fr.name = (is_directory ? "dir_" : "file_") + std::to_string(inode_num);
+                fr.parentId = 0; // Lost parent link in raw scraping
+                fr.name = (is_directory ? "ext4_raw_dir_" : "ext4_raw_file_") + std::to_string(inode_num);
                 if (is_regular && file_size > 0) fr.extension = "bin";
-                fr.path = "/";
+                fr.path = "/lost+found/";
                 fr.sizeBytes = file_size;
                 fr.startSector = (inode_table_offset + offset + i * inode_size) / sectorSize;
                 fr.endSector = fr.startSector + (file_size + sectorSize - 1) / sectorSize;

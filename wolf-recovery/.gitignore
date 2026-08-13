@@ -19,3 +19,9 @@ cmake_install.cmake
 Thumbs.db
 *.db
 *.sqlite
+
+# Logs & IDE state (do not commit runtime debug output or plan scratch files)
+*.log
+debug_electron.log
+.zcode/
+compile_commands.json

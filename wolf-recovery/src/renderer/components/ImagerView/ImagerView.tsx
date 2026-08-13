@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
+import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 
 interface DriveInfo {
   index: number
@@ -34,12 +35,15 @@ function ImagerView(): React.ReactElement {
       cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number }) => {
         setProgress(data)
         
-        // Simulate random latency spikes for the chart
-        const newLatency = Math.floor(Math.random() * 30) + 10; // 10ms to 40ms normal
-        const isSpike = Math.random() > 0.95; // 5% chance of bad sector hit
-        const finalLatency = isSpike ? Math.floor(Math.random() * 200) + 150 : newLatency;
-        
         setLatencies(prev => {
+          const now = Date.now();
+          const lastTime = (window as any).lastProgressTime || now;
+          const delta = now - lastTime;
+          (window as any).lastProgressTime = now;
+          
+          // Avoid 0ms spikes on first run
+          const finalLatency = delta > 0 && delta < 1000 ? delta : 15;
+          
           const next = [...prev, finalLatency];
           if (next.length > 50) next.shift(); // Keep last 50 reads
           return next;
@@ -97,84 +101,94 @@ function ImagerView(): React.ReactElement {
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
 
   return (
-    <div className="imager-view">
-      <div className="imager-header glass-panel">
-        <h2>Disk İmaj Alma (RAW / DD Kopyalama)</h2>
-        <p>Seçilen diskin donanım seviyesinde sektör-sektör kopyasını alır. Yeni native C++ motoru üzerinden 0 veri kaybı garantisi.</p>
+    <div className="imager-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
+      <div className="imager-header glass-panel" style={{ padding: '24px', display: 'flex', gap: '16px', alignItems: 'center' }}>
+        <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}>
+          <Save size={32} color="var(--accent-blue)" />
+        </div>
+        <div>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Disk İmaj Alma (RAW Kopyalama)</h2>
+          <p style={{ color: 'var(--text-muted)' }}>Seçilen diskin donanım seviyesinde sektör-sektör kopyasını alır. Yeni native C++ motoru üzerinden tam veri bütünlüğü (bit-by-bit) garantisi sağlar.</p>
+        </div>
       </div>
 
-      <div className="imager-content glass-panel">
-        <div className="form-group">
-          <label>Kaynak Sürücü</label>
+      <div className="imager-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Server size={16} /> Kaynak Sürücü
+          </label>
           <select 
-            className="form-select" 
+            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
             value={selectedDrive} 
             onChange={(e) => setSelectedDrive(e.target.value === '' ? '' : Number(e.target.value))}
             disabled={imaging}
           >
-            <option value="">Sürücü Seçin...</option>
+            <option value="" style={{ background: 'var(--bg-surface)' }}>Sürücü Seçin...</option>
             {drives.map(d => (
-              <option key={d.index} value={d.index}>
-                Sürücü {d.index} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
+              <option key={d.index} value={d.index} style={{ background: 'var(--bg-surface)' }}>
+                Fiziksel Sürücü {d.index} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
               </option>
             ))}
           </select>
         </div>
 
-        <div className="form-group">
-          <label>İmaj Formatı</label>
-          <select className="form-select" disabled={imaging}>
-            <option>RAW (DD) Birebir Kopya (.dd, .img)</option>
+        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>İmaj Formatı</label>
+          <select style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }} disabled={imaging}>
+            <option style={{ background: 'var(--bg-surface)' }}>RAW (DD) Birebir Kopya (.dd, .img)</option>
+            <option style={{ background: 'var(--bg-surface)' }} disabled>E01 (EnCase Forensic) - Çok Yakında</option>
           </select>
         </div>
 
-        <div className="form-group">
-          <label>Hedef Dizin (Tam Yol: Örn: D:\Kopya.dd)</label>
-          <div className="path-input-group">
-            <input 
-              type="text" 
-              className="form-input" 
-              placeholder="D:\Recovered_Image.dd" 
-              value={destPath}
-              onChange={(e) => setDestPath(e.target.value)}
-              disabled={imaging}
-            />
-          </div>
+        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Hedef Dizin (Tam Yol: Örn: D:\Kopya.dd)</label>
+          <input 
+            type="text" 
+            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+            placeholder="D:\Kopya_Disk1.dd" 
+            value={destPath}
+            onChange={(e) => setDestPath(e.target.value)}
+            disabled={imaging}
+          />
         </div>
 
-        <div className="form-actions">
+        <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
           {!imaging ? (
-            <button className="btn-primary start-btn" onClick={handleStartImaging}>
-              İmaj Almayı Başlat
+            <button className="btn-primary start-btn" onClick={handleStartImaging} style={{ padding: '12px 32px', fontSize: '1rem' }}>
+              <Play size={18} fill="currentColor" /> İmaj Almayı Başlat
             </button>
           ) : (
-            <button className="btn-secondary stop-btn" onClick={handleStopImaging}>
-              İptal Et
+            <button className="btn-secondary stop-btn" onClick={handleStopImaging} style={{ padding: '12px 32px', fontSize: '1rem', color: 'var(--alert-red)', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+              <Square size={18} fill="currentColor" /> İptal Et
             </button>
           )}
         </div>
 
         {(imaging || status) && (
-          <div className="imager-progress-card glass-panel" style={{ marginTop: '20px', padding: '15px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-              <span style={{ fontWeight: 'bold', color: 'var(--neon-cyan)' }}>{status}</span>
-              <span style={{ color: 'var(--text-muted)' }}>Süre: {formatTime(elapsed)}</span>
+          <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'rgba(255,255,255,0.02)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
+              <span style={{ fontWeight: 500, color: status.includes('Tamamlandı') ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {status.includes('Tamamlandı') ? <CheckCircle size={18} /> : <Activity size={18} />} {status}
+              </span>
+              <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>Geçen Süre: {formatTime(elapsed)}</span>
             </div>
             
-            <div className="progress-labels">
+            <div className="progress-labels" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
               <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
               <span>%{percent}</span>
             </div>
-            <div className="progress-bar-bg" style={{ marginTop: '5px' }}>
-              <div className="progress-bar-fill" style={{ width: `${percent}%` }}></div>
+            <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+              <div className="progress-bar-fill" style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
             </div>
 
             {/* Predictive Latency Pulse Chart */}
-            <div className="latency-chart-container" style={{ marginTop: '20px', padding: '10px', backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid rgba(0, 229, 255, 0.2)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.85rem' }}>
-                <span style={{ color: 'var(--neon-cyan)' }}>Predictive Latency Engine (EKG)</span>
-                <span style={{ color: latencies[latencies.length - 1] > 100 ? 'var(--alert-red)' : 'var(--success-green)' }}>
-                  Current: {latencies.length > 0 ? latencies[latencies.length - 1] : 0} ms
+            <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '0.85rem' }}>
+                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Activity size={14} /> G/Ç Gecikme Grafiği (I/O Latency)
+                </span>
+                <span style={{ color: latencies[latencies.length - 1] > 100 ? 'var(--alert-red)' : 'var(--success-green)', fontFamily: 'monospace' }}>
+                  Anlık: {latencies.length > 0 ? latencies[latencies.length - 1] : 0} ms
                 </span>
               </div>
               <div className="latency-chart" style={{ display: 'flex', alignItems: 'flex-end', height: '60px', gap: '2px', overflow: 'hidden' }}>
@@ -187,10 +201,11 @@ function ImagerView(): React.ReactElement {
                       style={{ 
                         flex: 1, 
                         height: `${heightPct}%`, 
-                        backgroundColor: isHigh ? 'var(--alert-red)' : 'var(--neon-cyan)',
+                        backgroundColor: isHigh ? 'var(--alert-red)' : 'var(--accent-blue)',
                         opacity: 0.8,
                         minHeight: '2px',
-                        transition: 'height 0.1s ease-out'
+                        transition: 'height 0.1s ease-out',
+                        borderRadius: '1px 1px 0 0'
                       }} 
                       title={`${val} ms`}
                     />

@@ -165,11 +165,11 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
     DWORD bytesRead = 0;
 
     if (!bRead && err == ERROR_IO_PENDING) {
-        DWORD waitRes = WaitForSingleObject(hEvent, 500);
+        DWORD waitRes = WaitForSingleObject(hEvent, 5000);
         if (waitRes == WAIT_TIMEOUT) {
             CancelIoEx(static_cast<HANDLE>(handle_), &ol);
             GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, TRUE);
-            result.error = "Read timed out (500ms)";
+            result.error = "Read timed out (5000ms)";
             result.success = false;
             CloseHandle(hEvent);
             return result;

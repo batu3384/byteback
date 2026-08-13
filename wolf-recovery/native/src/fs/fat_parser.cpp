@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <array>
+#include <map>
 
 #pragma pack(push, 1)
 
@@ -115,6 +117,33 @@ static std::string formatFATName(const uint8_t name[11]) {
     return s;
 }
 
+// VFAT short-name checksum (used to validate that a chain of LFN entries
+// belongs to the following 8.3 entry). Algorithm per Microsoft FAT spec.
+static uint8_t lfnChecksum(const uint8_t shortName[11]) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; ++i) {
+        sum = ((sum & 1) << 7) + (sum >> 1) + shortName[i];
+    }
+    return sum;
+}
+
+// Reassemble UTF-16 LFN fragments collected in reverse order into a UTF-8-ish
+// string. We only emit the BMP subset that fits in a single byte (ASCII range
+// and Latin-1); other code points are replaced with '?' to stay compatible with
+// the existing ASCII-only pipeline. A full UTF-8 transcoder is on the roadmap
+// (Faz 1, NTFS UTF-16 names).
+static std::string lfnToString(const std::vector<uint16_t>& utf16) {
+    std::string out;
+    out.reserve(utf16.size());
+    for (uint16_t c : utf16) {
+        if (c == 0 || c == 0xFFFF) break; // terminator / padding
+        if (c < 0x80) out += static_cast<char>(c);
+        else if (c < 0x100) out += static_cast<char>(c); // Latin-1
+        else out += '?';
+    }
+    return out;
+}
+
 bool FATParser::scan(wolf::DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen()) return false;
 
@@ -164,20 +193,60 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
     if (isFat32) {
         dirClusters.push_back(bpb->rootCluster);
     } else {
-        // Parse FAT16 root dir sequentially
+        // Parse FAT16 root dir sequentially. Long File Name (LFN) entries
+        // precede their 8.3 short entry in reverse ordinal order; we buffer
+        // them and validate via checksum when the short entry arrives.
         std::vector<uint8_t> rootBuf(rootDirSectors * bps);
         reader.readSectors(rootDirStartSector * bps, rootDirSectors * bps, rootBuf.data());
-        
+
+        // LFN accumulation state. Indexed by ordinal so fragments reassemble in
+        // forward order regardless of how many 13-char segments were needed.
+        std::map<uint8_t, std::array<uint16_t, 13>> lfnFragments;
+        uint8_t lfnChecksumSeen = 0;
+
         for (uint32_t offset = 0; offset < rootBuf.size(); offset += 32) {
             FAT_DirEntry* entry = reinterpret_cast<FAT_DirEntry*>(rootBuf.data() + offset);
             if (entry->name[0] == 0x00) break;
-            if (entry->name[0] == 0xE5) {
-                // Deleted file
+
+            bool deleted = (entry->name[0] == 0xE5);
+
+            if (entry->attr == 0x0F) {
+                // VFAT long-name entry. Deleted LFN entries (0xE5 first byte)
+                // still belong to a possibly-deleted file, but the ord field
+                // has been clobbered to 0xE5 — skip those; we cannot trust the
+                // ordinal and would corrupt a following valid chain.
+                if (deleted) continue;
+                FAT_LFNEntry* lfn = reinterpret_cast<FAT_LFNEntry*>(entry);
+                uint8_t ord = lfn->ord & 0x3F; // mask the "last" bit (0x40)
+                std::array<uint16_t, 13> chars{};
+                for (int i = 0; i < 5; ++i) chars[i] = lfn->name1[i];
+                for (int i = 0; i < 6; ++i) chars[5 + i] = lfn->name2[i];
+                for (int i = 0; i < 2; ++i) chars[11 + i] = lfn->name3[i];
+                lfnFragments[ord] = chars;
+                lfnChecksumSeen = lfn->chksum;
                 continue;
             }
-            if (entry->attr == 0x0F) continue; // LFN
-            
+
+            int status = 1;
+            int confidence = 100;
+            if (deleted) {
+                status = 0;
+                confidence = 60;
+                entry->name[0] = '_';
+            }
+
+            // Resolve the display name: prefer the LFN if the checksum matches.
             std::string name = formatFATName(entry->name);
+            if (!lfnFragments.empty() && lfnChecksum(entry->name) == lfnChecksumSeen) {
+                std::vector<uint16_t> full;
+                for (auto it = lfnFragments.begin(); it != lfnFragments.end(); ++it) {
+                    for (uint16_t c : it->second) full.push_back(c);
+                }
+                std::string lfnName = lfnToString(full);
+                if (!lfnName.empty()) name = lfnName;
+            }
+            lfnFragments.clear();
+
             uint32_t firstCluster = entry->fstClusLO | (entry->fstClusHI << 16);
             if (entry->attr & 0x10) {
                 if (name != "." && name != "..") dirClusters.push_back(firstCluster);
@@ -190,8 +259,8 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
                 fr.startSector = firstCluster; // Store cluster in startSector
                 fr.endSector = firstCluster;
                 fr.path = "/";
-                fr.status = 1;
-                fr.confidence = 100;
+                fr.status = status;
+                fr.confidence = confidence;
                 fr.category = "Unknown";
                 fr.source = "fat";
                 callback(fr);
@@ -219,28 +288,60 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
         
         uint32_t bytesPerCluster = bpb->sectorsPerCluster * bps;
         std::vector<uint8_t> clusterBuf(bytesPerCluster);
-        
+
+        // LFN fragments can span cluster boundaries within a single directory,
+        // so the accumulation state lives outside the per-cluster loop.
+        std::map<uint8_t, std::array<uint16_t, 13>> lfnFragments;
+        uint8_t lfnChecksumSeen = 0;
+
         while (!dirClusters.empty()) {
             uint32_t currentCluster = dirClusters.back();
             dirClusters.pop_back();
-            
+
             uint32_t clus = currentCluster;
             while (clus >= 2 && clus < 0x0FFFFFF8) {
                 uint64_t sec = dataStartSector + (clus - 2) * bpb->sectorsPerCluster;
                 if (!reader.readSectors(sec * bps, bytesPerCluster, clusterBuf.data()).success) break;
-                
+
                 for (uint32_t offset = 0; offset < bytesPerCluster; offset += 32) {
                     FAT_DirEntry* entry = reinterpret_cast<FAT_DirEntry*>(clusterBuf.data() + offset);
                     if (entry->name[0] == 0x00) break;
-                    
+
+                    bool deleted = (entry->name[0] == 0xE5);
+
+                    if (entry->attr == 0x0F) {
+                        if (deleted) continue; // ordinal clobbered, unsafe to use
+                        FAT_LFNEntry* lfn = reinterpret_cast<FAT_LFNEntry*>(entry);
+                        uint8_t ord = lfn->ord & 0x3F;
+                        std::array<uint16_t, 13> chars{};
+                        for (int i = 0; i < 5; ++i) chars[i] = lfn->name1[i];
+                        for (int i = 0; i < 6; ++i) chars[5 + i] = lfn->name2[i];
+                        for (int i = 0; i < 2; ++i) chars[11 + i] = lfn->name3[i];
+                        lfnFragments[ord] = chars;
+                        lfnChecksumSeen = lfn->chksum;
+                        continue;
+                    }
+
                     int status = 1;
-                    if (entry->name[0] == 0xE5) status = 0; // Deleted
-                    
-                    if (entry->attr == 0x0F) continue; // LFN stub
-                    
+                    int confidence = 100;
+                    if (deleted) {
+                        status = 0;
+                        confidence = 60;
+                    }
+
                     std::string name = formatFATName(entry->name);
+                    if (!lfnFragments.empty() && lfnChecksum(entry->name) == lfnChecksumSeen) {
+                        std::vector<uint16_t> full;
+                        for (auto it = lfnFragments.begin(); it != lfnFragments.end(); ++it) {
+                            for (uint16_t c : it->second) full.push_back(c);
+                        }
+                        std::string lfnName = lfnToString(full);
+                        if (!lfnName.empty()) name = lfnName;
+                    }
+                    lfnFragments.clear();
+
                     if (name == "." || name == "..") continue;
-                    
+
                     uint32_t firstCluster = entry->fstClusLO | (entry->fstClusHI << 16);
                     if (entry->attr & 0x10) {
                         dirClusters.push_back(firstCluster);
@@ -254,15 +355,17 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
                         fr.endSector = firstCluster;
                         fr.path = "/";
                         fr.status = status;
-                        fr.confidence = 100;
+                        fr.confidence = confidence;
                         fr.category = "Unknown";
                         fr.source = "fat";
                         callback(fr);
                     }
                 }
-                
+
                 clus = getNextCluster(clus);
             }
+            // A directory boundary invalidates any half-collected LFN chain.
+            lfnFragments.clear();
         }
     }
 }
@@ -323,8 +426,12 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
                     currentFirstCluster = *reinterpret_cast<uint32_t*>(&entry->data[19]);
                     currentFileSize = *reinterpret_cast<uint64_t*>(&entry->data[23]);
                 } else if ((entry->entryType & 0x7F) == 0x01) { // File name
-                    // LFN reconstruction simplified
-                    currentFileName += "exfat_file";
+                    for (int i = 0; i < 15; ++i) {
+                        uint16_t ch = entry->data[1 + i * 2] | (entry->data[2 + i * 2] << 8);
+                        if (ch == 0) break;
+                        if (ch < 128) currentFileName += static_cast<char>(ch);
+                        else currentFileName += '?';
+                    }
                     if (isDir) {
                         dirClusters.push_back(currentFirstCluster);
                     } else {

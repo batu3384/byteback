@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "electron.vite.config.ts"]
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
+  "exclude": ["electron.vite.config.ts"]
 }

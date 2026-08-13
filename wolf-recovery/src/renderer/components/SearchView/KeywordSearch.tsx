@@ -1,12 +1,6 @@
 import React, { useState } from 'react';
 import './KeywordSearch.css';
-
-interface SearchResult {
-  fileName: string;
-  path: string;
-  lineNumber: number;
-  context: string;
-}
+import { Search, FileText, Filter, AlertCircle, FileSearch, Keyboard } from 'lucide-react';
 
 interface KeywordSearchProps {
   filesFound: any[];
@@ -23,88 +17,98 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
     setSearching(true);
     setSearchDone(false);
     
-    // In production, this would call native API to search recovered files
-    setTimeout(() => {
-      setSearching(false);
-      setSearchDone(true);
-      
-      const lowerQuery = query.toLowerCase();
-      const filtered = filesFound.filter(f => f.name && f.name.toLowerCase().includes(lowerQuery));
-      setResults(filtered);
-    }, 500);
+    const lowerQuery = query.toLowerCase();
+    const filtered = filesFound.filter(f => f.name && f.name.toLowerCase().includes(lowerQuery));
+    setResults(filtered);
+    setSearching(false);
+    setSearchDone(true);
   };
 
   return (
-    <div className="keyword-search-view">
-      <div className="search-header">
-        <h2>Keyword Search</h2>
-        <p className="subtitle">Search through recovered files by filename or content keywords.</p>
+    <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
+      <div className="search-header glass-panel" style={{ padding: '24px' }}>
+        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması (Keyword Search)</h2>
+        <p style={{ color: 'var(--text-muted)' }}>Kurtarılan dosyaların isminde veya içeriğinde anahtar kelime araması yapın.</p>
       </div>
 
-      <div className="search-bar-container glass-panel">
-        <div className="search-input-wrapper">
-          <span className="search-icon">🔍</span>
-          <input
-            type="text"
-            className="search-input"
-            placeholder="Enter keyword (e.g., 'invoice', 'contract', '.xlsx')"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          />
-          <button className="btn-primary search-btn" onClick={handleSearch} disabled={searching}>
-            {searching ? 'Searching...' : 'Search'}
+      <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div className="search-input-wrapper" style={{ display: 'flex', gap: '12px' }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', padding: '0 16px' }}>
+            <Search size={20} color="var(--text-muted)" />
+            <input
+              type="text"
+              style={{ flex: 1, background: 'transparent', border: 'none', padding: '12px 16px', color: 'var(--text-main)', outline: 'none', fontSize: '1rem' }}
+              placeholder="Anahtar kelime girin (örn. 'fatura', 'sözleşme', '.xlsx')"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            />
+          </div>
+          <button className="btn-primary search-btn" onClick={handleSearch} disabled={searching} style={{ padding: '0 32px' }}>
+            {searching ? 'Aranıyor...' : 'Ara'}
           </button>
         </div>
 
-        <div className="search-filters">
-          <label className="filter-chip active">
-            <input type="checkbox" defaultChecked /> All Files
+        <div className="search-filters" style={{ display: 'flex', gap: '16px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)' }}>
+            <Filter size={16} /> Filtreler:
+          </span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input type="checkbox" defaultChecked /> Tüm Dosyalar
           </label>
-          <label className="filter-chip">
-            <input type="checkbox" /> Filename Only
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input type="checkbox" defaultChecked /> Sadece Dosya Adı
           </label>
-          <label className="filter-chip">
-            <input type="checkbox" /> Content Search
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', opacity: 0.5 }}>
+            <input type="checkbox" disabled /> İçerik Araması (Yakında)
           </label>
-          <label className="filter-chip">
-            <input type="checkbox" /> Regex
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input type="checkbox" /> Düzenli İfade (Regex)
           </label>
         </div>
       </div>
 
-      <div className="search-results glass-panel">
+      <div className="search-results glass-panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         {searching && (
-          <div className="loading-state">
-            <div className="spinner"></div>
-            <p>Searching recovered files...</p>
+          <div className="loading-state" style={{ margin: 'auto', textAlign: 'center', color: 'var(--accent-blue)' }}>
+            <Search size={48} className="spinner" style={{ margin: '0 auto 16px' }} />
+            <p style={{ color: 'var(--text-muted)' }}>Bulunan dosyalar taranıyor...</p>
           </div>
         )}
 
         {searchDone && results.length === 0 && (
-          <div className="empty-state">
-            <span style={{ fontSize: '3rem' }}>🔎</span>
-            <p>No results found for "<strong>{query}</strong>"</p>
-            <p className="hint">Try different keywords or check the search filters.</p>
+          <div className="empty-state" style={{ margin: 'auto', textAlign: 'center' }}>
+            <AlertCircle size={48} color="var(--warning-yellow)" style={{ margin: '0 auto 16px' }} />
+            <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>"<strong>{query}</strong>" için sonuç bulunamadı</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Farklı anahtar kelimeler deneyin veya arama filtrelerini kontrol edin.</p>
           </div>
         )}
 
         {results.length > 0 && (
-          <div className="results-list">
-            {results.map((r, i) => (
-              <div key={i} className="result-item">
-                <div className="result-file">{r.name}</div>
-                <div className="result-path">{r.path || r.category || 'Recovered'}</div>
-                <div className="result-context">{r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}</div>
-              </div>
-            ))}
+          <div className="results-list" style={{ padding: '16px 24px', overflowY: 'auto' }}>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>{results.length} sonuç bulundu.</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {results.map((r, i) => (
+                <div key={i} style={{ 
+                  display: 'flex', alignItems: 'center', padding: '12px 16px', 
+                  background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid transparent'
+                }}>
+                  <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
+                  <span style={{ fontWeight: 500, flex: 1 }}>{r.name}</span>
+                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem' }}>{r.path || r.category || 'Kurtarılanlar'}</span>
+                  <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
+                    {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         {!searching && !searchDone && (
-          <div className="empty-state">
-            <span style={{ fontSize: '3rem' }}>⌨️</span>
-            <p>Enter a keyword to search through recovered files.</p>
+          <div className="empty-state" style={{ margin: 'auto', textAlign: 'center', color: 'var(--panel-border)' }}>
+            <Keyboard size={64} style={{ margin: '0 auto 16px' }} />
+            <p style={{ color: 'var(--text-muted)' }}>Kurtarılan dosyalar arasında arama yapmak için bir kelime girin.</p>
           </div>
         )}
       </div>

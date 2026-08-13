@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
+import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -8,11 +9,10 @@ interface ScanViewProps {
   filesFound: any[]
   setFilesFound: React.Dispatch<React.SetStateAction<any[]>>
   progress: { current: number, total: number }
-  setProgress: React.Dispatch<React.SetStateAction<{ current: number, total: number }>>
   status: string
-  setStatus: React.Dispatch<React.SetStateAction<string>>
   elapsed: number
-  setElapsed: React.Dispatch<React.SetStateAction<number>>
+  activeScanId: number
+  onStop: () => void
   onCancel: () => void
   onViewResults: () => void
 }
@@ -20,12 +20,11 @@ interface ScanViewProps {
 function ScanView({ 
   driveIndex, scanType, 
   filesFound, setFilesFound,
-  progress, setProgress,
-  status, setStatus,
-  elapsed, setElapsed,
-  onCancel, onViewResults 
+  progress, status,
+  elapsed, activeScanId,
+  onStop, onCancel, onViewResults 
 }: ScanViewProps): React.ReactElement {
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pageRef = useRef(0)
   const [page, setPage] = useState(0)
@@ -33,66 +32,76 @@ function ScanView({
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const limit = 50
 
+  // Sliding Window ETA
+  const speedHistoryRef = useRef<{ timestamp: number; sector: number }[]>([])
+  const [currentSpeed, setCurrentSpeed] = useState<number>(0) // Sectors per second
+  const [etaSeconds, setEtaSeconds] = useState<number>(-1)
+
   // Keep pageRef in sync
   useEffect(() => { pageRef.current = page }, [page])
 
-  // Effect 1: Scan lifecycle (start scan, listeners, timer) — only on mount
+  // ETA Calculation Effect
   useEffect(() => {
-    if (driveIndex === null) return
+    if (status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi') {
+      setEtaSeconds(-1)
+      setCurrentSpeed(0)
+      return
+    }
 
-    // Start elapsed timer
-    timerRef.current = setInterval(() => {
-      setElapsed(prev => prev + 1)
-    }, 1000)
+    const now = Date.now()
+    const history = speedHistoryRef.current
+    
+    // Add current progress
+    history.push({ timestamp: now, sector: progress.current })
 
-    let cleanupProgress: (() => void) | undefined
-    let cleanupFileFound: (() => void) | undefined
+    // Remove entries older than 5 seconds
+    while (history.length > 0 && now - history[0].timestamp > 5000) {
+      history.shift()
+    }
 
-    if (window.api && window.api.onScanProgress) {
-      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number }) => {
-        setProgress(data)
-        if (data.current >= data.total && data.total > 0) {
-          setStatus('Tarama Tamamlandı')
-          if (timerRef.current) clearInterval(timerRef.current)
+    if (history.length > 1) {
+      const first = history[0]
+      const last = history[history.length - 1]
+      const timeDiffSeconds = (last.timestamp - first.timestamp) / 1000
+      
+      if (timeDiffSeconds > 0) {
+        const sectorDiff = last.sector - first.sector
+        const speed = sectorDiff / timeDiffSeconds
+        setCurrentSpeed(speed)
+        
+        if (speed > 0 && progress.total > progress.current) {
+          const remainingSectors = progress.total - progress.current
+          setEtaSeconds(remainingSectors / speed)
+        } else {
+          setEtaSeconds(-1)
         }
-      })
-    }
-
-    if (window.api && window.api.onScanFileFound) {
-      cleanupFileFound = window.api.onScanFileFound((fileData: { name: string, size: number }) => {
-        setTotalFiles(prev => prev + 1)
-      })
-    }
-
-    if (window.api && window.api.startScan) {
-      window.api.startScan(driveIndex, scanType)
-    }
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-      if (cleanupProgress) cleanupProgress()
-      if (cleanupFileFound) cleanupFileFound()
-      // Stop scan when leaving ScanView
-      if (window.api && window.api.stopScan) {
-        window.api.stopScan()
       }
     }
-  }, [driveIndex, scanType])
+  }, [progress.current, status])
 
-  // Effect 2: DB polling for paginated results (separate so page changes don't restart scan)
+  // DB polling for paginated results
   useEffect(() => {
-    if (driveIndex === null) return
+    if (driveIndex === null || activeScanId <= 0) return
 
     pollRef.current = setInterval(async () => {
       if (window.api && window.api.getFileCount && window.api.getFilesPage) {
         try {
-          const scanId = 1
-          const count = await window.api.getFileCount(scanId)
+          const count = await window.api.getFileCount(activeScanId)
           setTotalFiles(count)
           
-          const pageData = await window.api.getFilesPage(scanId, pageRef.current * limit, limit)
+          const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit)
           if (pageData && pageData.length > 0) {
-            setFilesFound(pageData)
+            setFilesFound(prev => {
+              // Create a Set of existing IDs for O(1) lookup
+              const existingIds = new Set(prev.map(f => f.id));
+              
+              // Only add files that aren't already in the list
+              const newFiles = pageData.filter((newFile: any) => !existingIds.has(newFile.id));
+              
+              if (newFiles.length === 0) return prev;
+              
+              return [...prev, ...newFiles];
+            });
           }
         } catch (e) {
           console.error("Pagination error", e)
@@ -103,147 +112,132 @@ function ScanView({
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [driveIndex])
-
-
-  const handleStop = () => {
-    if (window.api && window.api.stopScan) {
-      window.api.stopScan()
-    }
-    if (timerRef.current) clearInterval(timerRef.current)
-    setStatus('Tarama İptal Edildi')
-  }
+  }, [driveIndex, activeScanId, setFilesFound])
 
   const formatTime = (seconds: number) => {
-    if (seconds < 0) return "--:--:--";
+    if (seconds < 0) return "--:--:--"
     const h = Math.floor(seconds / 3600)
     const m = Math.floor((seconds % 3600) / 60)
     const s = Math.floor(seconds % 60)
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
 
+  const formatSpeed = (speed: number) => {
+    if (speed <= 0) return "0 Sektör/s"
+    if (speed > 1000000) return `${(speed / 1000000).toFixed(2)} M Sektör/s`
+    if (speed > 1000) return `${(speed / 1000).toFixed(2)} K Sektör/s`
+    return `${Math.floor(speed)} Sektör/s`
+  }
+
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
   const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
 
-  // ETA Calculation
-  let etaSeconds = -1;
-  if (!isFinished && elapsed > 5 && progress.current > 0 && progress.total > 0) {
-    const sectorsPerSecond = progress.current / elapsed;
-    const remainingSectors = progress.total - progress.current;
-    etaSeconds = remainingSectors / sectorsPerSecond;
-  }
-
   return (
-    <div className="scan-view">
-      <div className="scan-header glass-panel">
-        <div className="scan-info">
-          <div className={`scan-icon ${isFinished ? '' : 'spinner'}`}>{isFinished ? '✅' : '🔍'}</div>
+    <div className="scan-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
+      
+      <div className="scan-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-xl)' }}>
+        <div className="scan-info" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
+          <div className="scan-icon" style={{ 
+            background: isFinished ? 'rgba(16, 185, 129, 0.1)' : 'rgba(59, 130, 246, 0.1)', 
+            padding: '16px', borderRadius: '12px',
+            color: isFinished ? 'var(--success-green)' : 'var(--accent-blue)'
+          }}>
+            {isFinished ? <CheckCircle size={32} /> : <Search size={32} className="spinner" />}
+          </div>
           <div>
-            <h2>Sürücü {driveIndex} Taranıyor</h2>
-            <p>{scanType === 'quick' ? 'Hızlı Tarama (MFT Kayıtları)' : 'Derin Tarama (Sektör Bazlı)'} • {status}</p>
+            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sürücü {driveIndex} Taranıyor</h2>
+            <p style={{ color: 'var(--text-muted)' }}>{scanType === 'quick' ? 'Hızlı Tarama (MFT)' : 'Derin Tarama (Sektör)'} • {status}</p>
           </div>
         </div>
-        <div className="scan-stats">
-          <div className="stat-pill">
-            <span className="label">Bulunan</span>
-            <span className="value">{filesFound.length}</span>
+        <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
+          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bulunan</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString()}</span>
           </div>
-          <div className="stat-pill">
-            <span className="label">Geçen Süre</span>
-            <span className="value">{formatTime(elapsed)}</span>
+          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Geçen Süre</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatTime(elapsed)}</span>
           </div>
-          <div className="stat-pill" style={{ opacity: isFinished ? 0.3 : 1 }}>
-            <span className="label">Kalan Süre (ETA)</span>
-            <span className="value" style={{ color: etaSeconds > 0 ? 'var(--neon-cyan)' : 'inherit' }}>
-              {isFinished ? '00:00:00' : (etaSeconds >= 0 ? formatTime(etaSeconds) : 'Hesaplanıyor...')}
+          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kalan Süre</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 ? 'var(--accent-blue)' : 'inherit' }}>
+              {isFinished ? '00:00:00' : (etaSeconds >= 0 ? formatTime(etaSeconds) : '...')}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="scan-progress-card glass-panel">
+      <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
         <DiskMapVisualizer 
           totalSectors={progress.total} 
           currentSector={progress.current} 
           badSectors={[]} 
         />
-        <div className="progress-labels" style={{ marginTop: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
           <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
+          <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
           <span>%{percent}</span>
         </div>
-        <div className="progress-bar-bg">
-          <div className="progress-bar-fill" style={{ width: `${percent}%` }}></div>
+        <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
+          <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
       </div>
 
-      <div className="scan-live-results glass-panel">
-        <div className="live-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3>Bulunan Dosyalar (Sayfa {page + 1})</h3>
-          <div className="pagination-controls">
-            <button 
-              className="btn-secondary" 
-              style={{ padding: '4px 8px', marginRight: '5px', fontSize: '12px' }}
-              disabled={page === 0} 
-              onClick={() => setPage(p => p - 1)}
-            >
-              ◀ Önceki
+      <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>Bulunan Dosyalar (Sayfa {page + 1})</h3>
+          <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
+            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0} onClick={() => setPage(p => p - 1)}>
+              <ChevronLeft size={16} /> Önceki
             </button>
-            <button 
-              className="btn-secondary"
-              style={{ padding: '4px 8px', fontSize: '12px' }}
-              disabled={(page + 1) * limit >= totalFiles}
-              onClick={() => setPage(p => p + 1)}
-            >
-              Sonraki ▶
+            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= totalFiles} onClick={() => setPage(p => p + 1)}>
+              Sonraki <ChevronRight size={16} />
             </button>
           </div>
         </div>
-        <div className="live-files">
+        <div style={{ padding: 'var(--space-md)', overflowY: 'auto', flex: 1 }}>
           {filesFound.length === 0 ? (
-            <div className="empty-files">Henüz dosya bulunamadı...</div>
+            <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>Henüz dosya bulunamadı...</div>
           ) : (
-            filesFound.map((f, i) => (
-              <div key={i} className="live-file-item" onClick={() => setSelectedFile(f)} style={{ cursor: 'pointer' }}>
-                <span className="file-icon">📄</span>
-                <span className="file-name">{f.name}</span>
-                <span className="file-category" style={{ opacity: 0.6, fontSize: '0.8em', marginLeft: '10px' }}>{f.category}</span>
-                <span className="file-size" style={{ marginLeft: 'auto' }}>{(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB</span>
-                <span className="file-preview-btn" style={{ marginLeft: '15px', color: 'var(--neon-cyan)', fontSize: '0.85rem' }}>👁️ Preview</span>
-              </div>
-            ))
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {filesFound.map((f, i) => (
+                <div key={i} onClick={() => setSelectedFile(f)} style={{ 
+                  display: 'flex', alignItems: 'center', padding: '12px 16px', 
+                  background: 'rgba(255,255,255,0.02)', borderRadius: '6px', cursor: 'pointer',
+                  border: '1px solid transparent', transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--panel-border)'}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = 'transparent'}
+                >
+                  <File size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
+                  <span style={{ fontWeight: 500 }}>{f.name}</span>
+                  <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: '12px' }}>{f.category}</span>
+                  <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                    {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
+                  </span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
 
-      {selectedFile && (
-        <div className="preview-modal-overlay" onClick={() => setSelectedFile(null)} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div className="preview-modal glass-panel" onClick={(e) => e.stopPropagation()} style={{ width: '600px', maxWidth: '90%', padding: '20px', borderRadius: '12px' }}>
-            <h3 style={{ color: 'var(--neon-cyan)', marginBottom: '10px' }}>Safe File Preview</h3>
-            <p><strong>Name:</strong> {selectedFile.name}</p>
-            <p><strong>Size:</strong> {(selectedFile.sizeBytes || selectedFile.size) / 1024} KB</p>
-            <p><strong>Status:</strong> {selectedFile.status === 0 ? 'Intact' : 'Partially Overwritten'}</p>
-            <div className="preview-hex-box" style={{ marginTop: '15px', backgroundColor: '#0B0F19', padding: '10px', fontFamily: 'monospace', fontSize: '0.85rem', color: '#00E676', border: '1px solid var(--border-subtle)', borderRadius: '4px', height: '150px', overflowY: 'auto' }}>
-              4D 5A 90 00 03 00 00 00 04 00 00 00 FF FF 00 00 <br/>
-              B8 00 00 00 00 00 00 00 40 00 00 00 00 00 00 00 <br/>
-              00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 <br/>
-              ... (Safe Hex View - Payload Exec Prevented) ...
-            </div>
-            <button className="btn-secondary" style={{ marginTop: '20px', width: '100%' }} onClick={() => setSelectedFile(null)}>Close Preview</button>
-          </div>
-        </div>
-      )}
-
-      <div className="scan-actions">
-        {isFinished ? (
-          <button className="btn-primary" onClick={onViewResults}>Sonuçları Görüntüle</button>
-        ) : (
-          <button className="btn-secondary" onClick={handleStop}>Durdur</button>
+      <div className="scan-actions" style={{ display: 'flex', gap: 'var(--space-md)', justifyContent: 'flex-end', marginTop: 'var(--space-md)' }}>
+        {!isFinished && (
+          <button className="btn-danger" onClick={onStop} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Square size={16} fill="currentColor" /> Taramayı Durdur
+          </button>
         )}
-        <button className="btn-secondary" onClick={onCancel}>Geri Dön</button>
+        {isFinished && (
+          <button className="btn-primary" onClick={onViewResults}>
+            Sonuçları Görüntüle
+          </button>
+        )}
+        <button className="btn-secondary" onClick={onCancel}>İptal</button>
       </div>
+
     </div>
   )
 }
 
 export default ScanView
-
