@@ -160,5 +160,193 @@ inline bool applyUsaFixup(uint8_t* record, size_t recordSize, size_t sectorSize,
     return true;
 }
 
+// Decompress an LZNT1 stream (the algorithm NTFS uses for compressed files).
+//
+// LZNT1 is a chunked LZ77 variant. A stream is a sequence of chunks, each
+// preceded by a 2-byte little-endian header:
+//   - bit 15 set   -> the chunk is compressed; payload size = (header & 0x0FFF) + 1
+//   - bit 15 clear -> literal chunk; copy (header & 0x0FFF) + 1 bytes verbatim
+//   - header == 0  -> end-of-stream marker
+//
+// Inside a compressed chunk the payload is a sequence of (flag byte, 8 tokens).
+// Flag bit clear = literal byte; bit set = 16-bit back-reference token. The
+// split between length and displacement inside a token depends on how far into
+// the chunk we have already decompressed: the displacement field grows (and the
+// length field shrinks) as the output position advances past each power of two,
+// starting at 16. This matches RtlDecompressBufferEx on Windows.
+//
+// Returns the number of bytes written to dst, or -1 on malformed input. Output
+// is capped at dstCapacity; a partial decompression is still returned (not -1)
+// as long as the stream was structurally valid — callers decide whether the
+// truncated result is useful.
+inline int lznt1Decompress(const uint8_t* src, size_t srcSize,
+                            uint8_t* dst, size_t dstCapacity) {
+    if (!src || !dst) return -1;
+    size_t sp = 0, dp = 0;
+
+    while (sp + 1 < srcSize) {
+        uint16_t hdr = static_cast<uint16_t>(src[sp]) |
+                       (static_cast<uint16_t>(src[sp + 1]) << 8);
+        sp += 2;
+        if (hdr == 0) break; // end-of-stream marker
+
+        size_t chunkLen = (hdr & 0x0FFF) + 1;
+        if (sp + chunkLen > srcSize) return -1; // truncated chunk
+
+        if (!(hdr & 0x8000)) {
+            // Uncompressed chunk: literal copy.
+            size_t copy = (dp + chunkLen <= dstCapacity) ? chunkLen : (dstCapacity - dp);
+            if (copy > 0) {
+                std::memmove(dst + dp, src + sp, copy);
+            }
+            dp += chunkLen;
+            sp += chunkLen;
+            continue;
+        }
+
+        // Compressed chunk.
+        const size_t chunkEnd = sp + chunkLen;
+        const size_t chunkBase = dp; // output position at chunk start
+
+        while (sp < chunkEnd) {
+            uint8_t flags = src[sp++];
+            for (int bit = 0; bit < 8 && sp < chunkEnd; ++bit) {
+                if (!(flags & (1u << bit))) {
+                    // Literal byte.
+                    if (dp < dstCapacity) dst[dp] = src[sp];
+                    ++dp;
+                    ++sp;
+                    continue;
+                }
+
+                // Back-reference token (2 bytes LE).
+                if (sp + 1 >= chunkEnd) return -1;
+                uint16_t token = static_cast<uint16_t>(src[sp]) |
+                                 (static_cast<uint16_t>(src[sp + 1]) << 8);
+                sp += 2;
+
+                // The displacement field width grows with output position:
+                // u = smallest power of two strictly greater than (dp - chunkBase),
+                // minimum 16. dispBits = log2(u).
+                size_t posInChunk = dp - chunkBase;
+                size_t u = 0x10;
+                int dispBits = 4;
+                while (u <= posInChunk) { u <<= 1; ++dispBits; }
+                // Guard: displacement field must fit in 16 bits with room for length.
+                if (dispBits > 12) return -1;
+
+                int lenBits = 16 - dispBits;
+                size_t length = 3 + (token & ((1u << lenBits) - 1));
+                size_t displacement = (token >> lenBits) + 1;
+
+                if (displacement > dp - chunkBase) return -1; // would read before chunk start
+
+                // Copy byte-by-byte (matches may overlap — LZ77 style).
+                for (size_t k = 0; k < length; ++k) {
+                    if (dp < dstCapacity) dst[dp] = dst[dp - displacement];
+                    ++dp;
+                }
+            }
+        }
+    }
+    return static_cast<int>(dp);
+}
+
+// Parsed USN (Update Sequence Number) journal record. These live in
+// $Extend\$UsnJrnl:$J and record per-file change events (create, rename,
+// delete, data extend, security change, ...). For forensic purposes they are
+// a second source of truth about deleted files: even after the MFT entry is
+// reused, the USN record that logged the deletion often survives in the
+// journal's slack. We carve them structurally from raw sectors.
+struct UsnRecord {
+    uint64_t fileReference;      // MFT reference of the affected file
+    uint64_t parentFileReference;
+    uint64_t usn;                // monotonic journal sequence number
+    int64_t  timestamp;          // Unix seconds (converted from FILETIME)
+    uint32_t reasonFlags;        // bitmask of USN_REASON_* (what changed)
+    uint32_t fileAttributes;     // FILE_ATTRIBUTE_* (directory, hidden, ...)
+    std::string name;            // UTF-8 file name at the time of the event
+};
+
+// USN_REASON_* bit flags (subset). Presence of these in reasonFlags tells the
+// forensic story: a CREATE followed later by a DELETE on the same MFT
+// reference is a strong deleted-file signal.
+constexpr uint32_t USN_REASON_FILE_CREATE          = 0x00000001;
+constexpr uint32_t USN_REASON_FILE_DELETE          = 0x00000002;
+constexpr uint32_t USN_REASON_DATA_OVERWRITE       = 0x00000004;
+constexpr uint32_t USN_REASON_DATA_EXTEND          = 0x00000008;
+constexpr uint32_t USN_REASON_DATA_TRUNCATION      = 0x00000010;
+constexpr uint32_t USN_REASON_RENAME_OLD_NAME      = 0x00010000;
+constexpr uint32_t USN_REASON_RENAME_NEW_NAME      = 0x00020000;
+
+// Try to parse a USN v2/v3 record at the given byte offset within a buffer.
+// Returns true and fills `out` on success; returns false if the bytes do not
+// form a plausible record (bad version, impossible length, name out of bounds).
+// `available` is the number of bytes from `data` to the buffer end — used for
+// every bounds check so a malformed record cannot read past the buffer.
+inline bool parseUsnRecord(const uint8_t* data, size_t available, UsnRecord& out) {
+    if (!data || available < 60) return false; // minimum v2 record header
+
+    uint32_t recordLength = static_cast<uint32_t>(data[0]) |
+                            (static_cast<uint32_t>(data[1]) << 8) |
+                            (static_cast<uint32_t>(data[2]) << 16) |
+                            (static_cast<uint32_t>(data[3]) << 24);
+    // recordLength includes padding to align the next record (typically to 8).
+    if (recordLength < 60 || recordLength > 65536) return false;
+    if (recordLength > available) return false; // truncated
+
+    uint16_t majorVersion = static_cast<uint16_t>(data[4]) | (static_cast<uint16_t>(data[5]) << 8);
+    if (majorVersion != 2 && majorVersion != 3) return false;
+
+    // Layout (v2): offsets are absolute from the record start.
+    //   8  fileReferenceNumber (uint64)
+    //   16 parentFileReferenceNumber (uint64)
+    //   24 usn (uint64)
+    //   32 timestamp (FILETIME uint64)
+    //   40 reasonFlags (uint32)
+    //   44 sourceInfo (uint32)
+    //   48 securityId (uint32)
+    //   52 fileAttributes (uint32)
+    //   56 fileNameLength (uint16, bytes)
+    //   58 fileNameOffset (uint16, from record start)
+    //   60 fileName[] (UTF-16LE, fileNameLength bytes)
+    auto readU64 = [&](size_t off) -> uint64_t {
+        return static_cast<uint64_t>(data[off]) |
+               (static_cast<uint64_t>(data[off + 1]) << 8) |
+               (static_cast<uint64_t>(data[off + 2]) << 16) |
+               (static_cast<uint64_t>(data[off + 3]) << 24) |
+               (static_cast<uint64_t>(data[off + 4]) << 32) |
+               (static_cast<uint64_t>(data[off + 5]) << 40) |
+               (static_cast<uint64_t>(data[off + 6]) << 48) |
+               (static_cast<uint64_t>(data[off + 7]) << 56);
+    };
+    auto readU32 = [&](size_t off) -> uint32_t {
+        return static_cast<uint32_t>(data[off]) |
+               (static_cast<uint32_t>(data[off + 1]) << 8) |
+               (static_cast<uint32_t>(data[off + 2]) << 16) |
+               (static_cast<uint32_t>(data[off + 3]) << 24);
+    };
+    auto readU16 = [&](size_t off) -> uint16_t {
+        return static_cast<uint16_t>(data[off]) | (static_cast<uint16_t>(data[off + 1]) << 8);
+    };
+
+    out.fileReference = readU64(8);
+    out.parentFileReference = readU64(16);
+    out.usn = readU64(24);
+    out.timestamp = filetimeToUnix(readU64(32));
+    out.reasonFlags = readU32(40);
+    out.fileAttributes = readU32(52);
+
+    uint16_t nameLen = readU16(56);
+    uint16_t nameOff = readU16(58);
+    if (nameLen == 0 || nameOff < 60) { out.name.clear(); return true; }
+    if (static_cast<size_t>(nameOff) + nameLen > recordLength) return false;
+
+    size_t nameUnits = nameLen / sizeof(uint16_t);
+    const uint16_t* namePtr = reinterpret_cast<const uint16_t*>(data + nameOff);
+    out.name = utf16leToUtf8(namePtr, nameUnits);
+    return true;
+}
+
 } // namespace ntfs
 } // namespace wolf

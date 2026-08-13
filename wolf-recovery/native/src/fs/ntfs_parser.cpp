@@ -183,9 +183,11 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                     recordSize = 1024; // Fallback for corrupt headers
                 }
 
-                // MFT Record is in use and is a file (not directory for now)
+                // Distinguish directories from regular files. We no longer skip
+                // directories: reporting them is essential for reconstructing the
+                // folder tree, and a deleted directory record may be the only
+                // surviving trace of files that lived under it.
                 bool isDirectory = (header->flags & ntfs::RECORD_FLAG_DIRECTORY) != 0;
-                if (isDirectory) continue;
 
                 // Apply the NTFS Update Sequence Array (USA) fixup before any
                 // attribute parsing: NTFS overwrites the last two bytes of each
@@ -211,6 +213,19 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 uint64_t finalEndSector = 0;
                 int64_t createdAt = 0;
                 int64_t modifiedAt = 0;
+
+                // Alternate Data Streams (ADS): a record may carry several
+                // $DATA attributes; only the unnamed one is the file's main
+                // content. Named $DATA streams (e.g. Zone.Identifier) are
+                // collected here and reported as separate recoverable records
+                // using the "filename:streamname" convention.
+                struct AdsEntry {
+                    std::string streamName;
+                    uint64_t size;
+                    std::vector<FileRecord::DataRun> runs;
+                    uint64_t startSector;
+                };
+                std::vector<AdsEntry> adsEntries;
 
                 // Parse Attributes
                 uint32_t attrOffset = header->firstAttributeOffset;
@@ -272,21 +287,40 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                     }
 
                     if (attr->type == ntfs::ATTR_DATA) {
+                        // Determine whether this is the unnamed main $DATA or
+                        // a named Alternate Data Stream. attr->nameOffset is
+                        // relative to the attribute start; the name is UTF-16LE.
+                        bool isAds = (attr->nameLength > 0);
+                        std::string adsName;
+                        if (isAds) {
+                            size_t namePos = attrOffset + attr->nameOffset;
+                            if (namePos + static_cast<size_t>(attr->nameLength) * sizeof(uint16_t) <= recordSize) {
+                                const uint16_t* nameUnits = reinterpret_cast<const uint16_t*>(recBase + namePos);
+                                adsName = sanitizeUtf8Name(ntfs::utf16leToUtf8(nameUnits, attr->nameLength));
+                            }
+                        }
+
                         if (attr->nonResidentFlag == 0) {
                             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
                                 NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
-                                fileSize = resAttr->valueLength;
-                                dataRuns.clear();
+                                if (isAds) {
+                                    adsEntries.push_back({adsName, resAttr->valueLength, {}, 0});
+                                } else {
+                                    fileSize = resAttr->valueLength;
+                                    dataRuns.clear();
+                                }
                             }
                         } else {
                             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <= recordSize) {
                                 NTFS_NonResidentHeader* nonResAttr = reinterpret_cast<NTFS_NonResidentHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
-                                fileSize = nonResAttr->realSize;
 
+                                // Parse the data runs into a local list so an
+                                // ADS does not clobber the main stream's runs.
                                 uint16_t runOffset = nonResAttr->dataRunOffset;
                                 size_t currentRunPos = attrOffset + runOffset;
                                 int64_t previousLcn = 0;
-                                dataRuns.clear();
+                                std::vector<FileRecord::DataRun> localRuns;
+                                uint64_t localStart = UINT64_MAX;
 
                                 while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize) {
                                     uint8_t headerByte = (uint8_t)recBase[currentRunPos];
@@ -304,20 +338,12 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                                     }
                                     currentRunPos += lenSize;
 
-                                    // A data run with offSize == 0 is a sparse run:
-                                    // it occupies VCN space but has no physical
-                                    // clusters (reads as zeros). We record it with
-                                    // a sentinel startSector so the recovery engine
-                                    // zero-fills that range instead of reading disk.
                                     bool sparse = (offSize == 0);
                                     int64_t lcnOffset = 0;
                                     if (!sparse) {
                                         for (int j = 0; j < offSize; j++) {
                                             lcnOffset |= (uint64_t)((uint8_t)recBase[currentRunPos + j]) << (j * 8);
                                         }
-                                        // Sign-extend negative offsets (relative
-                                        // to previous LCN, NTFS run lengths are
-                                        // little-endian signed).
                                         if ((uint8_t)recBase[currentRunPos + offSize - 1] & 0x80) {
                                             for (int j = offSize; j < 8; j++) {
                                                 lcnOffset |= (uint64_t)0xFF << (j * 8);
@@ -330,17 +356,25 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                                     FileRecord::DataRun run;
                                     run.startSector = sparse ? UINT64_MAX : previousLcn * sectorsPerCluster;
                                     run.sectorCount = clusterCount * sectorsPerCluster;
-                                    dataRuns.push_back(run);
-                                    
-                                    if (dataRuns.size() == 1) {
-                                        finalStartSector = run.startSector;
+                                    localRuns.push_back(run);
+                                    if (!sparse && localStart == UINT64_MAX) {
+                                        localStart = run.startSector;
                                     }
-                                    finalEndSector = run.startSector + run.sectorCount;
+                                }
+
+                                if (isAds) {
+                                    adsEntries.push_back({adsName, nonResAttr->realSize, localRuns, localStart});
+                                } else {
+                                    fileSize = nonResAttr->realSize;
+                                    dataRuns = std::move(localRuns);
+                                    finalStartSector = (localStart != UINT64_MAX) ? localStart : 0;
+                                    finalEndSector = dataRuns.empty() ? 0
+                                        : (dataRuns.back().startSector == UINT64_MAX ? 0 : dataRuns.back().startSector + dataRuns.back().sectorCount);
                                 }
                             }
                         }
                     }
-                    
+
                     if (attr->length < sizeof(NTFS_AttributeHeader)) break; // Corrupt attribute, prevent infinite loop
                     attrOffset += attr->length;
                 }
@@ -364,7 +398,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 // their attributes may be partially corrupt.
                 fr.confidence = fr.status ? 100 : 80;
                 if (!usaOk) fr.confidence = std::max(0, fr.confidence - 25);
-                fr.category = "Document"; // Fallback category
+                // Directories are reported as a distinct category so the UI can
+                // render a folder tree; they carry no recoverable $DATA payload.
+                fr.category = isDirectory ? "Folder" : "Document";
                 fr.source = "ntfs_mft";
                 fr.createdAt = createdAt;
                 fr.modifiedAt = modifiedAt;
@@ -373,6 +409,32 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 tf.fr = fr;
                 tf.parentId = fileParentMftId;
                 tempFiles.push_back(tf);
+
+                // Emit one record per Alternate Data Stream so each named
+                // stream is independently recoverable. We reuse the parent
+                // record's metadata and override name/size/runs. Resident
+                // (tiny) ADS streams have no data runs and are reported with
+                // the MFT record's own sector so a caller can at least locate
+                // the attribute inline.
+                for (const auto& ads : adsEntries) {
+                    FileRecord adsFr = fr;
+                    adsFr.id = foundCount++;
+                    adsFr.name = filename + ":" + (ads.streamName.empty() ? "stream" : ads.streamName);
+                    adsFr.extension = ads.streamName;
+                    adsFr.sizeBytes = ads.size;
+                    adsFr.runs = ads.runs;
+                    adsFr.startSector = ads.runs.empty()
+                        ? (sector + (i / sectorSize))
+                        : ads.startSector;
+                    adsFr.endSector = adsFr.startSector;
+                    adsFr.source = "ntfs_ads";
+                    adsFr.confidence = std::max(0, fr.confidence - 5);
+
+                    TempFile adsTf;
+                    adsTf.fr = adsFr;
+                    adsTf.parentId = fileParentMftId;
+                    tempFiles.push_back(adsTf);
+                }
             }
             // Look for "INDX" signature
             else if (std::strncmp(header->signature, "INDX", 4) == 0 && i + sizeof(INDX_Header) <= res.bytesRead) {
@@ -384,26 +446,40 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 if (i + recordSize > res.bytesRead) recordSize = res.bytesRead - i;
                 
                 if (entriesOffset < recordSize && entriesOffset + entriesSize <= recordSize) {
+                    // Walk the live index entries first (entriesSize window),
+                    // then keep scanning into the INDX slack — NTFS does not
+                    // zero the tail after a delete, so deleted directory
+                    // entries often survive there. We validate each candidate
+                    // (plausible lengths, name in bounds) and skip rather than
+                    // stop on a bad one so one corrupt slot cannot hide the
+                    // remaining slack. The scan ends at the buffer boundary.
                     uint32_t offset = entriesOffset;
-                    while (offset + sizeof(INDX_Entry) <= entriesOffset + entriesSize) {
+                    uint32_t scanLimit = recordSize;
+                    while (offset + sizeof(INDX_Entry) <= scanLimit) {
                         INDX_Entry* entry = reinterpret_cast<INDX_Entry*>(currentBuf->data() + i + offset);
-                        
-                        if (entry->entryLength < 16) break; // invalid entry
-                        if (entry->flags & 0x02) break; // last entry
-                        
-                        if (entry->streamLength >= sizeof(NTFS_FileNameAttribute) && offset + 16 + sizeof(NTFS_FileNameAttribute) <= recordSize) {
+
+                        // A zeroed or nonsensical slot in the slack is skipped,
+                        // not treated as end-of-index, so trailing slack is
+                        // still examined.
+                        if (entry->entryLength < 16) {
+                            offset += 8; // advance by the minimum entry stride
+                            continue;
+                        }
+                        if (offset + entry->entryLength > scanLimit) {
+                            offset += 8;
+                            continue;
+                        }
+
+                        if (entry->streamLength >= sizeof(NTFS_FileNameAttribute) && offset + 16 + sizeof(NTFS_FileNameAttribute) <= scanLimit) {
                             NTFS_FileNameAttribute* fnAttr = reinterpret_cast<NTFS_FileNameAttribute*>(currentBuf->data() + i + offset + 16);
-                            
+
                             uint64_t childMftId = entry->fileReference & 0x0000FFFFFFFFFFFFULL;
                             uint64_t parentMftId = fnAttr->parentDirectory & 0x0000FFFFFFFFFFFFULL;
-                            
+
                             size_t nameStructOffset = offset + 16;
                             size_t totalNameBytes = fnAttr->nameLength * 2;
-                            
+
                             if (fnAttr->nameLength > 0 && fnAttr->nameLength < 255 && nameStructOffset + offsetof(NTFS_FileNameAttribute, name) + totalNameBytes <= offset + entry->entryLength) {
-                                // UTF-16LE -> UTF-8 via shared helper (Turkish,
-                                // CJK, Cyrillic names preserved, sanitized for
-                                // safe path storage).
                                 size_t available = (offset + entry->entryLength) - nameStructOffset;
                                 std::string decoded = decodeNtfsName(fnAttr, available);
                                 if (!decoded.empty()) {
