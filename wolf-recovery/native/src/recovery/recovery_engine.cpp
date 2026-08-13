@@ -150,6 +150,27 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         if (isRunning && !(*isRunning)) break;
         if (bytesWritten >= totalBytes) break;
 
+        // Sparse run sentinel (set by the NTFS parser for runs with no
+        // physical clusters). NTFS sparse files and compressed-unit gaps read
+        // as zeros, so emit zeros for the whole run without touching the disk.
+        if (run.startSector == UINT64_MAX) {
+            uint64_t runSizeBytes = run.sectorCount * sectorSize;
+            uint64_t toZero = std::min(runSizeBytes, totalBytes - bytesWritten);
+            uint64_t zeroed = 0;
+            const uint32_t zeroChunk = readChunk;
+            std::vector<char> zeros(zeroChunk, 0);
+            while (zeroed < toZero) {
+                if (isRunning && !(*isRunning)) break;
+                uint32_t n = (uint32_t)std::min((uint64_t)zeroChunk, toZero - zeroed);
+                outFile.write(zeros.data(), n);
+                md5Update(md5ctx, reinterpret_cast<const uint8_t*>(zeros.data()), n);
+                zeroed += n;
+                bytesWritten += n;
+                if (onProgress) onProgress(bytesWritten, totalBytes);
+            }
+            continue;
+        }
+
         uint64_t runOffsetBytes = run.startSector * sectorSize;
         uint64_t runSizeBytes = run.sectorCount * sectorSize;
         uint64_t runBytesRead = 0;

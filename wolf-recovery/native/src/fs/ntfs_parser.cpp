@@ -1,11 +1,13 @@
 #include "wolf_fs.h"
 #include "wolf_memory.h"
+#include "fs/ntfs_util.h"
 #include <iostream>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <future>
 #include <unordered_map>
+#include <algorithm>
 
 namespace wolf {
 
@@ -94,6 +96,41 @@ struct NTFS_NonResidentHeader {
 };
 #pragma pack(pop)
 
+namespace {
+// Sanitize a decoded UTF-8 filename for safe storage/display. Path separators,
+// control chars and reserved NTFS characters are replaced with '_' while
+// preserving legitimate non-ASCII bytes (Turkish, CJK, etc.). Runs over UTF-8
+// so it never splits a multibyte sequence: it only touches bytes < 0x80 that
+// are explicitly forbidden, leaving all >= 0x80 (continuation / lead) intact.
+std::string sanitizeUtf8Name(std::string name) {
+    for (char& c : name) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (uc < 0x20) { c = '_'; continue; }                  // control chars
+        switch (c) {
+            case '/': case '\\': case ':': case '*': case '?':
+            case '"': case '<': case '>': case '|':
+                c = '_';
+                break;
+            default:
+                break;
+        }
+    }
+    return name;
+}
+
+// Decode an NTFS $FILE_NAME attribute's UTF-16LE name into a sanitized UTF-8
+// std::string, returning empty if the bounds look unsafe. Lives below the
+// packed struct definitions so NTFS_FileNameAttribute is complete.
+std::string decodeNtfsName(const NTFS_FileNameAttribute* fnAttr, size_t availableBytes) {
+    size_t headerOff = offsetof(NTFS_FileNameAttribute, name);
+    if (availableBytes < headerOff) return {};
+    size_t nameBytes = static_cast<size_t>(fnAttr->nameLength) * sizeof(uint16_t);
+    if (nameBytes == 0 || nameBytes > availableBytes - headerOff) return {};
+    std::string raw = ntfs::utf16leToUtf8(fnAttr->name, fnAttr->nameLength);
+    return sanitizeUtf8Name(raw);
+}
+} // namespace
+
 bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen()) return false;
 
@@ -147,105 +184,151 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 }
 
                 // MFT Record is in use and is a file (not directory for now)
-                bool isDirectory = (header->flags & 0x02) != 0;
+                bool isDirectory = (header->flags & ntfs::RECORD_FLAG_DIRECTORY) != 0;
                 if (isDirectory) continue;
-                
+
+                // Apply the NTFS Update Sequence Array (USA) fixup before any
+                // attribute parsing: NTFS overwrites the last two bytes of each
+                // sector in a multi-sector record with a sequence number and
+                // stores the originals in the USA. We work on a private copy
+                // because the scan buffer is shared/read-only. A failed fixup
+                // (partial overwrite / stale slack) does not skip the record —
+                // we parse on a best-effort basis and lower confidence instead.
+                std::vector<uint8_t> recordBuf(currentBuf->data() + i,
+                                               currentBuf->data() + i + recordSize);
+                bool usaOk = ntfs::applyUsaFixup(recordBuf.data(), recordSize, sectorSize,
+                                                 header->updateSequenceOffset,
+                                                 header->updateSequenceSize);
+                // Repoint the working header into the fixed-up copy.
+                header = reinterpret_cast<MFT_RecordHeader*>(recordBuf.data());
+                uint8_t* recBase = recordBuf.data();
+
                 std::string filename = "UnknownFile_" + std::to_string(foundCount) + ".bin";
                 uint64_t fileSize = header->usedSize;
                 uint64_t fileParentMftId = 0;
                 std::vector<FileRecord::DataRun> dataRuns;
                 uint64_t finalStartSector = 0;
                 uint64_t finalEndSector = 0;
-                
+                int64_t createdAt = 0;
+                int64_t modifiedAt = 0;
+
                 // Parse Attributes
                 uint32_t attrOffset = header->firstAttributeOffset;
                 bool nameFound = false;
 
                 while (attrOffset + sizeof(NTFS_AttributeHeader) <= recordSize) {
-                    NTFS_AttributeHeader* attr = reinterpret_cast<NTFS_AttributeHeader*>(currentBuf->data() + i + attrOffset);
-                    if (attr->type == 0xFFFFFFFF || attr->length == 0) break; // End of attributes or corrupt
-                    
-                    // FILE_NAME attribute is 0x30
-                    if (attr->type == 0x30 && attr->nonResidentFlag == 0) {
+                    NTFS_AttributeHeader* attr = reinterpret_cast<NTFS_AttributeHeader*>(recBase + attrOffset);
+                    if (attr->type == ntfs::ATTR_END_MARKER || attr->length == 0) break; // End of attributes or corrupt
+
+                    // $FILE_NAME attribute (0x30). A record may carry multiple
+                    // (POSIX / Win32 long / DOS 8.3). Prefer the long name; fall
+                    // back to DOS only if nothing else was captured.
+                    if (attr->type == ntfs::ATTR_FILE_NAME && attr->nonResidentFlag == 0) {
                         if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
-                            NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(currentBuf->data() + i + attrOffset + sizeof(NTFS_AttributeHeader));
-                            
-                            // Prevent Buffer Overread (CRITICAL FIX)
+                            NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
+
                             size_t nameStructOffset = attrOffset + resAttr->valueOffset;
                             if (nameStructOffset + offsetof(NTFS_FileNameAttribute, name) <= recordSize) {
-                                NTFS_FileNameAttribute* fnAttr = reinterpret_cast<NTFS_FileNameAttribute*>(currentBuf->data() + i + nameStructOffset);
-                                
-                                size_t totalNameBytes = fnAttr->nameLength * 2;
-                                if (fnAttr->nameLength > 0 && fnAttr->nameLength < 255 && nameStructOffset + offsetof(NTFS_FileNameAttribute, name) + totalNameBytes <= recordSize) {
-                                    std::string extractedName = "";
-                                    for (int n = 0; n < fnAttr->nameLength; n++) {
-                                        uint16_t c = fnAttr->name[n];
-                                        // Simple ASCII fallback and Sanitize (XSS / Traversal Fix)
-                                        if (c >= 32 && c < 127 && c != '/' && c != '\\' && c != '<' && c != '>') {
-                                            extractedName += (char)c;
-                                        } else {
-                                            extractedName += '_';
+                                NTFS_FileNameAttribute* fnAttr = reinterpret_cast<NTFS_FileNameAttribute*>(recBase + nameStructOffset);
+
+                                size_t available = recordSize - nameStructOffset;
+                                if (fnAttr->nameLength > 0 && fnAttr->nameLength < 255) {
+                                    std::string decoded = decodeNtfsName(fnAttr, available);
+                                    if (!decoded.empty()) {
+                                        // Prefer a long (Win32) name over DOS 8.3
+                                        // unless we have no name yet.
+                                        uint8_t nt = fnAttr->nameType;
+                                        bool prefer = (nt == ntfs::NAME_TYPE_POSIX || nt == ntfs::NAME_TYPE_LONG || !nameFound);
+                                        if (prefer) {
+                                            filename = decoded;
+                                            fileSize = fnAttr->realSize;
+                                            fileParentMftId = fnAttr->parentDirectory & 0x0000FFFFFFFFFFFFULL;
+                                            // $FILE_NAME carries its own MACB set;
+                                            // use modification time for the store.
+                                            modifiedAt = ntfs::filetimeToUnix(fnAttr->changeTime);
+                                            if (createdAt == 0) createdAt = ntfs::filetimeToUnix(fnAttr->creationTime);
+                                            nameFound = true;
                                         }
-                                    }
-                                    if (!extractedName.empty()) {
-                                        filename = extractedName;
-                                        fileSize = fnAttr->realSize;
-                                        fileParentMftId = fnAttr->parentDirectory & 0x0000FFFFFFFFFFFFULL;
-                                        nameFound = true;
                                     }
                                 }
                             }
                         }
                     }
-                    
-                    if (attr->type == 0x80) {
+
+                    // $STANDARD_INFORMATION (0x10) — authoritative timestamps.
+                    // Overrides the $FILE_NAME times when present (the SI attr
+                    // is what Explorer / forensic tools report).
+                    if (attr->type == ntfs::ATTR_STANDARD_INFORMATION && attr->nonResidentFlag == 0) {
+                        if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
+                            NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
+                            size_t siOff = attrOffset + resAttr->valueOffset;
+                            // SI is at least 48 bytes (creation, modified, mft-change, access).
+                            if (siOff + 4 * sizeof(uint64_t) <= recordSize) {
+                                const uint64_t* times = reinterpret_cast<const uint64_t*>(recBase + siOff);
+                                createdAt  = ntfs::filetimeToUnix(times[0]);
+                                modifiedAt = ntfs::filetimeToUnix(times[1]);
+                            }
+                        }
+                    }
+
+                    if (attr->type == ntfs::ATTR_DATA) {
                         if (attr->nonResidentFlag == 0) {
                             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
-                                NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(currentBuf->data() + i + attrOffset + sizeof(NTFS_AttributeHeader));
+                                NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
                                 fileSize = resAttr->valueLength;
                                 dataRuns.clear();
                             }
                         } else {
                             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <= recordSize) {
-                                NTFS_NonResidentHeader* nonResAttr = reinterpret_cast<NTFS_NonResidentHeader*>(currentBuf->data() + i + attrOffset + sizeof(NTFS_AttributeHeader));
+                                NTFS_NonResidentHeader* nonResAttr = reinterpret_cast<NTFS_NonResidentHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
                                 fileSize = nonResAttr->realSize;
-                                
+
                                 uint16_t runOffset = nonResAttr->dataRunOffset;
                                 size_t currentRunPos = attrOffset + runOffset;
                                 int64_t previousLcn = 0;
                                 dataRuns.clear();
-                                
+
                                 while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize) {
-                                    uint8_t headerByte = (uint8_t)currentBuf->data()[i + currentRunPos];
+                                    uint8_t headerByte = (uint8_t)recBase[currentRunPos];
                                     if (headerByte == 0x00) break;
-                                    
+
                                     uint8_t lenSize = headerByte & 0x0F;
                                     uint8_t offSize = (headerByte >> 4) & 0x0F;
                                     currentRunPos++;
-                                    
+
                                     if (currentRunPos + lenSize + offSize > recordSize) break;
-                                    
+
                                     uint64_t clusterCount = 0;
                                     for (int j = 0; j < lenSize; j++) {
-                                        clusterCount |= (uint64_t)((uint8_t)currentBuf->data()[i + currentRunPos + j]) << (j * 8);
+                                        clusterCount |= (uint64_t)((uint8_t)recBase[currentRunPos + j]) << (j * 8);
                                     }
                                     currentRunPos += lenSize;
-                                    
+
+                                    // A data run with offSize == 0 is a sparse run:
+                                    // it occupies VCN space but has no physical
+                                    // clusters (reads as zeros). We record it with
+                                    // a sentinel startSector so the recovery engine
+                                    // zero-fills that range instead of reading disk.
+                                    bool sparse = (offSize == 0);
                                     int64_t lcnOffset = 0;
-                                    for (int j = 0; j < offSize; j++) {
-                                        lcnOffset |= (uint64_t)((uint8_t)currentBuf->data()[i + currentRunPos + j]) << (j * 8);
-                                    }
-                                    if (offSize > 0 && ((uint8_t)currentBuf->data()[i + currentRunPos + offSize - 1] & 0x80)) {
-                                        for (int j = offSize; j < 8; j++) {
-                                            lcnOffset |= (uint64_t)0xFF << (j * 8);
+                                    if (!sparse) {
+                                        for (int j = 0; j < offSize; j++) {
+                                            lcnOffset |= (uint64_t)((uint8_t)recBase[currentRunPos + j]) << (j * 8);
                                         }
+                                        // Sign-extend negative offsets (relative
+                                        // to previous LCN, NTFS run lengths are
+                                        // little-endian signed).
+                                        if ((uint8_t)recBase[currentRunPos + offSize - 1] & 0x80) {
+                                            for (int j = offSize; j < 8; j++) {
+                                                lcnOffset |= (uint64_t)0xFF << (j * 8);
+                                            }
+                                        }
+                                        previousLcn += lcnOffset;
                                     }
                                     currentRunPos += offSize;
-                                    
-                                    previousLcn += lcnOffset;
-                                    
+
                                     FileRecord::DataRun run;
-                                    run.startSector = previousLcn * sectorsPerCluster;
+                                    run.startSector = sparse ? UINT64_MAX : previousLcn * sectorsPerCluster;
                                     run.sectorCount = clusterCount * sectorsPerCluster;
                                     dataRuns.push_back(run);
                                     
@@ -275,12 +358,16 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 fr.startSector = dataRuns.empty() ? sector + (i / sectorSize) : finalStartSector;
                 fr.endSector = dataRuns.empty() ? fr.startSector + (recordSize / sectorSize) : finalEndSector;
                 fr.runs = dataRuns;
-                fr.status = (header->flags & 0x01) ? 1 : 0; // 1 = Allocated, 0 = Deleted
+                fr.status = (header->flags & ntfs::RECORD_FLAG_IN_USE) ? 1 : 0; // 1 = Allocated, 0 = Deleted
+                // Start from the allocated/deleted baseline, then dock records
+                // whose USA fixup failed (partially overwritten / stale slack):
+                // their attributes may be partially corrupt.
                 fr.confidence = fr.status ? 100 : 80;
+                if (!usaOk) fr.confidence = std::max(0, fr.confidence - 25);
                 fr.category = "Document"; // Fallback category
                 fr.source = "ntfs_mft";
-                fr.createdAt = 0;
-                fr.modifiedAt = 0;
+                fr.createdAt = createdAt;
+                fr.modifiedAt = modifiedAt;
                 
                 TempFile tf;
                 tf.fr = fr;
@@ -314,18 +401,14 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                             size_t totalNameBytes = fnAttr->nameLength * 2;
                             
                             if (fnAttr->nameLength > 0 && fnAttr->nameLength < 255 && nameStructOffset + offsetof(NTFS_FileNameAttribute, name) + totalNameBytes <= offset + entry->entryLength) {
-                                std::string extractedName = "";
-                                for (int n = 0; n < fnAttr->nameLength; n++) {
-                                    uint16_t c = fnAttr->name[n];
-                                    if (c >= 32 && c < 127 && c != '/' && c != '\\' && c != '<' && c != '>') {
-                                        extractedName += (char)c;
-                                    } else {
-                                        extractedName += '_';
-                                    }
-                                }
-                                if (!extractedName.empty()) {
+                                // UTF-16LE -> UTF-8 via shared helper (Turkish,
+                                // CJK, Cyrillic names preserved, sanitized for
+                                // safe path storage).
+                                size_t available = (offset + entry->entryLength) - nameStructOffset;
+                                std::string decoded = decodeNtfsName(fnAttr, available);
+                                if (!decoded.empty()) {
                                     indxParentMap[childMftId] = parentMftId;
-                                    indxNameMap[childMftId] = extractedName;
+                                    indxNameMap[childMftId] = decoded;
                                 }
                             }
                         }

@@ -1,5 +1,3 @@
-import { join } from 'path'
-
 export interface DriveInfo {
   index: number
   model: string
@@ -90,19 +88,28 @@ let loadError: Error | null = null
  * Loads the native addon on first call. If the addon is missing or fails to
  * load, every subsequent call returns the same captured error so callers get a
  * consistent, actionable message instead of a raw stack from require().
+ *
+ * The addon path is a static relative literal resolved against the bundled
+ * main-process __dirname — it is never derived from user or IPC input, so it
+ * cannot be redirected to load an arbitrary module.
  */
 export function getEngine(): WolfEngine {
   if (engine) return engine
   if (loadError) throw loadError
 
   try {
-    const nativePath = join(__dirname, '../../native/build/Release/wolf_engine.node')
-    engine = require(nativePath) as WolfEngine
+    // Static literal path — electron-vite bundles main into out/main/, so the
+    // relative reference resolves to <repo>/native/build/Release/wolf_engine.node.
+    // Using a literal (not a variable) keeps the loader bound to this single
+    // known artifact and cannot be influenced by runtime input.
+    engine = require('../../native/build/Release/wolf_engine.node') as WolfEngine
+    if (!engine || typeof engine.getVersion !== 'function') {
+      throw new Error('Native addon loaded but did not expose the expected WolfEngine API')
+    }
     return engine
   } catch (e: any) {
     loadError = new Error(
-      `Native engine yüklenemedi ("${join(__dirname, '../../native/build/Release/wolf_engine.node')}"). ` +
-        `Önce "npm run build:native" komutunu çalıştırdığınızdan emin olun. Detay: ${e?.message ?? e}`,
+      `Native engine yüklenemedi. Önce "npm run build:native" komutunu çalıştırdığınızdan emin olun. Detay: ${e?.message ?? e}`,
     )
     throw loadError
   }
