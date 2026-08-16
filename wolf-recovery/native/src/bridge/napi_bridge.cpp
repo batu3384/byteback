@@ -183,6 +183,18 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
         obj.Set("powerOnHours", Napi::Number::New(env, status.powerOnHours));
         obj.Set("reallocatedSectors", Napi::Number::New(env, status.reallocatedSectors));
         obj.Set("pendingSectors", Napi::Number::New(env, status.pendingSectors));
+        // NVMe health-log / wear fields (-1 = not reported).
+        obj.Set("isNvme", Napi::Boolean::New(env, status.isNvme));
+        obj.Set("percentageUsed", Napi::Number::New(env, status.percentageUsed));
+        obj.Set("availableSpare", Napi::Number::New(env, status.availableSpare));
+        obj.Set("availableSpareThreshold", Napi::Number::New(env, status.availableSpareThreshold));
+        obj.Set("criticalWarning", Napi::Number::New(env, status.criticalWarning));
+        obj.Set("unsafeShutdowns", Napi::Number::New(env, static_cast<double>(status.unsafeShutdowns)));
+        obj.Set("mediaErrors", Napi::Number::New(env, static_cast<double>(status.mediaErrors)));
+        obj.Set("totalBytesWritten", Napi::Number::New(env, static_cast<double>(status.totalBytesWritten)));
+        // SSD/TRIM awareness (seek-penalty query).
+        obj.Set("isSsd", Napi::Boolean::New(env, status.isSsd));
+        obj.Set("seekPenaltyKnown", Napi::Boolean::New(env, status.seekPenaltyKnown));
     }
     return obj;
     NAPI_CATCH

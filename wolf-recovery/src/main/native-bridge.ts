@@ -30,6 +30,19 @@ export interface SmartStatus {
   powerOnHours?: number
   reallocatedSectors?: number
   pendingSectors?: number
+  /** NVMe Health Info Log fields (-1 = not reported by this drive). */
+  isNvme?: boolean
+  percentageUsed?: number
+  availableSpare?: number
+  availableSpareThreshold?: number
+  criticalWarning?: number
+  unsafeShutdowns?: number
+  mediaErrors?: number
+  /** Total bytes written (ATA 0xF1 host-writes or NVMe data units written). */
+  totalBytesWritten?: number
+  /** SSD detection via seek-penalty query — drives the TRIM warning. */
+  isSsd?: boolean
+  seekPenaltyKnown?: boolean
 }
 
 export interface ScanState {
