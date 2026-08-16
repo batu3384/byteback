@@ -1,4 +1,5 @@
 #include "wolf_fs.h"
+#include "fs/ntfs_util.h"
 #include <iostream>
 #include <cstring>
 #include <algorithm>
@@ -145,13 +146,20 @@ static std::string lfnToString(const std::vector<uint16_t>& utf16) {
 }
 
 bool FATParser::scan(wolf::DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
-    if (!reader.isOpen()) return false;
+    return scanAt(reader, callback, isRunning, 0);
+}
 
-    // Use partitionOffset 0 for now (or detect it if MBR is present)
-    uint64_t partitionOffset = 0;
+bool FATParser::scanAt(wolf::DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning,
+                       uint64_t partitionOffsetBytes) {
+    if (!reader.isOpen()) return false;
 
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
+
+    // The internal parseFAT/parseExFAT routines work in partition-relative
+    // SECTOR units; convert the caller-supplied byte offset once here.
+    uint64_t partitionOffset = partitionOffsetBytes / sectorSize;
+
     std::vector<uint8_t> buffer(sectorSize);
 
     auto res = reader.readSectors(partitionOffset * sectorSize, sectorSize, buffer.data());
@@ -398,63 +406,170 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
     
     std::vector<uint32_t> dirClusters = { bpb->rootDirectoryCluster };
     std::vector<uint8_t> clusterBuf(bytesPerCluster);
-    
+
+    // ---- exFAT entry-set state machine ----
+    // An exFAT directory is a flat sequence of 32-byte entries. A file is a
+    // "set": one File entry (type code 0x05), followed by a Stream Extension
+    // entry (0x45) carrying the cluster/length, followed by one or more File
+    // Name entries (0x41) each holding up to 15 UTF-16LE characters. The old
+    // parser compared masked type codes against the wrong constants (0x0C and
+    // 0x01), so stream/name entries never matched and no file was ever
+    // reported. Bit 0x80 = "in use"; clear means deleted.
+    //
+    // A pending set accumulates until the next File entry (or scan end), so
+    // sets that span a cluster boundary survive the FAT chain walk.
+    struct ExfatPending {
+        bool active = false;
+        bool isDir = false;
+        bool inUse = true;
+        uint64_t created = 0;
+        uint64_t modified = 0;
+        uint32_t firstCluster = 0;
+        uint64_t dataLength = 0;
+        uint8_t nameLength = 0;       // in UTF-16 code units
+        std::vector<uint16_t> name;   // accumulated name units
+    } pending;
+
+    auto dosTimestampToUnix = [](uint16_t date, uint16_t time) -> int64_t {
+        // DOS date/time: year 1980+, 2-second granularity. Convert to Unix
+        // seconds using days-from-civil arithmetic.
+        int year = ((date >> 9) & 0x7F) + 1980;
+        int month = (date >> 5) & 0x0F;
+        int day = date & 0x1F;
+        int hour = (time >> 11) & 0x1F;
+        int minute = (time >> 5) & 0x3F;
+        int second = (time & 0x1F) * 2;
+        if (month < 1 || month > 12 || day < 1 || day > 31) return 0;
+        // days from 1970-01-01 (Howard Hinnant's civil-from-days inverse)
+        long long y = year;
+        y -= month <= 2;
+        long long era = (y >= 0 ? y : y - 399) / 400;
+        unsigned yoe = static_cast<unsigned>(y - era * 400);
+        unsigned doy = (153u * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+        unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        long long days = era * 146097 + static_cast<long long>(doe) - 719468;
+        return static_cast<int64_t>(days) * 86400 + hour * 3600 + minute * 60 + second;
+    };
+
+    auto emitPending = [&](const std::string& currentPath) {
+        if (!pending.active || pending.name.empty()) {
+            pending = ExfatPending{};
+            return;
+        }
+        std::string name = ntfs::utf16leToUtf8(pending.name.data(), pending.name.size());
+        // sanitize: strip separators/control chars (same policy as NTFS names)
+        for (char& c : name) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || c == '/' || c == '\\' || c == ':') c = '_';
+        }
+        if (name.empty()) {
+            pending = ExfatPending{};
+            return;
+        }
+
+        if (pending.isDir) {
+            if (pending.firstCluster >= 2) dirClusters.push_back(pending.firstCluster);
+        } else {
+            FileRecord fr;
+            fr.id = -1;
+            fr.parentId = 0;
+            fr.name = name;
+            fr.sizeBytes = pending.dataLength;
+            fr.startSector = pending.firstCluster; // cluster number (chain via FAT)
+            fr.endSector = pending.firstCluster;
+            fr.path = currentPath;
+            fr.status = pending.inUse ? 1 : 0;
+            // Deleted sets: the FAT chain is cleared on delete, so recovery
+            // assumes the data was contiguous from the first cluster — score
+            // it accordingly.
+            fr.confidence = pending.inUse ? 100 : 70;
+            fr.category = "Unknown";
+            fr.source = "exfat";
+            fr.createdAt = pending.created;
+            fr.modifiedAt = pending.modified;
+            callback(fr);
+        }
+        pending = ExfatPending{};
+    };
+
+    // Track the current directory's display path for nested results (best
+    // effort — exFAT does not store parent ids, so paths are reconstructed
+    // per recursion level by the caller-side list order).
+    std::string currentPath = "/";
+
     while (!dirClusters.empty()) {
         uint32_t currentCluster = dirClusters.back();
         dirClusters.pop_back();
-        
+
         uint32_t clus = currentCluster;
         while (clus >= 2 && clus <= 0xFFFFFFF6) {
-            uint64_t sec = dataStartSector + (clus - 2) * (1 << bpb->sectorsPerClusterShift);
+            uint64_t sec = dataStartSector + (clus - 2) * (1u << bpb->sectorsPerClusterShift);
             if (!reader.readSectors(sec * bytesPerSector, bytesPerCluster, clusterBuf.data()).success) break;
-            
-            std::string currentFileName = "";
-            uint64_t currentFileSize = 0;
-            uint32_t currentFirstCluster = 0;
-            bool isDir = false;
-            int status = 1;
-            
-            for (uint32_t offset = 0; offset < bytesPerCluster; offset += 32) {
-                ExFAT_GenericEntry* entry = reinterpret_cast<ExFAT_GenericEntry*>(clusterBuf.data() + offset);
-                
-                if (entry->entryType == 0x00) break;
-                
-                if ((entry->entryType & 0x7F) == 0x05) { // File directory entry
-                    isDir = (entry->data[3] & 0x10) != 0;
-                    status = (entry->entryType & 0x80) ? 1 : 0; // Allocation status
-                } else if ((entry->entryType & 0x7F) == 0x00C) { // Stream extension
-                    currentFirstCluster = *reinterpret_cast<uint32_t*>(&entry->data[19]);
-                    currentFileSize = *reinterpret_cast<uint64_t*>(&entry->data[23]);
-                } else if ((entry->entryType & 0x7F) == 0x01) { // File name
+
+            for (uint32_t offset = 0; offset + 32 <= bytesPerCluster; offset += 32) {
+                const uint8_t* e = clusterBuf.data() + offset;
+                uint8_t type = e[0];
+
+                if (type == 0x00) {
+                    // End-of-directory marker — everything after is slack.
+                    offset = bytesPerCluster; // stop scanning this cluster
+                    break;
+                }
+
+                uint8_t typeCode = type & 0x7F;
+                bool inUse = (type & 0x80) != 0;
+
+                // Volume label (0x83/0x03), allocation bitmap (0x81/0x01),
+                // up-case table (0x82/0x02) — structural entries, skip.
+                if (typeCode == 0x03 || typeCode == 0x02 || (typeCode == 0x01 && !pending.active)) {
+                    continue;
+                }
+
+                if (typeCode == 0x05) {
+                    // File directory entry: starts a new set. Emit whatever
+                    // was pending first.
+                    emitPending(currentPath);
+                    pending.active = true;
+                    pending.inUse = inUse;
+                    // +0x04 FileAttributes (2 bytes LE); 0x10 = directory.
+                    uint16_t attr = static_cast<uint16_t>(e[4]) | (static_cast<uint16_t>(e[5]) << 8);
+                    pending.isDir = (attr & 0x10) != 0;
+                    // +0x08 Created / +0x0C LastModified — 4 bytes each:
+                    // 16-bit DOS date then 16-bit DOS time (LE).
+                    pending.created = dosTimestampToUnix(
+                        static_cast<uint16_t>(e[8]) | (static_cast<uint16_t>(e[9]) << 8),
+                        static_cast<uint16_t>(e[10]) | (static_cast<uint16_t>(e[11]) << 8));
+                    pending.modified = dosTimestampToUnix(
+                        static_cast<uint16_t>(e[12]) | (static_cast<uint16_t>(e[13]) << 8),
+                        static_cast<uint16_t>(e[14]) | (static_cast<uint16_t>(e[15]) << 8));
+                } else if (typeCode == 0x45 && pending.active) {
+                    // Stream extension: +0x03 FileNameLength, +0x14 FirstCluster
+                    // (u32), +0x18 DataLength (u64).
+                    pending.nameLength = e[3];
+                    pending.firstCluster = static_cast<uint32_t>(e[20]) |
+                                           (static_cast<uint32_t>(e[21]) << 8) |
+                                           (static_cast<uint32_t>(e[22]) << 16) |
+                                           (static_cast<uint32_t>(e[23]) << 24);
+                    uint64_t len = 0;
+                    for (int i = 7; i >= 0; --i) len = (len << 8) | e[24 + i];
+                    pending.dataLength = len;
+                } else if (typeCode == 0x41 && pending.active) {
+                    // File name: +0x02..0x1F = 15 UTF-16LE code units.
                     for (int i = 0; i < 15; ++i) {
-                        uint16_t ch = entry->data[1 + i * 2] | (entry->data[2 + i * 2] << 8);
+                        if (pending.nameLength > 0 &&
+                            pending.name.size() >= pending.nameLength) break;
+                        uint16_t ch = static_cast<uint16_t>(e[2 + i * 2]) |
+                                      (static_cast<uint16_t>(e[3 + i * 2]) << 8);
                         if (ch == 0) break;
-                        if (ch < 128) currentFileName += static_cast<char>(ch);
-                        else currentFileName += '?';
+                        pending.name.push_back(ch);
                     }
-                    if (isDir) {
-                        dirClusters.push_back(currentFirstCluster);
-                    } else {
-                        FileRecord fr;
-                        fr.id = -1;
-                        fr.parentId = 0;
-                        fr.name = currentFileName;
-                        fr.sizeBytes = currentFileSize;
-                        fr.startSector = currentFirstCluster;
-                        fr.endSector = currentFirstCluster;
-                        fr.path = "/";
-                        fr.status = status;
-                        fr.confidence = 100;
-                        fr.category = "Unknown";
-                        fr.source = "exfat";
-                        callback(fr);
-                    }
-                    currentFileName = ""; // Reset
                 }
             }
             clus = getNextCluster(clus);
         }
     }
+    // Flush a set that ended exactly at the end of the directory.
+    emitPending(currentPath);
 }
 
 } // namespace wolf

@@ -6,6 +6,7 @@
 #include "wolf_shredder.h"
 #include "wolf_recovery.h"
 #include "fs/virtual_raid.h"
+#include "fs/partition_scanner.h"
 #include <cstdlib>
 #include <memory>
 #include <exception>
@@ -84,6 +85,42 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info) {
         drive.Set("sectorSize", Napi::Number::New(env, drives[i].sectorSize));
         drive.Set("type", Napi::String::New(env, drives[i].type));
         result[i] = drive;
+    }
+    return result;
+    NAPI_CATCH
+}
+
+// ---------------- Partition table ----------------
+// Returns the MBR (or GPT, when present) partition layout of a physical
+// drive: [{type, startSector, sizeInSectors, label, isActive}].
+Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
+        return Napi::Array::New(env, 0);
+    }
+
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    wolf::DiskReader& reader = bdata->engine.getDiskReader();
+    if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
+        if (!reader.openDrive(driveIndex)) return Napi::Array::New(env, 0);
+    }
+
+    wolf::PartitionScanner scanner(&reader);
+    std::vector<wolf::PartitionInfo> parts = scanner.parseMBR();
+    std::vector<wolf::PartitionInfo> gpt = scanner.parseGPT();
+    if (!gpt.empty()) parts = std::move(gpt);
+
+    Napi::Array result = Napi::Array::New(env, parts.size());
+    for (size_t i = 0; i < parts.size(); ++i) {
+        Napi::Object p = Napi::Object::New(env);
+        p.Set("type", Napi::String::New(env, parts[i].type));
+        p.Set("startSector", Napi::Number::New(env, static_cast<double>(parts[i].startSector)));
+        p.Set("sizeInSectors", Napi::Number::New(env, static_cast<double>(parts[i].sizeInSectors)));
+        p.Set("label", Napi::String::New(env, parts[i].label));
+        p.Set("isActive", Napi::Boolean::New(env, parts[i].isActive));
+        result[i] = p;
     }
     return result;
     NAPI_CATCH
@@ -645,6 +682,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getVersion", Napi::Function::New(env, GetVersion));
     exports.Set("isAdministrator", Napi::Function::New(env, IsAdministrator));
     exports.Set("listDrives", Napi::Function::New(env, ListDrives));
+    exports.Set("listPartitions", Napi::Function::New(env, ListPartitions));
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));

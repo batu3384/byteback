@@ -37,7 +37,6 @@ set(SOURCES
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
-    src/fs/exfat_parser.cpp
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
     src/fs/partition_scanner.cpp

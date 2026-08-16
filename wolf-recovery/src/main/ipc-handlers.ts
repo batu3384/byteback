@@ -45,6 +45,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('list-partitions', (_event, driveIndex: number) => {
+    try {
+      const engine = getEngine()
+      return engine.listPartitions(driveIndex)
+    } catch (err) {
+      console.error('[IPC] list-partitions error:', err)
+      return []
+    }
+  })
+
   ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string) => {
     try {
       const engine = getEngine()
