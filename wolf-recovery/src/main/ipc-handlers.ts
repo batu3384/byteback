@@ -87,6 +87,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('get-timeline-events', (_event, scanId: number, offset: number, limit: number, filter?: string) => {
+    try {
+      const engine = getEngine()
+      return engine.getTimelineEvents(scanId, offset ?? 0, limit ?? 200, filter ?? '')
+    } catch (err) {
+      console.error('[IPC] get-timeline-events error:', err)
+      return { total: 0, events: [] }
+    }
+  })
+
   ipcMain.handle('get-smart-status', (_event, driveIndex) => {
     try {
       const engine = getEngine()

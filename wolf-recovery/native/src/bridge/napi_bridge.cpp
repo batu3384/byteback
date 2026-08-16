@@ -165,6 +165,47 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+// ---------------- Unified timeline ----------------
+// getTimelineEvents(scanId, offset, limit, [eventTypeFilter])
+// Returns {total, events: [{id, timestamp, eventType, fileName, mftRef, source}]}
+Napi::Value GetTimelineEvents(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 3 ||
+        !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId, offset, limit, [eventTypeFilter])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    int offset = info[1].As<Napi::Number>().Int32Value();
+    int limit = info[2].As<Napi::Number>().Int32Value();
+    std::string filter = (info.Length() >= 4 && info[3].IsString())
+                         ? info[3].As<Napi::String>().Utf8Value() : "";
+
+    auto& store = bdata->engine.getMetadataStore();
+    auto events = store.getTimelineEvents(scanId, offset, limit, filter);
+    int64_t total = store.getTimelineEventCount(scanId, filter);
+
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("total", Napi::Number::New(env, static_cast<double>(total)));
+    Napi::Array arr = Napi::Array::New(env, events.size());
+    for (size_t i = 0; i < events.size(); ++i) {
+        Napi::Object e = Napi::Object::New(env);
+        e.Set("id", Napi::Number::New(env, static_cast<double>(events[i].id)));
+        e.Set("timestamp", Napi::Number::New(env, static_cast<double>(events[i].timestamp)));
+        e.Set("eventType", Napi::String::New(env, events[i].eventType));
+        e.Set("fileName", Napi::String::New(env, events[i].fileName));
+        e.Set("mftRef", Napi::Number::New(env, static_cast<double>(events[i].mftRef)));
+        e.Set("source", Napi::String::New(env, events[i].source));
+        arr[i] = e;
+    }
+    out.Set("events", arr);
+    return out;
+    NAPI_CATCH
+}
+
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -313,6 +354,29 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     );
 
     auto onFileFound = [context, engine = &bdata->engine](const wolf::FileRecord& fr) {
+        // USN journal records are timeline events, not scannable files:
+        // route them to the timeline_events table with the reason bitmap
+        // decoded to a dominant event type.
+        if (fr.source == "usn_journal") {
+            wolf::TimelineEvent ev;
+            ev.scanId = context->scanId;
+            ev.timestamp = fr.createdAt;
+            ev.mftRef = 0;
+            ev.source = "usn_journal";
+            ev.fileName = fr.name;
+            uint32_t reason = static_cast<uint32_t>(fr.status);
+            if (reason & 0x00000002)      ev.eventType = "delete";
+            else if (reason & 0x00010000) ev.eventType = "rename_old";
+            else if (reason & 0x00020000) ev.eventType = "rename_new";
+            else if (reason & 0x00000010) ev.eventType = "truncate";
+            else if (reason & 0x00000008) ev.eventType = "extend";
+            else if (reason & 0x00000004) ev.eventType = "overwrite";
+            else if (reason & 0x00000001) ev.eventType = "create";
+            else                          ev.eventType = "touch";
+            engine->getMetadataStore().insertTimelineEvent(context->scanId, ev);
+            return; // not surfaced as a file result
+        }
+
         {
             std::lock_guard<std::mutex> lock(context->bufferMutex);
             context->fileBuffer.push_back(fr);
@@ -700,6 +764,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
     exports.Set("getFilesPage", Napi::Function::New(env, GetFilesPage));
     exports.Set("getScanState", Napi::Function::New(env, GetScanState));
+    exports.Set("getTimelineEvents", Napi::Function::New(env, GetTimelineEvents));
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     
     exports.Set("startScan", Napi::Function::New(env, StartScan));

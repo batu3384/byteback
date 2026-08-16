@@ -1,0 +1,11 @@
+/* TimelineView — layout styles live inline with the component (matching the
+   project convention); this file exists for the import and view-scoped
+   tweaks like row hover behaviour. */
+
+.timeline-row {
+  transition: background 150ms ease;
+}
+
+.timeline-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}

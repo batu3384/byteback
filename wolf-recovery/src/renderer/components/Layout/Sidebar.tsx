@@ -1,6 +1,6 @@
 import React from 'react'
 import './Sidebar.css'
-import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText } from 'lucide-react'
+import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock } from 'lucide-react'
 
 interface SidebarProps {
   activePage: string
@@ -18,6 +18,7 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
     { id: 'smart', label: 'S.M.A.R.T. Durumu', icon: <Activity size={20} strokeWidth={1.5} /> },
     { id: 'shredder', label: 'Veri Yok Edici', icon: <ShieldAlert size={20} strokeWidth={1.5} /> },
     { id: 'raid', label: 'Sanal RAID Oluştur', icon: <Database size={20} strokeWidth={1.5} /> },
+    { id: 'timeline', label: 'Olay Zaman Çizelgesi', icon: <Clock size={20} strokeWidth={1.5} /> },
     { id: 'report', label: 'Adli Rapor (PDF)', icon: <FileText size={20} strokeWidth={1.5} /> },
   ]
 

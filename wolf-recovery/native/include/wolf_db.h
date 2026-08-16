@@ -31,6 +31,18 @@ struct FileRecord {
     int64_t modifiedAt;
 };
 
+// One point on the unified timeline: a file event observed in the USN
+// journal (or, later, other artifact sources) with its decoded reason.
+struct TimelineEvent {
+    int64_t id;
+    int64_t scanId;
+    int64_t timestamp;      // Unix seconds
+    std::string eventType;  // "create", "delete", "rename_old", "rename_new", ...
+    std::string fileName;
+    uint64_t mftRef;
+    std::string source;     // "usn_journal", "mft", ...
+};
+
 struct ScanState {
     int64_t id;
     int driveIndex;
@@ -62,6 +74,12 @@ public:
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
     bool completeScan(int64_t scanId, int status);
     ScanState getScanState(int64_t scanId);
+
+    // Unified timeline (USN journal and other event sources)
+    int64_t insertTimelineEvent(int64_t scanId, const TimelineEvent& event);
+    std::vector<TimelineEvent> getTimelineEvents(int64_t scanId, int offset, int limit,
+                                                 const std::string& eventTypeFilter = "");
+    int64_t getTimelineEventCount(int64_t scanId, const std::string& eventTypeFilter = "");
 
 private:
     bool createTables();

@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   getFileCount: (scanId: number) => ipcRenderer.invoke('get-file-count', scanId),
   getFilesPage: (scanId: number, offset: number, limit: number) => ipcRenderer.invoke('get-files-page', scanId, offset, limit),
   getScanState: (scanId: number) => ipcRenderer.invoke('get-scan-state', scanId),
+  getTimelineEvents: (scanId: number, offset: number, limit: number, filter?: string) => ipcRenderer.invoke('get-timeline-events', scanId, offset, limit, filter),
 
   startWipe: (targetPath: string) => ipcRenderer.invoke('start-wipe', targetPath),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
