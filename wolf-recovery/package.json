@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:native": "cmake --build native/build --config Release --target wolf_tests && ctest --test-dir native/build --output-on-failure"
+    "test:native": "cmake --build native/build --config Release --target wolf_tests && ctest --test-dir native/build --output-on-failure",
+    "dist": "npm run build && electron-builder --win nsis --x64"
   },
   "dependencies": {
     "lucide-react": "^1.31.0",
@@ -26,8 +27,38 @@
     "@vitejs/plugin-react": "^4.3.1",
     "cmake-js": "^8.0.0",
     "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.9"
+  },
+  "build": {
+    "appId": "com.wolf.recovery",
+    "productName": "Wolf Recovery",
+    "copyright": "MIT License",
+    "directories": {
+      "output": "release"
+    },
+    "asar": false,
+    "files": [
+      "out/**/*",
+      "native/build/Release/wolf_engine.node",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Wolf Recovery"
+    }
   }
 }

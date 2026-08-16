@@ -110,25 +110,34 @@ wolf-recovery/
 ```
 
 ## Yol Haritası
-Master geliştirme planı, projeyi endüstri lideri seviyesine taşımak için 8 fazdan oluşur:
+Master geliştirme planının durumu:
 
 1. **Faz 0** ✅ — Temizlik, stabilite, bug-fix, CI/CD, test altyapısı
-2. **Faz 1** — NTFS derinleştirme ($UsnJrnl, $LogFile, sparse MFT, ADS, UTF-16, ghost-MFT carving)
-3. **Faz 2** — Tiered carving (Fast Object Validation, Bifragmented Gap Carving) + GPU PFAC + imza genişletme (400+)
-4. **Faz 3** — RAID onarımı (6/10, Storage Spaces, LVM2, auto-detect) + E01/AFF4 adli imajlama + on-the-fly hashing
-5. **Faz 4** — Çoklu dosya sistemi (exFAT, Ext2/3/4 journal, APFS, HFS+, ReFS) + bölüm kurtarma
-6. **Faz 5** — NVMe SMART + SSD/TRIM farkındalığı + Bayesian arıza tahmini
-7. **Faz 6** — VSS snapshot analizi + BitLocker çözme + Unified Timeline + artifact ingest (email/browser/registry/memory)
-8. **Faz 7** — Profesyonel UX (ışık teması, önizleme bölmesi, dizin ağacı), gerçek PDF raporlama, vaka yönetimi, paketleme (NSIS installer)
+2. **Faz 1** ✅ — NTFS derinleştirme (UTF-16, USA fixup, zaman damgaları, sparse run, LZNT1, ADS, USN journal, dizin + INDX slack)
+3. **Faz 2** ✅ — Tiered carving (Fast Object Validation: JPEG/PNG/ZIP/PDF/GZIP; Bifragmented Gap Carving; ~114 imza)
+4. **Faz 3** ✅ — RAID 0/1/5/6/10 (GF(2⁸) çift-parite) + E01 (EWF) adli imajlama + on-the-fly MD5
+5. **Faz 4** ✅ — Çoklu dosya sistemi (exFAT entry-set, Ext4 extent tree + dirents) + bölüm-farkındalıklı tarama (MBR/GPT)
+6. **Faz 5** ✅ — NVMe SMART (Health Info Log) + ATA IDENTIFY + SSD/TRIM farkındalığı
+7. **Faz 6** ✅ (temel) — Unified Timeline (USN journal → timeline_events → UI) + BitLocker tespiti
+8. **Faz 7** ✅ (temel) — Dürüst rapor (gerçek SHA-256 + gömülü denetim günlüğü), PDF export, CSV export, dizin ağacı, dosya önizleme, ışık teması, NSIS paketleme
+
+Yapılacaklar (tech debt): VSS snapshot analizi, BitLocker şifre çözme (AES-XTS), artifact ingest
+(browser/registry/email), APFS/HFS+ tam parser, $LogFile, GPU PFAC, NSRL hash setleri.
 
 ## Geliştirme
 ```bash
 # Tip kontrolü (renderer + main)
-npx tsc --noEmit -p tsconfig.web.json
-npx tsc --noEmit -p tsconfig.node.json
+npm run typecheck
 
 # Üretim derlemesi (out/ klasörü)
 npm run build
+
+# Testler
+npm run test          # Vitest (renderer)
+npm run test:native   # GoogleTest (native, 66 test)
+
+# Windows kurulum paketi üret (release/ altına NSIS installer)
+npm run dist
 ```
 
 ## Lisans

@@ -97,6 +97,53 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('export-report-pdf', async (_event, html: string) => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const opts: Electron.SaveDialogOptions = {
+        title: 'PDF Raporunu Kaydet',
+        defaultPath: `wolf-recovery-rapor-${new Date().toISOString().slice(0, 10)}.pdf`,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      }
+      const target = focused
+        ? await dialog.showSaveDialog(focused, opts)
+        : await dialog.showSaveDialog(opts)
+      if (target.canceled || !target.filePath) return { success: false, canceled: true }
+
+      // Render the report HTML off-screen and print it to PDF through
+      // Chromium's native PDF engine — no third-party dependency, and the
+      // output matches what a browser would print.
+      const win = new BrowserWindow({
+        show: false,
+        webPreferences: { offscreen: true, sandbox: true },
+      })
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      const pdf = await win.webContents.printToPDF({
+        printBackground: true,
+        margins: { marginType: 'default' },
+        pageSize: 'A4',
+      })
+      win.destroy()
+
+      const fs = await import('node:fs/promises')
+      await fs.writeFile(target.filePath, pdf)
+      return { success: true, path: target.filePath }
+    } catch (err) {
+      console.error('[IPC] export-report-pdf error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('get-audit-log', (_event, maxLines?: number) => {
+    try {
+      const engine = getEngine()
+      return engine.getAuditLog(maxLines ?? 200)
+    } catch (err) {
+      console.error('[IPC] get-audit-log error:', err)
+      return []
+    }
+  })
+
   ipcMain.handle('get-smart-status', (_event, driveIndex) => {
     try {
       const engine = getEngine()

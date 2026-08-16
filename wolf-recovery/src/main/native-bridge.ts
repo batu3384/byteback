@@ -110,6 +110,7 @@ interface WolfEngine {
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
   getScanState(scanId: number): ScanState
   getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
+  getAuditLog(maxLines?: number): string[]
   readSectors(driveIndex: number, offset: number, size: number): {
     success: boolean
     bytesRead: number

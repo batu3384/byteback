@@ -7,6 +7,7 @@
 #include "wolf_recovery.h"
 #include "fs/virtual_raid.h"
 #include "fs/partition_scanner.h"
+#include "forensic/audit_logger.h"
 #include <cstdlib>
 #include <memory>
 #include <exception>
@@ -44,6 +45,8 @@ struct BridgeData {
     // scan/imaging calls can read through it; empty until the UI assembles
     // an array via reconstructRaid().
     std::shared_ptr<wolf::VirtualRaid> raid;
+    // Path of the hash-chained forensic audit log (set by initDatabase).
+    std::string auditLogPath;
 };
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
@@ -206,6 +209,37 @@ Napi::Value GetTimelineEvents(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+// ---------------- Audit log ----------------
+// getAuditLog(maxLines) -> string[] (tail of the hash-chained audit log).
+Napi::Value GetAuditLog(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || bdata->auditLogPath.empty()) {
+        return Napi::Array::New(env, 0);
+    }
+    int maxLines = (info.Length() >= 1 && info[0].IsNumber()) ? info[0].As<Napi::Number>().Int32Value() : 200;
+
+    std::ifstream in(bdata->auditLogPath);
+    if (!in.is_open()) return Napi::Array::New(env, 0);
+
+    std::vector<std::string> tail;
+    tail.reserve(static_cast<size_t>(std::max(1, maxLines)));
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        tail.push_back(line);
+        if (tail.size() > static_cast<size_t>(std::max(1, maxLines))) tail.erase(tail.begin());
+    }
+
+    Napi::Array arr = Napi::Array::New(env, tail.size());
+    for (size_t i = 0; i < tail.size(); ++i) {
+        arr[i] = Napi::String::New(env, tail[i]);
+    }
+    return arr;
+    NAPI_CATCH
+}
+
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -250,6 +284,16 @@ Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
 
     std::string dbPath = info[0].As<Napi::String>().Utf8Value();
     bool ok = engine->getMetadataStore().open(dbPath);
+
+    // The hash-chained forensic audit log lives next to the metadata DB and
+    // records every forensic operation (scan/imaging/wipe/recovery) with a
+    // running SHA-256 chain so tampering is detectable.
+    if (ok) {
+        std::string auditPath = dbPath + ".audit.log";
+        forensic::AuditLogger::GetInstance().Initialize(auditPath);
+        forensic::AuditLogger::GetInstance().LogEvent("SESSION_START | database=" + dbPath);
+        if (bdata) bdata->auditLogPath = auditPath;
+    }
     return Napi::Boolean::New(env, ok);
     NAPI_CATCH
 }
@@ -347,6 +391,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     int driveIndex = 0;
     try { driveIndex = std::stoi(drivePath); } catch(...) {}
     context->scanId = bdata->engine.getMetadataStore().createScan(driveIndex, scanType, 0);
+
+    forensic::AuditLogger::GetInstance().LogEvent(
+        "SCAN_START | drive=" + drivePath + " | type=" + scanType + " | scanId=" + std::to_string(context->scanId));
 
     context->tsfn = Napi::ThreadSafeFunction::New(
         env, cb, "ScanCallback", 0, 1, 
@@ -573,7 +620,9 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
     }
     
     std::string targetPath = info[0].As<Napi::String>().Utf8Value();
-    
+
+    forensic::AuditLogger::GetInstance().LogEvent("WIPE_START | target=" + targetPath);
+
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
     
     WipeWorker* worker = new WipeWorker(env, targetPath, deferred);
@@ -765,6 +814,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getFilesPage", Napi::Function::New(env, GetFilesPage));
     exports.Set("getScanState", Napi::Function::New(env, GetScanState));
     exports.Set("getTimelineEvents", Napi::Function::New(env, GetTimelineEvents));
+    exports.Set("getAuditLog", Napi::Function::New(env, GetAuditLog));
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     
     exports.Set("startScan", Napi::Function::New(env, StartScan));

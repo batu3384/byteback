@@ -20,6 +20,8 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanResults, filesFou
   const [generating, setGenerating] = useState(false);
   const [reportHtml, setReportHtml] = useState<string | null>(null);
   const [reportHash, setReportHash] = useState<string>('');
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfDone, setPdfDone] = useState('');
 
   const generateReport = async () => {
     setGenerating(true);
@@ -27,6 +29,24 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanResults, filesFou
       const now = new Date();
       const dateStr = now.toISOString().split('T')[0];
       const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
+
+      // Real audit-log tail: the hash-chained forensic log maintained by the
+      // native engine (scan/imaging/wipe events). Embedded verbatim so the
+      // report reflects what actually happened, not what we wish happened.
+      let auditLines: string[] = [];
+      try {
+        auditLines = (await window.api?.getAuditLog?.(50)) ?? [];
+      } catch { /* audit log optional in report */ }
+      const auditSection = auditLines.length > 0 ? `
+<h2>5. Denetim Günlüğü Özeti (Audit Log — hash zincirli)</h2>
+<p>Aşağıda, motorun SHA-256 hash zinciriyle korunan adli denetim günlüğünün son
+${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinindeki
+<code>wolf_recovery.db.audit.log</code> dosyasındadır.</p>
+<table>
+  <tr><th>Olay</th></tr>
+  ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${l.replace(/</g, '&lt;')}</td></tr>`).join('\n  ')}
+</table>
+` : '';
 
       const imgCount = filesFound.filter((f: any) => f.category === 'Image').length;
       const vidCount = filesFound.filter((f: any) => f.category === 'Video').length;
@@ -80,6 +100,7 @@ yazma işlemi yapmamaktadır. Kaynak medyanın içerik bütünlüğü tarama boy
   <tr><td>📦 Arşivler</td><td>${arcCount}</td></tr>
   <tr><td>💾 Diğer</td><td>${othCount}</td></tr>
 </table>
+${auditSection}
 `;
 
       const hash = await sha256Hex(body);
@@ -101,7 +122,7 @@ ${body}
   <p>Bu rapor Wolf Recovery tarafından otomatik olarak oluşturulmuştur.
   Raporu mahkemeye veya kuruma sunmadan önce doğruluk kontrolü uzmanın sorumluluğundadır.</p>
   <p><strong>Rapor Bütünlük Doğrulaması (SHA-256):</strong> Aşağıdaki özet, bu raporun
-  1-4 numaralı bölümlerinin tam içeriği üzerinden hesaplanmıştır:</p>
+  rapor bölümlerinin (audit günlüğü dahil) tam içeriği üzerinden hesaplanmıştır:</p>
   <p class="hash-box">${hash}</p>
   <p>Rapor içeriğinde yapılan herhangi bir değişiklik bu özeti geçersiz kılar.
   Kurtarılan bireysel dosyaların MD5 özetleri, kurtarma işlemi sonunda
@@ -129,6 +150,25 @@ ${body}
     a.download = `wolf-recovery-rapor-${dateStr}.html`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Real PDF via Chromium's print engine (main-process printToPDF). The PDF
+  // contains exactly the report content the SHA-256 in the footer covers.
+  const downloadPdf = async () => {
+    if (!reportHtml || !window.api?.exportReportPdf) return
+    setPdfBusy(true)
+    try {
+      const res = await window.api.exportReportPdf(reportHtml)
+      if (res?.success) {
+        setPdfDone(res.path ?? '')
+      } else if (res?.error && !res.canceled) {
+        alert('PDF oluşturulamadı: ' + res.error)
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setPdfBusy(false)
+    }
   };
 
   return (
@@ -205,11 +245,24 @@ ${body}
               <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all', maxWidth: '600px' }}>
                 SHA-256: {reportHash}
               </div>
+              {pdfDone && (
+                <div style={{ fontSize: '0.85rem', color: 'var(--success-green)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  PDF kaydedildi: {pdfDone}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button className="btn-primary" onClick={downloadReport} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Download size={18} /> HTML Olarak İndir
                 </button>
-                <button className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); }}>
+                <button
+                  className="btn-primary"
+                  onClick={downloadPdf}
+                  disabled={pdfBusy}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--accent-blue)', color: '#fff' }}
+                >
+                  <Download size={18} /> {pdfBusy ? 'PDF Oluşturuluyor...' : 'PDF Olarak İndir'}
+                </button>
+                <button className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); setPdfDone(''); }}>
                   Yeniden Oluştur
                 </button>
               </div>

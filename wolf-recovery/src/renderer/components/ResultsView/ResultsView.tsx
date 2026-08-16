@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import './ResultsView.css'
-import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck } from 'lucide-react'
+import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List } from 'lucide-react'
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -11,6 +11,8 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
   const [filter, setFilter] = useState('all')
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
+  const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree')
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
 
   const handleRecover = async () => {
     if (selectedFiles.size === 0) return
@@ -124,6 +126,7 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
   const mappedFiles = filesFound.map((f, i) => ({
     id: i,
     name: f.name,
+    rawPath: typeof f.path === 'string' ? f.path : '',
     size: formatSize(f.sizeBytes || f.size),
     path: 'Kurtarılanlar',
     status: f.status === 0 ? 'Kurtarılabilir' : 'Kısmen Bozuk',
@@ -131,6 +134,78 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
   }))
 
   const filteredFiles = mappedFiles.filter(f => filter === 'all' || f.type === filter)
+
+  // ---- Directory tree ----
+  // Build a nested tree from the reconstructed paths (NTFS results carry
+  // real paths from the INDX/MFT pass; carved files fall under "Kurtarılanlar").
+  interface TreeNode {
+    name: string
+    path: string
+    dirs: Map<string, TreeNode>
+    files: typeof filteredFiles
+  }
+  const buildTree = (): TreeNode => {
+    const root: TreeNode = { name: '/', path: '', dirs: new Map(), files: [] }
+    for (const f of filteredFiles) {
+      const raw = (f.rawPath || '/Kurtarılanlar/' + f.name).replace(/\\/g, '/').replace(/^\/+/, '')
+      const parts = raw.split('/').filter(Boolean)
+      // The path usually ends with the file name; use it as the leaf when it matches.
+      let node = root
+      const dirParts = parts.length > 1 && parts[parts.length - 1] === f.name ? parts.slice(0, -1) : parts
+      for (const part of dirParts) {
+        if (!node.dirs.has(part)) {
+          node.dirs.set(part, { name: part, path: (node.path ? node.path + '/' : '') + part, dirs: new Map(), files: [] })
+        }
+        node = node.dirs.get(part)!
+      }
+      node.files.push(f)
+    }
+    return root
+  }
+  const treeRoot = buildTree()
+
+  const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode[] => {
+    const out: React.ReactNode[] = []
+    const sortedDirs = Array.from(node.dirs.values()).sort((a, b) => a.name.localeCompare(b.name, 'tr'))
+    for (const dir of sortedDirs) {
+      const isOpen = expandedDirs.has(dir.path)
+      const childCount = dir.files.length + dir.dirs.size
+      out.push(
+        <div
+          key={'d:' + dir.path}
+          onClick={() => {
+            const next = new Set(expandedDirs)
+            if (next.has(dir.path)) next.delete(dir.path)
+            else next.add(dir.path)
+            setExpandedDirs(next)
+          }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', cursor: 'pointer', marginLeft: depth * 16, borderRadius: '4px' }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        >
+          {isOpen ? <FolderOpen size={16} color="var(--accent-blue)" /> : <Folder size={16} color="var(--accent-blue)" />}
+          <span style={{ fontWeight: 500 }}>{dir.name}</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{childCount} öğe</span>
+        </div>
+      )
+      if (isOpen) out.push(...renderTreeNode(dir, depth + 1))
+    }
+    for (const f of node.files) {
+      out.push(
+        <div
+          key={'f:' + f.id}
+          onClick={() => toggleSelection(f.id)}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', marginLeft: (depth + 1) * 16, cursor: 'pointer', borderRadius: '4px', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent' }}
+        >
+          <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} style={{ width: 14, height: 14 }} />
+          {getIconForType(f.type)}
+          <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>{f.size}</span>
+        </div>
+      )
+    }
+    return out
+  }
 
   const getIconForType = (type: string) => {
     switch (type) {
@@ -167,7 +242,16 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
       </div>
 
       <div className="results-content glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div className="filters" style={{ display: 'flex', gap: '8px', padding: '16px 24px', borderBottom: '1px solid var(--panel-border)' }}>
+        <div className="filters" style={{ display: 'flex', gap: '8px', padding: '16px 24px', borderBottom: '1px solid var(--panel-border)', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            className="btn-secondary"
+            title={viewMode === 'tree' ? 'Düz liste görünümüne geç' : 'Dizin ağacı görünümüne geç'}
+            onClick={() => setViewMode(viewMode === 'tree' ? 'flat' : 'tree')}
+            style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center' }}
+          >
+            {viewMode === 'tree' ? <List size={16} /> : <ListTree size={16} />}
+            {viewMode === 'tree' ? 'Liste' : 'Ağaç'}
+          </button>
           <button className={`btn-secondary ${filter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('all')}>Tümü</button>
           <button className={`btn-secondary ${filter === 'img' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'img' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('img')}>Resimler</button>
           <button className={`btn-secondary ${filter === 'doc' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'doc' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('doc')}>Belgeler</button>
@@ -176,7 +260,14 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
           <button className={`btn-secondary ${filter === 'archive' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'archive' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('archive')}>Arşivler</button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''}>
+          {viewMode === 'tree' ? (
+          <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {filteredFiles.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>Bu kategoride dosya bulunamadı.</div>
+            ) : renderTreeNode(treeRoot, 0)}
+          </div>
+          ) : (
           <table className="results-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
             <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-surface)', zIndex: 1 }}>
               <tr>
@@ -223,6 +314,7 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
               )}
             </tbody>
           </table>
+          )}
         </div>
       </div>
     </div>
