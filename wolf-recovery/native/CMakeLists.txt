@@ -42,6 +42,7 @@ set(SOURCES
     src/fs/apfs_parser.cpp
     src/fs/partition_scanner.cpp
     src/fs/virtual_raid.cpp
+    src/fs/raid6_math.cpp
     src/imager/disk_imager.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
@@ -101,6 +102,7 @@ if(WOLF_BUILD_TESTS)
     tests/test_usn.cpp
     tests/test_validators.cpp
     tests/test_bgc.cpp
+    tests/test_raid6_math.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -108,6 +110,7 @@ if(WOLF_BUILD_TESTS)
     # coverage without forcing a public export surface on the addon.
     src/math/entropy.cpp
     src/carver/bgc.cpp
+    src/fs/raid6_math.cpp
   )
   target_link_libraries(wolf_tests
     PRIVATE

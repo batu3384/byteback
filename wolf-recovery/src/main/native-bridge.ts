@@ -52,6 +52,17 @@ export interface RecoverResult {
 export type ProgressCallback = (data: { current: number; total: number }) => void
 export type FileFoundCallback = (data: { name: string; size: number }) => void
 
+/** Result of assembling a virtual RAID array over physical disks. */
+export interface RaidAssemblyResult {
+  success: boolean
+  /** Logical capacity of the assembled array in bytes (0 on failure). */
+  capacity: number
+  /** Number of member disks in the array. */
+  numDisks: number
+  /** Human-readable failure reason; empty string on success. */
+  error: string
+}
+
 interface WolfEngine {
   getVersion(): string
   isAdministrator(): boolean
@@ -72,7 +83,7 @@ interface WolfEngine {
   startImaging(driveIndex: number, destPath: string, callback: (data: any) => void): boolean
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
-  reconstructRaid(driveIndices: number[], raidLevel: number): boolean
+  reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
   recoverFile(
     driveIndex: number,
     fileRecord: FileRecord,

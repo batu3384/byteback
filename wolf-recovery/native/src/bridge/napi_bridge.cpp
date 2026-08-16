@@ -5,6 +5,7 @@
 #include "wolf_imager.h"
 #include "wolf_shredder.h"
 #include "wolf_recovery.h"
+#include "fs/virtual_raid.h"
 #include <cstdlib>
 #include <memory>
 #include <exception>
@@ -38,6 +39,10 @@ struct BridgeData {
     wolf::Engine engine;
     std::shared_ptr<ScanContext> scanContext;
     std::shared_ptr<ImagerContext> imagerContext;
+    // Assembled virtual RAID array (Phase 3). Kept alive here so subsequent
+    // scan/imaging calls can read through it; empty until the UI assembles
+    // an array via reconstructRaid().
+    std::shared_ptr<wolf::VirtualRaid> raid;
 };
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
@@ -453,10 +458,11 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
 }
 
 // ---------------- Virtual RAID ----------------
-// Accepts (driveIndices: number[], raidLevel: number). The full VirtualRaid
-// assembly + degraded read path lands in Phase 3; until then we validate the
-// inputs (at least 2 disks, recognised level) so the UI gets honest feedback
-// rather than an unconditional "success".
+// Accepts (driveIndices: number[], raidLevel: number) and assembles a real
+// VirtualRaid over the physical disks. The array is cached in BridgeData so
+// scan/imaging calls can read through it. Returns an object with
+// { success, capacity, numDisks, error } so the UI can show the assembled
+// capacity instead of a bare boolean.
 Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -465,21 +471,61 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
     Napi::Array indicesArr = info[0].As<Napi::Array>();
     int raidLevel = info[1].As<Napi::Number>().Int32Value();
 
     if (indicesArr.Length() < 2) {
-        return Napi::Boolean::New(env, false);
+        return fail("RAID requires at least 2 disks");
     }
-    // RaidLevel enum (virtual_raid.h): RAID0=0, RAID1=1, RAID5=2
-    if (raidLevel < 0 || raidLevel > 2) {
-        return Napi::Boolean::New(env, false);
+    // RaidLevel enum (virtual_raid.h): RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4
+    if (raidLevel < 0 || raidLevel > 4) {
+        return fail("Unknown RAID level");
     }
 
-    // TODO(Phase 3): instantiate wolf::VirtualRaid with these drives and
-    // expose it as a scannable virtual device. Until then return false so the
-    // UI reports an honest "not yet implemented" rather than a fake success.
-    return Napi::Boolean::New(env, false);
+    std::vector<int> drives;
+    drives.reserve(indicesArr.Length());
+    for (uint32_t i = 0; i < indicesArr.Length(); ++i) {
+        Napi::Value v = indicesArr[i];
+        if (!v.IsNumber()) return fail("driveIndices must be numbers");
+        drives.push_back(v.As<Napi::Number>().Int32Value());
+    }
+
+    // 64 KiB stripe unit — the most common hardware/Intel RST default.
+    constexpr size_t kStripeSize = 64 * 1024;
+
+    try {
+        auto level = static_cast<wolf::RaidLevel>(raidLevel);
+        auto raid = std::make_shared<wolf::VirtualRaid>(level, drives, kStripeSize);
+        // Probe the first block of the array to verify every member disk can
+        // actually be read through the assembly before reporting success.
+        auto probe = raid->read(0, 512);
+        bdata->raid = std::move(raid);
+
+        uint64_t cap = bdata->raid->capacity();
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(cap)));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(drives.size())));
+        out.Set("error", Napi::String::New(env, ""));
+        (void)probe;
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
     NAPI_CATCH
 }
 
