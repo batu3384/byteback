@@ -14,10 +14,12 @@ DiskImager::~DiskImager() {
     stopImaging();
 }
 
-void DiskImager::startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress) {
+void DiskImager::startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
+                              ImageFormat format) {
     if (isRunning_) return;
     isRunning_ = true;
-    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress);
+    lastImageMd5_.clear();
+    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format);
 }
 
 void DiskImager::stopImaging() {
@@ -29,7 +31,7 @@ void DiskImager::stopImaging() {
     }
 }
 
-void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress) {
+void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress, ImageFormat format) {
     DiskReader reader;
     if (!reader.openDrive(driveIndex)) {
         isRunning_ = false;
@@ -46,16 +48,28 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
     const uint32_t chunkSize = chunkSectors * sectorSize;
     auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
 
-    // Open destination file for raw writing
-    std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
-    if (!outFile.is_open()) {
-        isRunning_ = false;
-        return;
+    std::ofstream rawOut;          // Raw format
+    std::unique_ptr<EwfWriter> ewf; // EWF format
+
+    if (format == ImageFormat::Ewf) {
+        ewf = std::make_unique<EwfWriter>();
+        EwfOptions opts;
+        opts.examiner = "Wolf Recovery";
+        if (!ewf->open(destPath, totalSectors, sectorSize, opts)) {
+            isRunning_ = false;
+            return;
+        }
+    } else {
+        rawOut.open(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!rawOut.is_open()) {
+            isRunning_ = false;
+            return;
+        }
     }
 
     uint64_t sector = 0;
     int highLatencyCount = 0;
-    
+
     while (sector < totalSectors) {
         if (!isRunning_) break;
 
@@ -65,26 +79,32 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
         auto t1 = std::chrono::high_resolution_clock::now();
         auto res = reader.readSectors(sector * sectorSize, bytesToRead, poolBuf->data());
         auto t2 = std::chrono::high_resolution_clock::now();
-        
+
         auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-        
+
         if (res.success && res.bytesRead > 0) {
-            outFile.write(reinterpret_cast<const char*>(poolBuf->data()), res.bytesRead);
+            if (ewf) ewf->write(poolBuf->data(), res.bytesRead);
+            else rawOut.write(reinterpret_cast<const char*>(poolBuf->data()), res.bytesRead);
         } else {
             // Write zeros for bad sectors to maintain image geometry
             std::vector<char> zeros(bytesToRead, 0);
-            outFile.write(zeros.data(), zeros.size());
+            if (ewf) ewf->write(reinterpret_cast<const uint8_t*>(zeros.data()), zeros.size());
+            else rawOut.write(zeros.data(), zeros.size());
         }
-        
+
         sector += sectorsToRead;
-
-
 
         // Report progress
         onProgress(sector, totalSectors);
     }
 
-    outFile.close();
+    if (ewf) {
+        if (ewf->finish()) {
+            lastImageMd5_ = ewf->md5Hex();
+        }
+    } else {
+        rawOut.close();
+    }
     isRunning_ = false;
 }
 

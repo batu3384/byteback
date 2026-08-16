@@ -80,7 +80,12 @@ interface WolfEngine {
   getSmartStatus(driveIndex: number): SmartStatus
   startScan(drivePath: string, scanType: string, callback: (data: any) => void): boolean
   stopScan(): void
-  startImaging(driveIndex: number, destPath: string, callback: (data: any) => void): boolean
+  startImaging(
+    driveIndex: number,
+    destPath: string,
+    callback: (data: any) => void,
+    format?: 'raw' | 'ewf',
+  ): boolean
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult

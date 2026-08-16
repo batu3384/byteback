@@ -37,9 +37,9 @@ declare global {
       onScanFileFound: (callback: FileFoundCallback) => () => void
       removeAllScanListeners: () => void
 
-      startImaging: (driveIndex: number, destPath: string) => void
+      startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') => void
       stopImaging: () => void
-      onImagingProgress: (callback: ProgressCallback) => () => void
+      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<number[]>

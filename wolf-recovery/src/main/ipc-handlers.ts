@@ -101,18 +101,22 @@ export function registerIpcHandlers(): void {
     return []
   })
 
-  ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string) => {
+  ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string) => {
     try {
       const engine = getEngine()
-      
+
       const callback = (data: any) => {
         if (data.type === 'progress') {
-          event.reply('imaging-progress', { current: data.current, total: data.total })
+          event.reply('imaging-progress', {
+            current: data.current,
+            total: data.total,
+            md5: data.md5 ?? undefined,
+          })
         }
       }
-      
-      console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath)
-      engine.startImaging(driveIndex, destPath, callback)
+
+      console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath, 'format:', format ?? 'raw')
+      engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
 
     } catch (err) {
       console.error('[IPC] start-imaging error:', err)

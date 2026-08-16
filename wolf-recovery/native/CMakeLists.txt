@@ -44,6 +44,8 @@ set(SOURCES
     src/fs/virtual_raid.cpp
     src/fs/raid6_math.cpp
     src/imager/disk_imager.cpp
+    src/imager/ewf_writer.cpp
+    src/crypto/md5.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
     src/carver/entropy_analyzer.cpp
@@ -103,6 +105,7 @@ if(WOLF_BUILD_TESTS)
     tests/test_validators.cpp
     tests/test_bgc.cpp
     tests/test_raid6_math.cpp
+    tests/test_ewf.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -111,6 +114,8 @@ if(WOLF_BUILD_TESTS)
     src/math/entropy.cpp
     src/carver/bgc.cpp
     src/fs/raid6_math.cpp
+    src/crypto/md5.cpp
+    src/imager/ewf_writer.cpp
   )
   target_link_libraries(wolf_tests
     PRIVATE
