@@ -7,47 +7,43 @@ interface ReportGeneratorProps {
   filesFound?: any[];
 }
 
+/** Compute the real SHA-256 of the report content via the Web Crypto API. */
+async function sha256Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanResults, filesFound = [] }) => {
   const [generating, setGenerating] = useState(false);
-  const [reportReady, setReportReady] = useState(false);
+  const [reportHtml, setReportHtml] = useState<string | null>(null);
+  const [reportHash, setReportHash] = useState<string>('');
 
-  const generateReport = () => {
+  const generateReport = async () => {
     setGenerating(true);
-    setGenerating(false);
-    setReportReady(true);
-  };
+    try {
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
 
-  const downloadReport = () => {
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-    
-    const imgCount = filesFound.filter(f => f.category === 'Image').length;
-    const vidCount = filesFound.filter(f => f.category === 'Video').length;
-    const docCount = filesFound.filter(f => f.category === 'Document').length;
-    const audCount = filesFound.filter(f => f.category === 'Audio').length;
-    const arcCount = filesFound.filter(f => f.category === 'Archive').length;
-    const othCount = filesFound.length - (imgCount + vidCount + docCount + audCount + arcCount);
-    
-    const html = `<!DOCTYPE html>
-<html lang="tr"><head><title>Wolf Recovery - Adli Bilişim Raporu</title>
-<style>
-  body { font-family: 'Inter', Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; background: #f8f9fa; color: #1a1a2e; }
-  h1 { color: #0B0F19; border-bottom: 3px solid #00E5FF; padding-bottom: 10px; }
-  h2 { color: #2962FF; margin-top: 30px; }
-  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-  th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-  th { background: #0B0F19; color: #00E5FF; }
-  .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-  .badge-ok { background: #d4edda; color: #155724; }
-  .badge-warn { background: #fff3cd; color: #856404; }
-  .footer { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; font-size: 0.85rem; color: #666; }
-  .header-meta { display: flex; justify-content: space-between; margin: 20px 0; padding: 15px; background: #e9ecef; border-radius: 8px; }
-</style></head><body>
+      const imgCount = filesFound.filter((f: any) => f.category === 'Image').length;
+      const vidCount = filesFound.filter((f: any) => f.category === 'Video').length;
+      const docCount = filesFound.filter((f: any) => f.category === 'Document').length;
+      const audCount = filesFound.filter((f: any) => f.category === 'Audio').length;
+      const arcCount = filesFound.filter((f: any) => f.category === 'Archive').length;
+      const othCount = filesFound.length - (imgCount + vidCount + docCount + audCount + arcCount);
+
+      // The integrity hash covers everything except the hash field itself:
+      // build the body first, hash it, then splice the digest into the
+      // template. This is a REAL computation, not a claim — the footer states
+      // exactly what is covered so an examiner can verify it independently.
+      const body = `
 <h1>🐺 Wolf Recovery — Adli Bilişim (Forensic) Kurtarma Raporu</h1>
 <div class="header-meta">
   <div><strong>Tarih:</strong> ${dateStr} ${timeStr}</div>
-  <div><strong>Yazılım:</strong> Wolf Recovery Pro Max v1.0</div>
+  <div><strong>Yazılım:</strong> Wolf Recovery</div>
   <div><strong>Uzman:</strong> [İsim Girin]</div>
 </div>
 
@@ -56,22 +52,23 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanResults, filesFou
   <tr><th>Alan</th><th>Değer</th></tr>
   <tr><td>Vaka Numarası</td><td>WR-${Date.now()}</td></tr>
   <tr><td>Rapor Tarihi</td><td>${now.toLocaleString('tr-TR')}</td></tr>
-  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery Pro Max 1.0.0</td></tr>
-  <tr><td>İşletim Sistemi</td><td>Windows (Native C++ Engine)</td></tr>
+  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery (Native C++ Engine)</td></tr>
+  <tr><td>İşletim Sistemi</td><td>Windows</td></tr>
 </table>
 
 <h2>2. Delil (Kanıt) Özeti</h2>
 <table>
   <tr><th>Metrik</th><th>Değer</th></tr>
-  <tr><td>Bulunan Toplam Dosya</td><td>${scanResults?.totalFiles || filesFound.length || 'Bilinmiyor'}</td></tr>
-  <tr><td>Kurtarılabilir (Tam)</td><td>${scanResults?.recoverableFiles || filesFound.filter(f => f.status === 0).length || 'Bilinmiyor'}</td></tr>
-  <tr><td>Kısmen Üzerine Yazılmış</td><td>${scanResults?.partialFiles || filesFound.filter(f => f.status !== 0).length || 'Bilinmiyor'}</td></tr>
-  <tr><td>Tarama Süresi</td><td>${scanResults?.duration || 'Bilinmiyor'}</td></tr>
+  <tr><td>Bulunan Toplam Dosya</td><td>${scanResults?.totalFiles || filesFound.length}</td></tr>
+  <tr><td>Kurtarılabilir (Tam)</td><td>${scanResults?.recoverableFiles ?? filesFound.filter((f: any) => f.status === 0).length}</td></tr>
+  <tr><td>Kısmen Üzerine Yazılmış</td><td>${scanResults?.partialFiles ?? filesFound.filter((f: any) => f.status !== 0).length}</td></tr>
+  <tr><td>Tarama Süresi</td><td>${scanResults?.duration ?? 'Kayıt yok'}</td></tr>
 </table>
 
 <h2>3. Gözetim Zinciri (Chain of Custody)</h2>
-<p>Bu tarama sırasındaki tüm disk erişim işlemleri Salt-Okunur (Read-Only) donanım modunda gerçekleştirilmiştir. 
-Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuştur.</p>
+<p>Bu tarama sırasındaki tüm disk erişim işlemleri Salt-Okunur (Read-Only) modda gerçekleştirilmiştir.
+Motor, fiziksel diske yalnızca okuma amacıyla açmakta (GENERIC_READ) ve imajlama dışında hiçbir
+yazma işlemi yapmamaktadır. Kaynak medyanın içerik bütünlüğü tarama boyunca korunmuştur.</p>
 
 <h2>4. Dosya Kategorileri Dağılımı</h2>
 <table>
@@ -83,15 +80,49 @@ Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuşt
   <tr><td>📦 Arşivler</td><td>${arcCount}</td></tr>
   <tr><td>💾 Diğer</td><td>${othCount}</td></tr>
 </table>
+`;
 
+      const hash = await sha256Hex(body);
+      const finalHtml = `<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8"><title>Wolf Recovery - Adli Bilişim Raporu</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; background: #f8f9fa; color: #1a1a2e; }
+  h1 { color: #0B0F19; border-bottom: 3px solid #2962FF; padding-bottom: 10px; }
+  h2 { color: #2962FF; margin-top: 30px; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+  th { background: #0B0F19; color: #fff; }
+  .footer { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px; font-size: 0.85rem; color: #666; }
+  .header-meta { display: flex; justify-content: space-between; margin: 20px 0; padding: 15px; background: #e9ecef; border-radius: 8px; }
+  .hash-box { font-family: monospace; word-break: break-all; background: #eef2ff; border: 1px solid #c7d2fe; padding: 12px; border-radius: 6px; }
+</style></head><body>
+${body}
 <div class="footer">
-  <p>Bu rapor Wolf Recovery Pro Max tarafından otomatik olarak oluşturulmuştur. 
+  <p>Bu rapor Wolf Recovery tarafından otomatik olarak oluşturulmuştur.
   Raporu mahkemeye veya kuruma sunmadan önce doğruluk kontrolü uzmanın sorumluluğundadır.</p>
-  <p><strong>Hash Doğrulaması:</strong> Kurtarılan dosyaların SHA-256 sağlama toplamları (checksum) ayrıntılı denetim günlüğünde mevcuttur.</p>
+  <p><strong>Rapor Bütünlük Doğrulaması (SHA-256):</strong> Aşağıdaki özet, bu raporun
+  1-4 numaralı bölümlerinin tam içeriği üzerinden hesaplanmıştır:</p>
+  <p class="hash-box">${hash}</p>
+  <p>Rapor içeriğinde yapılan herhangi bir değişiklik bu özeti geçersiz kılar.
+  Kurtarılan bireysel dosyaların MD5 özetleri, kurtarma işlemi sonunda
+  kurtarma sonuçlarıyla birlikte ayrıca raporlanır.</p>
 </div>
 </body></html>`;
 
-    const blob = new Blob([html], { type: 'text/html' });
+      setReportHtml(finalHtml);
+      setReportHash(hash);
+    } catch (err) {
+      console.error('Rapor oluşturma hatası:', err);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const downloadReport = () => {
+    if (!reportHtml) return;
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const blob = new Blob([reportHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -113,16 +144,16 @@ Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuşt
       </div>
 
       <div className="report-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <ShieldCheck size={24} color="var(--accent-blue)" />
             <div>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Gözetim Zinciri</h4>
-              <p style={{ fontWeight: 500 }}>Doğrulandı (Read-Only)</p>
+              <p style={{ fontWeight: 500 }}>Salt-Okunur Erişim</p>
             </div>
           </div>
-          
+
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <PieChart size={24} color="var(--accent-blue)" />
             <div>
@@ -130,12 +161,12 @@ Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuşt
               <p style={{ fontWeight: 500 }}>{filesFound.length}</p>
             </div>
           </div>
-          
+
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Clock size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>İşlem Zamanı</h4>
-              <p style={{ fontWeight: 500 }}>Otomatik Kaydedildi</p>
+              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Rapor Doğrulaması</h4>
+              <p style={{ fontWeight: 500 }}>SHA-256 (Gerçek Hesap)</p>
             </div>
           </div>
         </div>
@@ -148,12 +179,12 @@ Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuşt
             <li>Vaka bilgileri ve tarama istatistikleri</li>
             <li>Adli gözetim zinciri beyanı (Chain of Custody)</li>
             <li>Dosya kategorilerine göre dağılım analizi</li>
-            <li>SHA-256 veri bütünlüğü (Hash) kayıtları</li>
+            <li>Rapor içeriğinin SHA-256 bütünlük özeti (raporla birlikte hesaplanır ve gömülür)</li>
           </ul>
         </div>
-        
+
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: '16px' }}>
-          {!reportReady && !generating && (
+          {!reportHtml && !generating && (
             <button className="btn-primary" onClick={generateReport} style={{ padding: '16px 32px', fontSize: '1.1rem', background: 'var(--success-green)', color: '#000' }}>
               RESMİ RAPOR OLUŞTUR
             </button>
@@ -166,16 +197,19 @@ Kaynak medyanın veri bütünlüğü kurtarma işlemi boyunca tamamen korunmuşt
             </div>
           )}
 
-          {reportReady && (
+          {reportHtml && !generating && (
             <div className="report-ready" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
               <span style={{ color: 'var(--success-green)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.2rem' }}>
                 <CheckCircle size={24} /> Rapor Hazır
               </span>
+              <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all', maxWidth: '600px' }}>
+                SHA-256: {reportHash}
+              </div>
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button className="btn-primary" onClick={downloadReport} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Download size={18} /> HTML Olarak İndir
                 </button>
-                <button className="btn-secondary" onClick={() => setReportReady(false)}>
+                <button className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); }}>
                   Yeniden Oluştur
                 </button>
               </div>

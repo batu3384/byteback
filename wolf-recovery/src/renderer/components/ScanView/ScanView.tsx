@@ -195,26 +195,61 @@ function ScanView({
             </button>
           </div>
         </div>
-        <div style={{ padding: 'var(--space-md)', overflowY: 'auto', flex: 1 }}>
-          {filesFound.length === 0 ? (
-            <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>Henüz dosya bulunamadı...</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {filesFound.map((f, i) => (
-                <div key={i} onClick={() => setSelectedFile(f)} style={{ 
-                  display: 'flex', alignItems: 'center', padding: '12px 16px', 
-                  background: 'rgba(255,255,255,0.02)', borderRadius: '6px', cursor: 'pointer',
-                  border: '1px solid transparent', transition: 'all 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--panel-border)'}
-                onMouseLeave={(e) => e.currentTarget.style.borderColor = 'transparent'}
-                >
-                  <File size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
-                  <span style={{ fontWeight: 500 }}>{f.name}</span>
-                  <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: '12px' }}>{f.category}</span>
-                  <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                    {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
-                  </span>
+        <div style={{ padding: 'var(--space-md)', overflowY: 'auto', flex: 1, display: 'flex', gap: 'var(--space-md)' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {filesFound.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>Henüz dosya bulunamadı...</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {filesFound.map((f, i) => {
+                  const isSelected = selectedFile && selectedFile.name === f.name && selectedFile.startSector === f.startSector
+                  return (
+                    <div key={i} onClick={() => setSelectedFile(f)} style={{
+                      display: 'flex', alignItems: 'center', padding: '12px 16px',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'rgba(255,255,255,0.02)', borderRadius: '6px', cursor: 'pointer',
+                      border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.4)' : 'transparent'}`, transition: 'all 0.2s'
+                    }}
+                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'var(--panel-border)' }}
+                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'transparent' }}
+                    >
+                      <File size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
+                      <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                      <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: '12px', flexShrink: 0 }}>{f.category}</span>
+                      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem', flexShrink: 0 }}>
+                        {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {selectedFile && (
+            <div style={{ width: '320px', flexShrink: 0, background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
+                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Dosya Detayı</h4>
+                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)}>✕</button>
+              </div>
+              <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', marginBottom: 'var(--space-md)', color: 'var(--text-main)' }}>
+                {selectedFile.name}
+              </div>
+              {[
+                ['Kategori', selectedFile.category ?? '—'],
+                ['Boyut', ((selectedFile.sizeBytes ?? 0) / 1024).toFixed(2) + ' KB'],
+                ['Başlangıç Sektörü', selectedFile.startSector?.toLocaleString() ?? '—'],
+                ['Bitiş Sektörü', selectedFile.endSector?.toLocaleString() ?? '—'],
+                ['Güven Skoru', selectedFile.confidence != null ? `${selectedFile.confidence}%` : '—'],
+                ['Durum', selectedFile.status === 0 ? 'Silinmiş' : selectedFile.status === 1 ? 'Aktif' : 'Bilinmiyor'],
+                ['Kaynak', selectedFile.source ?? '—'],
+                ['Data Run Sayısı', selectedFile.runs?.length ?? 0],
+                ['Oluşturma', selectedFile.createdAt ? new Date(selectedFile.createdAt * 1000).toLocaleString('tr-TR') : '—'],
+                ['Değiştirme', selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString('tr-TR') : '—'],
+                ['Yol', selectedFile.path ?? '—'],
+              ].map(([k, v]) => (
+                <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{k}</span>
+                  <span style={{ textAlign: 'right', wordBreak: 'break-all' }}>{String(v)}</span>
                 </div>
               ))}
             </div>

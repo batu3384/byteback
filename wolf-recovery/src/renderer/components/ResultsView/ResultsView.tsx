@@ -60,6 +60,38 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
     setSelectedFiles(newSel)
   }
 
+  // Export the filtered results as CSV. UTF-8 BOM keeps Excel happy with
+  // Turkish filenames; fields are escaped per RFC 4180.
+  const exportCsv = () => {
+    const rows = filteredFiles.map((f) => {
+      const raw = filesFound.find((x) => x.id === f.id) ?? {}
+      return {
+        name: f.name,
+        sizeBytes: raw.sizeBytes ?? raw.size ?? '',
+        category: raw.category ?? '',
+        confidence: raw.confidence ?? '',
+        status: raw.status,
+        path: raw.path ?? '',
+        startSector: raw.startSector ?? '',
+        createdAt: raw.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
+        modifiedAt: raw.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
+      }
+    })
+    const esc = (v: unknown) => {
+      const s = String(v ?? '')
+      return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'startSector', 'createdAt', 'modifiedAt']
+    const csv = [header.join(';'), ...rows.map((r) => header.map((h) => esc((r as any)[h])).join(';'))].join('\r\n')
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `wolf-recovery-sonuclar-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const toggleAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
       setSelectedFiles(new Set(filteredFiles.map(f => f.id)))
@@ -119,8 +151,8 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
           <p style={{ color: 'var(--text-muted)' }}>Taranan disk üzerinde tespit edilen {filesFound.length} dosya</p>
         </div>
         <div className="results-actions" style={{ display: 'flex', gap: '12px' }}>
-          <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }}>
-            <Download size={16} /> Dışa Aktar (CSV/PDF)
+          <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0}>
+            <Download size={16} /> Dışa Aktar (CSV)
           </button>
           <button 
             className="btn-primary" 
