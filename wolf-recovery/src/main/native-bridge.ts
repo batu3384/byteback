@@ -63,10 +63,20 @@ export interface RaidAssemblyResult {
   error: string
 }
 
+/** A partition parsed from a drive's MBR or GPT table. */
+export interface PartitionInfo {
+  type: string
+  startSector: number
+  sizeInSectors: number
+  label: string
+  isActive: boolean
+}
+
 interface WolfEngine {
   getVersion(): string
   isAdministrator(): boolean
   listDrives(): DriveInfo[]
+  listPartitions(driveIndex: number): PartitionInfo[]
   initDatabase(path: string): boolean
   getFileCount(scanId: number): number
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]

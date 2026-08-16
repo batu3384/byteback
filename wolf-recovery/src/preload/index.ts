@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   getVersion: () => ipcRenderer.invoke('get-version'),
   isAdmin: () => ipcRenderer.invoke('is-admin'),
   listDrives: () => ipcRenderer.invoke('list-drives'),
+  listPartitions: (driveIndex: number) => ipcRenderer.invoke('list-partitions', driveIndex),
   
   startScan: (driveIndex: number, scanType: string) => ipcRenderer.invoke('start-scan', driveIndex, scanType),
   stopScan: () => ipcRenderer.send('stop-scan'),

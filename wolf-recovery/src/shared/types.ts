@@ -9,6 +9,7 @@ export type {
   ScanState,
   RecoverResult,
   RaidAssemblyResult,
+  PartitionInfo,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -20,6 +21,7 @@ import type {
   ScanState,
   RecoverResult,
   RaidAssemblyResult,
+  PartitionInfo,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -30,6 +32,7 @@ declare global {
       getVersion: () => Promise<string>
       isAdmin: () => Promise<boolean>
       listDrives: () => Promise<DriveInfo[]>
+      listPartitions: (driveIndex: number) => Promise<PartitionInfo[]>
 
       startScan: (driveIndex: number, scanType: string) => Promise<number>
       stopScan: () => void

@@ -35,6 +35,13 @@ public:
 
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
 
+    // Partition-aware variant: partitionOffsetBytes is the byte offset of the
+    // partition start (0 = whole disk / raw image). Pass the partition's
+    // start sector * sectorSize when the MBR/GPT layout is known so the boot
+    // sector and cluster geometry resolve at the right location.
+    bool scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                uint64_t partitionOffsetBytes);
+
 private:
     void parseFAT(DiskReader& reader, uint64_t partitionOffset, FileRecordCallback callback, std::atomic<bool>* isRunning);
     void parseExFAT(DiskReader& reader, uint64_t partitionOffset, FileRecordCallback callback, std::atomic<bool>* isRunning);
@@ -44,14 +51,6 @@ class Ext4Parser : public FileSystemParser {
 public:
     Ext4Parser();
     ~Ext4Parser() override;
-
-    bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
-};
-
-class ExFATParser : public FileSystemParser {
-public:
-    ExFATParser();
-    ~ExFATParser() override;
 
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
 };
