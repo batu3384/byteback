@@ -159,6 +159,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
         uint64_t parentId;
     };
     std::vector<TempFile> tempFiles;
+    // Data runs of $Extend\$UsnJrnl:$J captured while carving (see the ADS
+    // emit below). Populated only when the journal attribute survives.
+    std::vector<FileRecord::DataRun> usnJournalRuns;
     std::unordered_map<uint64_t, uint64_t> indxParentMap;
     std::unordered_map<uint64_t, std::string> indxNameMap;
 
@@ -430,6 +433,14 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                     adsFr.source = "ntfs_ads";
                     adsFr.confidence = std::max(0, fr.confidence - 5);
 
+                    // $UsnJrnl's journal data lives in an ADS named ":$J".
+                    // Capture its runs so the post-pass can parse USN records
+                    // into timeline events.
+                    if (ads.streamName == "$J" && !ads.runs.empty()) {
+                        usnJournalRuns.insert(usnJournalRuns.end(),
+                                              ads.runs.begin(), ads.runs.end());
+                    }
+
                     TempFile adsTf;
                     adsTf.fr = adsFr;
                     adsTf.parentId = fileParentMftId;
@@ -516,7 +527,68 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
         tf.fr.path = "/Recovered/" + fullPath;
         callback(tf.fr);
     }
-    
+
+    // ---- USN journal pass ----
+    // Read the captured $UsnJrnl:$J runs and parse every v2/v3 record into a
+    // timeline event (source="usn_journal"). The reason flags travel in
+    // fr.status-encoded form: the store decodes CREATE/DELETE/RENAME for the
+    // timeline UI. Records are validated structurally by parseUsnRecord, so
+    // slack garbage at the tail of the journal is skipped rather than
+    // poisoning the timeline.
+    for (const auto& run : usnJournalRuns) {
+        if (isRunning && !(*isRunning)) break;
+        if (run.startSector == UINT64_MAX) continue; // sparse run
+
+        const uint32_t kUsnChunk = 1u << 20; // 1 MiB
+        std::vector<uint8_t> buf(kUsnChunk);
+        uint64_t runBytes = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+        uint64_t pos = 0;
+
+        while (pos < runBytes) {
+            if (isRunning && !(*isRunning)) break;
+            uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(kUsnChunk, runBytes - pos));
+            if (!reader.readSectors(run.startSector * sectorSize + pos, take, buf.data()).success) {
+                pos += take; // bad sector in the journal: skip forward
+                continue;
+            }
+
+            size_t off = 0;
+            while (off + 64 <= take) {
+                ntfs::UsnRecord usn;
+                if (!ntfs::parseUsnRecord(buf.data() + off, take - off, usn)) {
+                    // Records are 8-byte aligned; step forward on a bad slot.
+                    off += 8;
+                    continue;
+                }
+                uint32_t recLen = static_cast<uint32_t>(buf[off]) |
+                                  (static_cast<uint32_t>(buf[off + 1]) << 8) |
+                                  (static_cast<uint32_t>(buf[off + 2]) << 16) |
+                                  (static_cast<uint32_t>(buf[off + 3]) << 24);
+                if (recLen < 64) break; // paranoia: parser guarantees >= 60
+
+                FileRecord fr;
+                fr.id = -1;                       // not a scannable file
+                fr.parentId = 0;
+                fr.name = usn.name;
+                fr.extension = "";
+                fr.path = "usn";                  // timeline marker
+                fr.sizeBytes = 0;
+                fr.startSector = (run.startSector * sectorSize + pos + off) / sectorSize;
+                fr.endSector = fr.startSector;
+                fr.status = static_cast<int>(usn.reasonFlags); // reason bits
+                fr.confidence = 90;
+                fr.category = "Timeline";
+                fr.source = "usn_journal";
+                fr.createdAt = usn.timestamp;
+                fr.modifiedAt = usn.timestamp;
+                callback(fr);
+
+                off += recLen;
+            }
+            pos += take;
+        }
+    }
+
     return true;
 }
 

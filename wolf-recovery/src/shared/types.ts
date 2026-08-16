@@ -10,6 +10,8 @@ export type {
   RecoverResult,
   RaidAssemblyResult,
   PartitionInfo,
+  TimelineEvent,
+  TimelineResult,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -22,6 +24,8 @@ import type {
   RecoverResult,
   RaidAssemblyResult,
   PartitionInfo,
+  TimelineEvent,
+  TimelineResult,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -50,6 +54,7 @@ declare global {
       getFileCount: (scanId: number) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
       getScanState: (scanId: number) => Promise<ScanState>
+      getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
 
       startWipe: (targetPath: string) => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>

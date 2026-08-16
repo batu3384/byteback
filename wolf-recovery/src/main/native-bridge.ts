@@ -76,6 +76,21 @@ export interface RaidAssemblyResult {
   error: string
 }
 
+/** One point on the unified timeline (USN journal and other sources). */
+export interface TimelineEvent {
+  id: number
+  timestamp: number
+  eventType: string
+  fileName: string
+  mftRef: number
+  source: string
+}
+
+export interface TimelineResult {
+  total: number
+  events: TimelineEvent[]
+}
+
 /** A partition parsed from a drive's MBR or GPT table. */
 export interface PartitionInfo {
   type: string
@@ -94,6 +109,7 @@ interface WolfEngine {
   getFileCount(scanId: number): number
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
   getScanState(scanId: number): ScanState
+  getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
   readSectors(driveIndex: number, offset: number, size: number): {
     success: boolean
     bytesRead: number

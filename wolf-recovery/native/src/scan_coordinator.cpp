@@ -57,6 +57,30 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
     };
 
     if (scanType == "quick") {
+        // BitLocker detection: encrypted volumes carry the OEM name
+        // "-FVEF-SYS-" at offset 3 of the boot sector. Recovery is impossible
+        // without the key, so the user gets an honest encrypted-volume marker
+        // instead of cryptic parse failures.
+        {
+            uint32_t blSectorSize = reader.getSectorSize();
+            if (blSectorSize == 0) blSectorSize = 512;
+            std::vector<uint8_t> boot(blSectorSize);
+            if (reader.readSectors(0, blSectorSize, boot.data()).success &&
+                blSectorSize >= 16 &&
+                std::memcmp(boot.data() + 3, "-FVEF-SYS-", 10) == 0) {
+                FileRecord fr;
+                fr.id = -1;
+                fr.name = "[BitLocker] Birim sifreli - kurtarma anahtari gerekli";
+                fr.path = "/";
+                fr.sizeBytes = 0;
+                fr.status = 2;
+                fr.confidence = 100;
+                fr.category = "Encrypted";
+                fr.source = "bitlocker_detect";
+                onFileFound(fr);
+            }
+        }
+
         // Partition-aware quick scan: read the MBR/GPT layout first, then run
         // the filesystem parser that matches each partition's type at the
         // partition's own offset. NTFS stays on the raw-carving path (it finds

@@ -11,8 +11,9 @@ import ShredderView from './components/ShredderView/ShredderView'
 import RaidBuilder from './components/VirtualRaid/RaidBuilder'
 import ReportGenerator from './components/ReportView/ReportGenerator'
 import KeywordSearch from './components/SearchView/KeywordSearch'
+import TimelineView from './components/TimelineView/TimelineView'
 
-type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search'
+type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline'
 
 function App(): React.ReactElement {
   const [activePage, setActivePage] = useState<Page>('dashboard')
@@ -135,6 +136,8 @@ function App(): React.ReactElement {
         return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} />
       case 'search':
         return <KeywordSearch filesFound={filesFound} />
+      case 'timeline':
+        return <TimelineView scanId={activeScanId} />
       case 'report':
         return <ReportGenerator scanResults={{ totalFiles: filesFound.length, recoverableFiles: filesFound.filter(f => f.status === 0).length, partialFiles: filesFound.filter(f => f.status !== 0).length, duration: scanElapsed + ' sn' }} filesFound={filesFound} />
       case 'hex':

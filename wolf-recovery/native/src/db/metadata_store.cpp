@@ -71,6 +71,19 @@ bool MetadataStore::createTables() {
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         );
 
+        CREATE TABLE IF NOT EXISTS timeline_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            file_name TEXT,
+            mft_ref INTEGER,
+            source TEXT,
+            FOREIGN KEY (scan_id) REFERENCES scans(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_timeline_scan_ts ON timeline_events(scan_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_timeline_type ON timeline_events(event_type);
+
         CREATE INDEX IF NOT EXISTS idx_files_scan_id ON files(scan_id);
         CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension);
         CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
@@ -295,6 +308,91 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
     }
     sqlite3_finalize(stmt);
     return state;
+}
+
+// ---- Unified timeline ----
+
+// Decode the USN reason bitmap into the dominant event type. Priority: the
+// most forensically significant reason wins (delete > rename > truncate >
+// extend > overwrite > create > touch).
+static std::string usnReasonToEventType(uint32_t reason) {
+    if (reason & 0x00000002) return "delete";
+    if (reason & 0x00010000) return "rename_old";
+    if (reason & 0x00020000) return "rename_new";
+    if (reason & 0x00000010) return "truncate";
+    if (reason & 0x00000008) return "extend";
+    if (reason & 0x00000004) return "overwrite";
+    if (reason & 0x00000001) return "create";
+    return "touch";
+}
+
+int64_t MetadataStore::insertTimelineEvent(int64_t scanId, const TimelineEvent& ev) {
+    const char* sql = R"(
+        INSERT INTO timeline_events (scan_id, timestamp, event_type, file_name, mft_ref, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+
+    sqlite3_bind_int64(stmt, 1, scanId);
+    sqlite3_bind_int64(stmt, 2, ev.timestamp);
+    sqlite3_bind_text(stmt, 3, ev.eventType.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, ev.fileName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(ev.mftRef));
+    sqlite3_bind_text(stmt, 6, ev.source.c_str(), -1, SQLITE_TRANSIENT);
+
+    int64_t id = -1;
+    if (sqlite3_step(stmt) == SQLITE_DONE) {
+        id = sqlite3_last_insert_rowid(db_);
+    }
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+std::vector<TimelineEvent> MetadataStore::getTimelineEvents(int64_t scanId, int offset, int limit,
+                                                            const std::string& eventTypeFilter) {
+    std::vector<TimelineEvent> out;
+    std::string sql =
+        "SELECT id, scan_id, timestamp, event_type, file_name, mft_ref, source "
+        "FROM timeline_events WHERE scan_id = ?";
+    if (!eventTypeFilter.empty()) sql += " AND event_type = ?";
+    sql += " ORDER BY timestamp ASC LIMIT ? OFFSET ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return out;
+
+    int bind = 1;
+    sqlite3_bind_int64(stmt, bind++, scanId);
+    if (!eventTypeFilter.empty()) sqlite3_bind_text(stmt, bind++, eventTypeFilter.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, bind++, limit);
+    sqlite3_bind_int(stmt, bind++, offset);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TimelineEvent ev;
+        ev.id = sqlite3_column_int64(stmt, 0);
+        ev.scanId = sqlite3_column_int64(stmt, 1);
+        ev.timestamp = sqlite3_column_int64(stmt, 2);
+        ev.eventType = safe_column_text(stmt, 3);
+        ev.fileName = safe_column_text(stmt, 4);
+        ev.mftRef = static_cast<uint64_t>(sqlite3_column_int64(stmt, 5));
+        ev.source = safe_column_text(stmt, 6);
+        out.push_back(std::move(ev));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+int64_t MetadataStore::getTimelineEventCount(int64_t scanId, const std::string& eventTypeFilter) {
+    std::string sql = "SELECT COUNT(*) FROM timeline_events WHERE scan_id = ?";
+    if (!eventTypeFilter.empty()) sql += " AND event_type = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(stmt, 1, scanId);
+    if (!eventTypeFilter.empty()) sqlite3_bind_text(stmt, 2, eventTypeFilter.c_str(), -1, SQLITE_TRANSIENT);
+    int64_t n = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    return n;
 }
 
 } // namespace wolf
