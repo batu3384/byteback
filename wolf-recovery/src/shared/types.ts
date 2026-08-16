@@ -8,6 +8,7 @@ export type {
   SmartStatus,
   ScanState,
   RecoverResult,
+  RaidAssemblyResult,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -18,6 +19,7 @@ import type {
   SmartStatus,
   ScanState,
   RecoverResult,
+  RaidAssemblyResult,
   ProgressCallback,
   FileFoundCallback,
 } from '../main/native-bridge'
@@ -47,7 +49,7 @@ declare global {
       getScanState: (scanId: number) => Promise<ScanState>
 
       startWipe: (targetPath: string) => Promise<boolean>
-      reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<boolean>
+      reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
 
       // File recovery: returns {success, destPath, bytesRecovered, md5Hash}
       recoverFile: (

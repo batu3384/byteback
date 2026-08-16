@@ -59,17 +59,20 @@ const RaidBuilder: React.FC = () => {
     setIsBuilding(true);
     if (window.api && window.api.reconstructRaid) {
       // Map the UI selection to the numeric RaidLevel enum used by the native
-      // engine (virtual_raid.h: RAID0=0, RAID1=1, RAID5=2). Pass the drives in
-      // their user-ordered slot order, since stripe/parity layout depends on it.
-      const raidLevelMap: Record<string, number> = { 'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2 };
+      // engine (virtual_raid.h: RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4).
+      // Pass the drives in their user-ordered slot order, since stripe/parity
+      // layout depends on it.
+      const raidLevelMap: Record<string, number> = { 'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2, 'RAID 6': 3, 'RAID 10': 4 };
       const raidLevel = raidLevelMap[raidType] ?? 2;
       const driveIndices = raidArray.map(d => Number(d.id));
-      const success = await window.api.reconstructRaid(driveIndices, raidLevel);
+      const res = await window.api.reconstructRaid(driveIndices, raidLevel);
       setIsBuilding(false);
-      if (success) {
-        alert(`${raidType} Diski Başarıyla Oluşturuldu! Artık bu diski normal bir disk gibi tarayabilirsiniz.`);
+      if (res && res.success) {
+        const capGb = res.capacity ? (res.capacity / (1024 ** 3)).toFixed(2) : '?';
+        alert(`${raidType} dizisi başarıyla oluşturuldu!\n\nKapasite: ${capGb} GB\nDisk sayısı: ${res.numDisks}\n\nArtık bu diziyi normal bir disk gibi tarayabilirsiniz.`);
       } else {
-        alert(`${raidType} Diski oluşturulamadı. Disk sırasını veya donanım sağlığını kontrol edin.`);
+        const why = res && res.error ? `\n\nHata: ${res.error}` : '';
+        alert(`${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`);
       }
     } else {
       setIsBuilding(false);
@@ -147,15 +150,17 @@ const RaidBuilder: React.FC = () => {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Settings2 size={16} color="var(--text-muted)" />
-              <select 
-                className="raid-type-select" 
-                value={raidType} 
+              <select
+                className="raid-type-select"
+                value={raidType}
                 onChange={(e) => setRaidType(e.target.value)}
                 style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '6px 12px', borderRadius: '6px', outline: 'none' }}
               >
                 <option value="RAID 0">RAID 0 (Stripe)</option>
                 <option value="RAID 1">RAID 1 (Mirror)</option>
                 <option value="RAID 5">RAID 5 (Parity)</option>
+                <option value="RAID 6">RAID 6 (Çift Parite)</option>
+                <option value="RAID 10">RAID 10 (Mirror+Stripe)</option>
               </select>
             </div>
           </div>

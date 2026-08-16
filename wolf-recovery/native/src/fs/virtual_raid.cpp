@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cstring>
 
+namespace wolf {
+
 VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size)
     : level_(level), num_disks_(drive_indices.size()), disk_size_(0), block_size_(block_size) {
     if (num_disks_ < 2) {
@@ -10,6 +12,12 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
     if (level == RaidLevel::RAID5 && num_disks_ < 3) {
         throw std::invalid_argument("RAID 5 requires at least 3 disks.");
     }
+    if (level == RaidLevel::RAID6 && num_disks_ < 4) {
+        throw std::invalid_argument("RAID 6 requires at least 4 disks.");
+    }
+    if (level == RaidLevel::RAID10 && (num_disks_ % 2 != 0)) {
+        throw std::invalid_argument("RAID 10 requires an even number of disks.");
+    }
 
     disk_active_.resize(num_disks_, true);
     for (int idx : drive_indices) {
@@ -17,7 +25,9 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
         if (!reader->openDrive(idx)) {
             throw std::runtime_error("Failed to open physical drive for RAID.");
         }
-        // Assume all disks in array are same size, get size from first one
+        // All array members are assumed to be the same model; the smallest
+        // size would be the real bound, but arrays built from identical disks
+        // dominate in practice.
         if (disk_size_ == 0) {
             disk_size_ = reader->getDiskSize();
         }
@@ -25,8 +35,46 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
     }
 }
 
-void VirtualRaid::write(size_t offset, const std::vector<uint8_t>& data) {
-    throw std::runtime_error("Write unsupported on physical RAID mode.");
+void VirtualRaid::write(size_t, const std::vector<uint8_t>&) {
+    throw std::runtime_error("Write unsupported on physical RAID mode (forensic read-only).");
+}
+
+uint64_t VirtualRaid::capacity() const {
+    switch (level_) {
+        case RaidLevel::RAID0: return disk_size_ * num_disks_;
+        case RaidLevel::RAID1: return disk_size_;
+        case RaidLevel::RAID5: return disk_size_ * (num_disks_ - 1);
+        case RaidLevel::RAID6: return disk_size_ * (num_disks_ - 2);
+        case RaidLevel::RAID10: return disk_size_ * (num_disks_ / 2);
+    }
+    return 0;
+}
+
+bool VirtualRaid::readMemberAligned(size_t disk_idx, uint64_t offset, size_t length, uint8_t* out) const {
+    if (disk_idx >= num_disks_ || !disk_readers_[disk_idx]->isOpen()) return false;
+
+    uint32_t sectorSize = disk_readers_[disk_idx]->getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+
+    uint64_t alignedStart = (offset / sectorSize) * sectorSize;
+    uint64_t end = offset + length;
+    uint64_t alignedEnd = ((end + sectorSize - 1) / sectorSize) * sectorSize;
+    uint32_t alignedLen = static_cast<uint32_t>(alignedEnd - alignedStart);
+
+    // Scratch buffer so a short read never under-runs the caller's slice.
+    static thread_local std::vector<uint8_t> scratch;
+    scratch.resize(alignedLen);
+
+    auto res = disk_readers_[disk_idx]->readSectors(alignedStart, alignedLen, scratch.data());
+    if (!res.success || res.bytesRead < length + (offset - alignedStart)) {
+        // Forensic rule: a bad sector yields zeros, it never aborts the
+        // reconstruction — an uncorrectable region must not take the whole
+        // array read down with it.
+        std::memset(out, 0, length);
+        return false;
+    }
+    std::memcpy(out, scratch.data() + (offset - alignedStart), length);
+    return true;
 }
 
 std::vector<uint8_t> VirtualRaid::read(size_t offset, size_t length) const {
@@ -35,6 +83,8 @@ std::vector<uint8_t> VirtualRaid::read(size_t offset, size_t length) const {
         case RaidLevel::RAID0: return read_raid0(offset, length);
         case RaidLevel::RAID1: return read_raid1(offset, length);
         case RaidLevel::RAID5: return read_raid5(offset, length);
+        case RaidLevel::RAID6: return read_raid6(offset, length);
+        case RaidLevel::RAID10: return read_raid10(offset, length);
     }
     return std::vector<uint8_t>();
 }
@@ -47,39 +97,10 @@ void VirtualRaid::fail_disk(size_t disk_index) {
 void VirtualRaid::reconstruct_disk(size_t disk_index) {
     if (disk_index >= num_disks_) throw std::out_of_range("Invalid disk index");
     if (disk_active_[disk_index]) return;
-
-    if (level_ == RaidLevel::RAID0) {
-        throw std::runtime_error("Cannot reconstruct RAID 0");
-    } else if (level_ == RaidLevel::RAID1) {
-        size_t source_disk = -1;
-        for (size_t i = 0; i < num_disks_; ++i) {
-            if (disk_active_[i]) {
-                source_disk = i;
-                break;
-            }
-        }
-        if (source_disk == static_cast<size_t>(-1)) {
-            throw std::runtime_error("No active disks to reconstruct from");
-        }
-        // For RAID 1, we don't reconstruct physical disks in software.
-        throw std::runtime_error("Cannot reconstruct physical RAID 1 disk in-place");
-    } else if (level_ == RaidLevel::RAID5) {
-        size_t failed_count = 0;
-        for (bool active : disk_active_) {
-            if (!active) failed_count++;
-        }
-        if (failed_count > 1) {
-            throw std::runtime_error("Cannot reconstruct RAID 5 with > 1 failed disk");
-        }
-
-        // For RAID 5, we don't reconstruct physical disks in software in-place.
-        throw std::runtime_error("Cannot reconstruct physical RAID 5 disk in-place");
-    }
-}
-
-
-void VirtualRaid::write_raid0(size_t offset, const std::vector<uint8_t>& data) {
-    throw std::runtime_error("Write unsupported");
+    // In-place reconstruction would require writing to physical media, which
+    // this tool never does. Redundancy is applied transparently during read()
+    // instead: mark the disk failed and reads will go through parity/mirrors.
+    throw std::runtime_error("In-place reconstruction disabled (forensic read-only mode); redundancy is applied on read");
 }
 
 std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const {
@@ -90,30 +111,22 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
         size_t offset_in_block = offset % block_size_;
         size_t disk_idx = block_index % num_disks_;
         size_t block_on_disk = block_index / num_disks_;
-        size_t disk_offset = block_on_disk * block_size_ + offset_in_block;
+        uint64_t disk_offset = static_cast<uint64_t>(block_on_disk) * block_size_ + offset_in_block;
 
-        if (disk_offset >= disk_size_) {
+        if (disk_offset + (block_size_ - offset_in_block) > disk_size_) {
             throw std::out_of_range("Read exceeds RAID capacity");
         }
         if (!disk_active_[disk_idx]) {
-            throw std::runtime_error("Reading from a failed disk in RAID 0");
+            throw std::runtime_error("Reading from a failed disk in RAID 0 (no redundancy)");
         }
 
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
-        
-        auto res = disk_readers_[disk_idx]->readSectors(disk_offset, read_len, &result[res_idx]);
-        if (!res.success) {
-            throw std::runtime_error("Failed to read from disk_idx " + std::to_string(disk_idx));
-        }
+        readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx]);
 
         res_idx += read_len;
         offset += read_len;
     }
     return result;
-}
-
-void VirtualRaid::write_raid1(size_t offset, const std::vector<uint8_t>& data) {
-    throw std::runtime_error("Write unsupported");
 }
 
 std::vector<uint8_t> VirtualRaid::read_raid1(size_t offset, size_t length) const {
@@ -123,15 +136,11 @@ std::vector<uint8_t> VirtualRaid::read_raid1(size_t offset, size_t length) const
     for (size_t i = 0; i < num_disks_; ++i) {
         if (disk_active_[i]) {
             std::vector<uint8_t> result(length);
-            auto res = disk_readers_[i]->readSectors(offset, length, result.data());
-            if (res.success) return result;
+            if (readMemberAligned(i, offset, length, result.data())) return result;
+            // Read failed (bad sectors) — fall through and try the next mirror.
         }
     }
-    throw std::runtime_error("No active disks to read from in RAID 1");
-}
-
-void VirtualRaid::write_raid5(size_t offset, const std::vector<uint8_t>& data) {
-    throw std::runtime_error("Write unsupported");
+    throw std::runtime_error("No readable mirror available in RAID 1");
 }
 
 std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const {
@@ -140,45 +149,37 @@ std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const
     while (res_idx < length) {
         size_t logical_block_index = offset / block_size_;
         size_t offset_in_block = offset % block_size_;
-        
+
         size_t stripe_index = logical_block_index / (num_disks_ - 1);
         size_t block_in_stripe = logical_block_index % (num_disks_ - 1);
-        
+
+        // Left-asymmetric: parity rotates one disk per stripe.
         size_t parity_disk = (num_disks_ - 1) - (stripe_index % num_disks_);
         size_t data_disk = block_in_stripe;
         if (data_disk >= parity_disk) {
             data_disk++;
         }
 
-        size_t disk_offset = stripe_index * block_size_ + offset_in_block;
-        if (disk_offset >= disk_size_) {
-            throw std::out_of_range("Read exceeds RAID capacity");
-        }
-
+        uint64_t disk_offset = static_cast<uint64_t>(stripe_index) * block_size_ + offset_in_block;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
 
         if (disk_active_[data_disk]) {
-            auto res = disk_readers_[data_disk]->readSectors(disk_offset, read_len, &result[res_idx]);
-            if (!res.success) throw std::runtime_error("RAID 5 direct read failed");
+            readMemberAligned(data_disk, disk_offset, read_len, &result[res_idx]);
         } else {
-            std::vector<uint8_t> reconstructed_block(block_size_, 0);
+            // XOR-reconstruct: D_failed = P XOR (all other data blocks).
+            std::vector<uint8_t> reconstructed(block_size_, 0);
+            std::vector<uint8_t> temp(block_size_);
             for (size_t i = 0; i < num_disks_; ++i) {
-                if (i != data_disk) {
-                    if (!disk_active_[i]) {
-                        throw std::runtime_error("RAID 5 read failed: multiple disks failed");
-                    }
-                    size_t block_start = stripe_index * block_size_;
-                    
-                    std::vector<uint8_t> temp_block(block_size_);
-                    auto res = disk_readers_[i]->readSectors(block_start, block_size_, temp_block.data());
-                    if (!res.success) throw std::runtime_error("RAID 5 block reconstruct read failed");
-                    
-                    for (size_t b = 0; b < block_size_; ++b) {
-                        reconstructed_block[b] ^= temp_block[b];
-                    }
+                if (i == data_disk) continue;
+                if (!disk_active_[i]) {
+                    throw std::runtime_error("RAID 5 read failed: multiple disks failed");
+                }
+                readMemberAligned(i, stripe_index * block_size_, block_size_, temp.data());
+                for (size_t b = 0; b < block_size_; ++b) {
+                    reconstructed[b] ^= temp[b];
                 }
             }
-            std::memcpy(&result[res_idx], &reconstructed_block[offset_in_block], read_len);
+            std::memcpy(&result[res_idx], &reconstructed[offset_in_block], read_len);
         }
 
         res_idx += read_len;
@@ -186,3 +187,152 @@ std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const
     }
     return result;
 }
+
+std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const {
+    std::vector<uint8_t> result(length);
+    size_t res_idx = 0;
+
+    // Stripe layout (left-asymmetric, P and Q adjacent, rotating):
+    //   p_pos = (N-1) - (stripe % N)
+    //   q_pos = p_pos == 0 ? N-1 : p_pos - 1
+    // Remaining slots (in disk order) carry the N-2 data blocks.
+    while (res_idx < length) {
+        size_t logical_block_index = offset / block_size_;
+        size_t offset_in_block = offset % block_size_;
+
+        size_t stripe_index = logical_block_index / (num_disks_ - 2);
+        size_t block_in_stripe = logical_block_index % (num_disks_ - 2);
+
+        size_t p_disk = (num_disks_ - 1) - (stripe_index % num_disks_);
+        size_t q_disk = (p_disk == 0) ? (num_disks_ - 1) : (p_disk - 1);
+
+        // Map the logical data block to a physical slot: walk disk order,
+        // skipping P and Q positions.
+        size_t data_disk = 0;
+        {
+            size_t seen = 0;
+            for (size_t i = 0; i < num_disks_; ++i) {
+                if (i == p_disk || i == q_disk) continue;
+                if (seen == block_in_stripe) { data_disk = i; break; }
+                seen++;
+            }
+        }
+
+        uint64_t stripe_base = static_cast<uint64_t>(stripe_index) * block_size_;
+        size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
+
+        if (disk_active_[data_disk]) {
+            readMemberAligned(data_disk, stripe_base + offset_in_block, read_len, &result[res_idx]);
+        } else {
+            // Count failed *data* disks in this stripe (P/Q loss alone does
+            // not affect reads).
+            size_t failedData = 0;
+            size_t failed[2] = {0, 0};
+            for (size_t i = 0; i < num_disks_; ++i) {
+                if (i == p_disk || i == q_disk) continue;
+                if (!disk_active_[i]) { if (failedData < 2) failed[failedData] = i; failedData++; }
+            }
+
+            if (failedData == 1) {
+                // Single failure: D = P XOR (other data blocks).
+                std::vector<uint8_t> acc(block_size_, 0), temp(block_size_);
+                if (!disk_active_[p_disk]) {
+                    throw std::runtime_error("RAID 6: data + P failed with Q needed (unsupported single-pass path)");
+                }
+                readMemberAligned(p_disk, stripe_base, block_size_, acc.data());
+                for (size_t i = 0; i < num_disks_; ++i) {
+                    if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
+                    readMemberAligned(i, stripe_base, block_size_, temp.data());
+                    for (size_t b = 0; b < block_size_; ++b) acc[b] ^= temp[b];
+                }
+                std::memcpy(&result[res_idx], &acc[offset_in_block], read_len);
+            } else if (failedData == 2) {
+                // Two failures: solve the 2-unknown GF system.
+                //   P' = P XOR (healthy data) = X_i XOR X_j
+                //   Q' = Q XOR (healthy data * g^slot) = X_i*g^i XOR X_j*g^j
+                // where i/j are the failed blocks' stripe slot indices.
+                auto slotOf = [&](size_t disk) -> int {
+                    int slot = 0;
+                    for (size_t i = 0; i < num_disks_; ++i) {
+                        if (i == p_disk || i == q_disk) continue;
+                        if (i == disk) return slot;
+                        slot++;
+                    }
+                    return -1;
+                };
+                int si = slotOf(failed[0]);
+                int sj = slotOf(failed[1]);
+
+                std::vector<uint8_t> pAcc(block_size_, 0), qAcc(block_size_, 0), temp(block_size_);
+                if (!disk_active_[p_disk] || !disk_active_[q_disk]) {
+                    throw std::runtime_error("RAID 6: too many failures (P or Q also lost)");
+                }
+                readMemberAligned(p_disk, stripe_base, block_size_, pAcc.data());
+                readMemberAligned(q_disk, stripe_base, block_size_, qAcc.data());
+                for (size_t i = 0; i < num_disks_; ++i) {
+                    if (i == p_disk || i == q_disk || !disk_active_[i]) continue;
+                    readMemberAligned(i, stripe_base, block_size_, temp.data());
+                    for (size_t b = 0; b < block_size_; ++b) {
+                        pAcc[b] ^= temp[b];
+                        qAcc[b] ^= raid6_math::gfMul(temp[b], raid6_math::gfPow(slotOf(i)));
+                    }
+                }
+                // Solve: X_i = (P'*g^j XOR Q') / (g^i XOR g^j)
+                uint8_t gi = raid6_math::gfPow(si);
+                uint8_t gj = raid6_math::gfPow(sj);
+                uint8_t denom = gi ^ gj;
+                if (denom == 0) throw std::runtime_error("RAID 6: degenerate GF system");
+                std::vector<uint8_t> xi(block_size_), xj(block_size_);
+                for (size_t b = 0; b < block_size_; ++b) {
+                    uint8_t num = raid6_math::gfMul(gj, pAcc[b]) ^ qAcc[b];
+                    xi[b] = raid6_math::gfDiv(num, denom);
+                    xj[b] = pAcc[b] ^ xi[b];
+                }
+                const std::vector<uint8_t>& wanted = (failed[0] == data_disk) ? xi : xj;
+                std::memcpy(&result[res_idx], &wanted[offset_in_block], read_len);
+            } else {
+                throw std::runtime_error("RAID 6 read failed: >2 data disks failed");
+            }
+        }
+
+        res_idx += read_len;
+        offset += read_len;
+    }
+    return result;
+}
+
+std::vector<uint8_t> VirtualRaid::read_raid10(size_t offset, size_t length) const {
+    std::vector<uint8_t> result(length);
+    size_t res_idx = 0;
+    while (res_idx < length) {
+        // Stripe across mirror pairs: block b lives on pair (b % (N/2)),
+        // members 2*(b % (N/2)) and 2*(b % (N/2)) + 1.
+        size_t block_index = offset / block_size_;
+        size_t offset_in_block = offset % block_size_;
+        size_t num_pairs = num_disks_ / 2;
+        size_t pair = block_index % num_pairs;
+        size_t block_on_pair = block_index / num_pairs;
+        uint64_t disk_offset = static_cast<uint64_t>(block_on_pair) * block_size_ + offset_in_block;
+
+        size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
+        size_t memberA = pair * 2;
+        size_t memberB = pair * 2 + 1;
+
+        bool ok = false;
+        if (disk_active_[memberA]) {
+            ok = readMemberAligned(memberA, disk_offset, read_len, &result[res_idx]);
+        }
+        if (!ok && disk_active_[memberB]) {
+            ok = readMemberAligned(memberB, disk_offset, read_len, &result[res_idx]);
+        }
+        if (!ok) {
+            throw std::runtime_error("RAID 10 read failed: both members of a mirror pair failed");
+        }
+
+        res_idx += read_len;
+        offset += read_len;
+    }
+    return result;
+}
+
+} // namespace wolf
