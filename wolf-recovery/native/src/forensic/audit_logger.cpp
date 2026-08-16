@@ -225,6 +225,12 @@ void AuditLogger::LogDiskRead(const std::string& devicePath, uint64_t offset, ui
     EnqueueLog(ss.str());
 }
 
+void AuditLogger::LogEvent(const std::string& eventMessage) {
+    std::stringstream ss;
+    ss << "[" << current_time_iso() << "] EVENT | " << eventMessage;
+    EnqueueLog(ss.str());
+}
+
 void AuditLogger::LogFileRecovered(const std::string& filePath, const uint8_t* data, size_t size) {
     std::string hash = CalculateSHA256(data, size);
     std::stringstream ss;
@@ -235,7 +241,7 @@ void AuditLogger::LogFileRecovered(const std::string& filePath, const uint8_t* d
 
 void AuditLogger::ProcessQueue() {
     while (true) {
-        LogEvent event;
+        LogEntry event;
         {
             std::unique_lock<std::mutex> lock(queueMutex_);
             cv_.wait(lock, [this]() { return stopThread_ || !logQueue_.empty(); });

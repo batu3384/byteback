@@ -1,6 +1,6 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import './Header.css'
-import { Settings, HelpCircle, Bell } from 'lucide-react'
+import { Settings, HelpCircle, Bell, Sun, Moon } from 'lucide-react'
 
 interface HeaderProps {
   title: string
@@ -16,16 +16,33 @@ const pageTitles: Record<string, string> = {
   search: 'Kelime Arama',
   report: 'Adli Rapor',
   shredder: 'Veri Yok Edici',
-  raid: 'Sanal RAID Oluştur'
+  raid: 'Sanal RAID Oluştur',
+  timeline: 'Olay Zaman Çizelgesi',
 }
 
 function Header({ title }: HeaderProps): React.ReactElement {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    (localStorage.getItem('wolf-theme') as 'dark' | 'light') || 'dark'
+  )
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('wolf-theme', theme)
+  }, [theme])
+
   return (
     <header className="app-header">
       <div className="header-title">
         <h2>{pageTitles[title] || title.toUpperCase()}</h2>
       </div>
       <div className="header-actions">
+        <button
+          className="icon-btn"
+          title={theme === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
         <button className="icon-btn" title="Bildirimler"><Bell size={18} /></button>
         <button className="icon-btn" title="Ayarlar"><Settings size={18} /></button>
         <button className="icon-btn" title="Yardım ve Belgeler"><HelpCircle size={18} /></button>

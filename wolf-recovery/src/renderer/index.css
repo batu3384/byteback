@@ -67,6 +67,24 @@ h1, h2, h3, h4, h5, h6 {
   color: #FFFFFF;
 }
 
+/* Light theme: same token names, light palette. Applied by toggling
+   <html data-theme="light">; the renderer persists the choice in
+   localStorage. Dark remains the default — forensic work happens in dim
+   rooms, but a light option matters for printed/screen-shared reports. */
+[data-theme='light'] {
+  --bg-color: #F4F4F5;
+  --bg-surface: #FFFFFF;
+  --panel-bg: rgba(255, 255, 255, 0.75);
+  --panel-border: rgba(9, 9, 11, 0.12);
+  --panel-border-hover: rgba(9, 9, 11, 0.25);
+  --text-main: #18181B;
+  --text-muted: #52525B;
+}
+
+[data-theme='light'] body {
+  background-color: var(--bg-color);
+}
+
 /* Glassmorphism / Mica Effect */
 .glass-panel {
   background: var(--panel-bg);

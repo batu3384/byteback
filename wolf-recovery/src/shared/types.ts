@@ -55,6 +55,8 @@ declare global {
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
       getScanState: (scanId: number) => Promise<ScanState>
       getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
+      getAuditLog: (maxLines?: number) => Promise<string[]>
+      exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
       startWipe: (targetPath: string) => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>

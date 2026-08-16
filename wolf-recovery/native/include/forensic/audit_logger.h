@@ -28,6 +28,11 @@ public:
     // Log a disk read operation
     void LogDiskRead(const std::string& devicePath, uint64_t offset, uint64_t size);
 
+    // Log a general forensic operation event (scan started/completed,
+    // imaging finished, wipe performed, ...). The message is folded into the
+    // hash chain like every other entry.
+    void LogEvent(const std::string& eventMessage);
+
     // Calculate SHA-256 and log file recovery
     void LogFileRecovered(const std::string& filePath, const uint8_t* data, size_t size);
     
@@ -44,13 +49,13 @@ private:
 
     void ProcessQueue();
 
-    struct LogEvent {
+    struct LogEntry {
         std::string message;
     };
 
     void EnqueueLog(const std::string& message);
 
-    std::queue<LogEvent> logQueue_;
+    std::queue<LogEntry> logQueue_;
     std::mutex queueMutex_;
     std::condition_variable cv_;
     bool stopThread_ = false;
