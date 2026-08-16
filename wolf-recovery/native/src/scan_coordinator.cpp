@@ -13,11 +13,13 @@ ScanCoordinator::~ScanCoordinator() {
 
 void ScanCoordinator::startScan(const std::string& drivePath, const std::string& scanType,
                                FileSystemParser::FileRecordCallback onFileFound,
-                               ProgressCallback onProgress) {
+                               ProgressCallback onProgress,
+                               std::vector<uint64_t>* badSectorOut) {
     if (isRunning) return;
     isRunning = true;
 
-    scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType, onFileFound, onProgress);
+    scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
+                             onFileFound, onProgress, badSectorOut);
 }
 
 void ScanCoordinator::stopScan() {
@@ -31,7 +33,8 @@ void ScanCoordinator::stopScan() {
 
 void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 FileSystemParser::FileRecordCallback onFileFound,
-                                ProgressCallback onProgress) {
+                                ProgressCallback onProgress,
+                                std::vector<uint64_t>* badSectorOut) {
     DiskReader reader;
     int driveIndex = 0;
     try { driveIndex = std::stoi(drivePath); } catch(...) {

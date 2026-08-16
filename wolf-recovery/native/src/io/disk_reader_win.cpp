@@ -101,6 +101,14 @@ std::vector<DriveInfo> DiskReader::enumerateDrives() {
 bool DiskReader::openDrive(int driveIndex) {
     closeDrive();
 
+    // Fresh session, fresh telemetry (closeDrive may keep the handle null
+    // but the counters belong to the previous volume).
+    {
+        std::lock_guard<std::mutex> lock(badSectorMutex_);
+        badSectorReads_ = 0;
+        badSectorList_.clear();
+    }
+
     wchar_t path[64];
     swprintf_s(path, L"\\\\.\\PhysicalDrive%d", driveIndex);
 
@@ -133,6 +141,31 @@ void DiskReader::closeDrive() {
     }
     diskSize_ = 0;
     currentDriveIndex_ = -1;
+}
+
+void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
+    uint32_t ss = sectorSize_ ? sectorSize_ : 512;
+    uint64_t startSector = offsetBytes / ss;
+    uint64_t count = (sizeBytes + ss - 1) / ss;
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    badSectorReads_ += count;
+    // Keep a bounded, representative sample for the map.
+    constexpr size_t kMaxBadSamples = 4096;
+    for (uint64_t i = 0; i < count && badSectorList_.size() < kMaxBadSamples; ++i) {
+        // Sub-sample large failures so one dead region doesn't fill the cap.
+        if (count > kMaxBadSamples && (i % (count / kMaxBadSamples + 1)) != 0) continue;
+        badSectorList_.push_back(startSector + i);
+    }
+}
+
+uint64_t DiskReader::getBadSectorReads() const {
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    return badSectorReads_;
+}
+
+std::vector<uint64_t> DiskReader::getBadSectors() const {
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    return badSectorList_;
 }
 
 ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
@@ -172,6 +205,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.error = "Read timed out (5000ms)";
             result.success = false;
             CloseHandle(hEvent);
+            noteBadRead(offsetBytes, sizeBytes);
             return result;
         } else if (waitRes == WAIT_OBJECT_0) {
             bRead = GetOverlappedResult(static_cast<HANDLE>(handle_), &ol, &bytesRead, FALSE);
@@ -198,6 +232,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.bytesRead = 0;
             result.error += " (bad sector)";
         }
+        noteBadRead(offsetBytes, sizeBytes);
     }
 
     CloseHandle(hEvent);

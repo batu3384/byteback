@@ -25,11 +25,6 @@ struct FileSignature {
     uint64_t maxSize;
 };
 
-class EntropyAnalyzer {
-public:
-    static double calculateShannonEntropy(const uint8_t* buffer, size_t bufferSize, size_t offset, size_t length);
-};
-
 struct ACTrieNode {
     std::map<uint8_t, int> children;
     int fail = 0;
@@ -76,13 +71,19 @@ private:
 // with a correct marker stream or a ZIP with a valid central directory is
 // accepted with high confidence.
 //
-// Returns the gap offset (bytes from the start of the first fragment) that
-// produced a valid reassembly, or SIZE_MAX if no gap validated. The caller
-// stitches fragments using that offset.
-size_t bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
-                            size_t headerOffset, size_t footerOffset,
-                            size_t maxGapBytes,
-                            int (*validator)(const uint8_t*, size_t));
+// Result of a successful BGC search: the reassembly that validated consists
+// of fragment 1 [headerOffset, headerOffset+frag1Len), a gap of gapLen
+// bytes, then fragment 2 up to footerOffset.
+struct BgcResult {
+    bool found = false;
+    size_t frag1Len = 0;
+    size_t gapLen = 0;
+};
+
+BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
+                               size_t headerOffset, size_t footerOffset,
+                               size_t maxGapBytes,
+                               const std::function<int(const uint8_t*, size_t)>& validator);
 
 } // namespace wolf
 

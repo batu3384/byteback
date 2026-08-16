@@ -5,9 +5,10 @@ import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download,
 interface ResultsViewProps {
   filesFound: any[]
   driveIndex: number | null
+  scanId?: number
 }
 
-function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactElement {
+function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
   const [filter, setFilter] = useState('all')
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
@@ -42,7 +43,7 @@ function ResultsView({ filesFound, driveIndex }: ResultsViewProps): React.ReactE
       const fileToRecover = filesFound.find(f => f.id === id) || filesFound[id]
       if (fileToRecover) {
         try {
-          const res = await window.api.recoverFile(driveIndex, fileToRecover, destDir)
+          const res = await window.api.recoverFile(driveIndex, fileToRecover, destDir, scanId)
           if (res.success) successCount++
           else failedCount++
         } catch {

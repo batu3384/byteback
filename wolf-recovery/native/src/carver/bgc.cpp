@@ -10,15 +10,16 @@
 
 namespace wolf {
 
-size_t bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
-                            size_t headerOffset, size_t footerOffset,
-                            size_t maxGapBytes,
-                            int (*validator)(const uint8_t*, size_t)) {
+BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
+                               size_t headerOffset, size_t footerOffset,
+                               size_t maxGapBytes,
+                               const std::function<int(const uint8_t*, size_t)>& validator) {
+    BgcResult out;
     if (!disk || !validator || headerOffset >= diskSize || footerOffset <= headerOffset)
-        return SIZE_MAX;
+        return out;
 
     size_t span = footerOffset - headerOffset;
-    if (span < 4) return SIZE_MAX;
+    if (span < 4) return out;
 
     // Cap the search so pathological cases do not scan the whole disk.
     size_t gapLimit = maxGapBytes ? maxGapBytes : (1u << 20); // default 1 MiB
@@ -52,11 +53,14 @@ size_t bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
             // accident when reassembling arbitrary byte ranges, so a 85+
             // floor keeps false positives out of the gap search.
             if (score >= 85) {
-                return localStart;
+                out.found = true;
+                out.frag1Len = localStart;
+                out.gapLen = gapLen;
+                return out;
             }
         }
     }
-    return SIZE_MAX;
+    return out;
 }
 
 } // namespace wolf

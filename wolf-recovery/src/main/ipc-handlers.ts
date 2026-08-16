@@ -61,7 +61,7 @@ export function registerIpcHandlers(): void {
       
       const callback = (data: any) => {
         if (data.type === 'progress') {
-          event.sender.send('scan-progress', { current: data.current, total: data.total })
+          event.sender.send('scan-progress', { current: data.current, total: data.total, badSectors: data.badSectors })
         } else if (data.type === 'file') {
           event.sender.send('scan-file-found', { name: data.name, size: data.size })
         }
@@ -220,6 +220,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('get-latest-scan-id', () => {
+    try {
+      const engine = getEngine()
+      return engine.getLatestScanId()
+    } catch (err) {
+      console.error('[IPC] get-latest-scan-id error:', err)
+      return -1
+    }
+  })
+
   ipcMain.handle('get-scan-state', (_event, scanId: number) => {
     try {
       const engine = getEngine()
@@ -271,11 +281,11 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileRecord: any, destDir: string) => {
+  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileRecord: any, destDir: string, scanId?: number) => {
     try {
       const engine = getEngine()
       console.log('[IPC] recover-file drive:', driveIndex, 'file:', fileRecord.name, 'dest:', destDir)
-      return await engine.recoverFile(driveIndex, fileRecord, destDir)
+      return await engine.recoverFile(driveIndex, fileRecord, destDir, scanId)
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
       return { success: false, error: String(err) }

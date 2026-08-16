@@ -23,6 +23,7 @@ struct FileRecord {
         uint64_t sectorCount;
     };
     std::vector<DataRun> runs;
+    bool compressed = false; // NTFS: $DATA has a compression unit (LZNT1)
     int status;            // 0=Intact, 1=PartialOverwrite, 2=FullOverwrite, 3=Unknown
     int confidence;        // 0-100
     std::string category;  // "Image", "Document", "Video", etc.
@@ -52,6 +53,7 @@ struct ScanState {
     int status;             // 0=Running, 1=Paused, 2=Complete, 3=Failed
     int64_t startedAt;
     int64_t updatedAt;
+    int64_t recoveredFiles = 0; // successful recoveries recorded for this scan
 };
 
 class MetadataStore {
@@ -74,6 +76,10 @@ public:
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
     bool completeScan(int64_t scanId, int status);
     ScanState getScanState(int64_t scanId);
+
+    // CA-008: real session + recovery bookkeeping.
+    int64_t getLatestScanId();
+    bool incrementRecovered(int64_t scanId);
 
     // Unified timeline (USN journal and other event sources)
     int64_t insertTimelineEvent(int64_t scanId, const TimelineEvent& event);

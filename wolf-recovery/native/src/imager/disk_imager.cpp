@@ -68,7 +68,6 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
     }
 
     uint64_t sector = 0;
-    int highLatencyCount = 0;
 
     while (sector < totalSectors) {
         if (!isRunning_) break;
@@ -81,6 +80,10 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
         auto t2 = std::chrono::high_resolution_clock::now();
 
         auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+
+        if (!res.success || res.bytesRead == 0) {
+            badSectorReads_.fetch_add(sectorsToRead);
+        }
 
         if (res.success && res.bytesRead > 0) {
             if (ewf) ewf->write(poolBuf->data(), res.bytesRead);
@@ -105,6 +108,13 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
     } else {
         rawOut.close();
     }
+
+    // CA-003 fix: the loop's final progress event fires BEFORE finish()
+    // computes the digest, so the MD5 field always arrived empty. Emit one
+    // more completion event after the digest exists — the UI keys off this
+    // one to show the chain-of-custody panel.
+    onProgress(totalSectors, totalSectors);
+
     isRunning_ = false;
 }
 

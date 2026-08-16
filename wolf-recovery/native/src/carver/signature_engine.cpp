@@ -406,14 +406,63 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             // candidate should be down-ranked. Capped at 1 MiB so
                             // very large carves do not stall the scan.
                             int confidence = 95; // header+footer baseline
-                            if (actualSize > 0 && actualSize <= (1u << 20)) {
-                                std::vector<uint8_t> probe(static_cast<size_t>(actualSize));
+                            // CA-004 fix: when the structural validator returns a
+                            // partial score (fragmented or damaged candidate), run
+                            // Bifragmented Gap Carving over the carved span. If
+                            // removing one contiguous gap makes the object
+                            // validate, report the two fragments as data runs so
+                            // recovery stitches them correctly.
+                            bool bgcRescued = false;
+                            BgcResult bgc{};
+                            if (actualSize > 4096 && actualSize <= (256u << 10)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
                                 auto rres = reader.readSectors(it->startOffset, alignedSize, alignedBuf.data());
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
+                                    if (confidence >= 40 && confidence < 85) {
+                                        bgc = bifragmentedGapCarve(
+                                            alignedBuf.data(), static_cast<size_t>(actualSize),
+                                            0, static_cast<size_t>(actualSize),
+                                            static_cast<size_t>(actualSize) / 4,
+                                            [&ext](const uint8_t* d, size_t n) {
+                                                return dispatchValidator(ext, d, n);
+                                            });
+                                        bgcRescued = bgc.found;
+                                    }
                                 }
+                            } else if (actualSize > 0) {
+                                // Above the BGC cap: keep the header/footer
+                                // baseline; nothing else to check cheaply.
+                                confidence = 70;
+                            }
+
+                            if (bgcRescued) {
+                                FileRecord fr;
+                                fr.id = 0;
+                                fr.parentId = 0;
+                                fr.name = it->filename;
+                                fr.extension = ext;
+                                fr.path = "/recovered_raw/" + fr.name;
+                                fr.sizeBytes = actualSize - bgc.gapLen;
+                                fr.startSector = it->startSector;
+                                fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
+                                fr.runs.push_back({it->startOffset / sectorSize,
+                                                   (bgc.frag1Len + sectorSize - 1) / sectorSize});
+                                uint64_t frag2Start = it->startOffset + bgc.frag1Len + bgc.gapLen;
+                                fr.runs.push_back({frag2Start / sectorSize,
+                                                   (actualSize - bgc.frag1Len - bgc.gapLen + sectorSize - 1) / sectorSize});
+                                fr.status = 0;
+                                fr.confidence = 88; // BGC-validated reassembly
+                                fr.category = sig.category;
+                                fr.source = "carver_bgc";
+                                fr.createdAt = 0;
+                                fr.modifiedAt = 0;
+
+                                callback(fr);
+
+                                it = activeCarves.erase(it);
+                                continue;
                             }
 
                             FileRecord fr;

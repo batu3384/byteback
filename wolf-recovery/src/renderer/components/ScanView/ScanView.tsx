@@ -168,10 +168,10 @@ function ScanView({
       </div>
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
-        <DiskMapVisualizer 
-          totalSectors={progress.total} 
-          currentSector={progress.current} 
-          badSectors={[]} 
+        <DiskMapVisualizer
+          totalSectors={progress.total}
+          currentSector={progress.current}
+          badSectors={(progress as any).badSectors ?? []}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
           <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>

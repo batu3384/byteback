@@ -33,8 +33,10 @@ public:
     // computed on the fly for both formats but only surfaced for EWF).
     std::string lastImageMd5() const { return lastImageMd5_; }
 
-    void setReverseImaging(bool reverse);
-    void setMaxRetries(int retries);
+    // CA-006 fix: setReverseImaging/setMaxRetries were declared but never
+    // implemented or called — dead API removed instead of being faked.
+    // CA-007: read-failure telemetry surfaced to the UI.
+    uint64_t badSectorReads() const { return badSectorReads_.load(); }
 
 private:
     void imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress, ImageFormat format);
@@ -42,8 +44,7 @@ private:
     std::atomic<bool> isRunning_;
     std::thread imagingThread_;
 
-    std::atomic<bool> reverseImaging_{false};
-    std::atomic<int> maxRetries_{3};
+    std::atomic<uint64_t> badSectorReads_{0};
     std::string lastImageMd5_;
 };
 

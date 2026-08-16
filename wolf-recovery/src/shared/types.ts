@@ -54,6 +54,7 @@ declare global {
       getFileCount: (scanId: number) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
       getScanState: (scanId: number) => Promise<ScanState>
+      getLatestScanId: () => Promise<number>
       getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
       getAuditLog: (maxLines?: number) => Promise<string[]>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
@@ -66,6 +67,7 @@ declare global {
         driveIndex: number,
         fileRecord: FileRecord,
         destDir: string,
+        scanId?: number,
       ) => Promise<RecoverResult>
 
       // Native directory picker (main-process dialog). Resolves to the chosen

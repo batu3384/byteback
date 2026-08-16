@@ -43,15 +43,15 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   }
 
   const checkActiveSession = async () => {
-    if (window.api && window.api.getScanState) {
+    // CA-008 fix: query the REAL latest scan instead of hardcoded id 1.
+    if (window.api?.getLatestScanId && window.api.getScanState) {
       try {
-        // Query the most recent scan (using a high ID or extending API to support getActiveScan)
-        // For MVP, we iterate backwards from a reasonable max or rely on a new IPC call.
-        // Let's assume the highest ID is what we want. Since we don't have getLatestScanId,
-        // we'll leave this as a TODO and handle state via React props in the real app.
-        const state = await window.api.getScanState(1) 
-        if (state && (state.status === 0 || state.status === 1)) {
-          setActiveSession(state)
+        const latestId = await window.api.getLatestScanId()
+        if (latestId > 0) {
+          const state = await window.api.getScanState(latestId)
+          if (state && (state.status === 0 || state.status === 1)) {
+            setActiveSession(state)
+          }
         }
       } catch (err) {
         console.error("No active session found")
@@ -148,7 +148,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '16px', borderRadius: '12px' }}><FolderCheck size={28} color="var(--success-green)" /></div>
           <div>
-            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>0</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{activeSession?.recoveredFiles ?? 0}</div>
             <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Kurtarılan Dosya</div>
           </div>
         </div>
