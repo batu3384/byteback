@@ -100,6 +100,72 @@ struct ExFAT_GenericEntry {
 
 namespace wolf {
 
+
+namespace {
+// CA-002 fix: convert a FAT/exFAT cluster chain into physical sector runs.
+// The old code stored the raw cluster number in fr.startSector, which the
+// recovery engine then multiplied by sectorSize — reading a completely
+// unrelated disk region. The real sector of cluster N is
+// dataStartSector + (N-2) * sectorsPerCluster, and the chain comes from the
+// FAT table itself. Deleted files may have cleared chains: the walk is
+// bounded and cycle-checked, and stops at the first unusable entry, keeping
+// whatever it reconstructed so far.
+std::vector<FileRecord::DataRun> buildRunsFromChain(
+    DiskReader& reader, uint64_t fatStartSector, uint32_t bytesPerSector,
+    int fatBits, uint32_t firstCluster, uint32_t sectorsPerCluster,
+    uint64_t dataStartSector, size_t maxClusters) {
+    std::vector<FileRecord::DataRun> runs;
+    if (firstCluster < 2 || sectorsPerCluster == 0) return runs;
+
+    auto readFatEntry = [&](uint32_t cluster) -> uint32_t {
+        uint64_t byteOffset = (fatBits == 12) ? (uint64_t)cluster * 3 / 2
+                          : (fatBits == 16) ? (uint64_t)cluster * 2
+                          : (uint64_t)cluster * 4;
+        uint64_t sector = fatStartSector + byteOffset / bytesPerSector;
+        uint32_t off = (uint32_t)(byteOffset % bytesPerSector);
+        if (off + 4 > bytesPerSector && fatBits == 32) return 0xFFFFFFF8; // entry straddles: treat as EOC
+        uint8_t sec[8] = {0};
+        if (!reader.readSectors(sector * bytesPerSector, bytesPerSector, sec).success) return 0xFFFFFFF8;
+        if (fatBits == 32) return (uint32_t)sec[off] | ((uint32_t)sec[off+1] << 8) | ((uint32_t)sec[off+2] << 16) | ((uint32_t)sec[off+3] << 24);
+        if (fatBits == 16) return (uint32_t)((uint16_t)sec[off] | ((uint16_t)sec[off+1] << 8));
+        // FAT12
+        uint32_t v = (uint32_t)sec[off] | ((uint32_t)sec[off+1] << 8);
+        return (cluster & 1) ? (v >> 4) : (v & 0xFFF);
+    };
+
+    auto isEoc = [&](uint32_t v) -> bool {
+        if (fatBits == 12) return v >= 0xFF8;
+        if (fatBits == 16) return v >= 0xFFF8;
+        return v >= 0x0FFFFFF8;
+    };
+    auto isBad = [&](uint32_t v) -> bool {
+        if (fatBits == 12) return v == 0xFF7;
+        if (fatBits == 16) return v == 0xFFF7;
+        return v == 0x0FFFFFF7;
+    };
+
+    std::vector<uint32_t> seen;
+    uint32_t clus = firstCluster;
+    while (clus >= 2 && !isEoc(clus) && runs.size() < maxClusters) {
+        // cycle / repeated cluster guard
+        bool repeated = false;
+        for (uint32_t c : seen) if (c == clus) { repeated = true; break; }
+        if (repeated) break;
+        seen.push_back(clus);
+
+        FileRecord::DataRun run;
+        run.startSector = dataStartSector + (uint64_t)(clus - 2) * sectorsPerCluster;
+        run.sectorCount = sectorsPerCluster;
+        runs.push_back(run);
+
+        uint32_t next = readFatEntry(clus);
+        if (next < 2 || isBad(next)) break;
+        clus = next;
+    }
+    return runs;
+}
+} // namespace
+
 FATParser::FATParser() {}
 FATParser::~FATParser() {}
 
@@ -259,13 +325,22 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
             if (entry->attr & 0x10) {
                 if (name != "." && name != "..") dirClusters.push_back(firstCluster);
             } else {
+                // CA-002: emit real sector runs from the FAT chain instead of
+                // leaking the raw cluster number into startSector.
+                int fatBits = (countOfClusters < 4085) ? 12 : 16;
+                auto runs16 = buildRunsFromChain(reader, fatStartSector, bps, fatBits,
+                                                 firstCluster, bpb->sectorsPerCluster,
+                                                 dataStartSector, 65536);
                 FileRecord fr;
                 fr.id = -1; // Will be set by DB
                 fr.parentId = 0;
                 fr.name = name;
                 fr.sizeBytes = entry->fileSize;
-                fr.startSector = firstCluster; // Store cluster in startSector
-                fr.endSector = firstCluster;
+                fr.startSector = runs16.empty()
+                    ? dataStartSector + (uint64_t)(std::max<uint32_t>(firstCluster, 2) - 2) * bpb->sectorsPerCluster
+                    : runs16.front().startSector;
+                fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
+                fr.runs = std::move(runs16);
                 fr.path = "/";
                 fr.status = status;
                 fr.confidence = confidence;
@@ -354,13 +429,19 @@ void FATParser::parseFAT(wolf::DiskReader& reader, uint64_t partitionOffset, Fil
                     if (entry->attr & 0x10) {
                         dirClusters.push_back(firstCluster);
                     } else {
+                        auto runs32 = buildRunsFromChain(reader, fatStartSector, bps, 32,
+                                                         firstCluster, bpb->sectorsPerCluster,
+                                                         dataStartSector, 65536);
                         FileRecord fr;
                         fr.id = -1;
                         fr.parentId = 0;
                         fr.name = name;
                         fr.sizeBytes = entry->fileSize;
-                        fr.startSector = firstCluster;
-                        fr.endSector = firstCluster;
+                        fr.startSector = runs32.empty()
+                            ? dataStartSector + (uint64_t)(std::max<uint32_t>(firstCluster, 2) - 2) * bpb->sectorsPerCluster
+                            : runs32.front().startSector;
+                        fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
+                        fr.runs = std::move(runs32);
                         fr.path = "/";
                         fr.status = status;
                         fr.confidence = confidence;
@@ -470,13 +551,20 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
         if (pending.isDir) {
             if (pending.firstCluster >= 2) dirClusters.push_back(pending.firstCluster);
         } else {
+            auto runsex = buildRunsFromChain(reader, fatStartSector, bytesPerSector, 32,
+                                             pending.firstCluster,
+                                             (1u << bpb->sectorsPerClusterShift),
+                                             dataStartSector, 1 << 20);
             FileRecord fr;
             fr.id = -1;
             fr.parentId = 0;
             fr.name = name;
             fr.sizeBytes = pending.dataLength;
-            fr.startSector = pending.firstCluster; // cluster number (chain via FAT)
-            fr.endSector = pending.firstCluster;
+            fr.startSector = runsex.empty()
+                ? dataStartSector + (uint64_t)(std::max<uint32_t>(pending.firstCluster, 2) - 2) * (1u << bpb->sectorsPerClusterShift)
+                : runsex.front().startSector;
+            fr.endSector = fr.startSector + (uint32_t)((pending.dataLength + bytesPerCluster - 1) / bytesPerCluster) * (1u << bpb->sectorsPerClusterShift);
+            fr.runs = std::move(runsex);
             fr.path = currentPath;
             fr.status = pending.inUse ? 1 : 0;
             // Deleted sets: the FAT chain is cleared on delete, so recovery

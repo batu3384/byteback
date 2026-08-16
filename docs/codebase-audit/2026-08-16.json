@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "skill": "codebase-audit",
+  "date": "2026-08-16",
+  "root": "C:\\Users\\Batuhan\\Desktop\\disk",
+  "verdict": "BLOCK",
+  "runtime": "static",
+  "findings": [
+    {"id": "CA-001", "severity": "Critical", "category": "Unsafe behavior", "path": "wolf-recovery/src/renderer/components/ShredderView/ShredderView.tsx:36"},
+    {"id": "CA-002", "severity": "Major", "category": "Data correctness", "path": "wolf-recovery/native/src/fs/fat_parser.cpp:267"},
+    {"id": "CA-003", "severity": "Major", "category": "Functional correctness", "path": "wolf-recovery/native/src/imager/disk_imager.cpp:98"},
+    {"id": "CA-004", "severity": "Major", "category": "Completeness", "path": "wolf-recovery/native/src/carver/bgc.cpp"},
+    {"id": "CA-005", "severity": "Major", "category": "Data correctness", "path": "wolf-recovery/native/src/recovery/recovery_engine.cpp"},
+    {"id": "CA-006", "severity": "Major", "category": "API integrity", "path": "wolf-recovery/native/include/wolf_imager.h:36"},
+    {"id": "CA-007", "severity": "Major", "category": "Fake data", "path": "wolf-recovery/src/renderer/components/ScanView/ScanView.tsx:174"},
+    {"id": "CA-008", "severity": "Major", "category": "Fake data", "path": "wolf-recovery/src/renderer/components/Dashboard/Dashboard.tsx:52"},
+    {"id": "CA-009", "severity": "Major", "category": "Fake control", "path": "wolf-recovery/src/renderer/components/SearchView/KeywordSearch.tsx:66"},
+    {"id": "CA-010", "severity": "Major", "category": "Data quality", "path": "wolf-recovery/native/src/fs/ntfs_parser.cpp:406"},
+    {"id": "CA-011", "severity": "Minor", "category": "Dead code", "path": "wolf-recovery/native/src/validator/file_validator.cpp"},
+    {"id": "CA-012", "severity": "Minor", "category": "Hygiene", "path": "wolf-recovery/test.js:1"},
+    {"id": "CA-013", "severity": "Minor", "category": "Maintainability", "path": "wolf-recovery/native/src/bridge/napi_bridge.cpp"},
+    {"id": "CA-014", "severity": "Minor", "category": "UX", "path": "wolf-recovery/src/renderer/components/Layout/Header.tsx:46"},
+    {"id": "CA-015", "severity": "Info", "category": "Runtime", "path": "docs/codebase-audit/2026-08-16.md"}
+  ]
+}

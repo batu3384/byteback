@@ -52,6 +52,7 @@ export interface ScanState {
   totalSectors: number
   scannedSectors: number
   status: number
+  recoveredFiles?: number
 }
 
 export interface RecoverResult {
@@ -109,6 +110,7 @@ interface WolfEngine {
   getFileCount(scanId: number): number
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
   getScanState(scanId: number): ScanState
+  getLatestScanId(): number
   getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
   getAuditLog(maxLines?: number): string[]
   readSectors(driveIndex: number, offset: number, size: number): {
@@ -133,6 +135,7 @@ interface WolfEngine {
     driveIndex: number,
     fileRecord: FileRecord,
     destDir: string,
+    scanId?: number,
   ): RecoverResult
 }
 

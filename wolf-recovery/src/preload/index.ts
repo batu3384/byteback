@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   startScan: (driveIndex: number, scanType: string) => ipcRenderer.invoke('start-scan', driveIndex, scanType),
   stopScan: () => ipcRenderer.send('stop-scan'),
   
-  onScanProgress: (callback: (data: { current: number, total: number }) => void) => {
+  onScanProgress: (callback: (data: { current: number, total: number, badSectors?: number[] }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
     ipcRenderer.on('scan-progress', handler)
     return () => ipcRenderer.removeListener('scan-progress', handler)
@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   getFileCount: (scanId: number) => ipcRenderer.invoke('get-file-count', scanId),
   getFilesPage: (scanId: number, offset: number, limit: number) => ipcRenderer.invoke('get-files-page', scanId, offset, limit),
   getScanState: (scanId: number) => ipcRenderer.invoke('get-scan-state', scanId),
+  getLatestScanId: () => ipcRenderer.invoke('get-latest-scan-id'),
   getTimelineEvents: (scanId: number, offset: number, limit: number, filter?: string) => ipcRenderer.invoke('get-timeline-events', scanId, offset, limit, filter),
   getAuditLog: (maxLines?: number) => ipcRenderer.invoke('get-audit-log', maxLines),
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
@@ -43,8 +44,8 @@ contextBridge.exposeInMainWorld('api', {
   startWipe: (targetPath: string) => ipcRenderer.invoke('start-wipe', targetPath),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
-  recoverFile: (driveIndex: number, fileRecord: any, destDir: string) =>
-    ipcRenderer.invoke('recover-file', driveIndex, fileRecord, destDir),
+  recoverFile: (driveIndex: number, fileRecord: any, destDir: string, scanId?: number) =>
+    ipcRenderer.invoke('recover-file', driveIndex, fileRecord, destDir, scanId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),
 
   removeAllScanListeners: () => {

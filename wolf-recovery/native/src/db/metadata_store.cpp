@@ -27,7 +27,16 @@ bool MetadataStore::open(const std::string& dbPath) {
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
-    return createTables();
+    bool ok = createTables();
+    // CA-005 migration: existing databases predate the compressed column.
+    if (ok) {
+        char* err = nullptr;
+        sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN compressed INTEGER DEFAULT 0;", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err); // column already exists -> ignore
+        sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN recovered_files INTEGER DEFAULT 0;", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+    }
+    return ok;
 }
 
 void MetadataStore::close() {
@@ -48,6 +57,7 @@ bool MetadataStore::createTables() {
             total_sectors INTEGER NOT NULL,
             scanned_sectors INTEGER DEFAULT 0,
             status INTEGER DEFAULT 0,
+            recovered_files INTEGER DEFAULT 0,
             started_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -63,6 +73,7 @@ bool MetadataStore::createTables() {
             start_sector INTEGER,
             end_sector INTEGER,
             status INTEGER DEFAULT 3,
+            compressed INTEGER DEFAULT 0,
             confidence INTEGER DEFAULT 0,
             category TEXT,
             source TEXT,
@@ -99,9 +110,9 @@ bool MetadataStore::createTables() {
 int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
-            start_sector, end_sector, status, confidence, category, source,
+            start_sector, end_sector, status, compressed, confidence, category, source,
             created_at, modified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -119,11 +130,12 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
     sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
     sqlite3_bind_int(stmt, 9, r.status);
-    sqlite3_bind_int(stmt, 10, r.confidence);
-    sqlite3_bind_text(stmt, 11, r.category.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 12, r.source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 13, r.createdAt);
-    sqlite3_bind_int64(stmt, 14, r.modifiedAt);
+    sqlite3_bind_int(stmt, 10, r.compressed ? 1 : 0);
+    sqlite3_bind_int(stmt, 11, r.confidence);
+    sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 14, r.createdAt);
+    sqlite3_bind_int64(stmt, 15, r.modifiedAt);
 
     int rc = sqlite3_step(stmt);
     int64_t rowId = (rc == SQLITE_DONE) ? sqlite3_last_insert_rowid(db_) : -1;
@@ -138,9 +150,9 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
 
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
-            start_sector, end_sector, status, confidence, category, source,
+            start_sector, end_sector, status, compressed, confidence, category, source,
             created_at, modified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -159,11 +171,12 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
         sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
         sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
         sqlite3_bind_int(stmt, 9, r.status);
-        sqlite3_bind_int(stmt, 10, r.confidence);
-        sqlite3_bind_text(stmt, 11, r.category.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 12, r.source.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 13, r.createdAt);
-        sqlite3_bind_int64(stmt, 14, r.modifiedAt);
+        sqlite3_bind_int(stmt, 10, r.compressed ? 1 : 0);
+        sqlite3_bind_int(stmt, 11, r.confidence);
+        sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 14, r.createdAt);
+        sqlite3_bind_int64(stmt, 15, r.modifiedAt);
 
         sqlite3_step(stmt);
         sqlite3_reset(stmt);
@@ -233,7 +246,7 @@ bool MetadataStore::completeScan(int64_t scanId, int status) {
 std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int limit) {
     const char* sql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
-               start_sector, end_sector, status, confidence, category, source,
+               start_sector, end_sector, status, compressed, confidence, category, source,
                created_at, modified_at
         FROM files WHERE scan_id = ? ORDER BY id LIMIT ? OFFSET ?
     )";
@@ -259,11 +272,12 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         r.startSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 6));
         r.endSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
         r.status = sqlite3_column_int(stmt, 8);
-        r.confidence = sqlite3_column_int(stmt, 9);
-        r.category = safe_column_text(stmt, 10);
-        r.source = safe_column_text(stmt, 11);
-        r.createdAt = sqlite3_column_int64(stmt, 12);
-        r.modifiedAt = sqlite3_column_int64(stmt, 13);
+        r.compressed = sqlite3_column_int(stmt, 9) != 0;
+        r.confidence = sqlite3_column_int(stmt, 10);
+        r.category = safe_column_text(stmt, 11);
+        r.source = safe_column_text(stmt, 12);
+        r.createdAt = sqlite3_column_int64(stmt, 13);
+        r.modifiedAt = sqlite3_column_int64(stmt, 14);
         records.push_back(r);
     }
 
@@ -305,9 +319,33 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
         state.status = sqlite3_column_int(stmt, 5);
         state.startedAt = sqlite3_column_int64(stmt, 6);
         state.updatedAt = sqlite3_column_int64(stmt, 7);
+        state.recoveredFiles = sqlite3_column_int64(stmt, 8);
     }
     sqlite3_finalize(stmt);
     return state;
+}
+
+// ---- Session + recovery bookkeeping (CA-008) ----
+
+int64_t MetadataStore::getLatestScanId() {
+    const char* sql = "SELECT id FROM scans ORDER BY id DESC LIMIT 1";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    int64_t id = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+bool MetadataStore::incrementRecovered(int64_t scanId) {
+    const char* sql = "UPDATE scans SET recovered_files = recovered_files + 1, updated_at = ? WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(std::time(nullptr)));
+    sqlite3_bind_int64(stmt, 2, scanId);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 // ---- Unified timeline ----

@@ -16,62 +16,17 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
   React.useEffect(() => {
     return () => {
       // Defensive cleanup on unmount.
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      window.clearInterval(progressTimerRef.current ?? undefined);
     };
   }, []);
 
   const handleShred = () => {
-    if (selectedDrive === null) return;
-
-    if (!window.confirm(`DİKKAT! Sürücü ${selectedDrive} üzerindeki boş alanlar KALICI OLARAK silinecektir. Bu işlem GERİ ALINAMAZ. Onaylıyor musunuz?`)) {
-      return;
-    }
-
-    // Set initial loading state
-    setStatus('shredding');
-    setProgress(5);
-
-    // The native wipe is async and does not yet stream per-pass progress
-    // (a structured progress event is on the roadmap). Until then we run an
-    // indeterminate ticker so the UI reflects "work in progress" rather than
-    // a frozen bar, capped below 95% so completion still visibly advances.
-    if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-    progressTimerRef.current = setInterval(() => {
-      setProgress(prev => (prev >= 95 ? prev : prev + 1));
-    }, 800);
-
-    // Call the real IPC endpoint
-    if (window.api && window.api.startWipe) {
-      window.api.startWipe(selectedDrive.toString()).then((success: boolean) => {
-        if (progressTimerRef.current) {
-          clearInterval(progressTimerRef.current);
-          progressTimerRef.current = null;
-        }
-        if (success) {
-          setProgress(100);
-          setStatus('done');
-        } else {
-          alert('Silme işlemi başarısız oldu. Lütfen uygulamayı Yönetici (Administrator) olarak çalıştırdığınızdan emin olun.');
-          setStatus('idle');
-        }
-      }).catch((e: any) => {
-        if (progressTimerRef.current) {
-          clearInterval(progressTimerRef.current);
-          progressTimerRef.current = null;
-        }
-        console.error(e);
-        alert('Silme işlemi sırasında hata oluştu.');
-        setStatus('idle');
-      });
-    } else {
-      if (progressTimerRef.current) {
-        clearInterval(progressTimerRef.current);
-        progressTimerRef.current = null;
-      }
-      alert('Kritik Hata: IPC (window.api) modülüne erişilemiyor. Lütfen uygulamayı tam yetkili modunda çalıştırın.');
-      setStatus('idle');
-    }
+    // CA-001: disk-wide free-space wiping is disabled until a filesystem-aware
+    // implementation exists. The native worker rejects device paths outright,
+    // and this handler no longer sends a drive index anywhere.
+    alert('Boş alan imhası geçici olarak devre dışıdır (denetim bulgusu CA-001). Motor, yanlışlıkla tüm diski ezmesini önlemek için fiziksel sürücü hedeflerini reddediyor.');
   };
+
 
   return (
     <div className="shredder-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
@@ -92,24 +47,29 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
           <div>
             <h4 style={{ color: 'var(--warning-yellow)', marginBottom: '8px', fontSize: '1.1rem' }}>Önemli Güvenlik Uyarısı</h4>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
-              Bu işlem, seçtiğiniz diskin <strong>sadece boş alanlarındaki</strong> (silinmiş ama fiziksel olarak diskte duran) kalıntıları tamamen yok eder. Mevcut dosyalarınıza zarar vermez ancak eskiden silinmiş verilerin kurtarılmasını imkansız hale getirir. SSD sürücülerde (TRIM) bu işlem diskin ömrünü (TBW) bir miktar azaltabilir.
+              <strong>Disk genelinde boş alan imhası geçici olarak devre dışıdır.</strong> Denetimde
+              (CA-001) imha zincirinin arayüz sözüyle çeliştiği saptandı: yerel imha motoru tek dosyaları
+              güvenle ezebiliyor, ancak bir <em>diskin boş alanını</em> güvenle ezecek dosya sistemi
+              farkındaki uygulama henüz yok. Yanlış hedefe yazmayı önlemek için motor artık fiziksel
+              sürücü yollarını reddediyor ve bu ekran o uygulama hazırlanana kadar kilitli. Tek dosya
+              imhası (dosya yolu ile) yerel motorda çalışır durumdadır.
             </p>
           </div>
         </div>
 
         <div className="shredder-card glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          
+
           <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Server size={16} /> Hedef Sürücü
             </label>
-            <select 
-              style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
-              value={selectedDrive || ''} 
+            <select
+              style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none', opacity: 0.5 }}
+              value={selectedDrive || ''}
               onChange={(e) => setSelectedDrive(Number(e.target.value))}
-              disabled={status === 'shredding'}
+              disabled
             >
-              <option value="" disabled style={{ background: 'var(--bg-surface)' }}>Temizlenecek Sürücüyü Seçin...</option>
+              <option value="" disabled style={{ background: 'var(--bg-surface)' }}>Boş alan imhası devre dışı (CA-001)</option>
               {drives && drives.map(d => (
                 <option key={d.index} value={d.index} style={{ background: 'var(--bg-surface)' }}>
                   Sürücü {d.index} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
@@ -126,13 +86,13 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
           </div>
 
           {status === 'idle' && (
-            <button 
-              className="btn-danger shred-btn" 
-              onClick={handleShred} 
-              disabled={selectedDrive === null}
-              style={{ padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: '16px' }}
+            <button
+              className="btn-danger shred-btn"
+              disabled
+              title="Boş alan imhası, dosya sistemi farkındaki uygulama hazırlanana kadar devre dışıdır (CA-001)."
+              style={{ padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: '16px', opacity: 0.5, cursor: 'not-allowed' }}
             >
-              <ShieldAlert size={20} /> GÜVENLİ İMHAYI BAŞLAT
+              <ShieldAlert size={20} /> BOŞ ALAN İMHASI DEVRE DIŞI
             </button>
           )}
 

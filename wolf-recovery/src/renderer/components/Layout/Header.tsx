@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import './Header.css'
-import { Settings, HelpCircle, Bell, Sun, Moon } from 'lucide-react'
+import { Sun, Moon } from 'lucide-react'
 
 interface HeaderProps {
   title: string
@@ -43,9 +43,6 @@ function Header({ title }: HeaderProps): React.ReactElement {
         >
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
-        <button className="icon-btn" title="Bildirimler"><Bell size={18} /></button>
-        <button className="icon-btn" title="Ayarlar"><Settings size={18} /></button>
-        <button className="icon-btn" title="Yardım ve Belgeler"><HelpCircle size={18} /></button>
       </div>
     </header>
   )

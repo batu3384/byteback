@@ -23,7 +23,7 @@ function App(): React.ReactElement {
   
   // Global Scan State (Persists across tab changes)
   const [filesFound, setFilesFound] = useState<any[]>([])
-  const [scanProgress, setScanProgress] = useState({ current: 0, total: 100 })
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 100, badSectors: [] as number[] })
   const [scanStatus, setScanStatus] = useState('Bekleniyor...')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
@@ -43,8 +43,8 @@ function App(): React.ReactElement {
     let cleanupFileFound: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
-      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number }) => {
-        setScanProgress(data)
+      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number, badSectors?: number[] }) => {
+        setScanProgress({ current: data.current, total: data.total, badSectors: data.badSectors ?? [] })
         if (data.current >= data.total && data.total > 0) {
           setScanStatus('Tarama Tamamlandı')
           if (timerRef.current) clearInterval(timerRef.current)
@@ -78,7 +78,7 @@ function App(): React.ReactElement {
     
     // Reset Global State
     setFilesFound([])
-    setScanProgress({ current: 0, total: 100 })
+    setScanProgress({ current: 0, total: 100, badSectors: [] })
     setScanStatus('Tarama Sürüyor...')
     setScanElapsed(0)
     setActivePage('scan')
@@ -133,7 +133,7 @@ function App(): React.ReactElement {
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
-        return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} />
+        return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} scanId={activeScanId} />
       case 'search':
         return <KeywordSearch filesFound={filesFound} />
       case 'timeline':

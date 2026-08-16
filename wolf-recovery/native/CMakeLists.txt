@@ -31,6 +31,10 @@ set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
 
 set(SOURCES
   src/bridge/napi_bridge.cpp
+  src/bridge/bridge_drives.cpp
+  src/bridge/bridge_scan.cpp
+  src/bridge/bridge_imager.cpp
+  src/bridge/bridge_wipe.cpp
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
@@ -47,10 +51,8 @@ set(SOURCES
     src/crypto/md5.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
-    src/carver/entropy_analyzer.cpp
     src/math/entropy.cpp
     src/smart/smart_monitor.cpp
-    src/validator/file_validator.cpp
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
     src/forensic/audit_logger.cpp

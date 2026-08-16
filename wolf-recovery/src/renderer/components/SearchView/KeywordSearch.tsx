@@ -11,14 +11,31 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [searchDone, setSearchDone] = useState(false);
+  const [useRegex, setUseRegex] = useState(false);
+  const [regexError, setRegexError] = useState('');
 
   const handleSearch = () => {
     if (!query.trim()) return;
     setSearching(true);
     setSearchDone(false);
-    
-    const lowerQuery = query.toLowerCase();
-    const filtered = filesFound.filter(f => f.name && f.name.toLowerCase().includes(lowerQuery));
+    setRegexError('');
+
+    // CA-009 fix: the Regex checkbox now actually changes the matching.
+    // An invalid pattern is reported instead of silently ignored.
+    let filtered: any[] = [];
+    if (useRegex) {
+      try {
+        const re = new RegExp(query, 'i');
+        filtered = filesFound.filter(f => f.name && re.test(f.name));
+      } catch (err: any) {
+        setRegexError(`Geçersiz regex: ${err?.message ?? err}`);
+        setSearching(false);
+        return;
+      }
+    } else {
+      const lowerQuery = query.toLowerCase();
+      filtered = filesFound.filter(f => f.name && f.name.toLowerCase().includes(lowerQuery));
+    }
     setResults(filtered);
     setSearching(false);
     setSearchDone(true);
@@ -49,6 +66,12 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
           </button>
         </div>
 
+        {regexError && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--alert-red)', fontSize: '0.85rem' }}>
+            <AlertCircle size={16} /> {regexError}
+          </div>
+        )}
+
         <div className="search-filters" style={{ display: 'flex', gap: '16px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)' }}>
             <Filter size={16} /> Filtreler:
@@ -63,7 +86,13 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
             <input type="checkbox" disabled /> İçerik Araması (Yakında)
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input type="checkbox" /> Düzenli İfade (Regex)
+            <input
+              type="checkbox"
+              checked={useRegex}
+              onChange={(e) => { setUseRegex(e.target.checked); setRegexError(''); }}
+              id="regex-toggle"
+            />
+            <label htmlFor="regex-toggle" style={{ cursor: 'pointer' }}> Düzenli İfade (Regex)</label>
           </label>
         </div>
       </div>

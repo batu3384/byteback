@@ -131,6 +131,37 @@ std::string decodeNtfsName(const NTFS_FileNameAttribute* fnAttr, size_t availabl
 }
 } // namespace
 
+namespace {
+// CA-010 fix: derive the category from the extension instead of labelling
+// every NTFS record "Document". Keeps the ResultsView category filters and
+// report statistics honest for MFT-sourced files.
+std::string categoryForName(const std::string& name) {
+    size_t dot = name.find_last_of('.');
+    std::string ext = (dot != std::string::npos && dot + 1 < name.size())
+                      ? name.substr(dot + 1) : "";
+    for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    auto in = [&](const char* list) {
+        std::string l(list);
+        size_t pos = 0;
+        while (pos < l.size()) {
+            size_t comma = l.find(',', pos);
+            std::string item = l.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            if (item == ext) return true;
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+        return false;
+    };
+    if (in("jpg,jpeg,png,gif,bmp,tiff,webp,heic,svg,raf,jp2,cr3")) return "Image";
+    if (in("mp4,avi,mkv,mov,flv,wmv,mpg,mpeg,3gp,webm")) return "Video";
+    if (in("mp3,wav,flac,ogg,aac,wma,m4a,opus")) return "Audio";
+    if (in("doc,docx,pdf,txt,xls,xlsx,ppt,pptx,rtf,odt")) return "Document";
+    if (in("zip,rar,7z,gz,tar,iso,cab")) return "Archive";
+    if (in("exe,dll,sys,elf")) return "Executable";
+    return "Other";
+}
+} // namespace
+
 bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen()) return false;
 
@@ -216,6 +247,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 uint64_t finalEndSector = 0;
                 int64_t createdAt = 0;
                 int64_t modifiedAt = 0;
+                // CA-005: non-resident $DATA with a compression unit means the
+                // on-disk bytes are LZNT1-compressed; recovery must inflate.
+                bool dataCompressed = false;
 
                 // Alternate Data Streams (ADS): a record may carry several
                 // $DATA attributes; only the unnamed one is the file's main
@@ -365,6 +399,7 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                                     }
                                 }
 
+                                if (nonResAttr->compressionUnit != 0) dataCompressed = true;
                                 if (isAds) {
                                     adsEntries.push_back({adsName, nonResAttr->realSize, localRuns, localStart});
                                 } else {
@@ -403,8 +438,9 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                 if (!usaOk) fr.confidence = std::max(0, fr.confidence - 25);
                 // Directories are reported as a distinct category so the UI can
                 // render a folder tree; they carry no recoverable $DATA payload.
-                fr.category = isDirectory ? "Folder" : "Document";
+                fr.category = isDirectory ? "Folder" : categoryForName(filename);
                 fr.source = "ntfs_mft";
+                fr.compressed = dataCompressed;
                 fr.createdAt = createdAt;
                 fr.modifiedAt = modifiedAt;
                 

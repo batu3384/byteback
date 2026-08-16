@@ -76,30 +76,30 @@ TEST(Bgc, FindsGapInSplitJpeg) {
     // depends on where the validator's SOS/EOI heuristic fires, so we assert
     // that *some* gap was found rather than a specific offset.
     auto s = buildSplitJpeg(/*splitAt=*/8, /*gapLen=*/10);
-    size_t gap = bifragmentedGapCarve(s.disk.data(), s.disk.size(),
-                                      s.headerOff, s.footerOff,
-                                      /*maxGap=*/64, validateJpeg);
-    EXPECT_NE(gap, SIZE_MAX);
+    BgcResult r = bifragmentedGapCarve(s.disk.data(), s.disk.size(),
+                                       s.headerOff, s.footerOff,
+                                       /*maxGap=*/64, validateJpeg);
+    EXPECT_TRUE(r.found);
 }
 
 TEST(Bgc, ReturnsSizeMaxWhenNoGapValidates) {
     // A "disk" full of junk — no JPEG exists, so no gap can validate.
     std::vector<uint8_t> disk(256, 0x42);
-    size_t gap = bifragmentedGapCarve(disk.data(), disk.size(),
-                                      0, disk.size(),
-                                      32, validateJpeg);
-    EXPECT_EQ(gap, SIZE_MAX);
+    BgcResult r = bifragmentedGapCarve(disk.data(), disk.size(),
+                                       0, disk.size(),
+                                       32, validateJpeg);
+    EXPECT_FALSE(r.found);
 }
 
 TEST(Bgc, RejectsBadInputs) {
     std::vector<uint8_t> disk(64, 0);
-    EXPECT_EQ(bifragmentedGapCarve(nullptr, 64, 0, 64, 32, validateJpeg), SIZE_MAX);
-    EXPECT_EQ(bifragmentedGapCarve(disk.data(), 64, 0, 64, 32, nullptr), SIZE_MAX);
-    EXPECT_EQ(bifragmentedGapCarve(disk.data(), 64, 64, 0, 32, validateJpeg), SIZE_MAX); // header>=footer
+    EXPECT_FALSE(bifragmentedGapCarve(nullptr, 64, 0, 64, 32, validateJpeg).found);
+    EXPECT_FALSE(bifragmentedGapCarve(disk.data(), 64, 0, 64, 32, nullptr).found);
+    EXPECT_FALSE(bifragmentedGapCarve(disk.data(), 64, 64, 0, 32, validateJpeg).found); // header>=footer
 }
 
 TEST(Bgc, TinySpanReturnsSizeMax) {
     // A span too small to contain a gap produces no result.
     std::vector<uint8_t> disk(8, 0);
-    EXPECT_EQ(bifragmentedGapCarve(disk.data(), disk.size(), 0, 3, 32, validateJpeg), SIZE_MAX);
+    EXPECT_FALSE(bifragmentedGapCarve(disk.data(), disk.size(), 0, 3, 32, validateJpeg).found);
 }
