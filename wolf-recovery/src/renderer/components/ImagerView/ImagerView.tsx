@@ -21,6 +21,8 @@ function ImagerView(): React.ReactElement {
   const [status, setStatus] = useState<string>('')
   const [elapsed, setElapsed] = useState(0)
   const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
+  const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
+  const [imageMd5, setImageMd5] = useState<string>('')
   
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -32,18 +34,18 @@ function ImagerView(): React.ReactElement {
 
     let cleanupProgress: (() => void) | undefined
     if (window.api && window.api.onImagingProgress) {
-      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number }) => {
+      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string }) => {
         setProgress(data)
-        
+
         setLatencies(prev => {
           const now = Date.now();
           const lastTime = (window as any).lastProgressTime || now;
           const delta = now - lastTime;
           (window as any).lastProgressTime = now;
-          
+
           // Avoid 0ms spikes on first run
           const finalLatency = delta > 0 && delta < 1000 ? delta : 15;
-          
+
           const next = [...prev, finalLatency];
           if (next.length > 50) next.shift(); // Keep last 50 reads
           return next;
@@ -52,6 +54,7 @@ function ImagerView(): React.ReactElement {
         if (data.current >= data.total && data.total > 0) {
           setStatus('İmaj Alma Tamamlandı ✅')
           setImaging(false)
+          if (data.md5) setImageMd5(data.md5)
           if (timerRef.current) clearInterval(timerRef.current)
         }
       })
@@ -68,17 +71,18 @@ function ImagerView(): React.ReactElement {
       alert('Lütfen kaynak sürücü ve hedef dosya yolu belirleyin.')
       return
     }
-    
+
     setImaging(true)
     setStatus('İmaj Alınıyor...')
     setProgress({ current: 0, total: 0 })
     setElapsed(0)
-    
+    setImageMd5('')
+
     if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = setInterval(() => setElapsed(prev => prev + 1), 1000)
-    
+
     if (window.api && window.api.startImaging) {
-      window.api.startImaging(Number(selectedDrive), destPath)
+      window.api.startImaging(Number(selectedDrive), destPath, format)
     }
   }
   
@@ -134,9 +138,14 @@ function ImagerView(): React.ReactElement {
 
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>İmaj Formatı</label>
-          <select style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }} disabled={imaging}>
-            <option style={{ background: 'var(--bg-surface)' }}>RAW (DD) Birebir Kopya (.dd, .img)</option>
-            <option style={{ background: 'var(--bg-surface)' }} disabled>E01 (EnCase Forensic) - Çok Yakında</option>
+          <select
+            value={format}
+            onChange={(e) => setFormat(e.target.value as 'raw' | 'ewf')}
+            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+            disabled={imaging}
+          >
+            <option value="raw" style={{ background: 'var(--bg-surface)' }}>RAW (DD) Birebir Kopya (.dd, .img)</option>
+            <option value="ewf" style={{ background: 'var(--bg-surface)' }}>E01 (EnCase Forensic) + MD5 Hash (.E01)</option>
           </select>
         </div>
 
@@ -180,6 +189,17 @@ function ImagerView(): React.ReactElement {
             <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
               <div className="progress-bar-fill" style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
             </div>
+
+            {imageMd5 && (
+              <div style={{ marginTop: '16px', padding: '12px 16px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px' }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--success-green)', marginBottom: '6px', fontWeight: 500 }}>
+                  🔒 İmaj Bütünlük Doğrulaması (Zincirleme Sorumluluk)
+                </div>
+                <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-main)', wordBreak: 'break-all', userSelect: 'all' }}>
+                  MD5: {imageMd5}
+                </div>
+              </div>
+            )}
 
             {/* Predictive Latency Pulse Chart */}
             <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
