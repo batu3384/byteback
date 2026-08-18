@@ -1,4 +1,5 @@
 #include "fs/virtual_raid.h"
+#include "fs/raid_layout.h"
 #include <algorithm>
 #include <cstring>
 
@@ -153,12 +154,9 @@ std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const
         size_t stripe_index = logical_block_index / (num_disks_ - 1);
         size_t block_in_stripe = logical_block_index % (num_disks_ - 1);
 
-        // Left-asymmetric: parity rotates one disk per stripe.
-        size_t parity_disk = (num_disks_ - 1) - (stripe_index % num_disks_);
-        size_t data_disk = block_in_stripe;
-        if (data_disk >= parity_disk) {
-            data_disk++;
-        }
+        // Left-asymmetric placement lives in raid_layout.cpp (unit-tested).
+        size_t parity_disk = raid_layout::raid5ParityDisk(stripe_index, static_cast<uint32_t>(num_disks_));
+        size_t data_disk = raid_layout::raid5DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe), static_cast<uint32_t>(num_disks_));
 
         uint64_t disk_offset = static_cast<uint64_t>(stripe_index) * block_size_ + offset_in_block;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
@@ -203,20 +201,13 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
         size_t stripe_index = logical_block_index / (num_disks_ - 2);
         size_t block_in_stripe = logical_block_index % (num_disks_ - 2);
 
-        size_t p_disk = (num_disks_ - 1) - (stripe_index % num_disks_);
-        size_t q_disk = (p_disk == 0) ? (num_disks_ - 1) : (p_disk - 1);
+        raid_layout::Raid6Map pq = raid_layout::raid6Disks(stripe_index, static_cast<uint32_t>(num_disks_));
+        size_t p_disk = pq.pDisk;
+        size_t q_disk = pq.qDisk;
 
         // Map the logical data block to a physical slot: walk disk order,
-        // skipping P and Q positions.
-        size_t data_disk = 0;
-        {
-            size_t seen = 0;
-            for (size_t i = 0; i < num_disks_; ++i) {
-                if (i == p_disk || i == q_disk) continue;
-                if (seen == block_in_stripe) { data_disk = i; break; }
-                seen++;
-            }
-        }
+        // skipping P and Q positions (raid_layout.cpp owns the placement).
+        size_t data_disk = raid_layout::raid6DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe), static_cast<uint32_t>(num_disks_));
 
         uint64_t stripe_base = static_cast<uint64_t>(stripe_index) * block_size_;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
@@ -310,13 +301,13 @@ std::vector<uint8_t> VirtualRaid::read_raid10(size_t offset, size_t length) cons
         size_t block_index = offset / block_size_;
         size_t offset_in_block = offset % block_size_;
         size_t num_pairs = num_disks_ / 2;
-        size_t pair = block_index % num_pairs;
+        size_t pair = raid_layout::raid10Pair(block_index, static_cast<uint32_t>(num_disks_));
         size_t block_on_pair = block_index / num_pairs;
         uint64_t disk_offset = static_cast<uint64_t>(block_on_pair) * block_size_ + offset_in_block;
 
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
-        size_t memberA = pair * 2;
-        size_t memberB = pair * 2 + 1;
+        size_t memberA = raid_layout::raid10MemberA(block_index, static_cast<uint32_t>(num_disks_));
+        size_t memberB = raid_layout::raid10MemberB(block_index, static_cast<uint32_t>(num_disks_));
 
         bool ok = false;
         if (disk_active_[memberA]) {

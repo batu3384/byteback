@@ -193,6 +193,26 @@ inline int validatePdf(const uint8_t* data, size_t size) {
     return 25;
 }
 
+// ---- RIFF container (WebP / AVI / WAV) ----
+// The RIFF header carries the subtype at bytes 8..11 ("WEBP", "AVI ", "WAVE");
+// carving by the bare magic reports the same bytes once and the subtype
+// resolves the real extension at emit time (CA-006).
+inline const char* detectRiffSubtype(const uint8_t* data, size_t size) {
+    if (size < 12) return nullptr;
+    if (std::memcmp(data + 8, "WEBP", 4) == 0) return "webp";
+    if (std::memcmp(data + 8, "AVI ", 4) == 0) return "avi";
+    if (std::memcmp(data + 8, "WAVE", 4) == 0) return "wav";
+    return nullptr;
+}
+
+inline int validateRiff(const uint8_t* data, size_t size) {
+    if (size < 12) return 0;
+    if (std::memcmp(data, "RIFF", 4) != 0) return 0;
+    // A trailing RIFF tag is optional in practice; subtype presence is the
+    // structural evidence we can rely on.
+    return detectRiffSubtype(data, size) ? 90 : 15;
+}
+
 // ---- GZIP ----
 // Header: 1F 8B [method] [flags] [mtime:4] [xfl] [os]. Method must be 0x08
 // (deflate). The footer is a CRC-32 of the uncompressed data + uncompressed

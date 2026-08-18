@@ -51,6 +51,9 @@ public:
 private:
     std::vector<FileSignature> signatures;
     std::vector<ACTrieNode> acNodes;
+    // CA-001: per-scan BGC budget — the rescue path is bounded so a stream of
+    // partially-validated junk candidates can never dominate the scan time.
+    int bgcBudget_ = 32;
 
     std::vector<uint8_t> hexToBytes(const std::string& hex);
 
@@ -83,7 +86,8 @@ struct BgcResult {
 BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t headerOffset, size_t footerOffset,
                                size_t maxGapBytes,
-                               const std::function<int(const uint8_t*, size_t)>& validator);
+                               const std::function<int(const uint8_t*, size_t)>& validator,
+                               size_t stepBytes = 1);
 
 } // namespace wolf
 

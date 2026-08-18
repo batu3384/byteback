@@ -274,8 +274,16 @@ SmartStatus SmartMonitor::getSmartStatus(int driveIndex) {
     // ATA: Weibull failure model over defect counts, as before.
     // P(t) = 1 - exp(-(t/eta)^beta) with defects as the stress proxy.
     double criticalErrors = status.reallocatedSectors + (status.pendingSectors * 1.5);
-    double eta = 500.0;
-    double beta = 1.5;
+    // CA-003: UNCALIBRATED empirical model. eta (characteristic "life" in
+    // defect count) and beta (shape, >1 = wear-out) are engineering defaults,
+    // NOT fitted to any field data. Treat the resulting score as a heuristic
+    // triage threshold — do not present it as a reliability prediction until
+    // calibrated against field failure data (e.g. Backblaze-style datasets)
+    // or the user's own scan history.
+    constexpr double kWeibullEta = 500.0;
+    constexpr double kWeibullBeta = 1.5;
+    double eta = kWeibullEta;
+    double beta = kWeibullBeta;
     double failureProbability = 1.0 - std::exp(-std::pow(criticalErrors / eta, beta));
     double healthPercentage = (1.0 - failureProbability) * 100.0;
 
