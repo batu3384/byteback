@@ -1,0 +1,83 @@
+# Wolf Recovery — Mimari
+
+Bu belge, kod tabanındaki modül haritasını ve veri akışını özetler. Hedef
+kitle: projeye katkı yapacak mühendisler. Kullanıcı yüzü için `README.md`'ye bakın.
+
+## Katmanlar ve Veri Akışı
+
+```
+Renderer (React)          Main (Electron)           Native (C++ .node)
+────────────────          ───────────────           ──────────────────
+components/*  ──preload──▶ ipc-handlers.ts ────────▶ bridge_*.cpp
+window.api                 native-bridge.ts          │
+                                                  ┌──┴───────────────┐
+                                                  │ wolf::Engine     │
+                                                  │ ScanCoordinator  │
+                                                  │ DiskImager/Ewf   │
+                                                  │ RecoveryEngine   │
+                                                  │ VirtualRaid      │
+                                                  └──┬───────────────┘
+                                                     │ DiskReader (DeviceIoControl)
+                                                  Fiziksel disk (salt-okunur)
+```
+
+- Renderer hiçbir zaman native'e doğrudan dokunmaz; `preload/index.ts`
+  `contextBridge` ile beyaz liste API'si açar (`contextIsolation: true`).
+- Tüm disk erişimi `GENERIC_READ` üzerindendir; motor yazma yapmaz (imaj
+  çıktısı dosyaya, diske değil).
+
+## Native Modüller (`native/src/`)
+
+| Dizin | Sorumluluk | Öne çıkan dosyalar |
+|---|---|---|
+| `io/` | Ham fiziksel disk erişimi, kötü sektör telemetrisi | `disk_reader_win.cpp` |
+| `fs/` | Dosya sistemi ayrıştırıcıları ve yerleşim matematiği | `ntfs_parser.cpp`, `fat_parser.cpp`, `ext4_parser.cpp`, `fat_chain.cpp` (saf FAT zincir/DOS-zaman), `raid_layout.cpp` (saf RAID 5/6/10 yerleşimi), `raid6_math.cpp` (GF(2⁸)), `virtual_raid.cpp`, `partition_scanner.cpp` |
+| `carver/` | İmza tabanlı kurtarma | `signature_engine.cpp` (Aho-Corasick + FOV + BGC kurtarma yolu), `bgc.cpp` (iki parçalı gap carving) |
+| `recovery/` | Dosyayı diskten hedefe yazma | `recovery_engine.cpp` (sparse/LZNT1 açma, MD5) |
+| `imager/` | Disk imajlama | `disk_imager.cpp` (raw/EWF seçimi), `ewf_writer.cpp` (E01 konteyneri) |
+| `crypto/` | Ortak özet fonksiyonları | `md5.cpp` (RFC 1321 vektörlü) |
+| `db/` | SQLite üstveri deposu | `metadata_store.cpp` (dosyalar, taramalar, zaman çizelgesi) |
+| `forensic/` | Hash zincirli denetim günlüğü | `audit_logger.cpp` (SHA-256, RFC 6234 vektörlü) |
+| `smart/` | ATA SMART + NVMe sağlık günlüğü | `smart_monitor.cpp` |
+| `bridge/` | NAPI bağlayıcıları, konuya göre bölünmüş | `bridge_common.h`, `bridge_{drives,scan,imager,wipe}.cpp`, `napi_bridge.cpp` (yalnızca Init) |
+| `security/` | Dosya imhası (aygıt yolları reddedilir) | `data_shredder.cpp` |
+
+## Doğruluk Güvencesi
+
+Kritik matematiğin tamamı birim testlidir (`native/tests/`, 86 test):
+
+- **MD5 / SHA-256** — RFC 1321 / RFC 6234 vektörleri, zincir katlama testi.
+- **GF(2⁸) Reed-Solomon** — alan aksiyomları, üs tablosu, iki-disk kaybı
+  kurtarma cebiri (polinom 0x11D).
+- **RAID yerleşimi** — stripe→(veri, parite) beklenti tabloları ve her
+  stripe'ta her diskin birer kez kullanıldığı permutasyon değişmezgeci.
+- **FAT zincir + DOS zaman** — sentetik tablolar, döngü koruması, artık gün
+  vektörleri (Python `datetime` ile bağımsız doğrulanmış).
+- **LZNT1 / USA fixup / USN / entropi / EWF konteyner** — kendi format
+  ayrıştırıcılarıyla gidiş-dönüş testleri.
+
+Sahne arkasında kalan bilinen sınırlar (Weibull kalibrasyonu, bağımsız EWF
+okuyucu doğrulaması vb.) ilgili dosyalarda ve README'de açıkça etiketlidir.
+
+## Çalışma Zamanı Varlıkları
+
+- `resources/signatures.json` — isteğe bağlı kullanıcı imza seti; yoksa motor
+  gömülü ~114 imzalı tabloyu kullanır.
+- `<userData>/wolf_recovery.db` — tarama üstverisi (WAL).
+- `<userData>/wolf_recovery.db.audit.log` — SHA-256 hash zincirli denetim
+  günlüğü; raporlar son kayıtları gömer.
+
+## Geliştirme Komutları
+
+```bash
+npm run build:native   # C++ motoru derle (cmake-js)
+npm run dev            # native + electron-vite geliştirme oturumu
+npm run typecheck      # tsc (web + node)
+npm run test           # Vitest (renderer)
+npm run test:native    # GoogleTest (86 test)
+npm run dist           # NSIS kurulum paketi (release/)
+```
+
+Not: `npm run build:native` test üretecinin önbelleğini sıfırlar; test
+koşusundan önce `cmake -S native -B native/build -DWOLF_BUILD_TESTS=ON` ile
+yeniden yapılandırın.
