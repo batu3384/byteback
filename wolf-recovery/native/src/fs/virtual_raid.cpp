@@ -26,12 +26,12 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
         if (!reader->openDrive(idx)) {
             throw std::runtime_error("Failed to open physical drive for RAID.");
         }
-        // All array members are assumed to be the same model; the smallest
-        // size would be the real bound, but arrays built from identical disks
-        // dominate in practice.
-        if (disk_size_ == 0) {
-            disk_size_ = reader->getDiskSize();
+        // All array members must be readable; capacity is bounded by the smallest disk.
+        uint64_t memberSize = reader->getDiskSize();
+        if (memberSize == 0) {
+            throw std::runtime_error("RAID member disk has zero size.");
         }
+        disk_size_ = (disk_size_ == 0) ? memberSize : std::min(disk_size_, memberSize);
         disk_readers_.push_back(reader);
     }
 }

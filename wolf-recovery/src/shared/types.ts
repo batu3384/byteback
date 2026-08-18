@@ -1,10 +1,8 @@
 // Shared type definitions for renderer and main process.
-// Re-exports the canonical types from native-bridge so there is a single
-// source of truth for the IPC contract and native API surface.
-
 export type {
   DriveInfo,
   FileRecord,
+  DataRun,
   SmartStatus,
   ScanState,
   RecoverResult,
@@ -14,7 +12,7 @@ export type {
   TimelineResult,
   ProgressCallback,
   FileFoundCallback,
-} from '../main/native-bridge'
+} from './ipc-contract'
 
 import type {
   DriveInfo,
@@ -28,7 +26,7 @@ import type {
   TimelineResult,
   ProgressCallback,
   FileFoundCallback,
-} from '../main/native-bridge'
+} from './ipc-contract'
 
 declare global {
   interface Window {
@@ -62,7 +60,6 @@ declare global {
       startWipe: (targetPath: string) => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
 
-      // File recovery: returns {success, destPath, bytesRecovered, md5Hash}
       recoverFile: (
         driveIndex: number,
         fileRecord: FileRecord,
@@ -70,9 +67,8 @@ declare global {
         scanId?: number,
       ) => Promise<RecoverResult>
 
-      // Native directory picker (main-process dialog). Resolves to the chosen
-      // path or null if the user cancelled.
       pickDirectory: () => Promise<string | null>
+      pickSaveImage: (format: 'raw' | 'ewf') => Promise<string | null>
     }
   }
 }

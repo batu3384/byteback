@@ -8,6 +8,7 @@
 #include <future>
 #include <unordered_map>
 #include <algorithm>
+#include <algorithm>
 
 namespace wolf {
 
@@ -163,15 +164,22 @@ std::string categoryForName(const std::string& name) {
 } // namespace
 
 bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
-    if (!reader.isOpen()) return false;
+    return scanAt(reader, callback, isRunning, 0, 0);
+}
+
+bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                        uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
 
     uint64_t diskSize = reader.getDiskSize();
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
+
+    const uint64_t volumeStartSector = partitionOffsetBytes / sectorSize;
     
     uint32_t sectorsPerCluster = 8;
     std::vector<uint8_t> bootSector(sectorSize);
-    if (reader.readSectors(0, sectorSize, bootSector.data()).success) {
+    if (reader.readSectors(partitionOffsetBytes, sectorSize, bootSector.data()).success) {
         sectorsPerCluster = bootSector[0x0D];
         if (sectorsPerCluster == 0) sectorsPerCluster = 8;
     }
@@ -182,7 +190,10 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
     auto poolBufA = MemoryPool::getInstance().acquireBuffer(chunkSize);
     auto* currentBuf = poolBufA.get();
     
-    uint64_t maxSector = diskSize / sectorSize;
+    uint64_t scanEndSector = diskSize / sectorSize;
+    if (partitionSizeBytes > 0) {
+        scanEndSector = std::min(scanEndSector, volumeStartSector + partitionSizeBytes / sectorSize);
+    }
     int foundCount = 0;
 
     struct TempFile {
@@ -196,7 +207,7 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
     std::unordered_map<uint64_t, uint64_t> indxParentMap;
     std::unordered_map<uint64_t, std::string> indxNameMap;
 
-    for (uint64_t sector = 0; sector < maxSector; sector += chunkSectors) {
+    for (uint64_t sector = volumeStartSector; sector < scanEndSector; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
         
         auto res = reader.readSectors(sector * sectorSize, chunkSize, currentBuf->data());
@@ -391,7 +402,8 @@ bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
                                     currentRunPos += offSize;
 
                                     FileRecord::DataRun run;
-                                    run.startSector = sparse ? UINT64_MAX : previousLcn * sectorsPerCluster;
+                                    run.startSector = sparse ? UINT64_MAX
+                                        : volumeStartSector + previousLcn * sectorsPerCluster;
                                     run.sectorCount = clusterCount * sectorsPerCluster;
                                     localRuns.push_back(run);
                                     if (!sparse && localStart == UINT64_MAX) {

@@ -10,6 +10,37 @@ std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
 }
+
+std::string serializeRuns(const std::vector<FileRecord::DataRun>& runs) {
+    if (runs.empty()) return "";
+    std::string out = "[";
+    for (size_t i = 0; i < runs.size(); ++i) {
+        if (i) out += ',';
+        out += "[" + std::to_string(runs[i].startSector) + "," +
+               std::to_string(runs[i].sectorCount) + "]";
+    }
+    return out + "]";
+}
+
+std::vector<FileRecord::DataRun> deserializeRuns(const std::string& json) {
+    std::vector<FileRecord::DataRun> runs;
+    if (json.empty() || json.front() != '[') return runs;
+    size_t i = 1;
+    while (i < json.size()) {
+        while (i < json.size() && (json[i] == ' ' || json[i] == ',')) ++i;
+        if (i >= json.size() || json[i] != '[') break;
+        ++i;
+        size_t c1 = json.find(',', i);
+        size_t c2 = json.find(']', i);
+        if (c1 == std::string::npos || c2 == std::string::npos || c1 > c2) break;
+        FileRecord::DataRun run;
+        run.startSector = std::stoull(json.substr(i, c1 - i));
+        run.sectorCount = std::stoull(json.substr(c1 + 1, c2 - c1 - 1));
+        runs.push_back(run);
+        i = c2 + 1;
+    }
+    return runs;
+}
 } // namespace
 
 MetadataStore::MetadataStore() : db_(nullptr) {}
@@ -34,6 +65,8 @@ bool MetadataStore::open(const std::string& dbPath) {
         sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN compressed INTEGER DEFAULT 0;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err); // column already exists -> ignore
         sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN recovered_files INTEGER DEFAULT 0;", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN runs_json TEXT DEFAULT '';", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
     }
     return ok;
@@ -79,6 +112,7 @@ bool MetadataStore::createTables() {
             source TEXT,
             created_at INTEGER,
             modified_at INTEGER,
+            runs_json TEXT DEFAULT '',
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         );
 
@@ -111,8 +145,8 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -134,8 +168,10 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     sqlite3_bind_int(stmt, 11, r.confidence);
     sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
+    std::string runsJson = serializeRuns(r.runs);
     sqlite3_bind_int64(stmt, 14, r.createdAt);
     sqlite3_bind_int64(stmt, 15, r.modifiedAt);
+    sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
 
     int rc = sqlite3_step(stmt);
     int64_t rowId = (rc == SQLITE_DONE) ? sqlite3_last_insert_rowid(db_) : -1;
@@ -151,8 +187,8 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -175,8 +211,10 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
         sqlite3_bind_int(stmt, 11, r.confidence);
         sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
+        std::string runsJson = serializeRuns(r.runs);
         sqlite3_bind_int64(stmt, 14, r.createdAt);
         sqlite3_bind_int64(stmt, 15, r.modifiedAt);
+        sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
 
         sqlite3_step(stmt);
         sqlite3_reset(stmt);
@@ -247,7 +285,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
     const char* sql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at
+               created_at, modified_at, runs_json
         FROM files WHERE scan_id = ? ORDER BY id LIMIT ? OFFSET ?
     )";
 
@@ -278,6 +316,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         r.source = safe_column_text(stmt, 12);
         r.createdAt = sqlite3_column_int64(stmt, 13);
         r.modifiedAt = sqlite3_column_int64(stmt, 14);
+        r.runs = deserializeRuns(safe_column_text(stmt, 15));
         records.push_back(r);
     }
 
@@ -302,7 +341,11 @@ int64_t MetadataStore::getFileCount(int64_t scanId) {
 }
 
 ScanState MetadataStore::getScanState(int64_t scanId) {
-    const char* sql = "SELECT * FROM scans WHERE id = ?";
+    const char* sql = R"(
+        SELECT id, drive_index, scan_type, total_sectors, scanned_sectors, status,
+               recovered_files, started_at, updated_at
+        FROM scans WHERE id = ?
+    )";
     ScanState state = {};
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {

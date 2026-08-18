@@ -124,8 +124,8 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
   }
 
-  const mappedFiles = filesFound.map((f, i) => ({
-    id: i,
+  const mappedFiles = filesFound.map((f) => ({
+    id: typeof f.id === 'number' ? f.id : -1,
     name: f.name,
     rawPath: typeof f.path === 'string' ? f.path : '',
     size: formatSize(f.sizeBytes || f.size),

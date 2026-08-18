@@ -90,6 +90,12 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     double offset = info[1].As<Napi::Number>().DoubleValue();
     uint32_t size = info[2].As<Napi::Number>().Uint32Value();
 
+    constexpr uint32_t kMaxRead = 1024 * 1024;
+    if (size == 0 || size > kMaxRead) {
+        Napi::TypeError::New(env, "Read size must be between 1 and 1048576 bytes").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
     auto& diskReader = engine->getDiskReader();
     if (!diskReader.isOpen() || diskReader.getDriveIndex() != driveIndex) {
         diskReader.openDrive(driveIndex);

@@ -36,7 +36,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
         </div>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px', color: 'var(--alert-red)' }}>Veri Yok Edici (Data Shredder)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Milli Savunma (DoD 5220.22-M) standartlarında veri imhası. Bu araçla silinen veriler HİÇBİR YAZILIM tarafından geri getirilemez.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Çok geçişli dosya imhası (tek dosya yolu ile). Disk geneli boş alan imhası şu an devre dışı.</p>
         </div>
       </div>
 

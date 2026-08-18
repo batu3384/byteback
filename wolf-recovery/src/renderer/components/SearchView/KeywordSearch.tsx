@@ -45,7 +45,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
     <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="search-header glass-panel" style={{ padding: '24px' }}>
         <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması (Keyword Search)</h2>
-        <p style={{ color: 'var(--text-muted)' }}>Kurtarılan dosyaların isminde veya içeriğinde anahtar kelime araması yapın.</p>
+        <p style={{ color: 'var(--text-muted)' }}>Tarama sonuçlarındaki dosya adlarında anahtar kelime arayın (içerik taraması henüz yok).</p>
       </div>
 
       <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>

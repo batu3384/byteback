@@ -1,7 +1,9 @@
 #include "scan_coordinator.h"
 #include "fs/partition_scanner.h"
+#include "fs/virtual_raid.h"
 #include <iostream>
 #include <chrono>
+#include <cstring>
 
 namespace wolf {
 
@@ -14,12 +16,13 @@ ScanCoordinator::~ScanCoordinator() {
 void ScanCoordinator::startScan(const std::string& drivePath, const std::string& scanType,
                                FileSystemParser::FileRecordCallback onFileFound,
                                ProgressCallback onProgress,
-                               std::vector<uint64_t>* badSectorOut) {
+                               std::vector<uint64_t>* badSectorOut,
+                               std::shared_ptr<VirtualRaid> raid) {
     if (isRunning) return;
     isRunning = true;
 
     scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
-                             onFileFound, onProgress, badSectorOut);
+                             onFileFound, onProgress, badSectorOut, std::move(raid));
 }
 
 void ScanCoordinator::stopScan() {
@@ -34,42 +37,44 @@ void ScanCoordinator::stopScan() {
 void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 FileSystemParser::FileRecordCallback onFileFound,
                                 ProgressCallback onProgress,
-                                std::vector<uint64_t>* badSectorOut) {
+                                std::vector<uint64_t>* badSectorOut,
+                                std::shared_ptr<VirtualRaid> raid) {
     DiskReader reader;
-    int driveIndex = 0;
-    try { driveIndex = std::stoi(drivePath); } catch(...) {
-        isRunning = false;
-        return;
-    }
-    if (!reader.openDrive(driveIndex)) {
-        isRunning = false;
-        return;
+    if (raid) {
+        reader.setRaidBackend(std::move(raid));
+    } else {
+        int driveIndex = 0;
+        try { driveIndex = std::stoi(drivePath); } catch (...) {
+            isRunning = false;
+            return;
+        }
+        if (!reader.openDrive(driveIndex)) {
+            isRunning = false;
+            return;
+        }
     }
 
-    uint64_t totalSectors = reader.getDiskSize() / reader.getSectorSize();
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    uint64_t totalSectors = reader.getDiskSize() / sectorSize;
+
+    auto syncBadSectors = [&]() {
+        if (!badSectorOut) return;
+        *badSectorOut = reader.getBadSectors();
+    };
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (!isRunning) return;
-
-        if (fr.id != -1) {
-            onFileFound(fr);
-        }
-
-        // Progress update based on sector
+        if (fr.id != -1) onFileFound(fr);
         onProgress(fr.startSector, totalSectors);
+        syncBadSectors();
     };
 
     if (scanType == "quick") {
-        // BitLocker detection: encrypted volumes carry the OEM name
-        // "-FVEF-SYS-" at offset 3 of the boot sector. Recovery is impossible
-        // without the key, so the user gets an honest encrypted-volume marker
-        // instead of cryptic parse failures.
         {
-            uint32_t blSectorSize = reader.getSectorSize();
-            if (blSectorSize == 0) blSectorSize = 512;
-            std::vector<uint8_t> boot(blSectorSize);
-            if (reader.readSectors(0, blSectorSize, boot.data()).success &&
-                blSectorSize >= 16 &&
+            std::vector<uint8_t> boot(sectorSize);
+            if (reader.readSectors(0, sectorSize, boot.data()).success &&
+                boot.size() >= 16 &&
                 std::memcmp(boot.data() + 3, "-FVEF-SYS-", 10) == 0) {
                 FileRecord fr;
                 fr.id = -1;
@@ -84,74 +89,90 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
             }
         }
 
-        // Partition-aware quick scan: read the MBR/GPT layout first, then run
-        // the filesystem parser that matches each partition's type at the
-        // partition's own offset. NTFS stays on the raw-carving path (it finds
-        // deleted MFT records anywhere on disk); FAT/exFAT must start at the
-        // partition's boot sector; ext4 is detected by its superblock.
         PartitionScanner partScanner(&reader);
         std::vector<PartitionInfo> partitions = partScanner.parseMBR();
         std::vector<PartitionInfo> gptParts = partScanner.parseGPT();
         if (!gptParts.empty()) partitions = std::move(gptParts);
 
-        uint32_t sectorSize = reader.getSectorSize();
-        if (sectorSize == 0) sectorSize = 512;
-
         bool anyFsScanned = false;
         for (const auto& part : partitions) {
             if (!isRunning) break;
             if (part.sizeInSectors == 0) continue;
-            uint64_t offsetBytes = part.startSector * sectorSize;
 
-            // FAT family (type 0x06/0x0B/0x0C/0x0E/0x1B/0x1C/0x1E MBR,
-            // "ms-basic-data" GPT): boot sector lives at the partition start.
-            if (part.type.find("FAT") != std::string::npos ||
-                part.type.find("exFAT") != std::string::npos) {
-                FATParser fat;
-                if (fat.scanAt(reader, callbackWrapper, &isRunning, offsetBytes)) {
-                    anyFsScanned = true;
+            uint64_t offsetBytes = part.startSector * sectorSize;
+            uint64_t partSizeBytes = part.sizeInSectors * sectorSize;
+            VolumeFsKind kind = probeVolumeAt(reader, offsetBytes, sectorSize);
+
+            switch (kind) {
+                case VolumeFsKind::Ntfs: {
+                    NTFSParser ntfs;
+                    if (ntfs.scanAt(reader, callbackWrapper, &isRunning, offsetBytes, partSizeBytes)) {
+                        anyFsScanned = true;
+                    }
+                    break;
                 }
-                continue;
+                case VolumeFsKind::ExFat:
+                case VolumeFsKind::Fat: {
+                    FATParser fat;
+                    if (fat.scanAt(reader, callbackWrapper, &isRunning, offsetBytes)) {
+                        anyFsScanned = true;
+                    }
+                    break;
+                }
+                case VolumeFsKind::Ext4: {
+                    Ext4Parser ext4;
+                    if (ext4.scanAt(reader, callbackWrapper, &isRunning, offsetBytes)) {
+                        anyFsScanned = true;
+                    }
+                    break;
+                }
+                default:
+                    break;
             }
         }
 
-        // Filesystems without partition metadata (superfloppy) or partition
-        // types we do not special-case: fall back to detection at offset 0.
         if (!anyFsScanned) {
-            NTFSParser ntfs;
-            bool ntfsOk = ntfs.scan(reader, callbackWrapper, &isRunning);
-            if (!ntfsOk) {
-                FATParser fat;
-                if (!fat.scan(reader, callbackWrapper, &isRunning)) {
-                    // Neither NTFS nor FAT at offset 0 — try ext4 anywhere in
-                    // the first 4 MiB (superblock magic search is built in).
-                    Ext4Parser ext4;
-                    ext4.scan(reader, callbackWrapper, &isRunning);
+            VolumeFsKind kind0 = probeVolumeAt(reader, 0, sectorSize);
+            switch (kind0) {
+                case VolumeFsKind::Ntfs: {
+                    NTFSParser ntfs;
+                    ntfs.scanAt(reader, callbackWrapper, &isRunning, 0, 0);
+                    break;
                 }
-            }
-        } else if (isRunning) {
-            // Partition layout was scanned, but also run the ext4 pass when
-            // a Linux partition type is present.
-            for (const auto& part : partitions) {
-                if (part.type.find("Linux") != std::string::npos) {
+                case VolumeFsKind::ExFat:
+                case VolumeFsKind::Fat: {
+                    FATParser fat;
+                    fat.scan(reader, callbackWrapper, &isRunning);
+                    break;
+                }
+                case VolumeFsKind::Ext4: {
                     Ext4Parser ext4;
                     ext4.scan(reader, callbackWrapper, &isRunning);
+                    break;
+                }
+                default: {
+                    NTFSParser ntfs;
+                    if (!ntfs.scan(reader, callbackWrapper, &isRunning)) {
+                        FATParser fat;
+                        if (!fat.scan(reader, callbackWrapper, &isRunning)) {
+                            Ext4Parser ext4;
+                            ext4.scan(reader, callbackWrapper, &isRunning);
+                        }
+                    }
                     break;
                 }
             }
         }
     } else if (scanType == "deep") {
         CarvingEngine carver;
-        // Optional user-defined signature set. Resolved relative to the
-        // working directory (dev: project root; packaged app: install dir);
-        // falls back to the embedded ~114-signature table when absent.
         if (!carver.loadSignatures("resources/signatures.json")) {
             carver.loadSignatures("signatures.json");
         }
         carver.scan(reader, callbackWrapper, &isRunning);
     }
 
-    onProgress(totalSectors, totalSectors); // Complete
+    syncBadSectors();
+    onProgress(totalSectors, totalSectors);
     isRunning = false;
 }
 

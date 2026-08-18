@@ -5,8 +5,11 @@
 #include <cstdint>
 #include <mutex>
 #include <functional>
+#include <memory>
 
 namespace wolf {
+
+class VirtualRaid;
 
 struct DriveInfo {
     int index;
@@ -40,6 +43,11 @@ public:
     // Close current drive
     void closeDrive();
 
+    // When set, readSectors/getDiskSize serve the assembled RAID volume instead
+    // of the opened physical drive. openDrive clears any prior backend.
+    void setRaidBackend(std::shared_ptr<VirtualRaid> raid);
+    bool hasRaidBackend() const;
+
     // Read sectors from current drive
     // offset and size MUST be sector-aligned
     ReadResult readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer);
@@ -68,6 +76,7 @@ private:
     uint64_t diskSize_;
     uint32_t sectorSize_;
     int currentDriveIndex_ = -1;
+    std::shared_ptr<VirtualRaid> raidBackend_;
 };
 
 } // namespace wolf
