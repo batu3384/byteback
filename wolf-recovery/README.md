@@ -1,144 +1,112 @@
 # Wolf Recovery
 
-**Profesyonel adli bilişim ve veri kurtarma aracı.** Yüksek performanslı Windows C++ motorunu modern bir Electron/React arayüzüyle birleştirir. Windows API'lerini atlayarak doğrudan ham disk sektörlerini okur; NTFS dosya sistemi yapılarından ve dosya imzalarından (carving) kayıp dosyaları kurtarır.
+**Windows için profesyonel adli bilişim + veri kurtarma aracı.** Ham disk
+erişimini yerel bir C++ motoruyla, modern bir Electron/React arayüzüyle
+birleştirir. Motor diski yalnızca okur (`GENERIC_READ`); yazma işlemi
+kullanıcının seçtiği hedef dosyalara yapılır.
 
-Hibrit konumlandırma: hem **adli bilişim** (Autopsy/X-Ways seviyesinde kanıt bütünlüğü, zincirleme sorumluluk, E01 imajlama) hem de **veri kurtarma** (R-Studio/DMDE seviyesinde RAID onarımı, bölüm kurtarma, SSD/TRIM farkındalığı) hedefler.
+Hibrit konumlandırma: hem **adli bilişim** (E01 imajlama, hash zincirli
+denetim günlüğü, USN zaman çizelgesi, rapor bütünlük özeti) hem de **veri
+kurtarma** (MFT/FAT/ext4 kurtarma, imza carving, RAID 0/1/5/6/10 sanal
+yeniden kurulum, SSD/TRIM farkındalığı).
 
 ## Özellikler
 
-### Çekirdek Motor (C++)
-- **Doğrudan ham disk erişimi** — `DeviceIoControl` ile Windows fiziksel sürücü erişimi
-- **MFT (Master File Table) parsing** — NTFS dosya kurtarma
-- **İmza tabanlı carving** — Aho-Corasick otomatı, ~100 dosya imzası
-- **SQLite destek deposu** — WAL modu, sayfalama, batch insert
-- **SMART izleme** — ATA/SATA + Weibull arıza tahmini
-- **Disk imajlama** — RAW/DD formatı
-- **Veri parçalama (shredding)** — DoD 5220.22-M
-- **Adli denetim günlüğü** — SHA-256 hash zinciri
+### Çekirdek Motor (C++17)
+- **NTFS**: UTF-16 dosya adları, USA fixup, $STANDARD_INFORMATION zaman
+  damgaları, sparse data run'ları, LZNT1 açma, ADS (alternatif akıtlar),
+  USN journal ayrıştırma, INDX slack taraması, dizin ağacı kurulumu.
+- **FAT12/16/32 + exFAT**: FAT zincir yürüyüşü (döngü korumalı), VFAT uzun
+  adlar, exFAT entry-set durum makinesi, DOS zaman damgaları.
+- **Ext2/3/4**: extent tree (derinlik destekli), directory entry'lerden
+  gerçek dosya adları, silinmiş inode/dirent kanıtı.
+- **Carving**: Aho-Corasick imza taraması (~114 gömülü imza), yapısal
+  doğrulama (JPEG/PNG/ZIP/PDF/GZIP/RIFF), iki parçalı dosyalar için
+  kümelenmiş BGC kurtarma yolu (sektör adımlı, tarama başına bütçeli).
+- **RAID**: 0/1/5/6/10 — GF(2⁸) Reed-Solomon çift parite, sektör hizalı
+  okuma, bozuk sektörde sıfır doldurma (tarama asla düşmez).
+- **İmajlama**: RAW (dd) ve **E01 (EWF)** — yazım sırasında MD5.
+- **SMART**: ATA öznitelikleri + NVMe Health Info Log, SSD/TRIM uyarısı.
+- **Denetim**: SHA-256 hash zincirli adli günlük (RFC 6234 vektörlü).
 
-### Arayüz (Electron/React)
-- Dashboard, Sürücü kartları
-- Canlı tarama görünümü + disk haritası
-- Hex editör + entropi analizi + veri şablonları
-- Sonuçlar görünümü (filtreleme, sayfalama)
-- SMART sağlık görünümü
-- RAID yapılandırıcı (drag & drop)
-- Disk imajlama + I/O gecikme grafiği
-- Anahtar kelime arama
-- Rapor oluşturucu
-- Veri parçalayıcı
+### Arayüz (Electron + React)
+Dashboard, canlı tarama + kötü sektör haritası, dizin ağacı + dosya detay
+bölmesi, hex inceleyici (entropi + veri şablonları), E01 imajlayıcı (MD5
+bütünlük paneli), SMART paneli, sanal RAID kurucu, USN olay zaman
+çizelgesi, CSV dışa aktarım, SHA-256 özetli HTML/PDF adli rapor, açık/koyu
+tema.
 
-## Teknoloji Yığını
-| Bileşen | Teknoloji |
-| --- | --- |
-| Arayüz | React 18, TypeScript, Vite |
-| Masaüstü | Electron, IPC Main/Renderer |
-| Backend Motor | C++17, Windows API'leri (DeviceIoControl) |
-| Native Bridge | Node-API (N-API), cmake-js |
-| Veritabanı | SQLite (vendored) |
-| Derleme | CMake 3.20+, Visual Studio 2022 |
+## Proje Yapısı
+
+```
+wolf-recovery/
+├── .github/workflows/     # CI: native + electron build, testler, ewfinfo kapısı
+├── docs/
+│   ├── ARCHITECTURE.md    # katman/modül haritası, doğrulama öyküsü
+│   └── codebase-audit/    # denetim raporları (md + json sidecar)
+├── resources/
+│   ├── signatures.json    # isteğe bağlı kullanıcı imza seti (yoksa gömülü tablo)
+│   └── icon.svg           # ürün işareti
+├── native/
+│   ├── include/           # başlıklar (fs/, carver/, crypto/, imager/, ...)
+│   ├── src/               # motor kaynakları (modül tablosu ARCHITECTURE.md'de)
+│   ├── tests/             # GoogleTest — 86 birim testi
+│   └── third_party/       # vendored sqlite3
+├── src/
+│   ├── main/              # Electron main + IPC + native köprüsü
+│   ├── preload/           # contextBridge (güvenli beyaz liste API)
+│   ├── renderer/          # React bileşenleri (görünüm başına klasör)
+│   └── shared/            # paylaşılan tipler + saf yardımcılar (entropy)
+├── package.json
+└── README.md
+```
 
 ## Gereksinimler
-- Visual Studio 2022 Build Tools ("Desktop development with C++" iş yüküyle)
+- Visual Studio 2022 Build Tools ("Desktop development with C++")
 - Node.js 20+
 - CMake 3.20+
 
 ## Kurulum ve Çalıştırma
 ```bash
-# Depoyu klonla
 git clone <repo-url>
 cd wolf-recovery
-
-# Node bağımlılıklarını yükle
 npm install
-
-# Native motoru derle
-npm run build:native
-
-# Uygulamayı geliştirme modunda başlat
-npm run dev
+npm run dev            # native derle + geliştirme oturumu
 ```
 
-## Proje Yapısı
-```
-wolf-recovery/
-├── src/
-│   ├── main/              # Electron main process (yaşam döngüsü, IPC)
-│   │   ├── main.ts
-│   │   ├── ipc-handlers.ts
-│   │   └── native-bridge.ts
-│   ├── preload/
-│   │   └── index.ts       # contextBridge (güvenli IPC)
-│   ├── shared/
-│   │   └── types.ts       # Paylaşılan TypeScript tipleri
-│   └── renderer/
-│       ├── App.tsx        # Ana uygulama + sayfa yönlendirme
-│       └── components/    # UI bileşenleri (görünüme göre klasörlü)
-│           ├── Dashboard/
-│           ├── ScanView/
-│           ├── ResultsView/
-│           ├── HexEditor/
-│           ├── ImagerView/
-│           ├── SmartView/
-│           ├── VirtualRaid/
-│           ├── DiskMap/
-│           ├── SearchView/
-│           ├── ShredderView/
-│           ├── ReportView/
-│           └── Layout/
-├── native/
-│   ├── include/           # C++ başlık dosyaları (modül bazlı)
-│   │   ├── fs/            # Dosya sistemi parser'ları
-│   │   ├── math/          # Matematik yardımcıları
-│   │   └── forensic/      # Adli bilişim modülleri
-│   ├── src/
-│   │   ├── bridge/        # N-API native add-on bağlayıcıları
-│   │   ├── fs/            # NTFS/FAT/exFAT/ext4/HFS+/APFS parser'ları
-│   │   ├── carver/        # Aho-Corasick imza motoru
-│   │   ├── io/            # Ham disk I/O (Windows)
-│   │   ├── db/            # SQLite metadata deposu
-│   │   ├── smart/         # SMART izleme
-│   │   ├── imager/        # Disk imajlama
-│   │   ├── recovery/      # Dosya kurtarma motoru
-│   │   ├── validator/     # Dosya doğrulama
-│   │   ├── security/      # Veri parçalama
-│   │   ├── forensic/      # Adli denetim günlüğü
-│   │   └── memory/        # Bellek havuzu
-│   ├── third_party/       # sqlite3.c (vendored)
-│   └── CMakeLists.txt     # CMake yapılandırması
-└── package.json           # Proje meta verisi ve derleme scriptleri
-```
-
-## Yol Haritası
-Master geliştirme planının durumu:
-
-1. **Faz 0** ✅ — Temizlik, stabilite, bug-fix, CI/CD, test altyapısı
-2. **Faz 1** ✅ — NTFS derinleştirme (UTF-16, USA fixup, zaman damgaları, sparse run, LZNT1, ADS, USN journal, dizin + INDX slack)
-3. **Faz 2** ✅ — Tiered carving (Fast Object Validation: JPEG/PNG/ZIP/PDF/GZIP; Bifragmented Gap Carving; ~114 imza)
-4. **Faz 3** ✅ — RAID 0/1/5/6/10 (GF(2⁸) çift-parite) + E01 (EWF) adli imajlama + on-the-fly MD5
-5. **Faz 4** ✅ — Çoklu dosya sistemi (exFAT entry-set, Ext4 extent tree + dirents) + bölüm-farkındalıklı tarama (MBR/GPT)
-6. **Faz 5** ✅ — NVMe SMART (Health Info Log) + ATA IDENTIFY + SSD/TRIM farkındalığı
-7. **Faz 6** ✅ (temel) — Unified Timeline (USN journal → timeline_events → UI) + BitLocker tespiti
-8. **Faz 7** ✅ (temel) — Dürüst rapor (gerçek SHA-256 + gömülü denetim günlüğü), PDF export, CSV export, dizin ağacı, dosya önizleme, ışık teması, NSIS paketleme
-
-Yapılacaklar (tech debt): VSS snapshot analizi, BitLocker şifre çözme (AES-XTS), artifact ingest
-(browser/registry/email), APFS/HFS+ tam parser, $LogFile, GPU PFAC, NSRL hash setleri.
-
-## Geliştirme
+## Komutlar
 ```bash
-# Tip kontrolü (renderer + main)
-npm run typecheck
-
-# Üretim derlemesi (out/ klasörü)
-npm run build
-
-# Testler
-npm run test          # Vitest (renderer)
-npm run test:native   # GoogleTest (native, 66 test)
-
-# Windows kurulum paketi üret (release/ altına NSIS installer)
-npm run dist
+npm run build:native   # C++ motoru derle (cmake-js)
+npm run build          # native + electron-vite üretim derlemesi
+npm run typecheck      # tsc (web + node)
+npm run test           # Vitest (renderer, 10 test)
+npm run test:native    # GoogleTest (86 test)
+npm run dist           # NSIS x64 kurulum paketi (release/)
 ```
+
+> Not: `build:native` test üretecinin önbelleğini sıfırlar; `test:native`
+> öncesinde `cmake -S native -B native/build -DWOLF_BUILD_TESTS=ON` ile
+> yeniden yapılandırın.
+
+## Yol Haritası Durumu
+1. **Faz 0-7 (çekirdek kapsam)** ✅ — temizlik/stabilite, NTFS derinleştirme,
+   tiered carving, RAID+E01, çoklu FS, NVMe SMART, timeline+BitLocker
+   tespiti, dürüst raporlama + paketleme.
+2. **İki denetim turu** ✅ — 15 + 11 bulgunun tamamı giderildi
+   (`docs/codebase-audit/`); kritik matematiğin tamamı birim testli.
+
+**Bilinen sınırlar (bilinçli, etiketli):** VSS snapshot analizi, BitLocker
+şifre çözme (tespit var), APFS/HFS+ tam ayrıştırıcı, $LogFile, GPU PFAC,
+NSRL hash setleri, Weibull parametre kalibrasyonu (model KALİBRASYONSUZ
+etiketli), E01 çıktısının bağımsız okuyucu (libewf) ile çapraz doğrulaması
+(CI'da araç varsa çalışan opsiyonel kapı mevcut).
+
+## Güvenlik Notları
+- Uygulama sektör erişimi için Yönetici gerektirir (NSIS manifestı
+  `requireAdministrator`); motor diske asla yazmaz.
+- Disk geneli boş-alan imhası, dosya sistemi farkında bir uygulama
+  yazılana kadar bilinçli olarak devre dışıdır (denetim CA-001 kararı);
+  yerel imha yalnızca tek dosya yollarını kabul eder.
 
 ## Lisans
 MIT License
