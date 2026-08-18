@@ -65,6 +65,11 @@ public:
 
     bool isOpen() const;
 
+    // In-memory volume for unit tests and pre-loaded disk images (.dd).
+    void attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize = 512);
+    void detachMemoryVolume();
+    bool hasMemoryVolume() const;
+
 private:
     void noteBadRead(uint64_t startSectorBytes, uint32_t sizeBytes);
 
@@ -77,6 +82,8 @@ private:
     uint32_t sectorSize_;
     int currentDriveIndex_ = -1;
     std::shared_ptr<VirtualRaid> raidBackend_;
+    std::vector<uint8_t> memoryImage_;
+    bool memoryMode_ = false;
 };
 
 } // namespace wolf

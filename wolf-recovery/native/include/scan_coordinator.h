@@ -6,12 +6,27 @@
 #include <functional>
 #include <vector>
 #include <memory>
+#include "wolf_io.h"
 #include "wolf_fs.h"
 #include "wolf_carver.h"
 
 namespace wolf {
 
 class VirtualRaid;
+
+using ScanProgressCallback = std::function<void(uint64_t currentSector, uint64_t totalSectors)>;
+
+void runQuickScan(DiskReader& reader,
+                  FileSystemParser::FileRecordCallback onFileFound,
+                  ScanProgressCallback onProgress,
+                  std::atomic<bool>* isRunning,
+                  std::vector<uint64_t>* badSectorOut = nullptr);
+
+void runDeepScan(DiskReader& reader,
+                 FileSystemParser::FileRecordCallback onFileFound,
+                 ScanProgressCallback onProgress,
+                 std::atomic<bool>* isRunning,
+                 std::vector<uint64_t>* badSectorOut = nullptr);
 
 class ScanCoordinator {
 public:

@@ -1,6 +1,7 @@
 #include "wolf_io.h"
 #include "fs/virtual_raid.h"
 #include <cstring>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -156,6 +157,8 @@ void DiskReader::closeDrive() {
     diskSize_ = 0;
     currentDriveIndex_ = -1;
     raidBackend_.reset();
+    memoryImage_.clear();
+    memoryMode_ = false;
 }
 
 void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
@@ -173,6 +176,25 @@ void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
 
 bool DiskReader::hasRaidBackend() const {
     return static_cast<bool>(raidBackend_);
+}
+
+void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize) {
+    closeDrive();
+    memoryImage_ = std::move(image);
+    sectorSize_ = sectorSize ? sectorSize : 512;
+    diskSize_ = memoryImage_.size();
+    memoryMode_ = true;
+    currentDriveIndex_ = -1;
+}
+
+void DiskReader::detachMemoryVolume() {
+    memoryImage_.clear();
+    memoryMode_ = false;
+    diskSize_ = 0;
+}
+
+bool DiskReader::hasMemoryVolume() const {
+    return memoryMode_;
 }
 
 void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
@@ -204,6 +226,29 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
     ReadResult result = { false, 0, "" };
 
     if (sectorSize_ == 0) sectorSize_ = 512;
+
+    if (memoryMode_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        if (offsetBytes + sizeBytes > memoryImage_.size()) {
+            std::memset(buffer, 0, sizeBytes);
+            if (offsetBytes < memoryImage_.size()) {
+                size_t avail = static_cast<size_t>(
+                    std::min<uint64_t>(sizeBytes, memoryImage_.size() - offsetBytes));
+                std::memcpy(buffer, memoryImage_.data() + offsetBytes, avail);
+                result.bytesRead = static_cast<uint64_t>(avail);
+            }
+            noteBadRead(offsetBytes, sizeBytes);
+            result.success = true;
+            return result;
+        }
+        std::memcpy(buffer, memoryImage_.data() + offsetBytes, sizeBytes);
+        result.success = true;
+        result.bytesRead = sizeBytes;
+        return result;
+    }
 
     if (raidBackend_) {
         if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
@@ -309,7 +354,9 @@ uint64_t DiskReader::getDiskSize() const {
 }
 uint32_t DiskReader::getSectorSize() const { return sectorSize_; }
 int DiskReader::getDriveIndex() const { return currentDriveIndex_; }
-bool DiskReader::isOpen() const { return handle_ != INVALID_HANDLE_VALUE; }
+bool DiskReader::isOpen() const {
+    return handle_ != INVALID_HANDLE_VALUE || memoryMode_ || static_cast<bool>(raidBackend_);
+}
 
 } // namespace wolf
 #endif

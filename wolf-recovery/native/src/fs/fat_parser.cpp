@@ -119,8 +119,8 @@ std::vector<FileRecord::DataRun> buildRunsFromChain(
         uint64_t sector = fatStartSector + byteOffset / bytesPerSector;
         uint32_t off = (uint32_t)(byteOffset % bytesPerSector);
         if (off + 4 > bytesPerSector && fatBits == 32) return 0xFFFFFFF8; // entry straddles: treat as EOC
-        uint8_t sec[8] = {0};
-        if (!reader.readSectors(sector * bytesPerSector, bytesPerSector, sec).success) return 0xFFFFFFF8;
+        std::vector<uint8_t> sec(bytesPerSector);
+        if (!reader.readSectors(sector * bytesPerSector, bytesPerSector, sec.data()).success) return 0xFFFFFFF8;
         if (fatBits == 32) return (uint32_t)sec[off] | ((uint32_t)sec[off+1] << 8) | ((uint32_t)sec[off+2] << 16) | ((uint32_t)sec[off+3] << 24);
         if (fatBits == 16) return (uint32_t)((uint16_t)sec[off] | ((uint16_t)sec[off+1] << 8));
         // FAT12

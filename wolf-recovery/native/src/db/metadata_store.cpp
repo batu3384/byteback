@@ -1,4 +1,5 @@
 #include "wolf_db.h"
+#include "db/runs_codec.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
@@ -9,37 +10,6 @@ namespace {
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
-}
-
-std::string serializeRuns(const std::vector<FileRecord::DataRun>& runs) {
-    if (runs.empty()) return "";
-    std::string out = "[";
-    for (size_t i = 0; i < runs.size(); ++i) {
-        if (i) out += ',';
-        out += "[" + std::to_string(runs[i].startSector) + "," +
-               std::to_string(runs[i].sectorCount) + "]";
-    }
-    return out + "]";
-}
-
-std::vector<FileRecord::DataRun> deserializeRuns(const std::string& json) {
-    std::vector<FileRecord::DataRun> runs;
-    if (json.empty() || json.front() != '[') return runs;
-    size_t i = 1;
-    while (i < json.size()) {
-        while (i < json.size() && (json[i] == ' ' || json[i] == ',')) ++i;
-        if (i >= json.size() || json[i] != '[') break;
-        ++i;
-        size_t c1 = json.find(',', i);
-        size_t c2 = json.find(']', i);
-        if (c1 == std::string::npos || c2 == std::string::npos || c1 > c2) break;
-        FileRecord::DataRun run;
-        run.startSector = std::stoull(json.substr(i, c1 - i));
-        run.sectorCount = std::stoull(json.substr(c1 + 1, c2 - c1 - 1));
-        runs.push_back(run);
-        i = c2 + 1;
-    }
-    return runs;
 }
 } // namespace
 
@@ -360,9 +330,9 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
         state.totalSectors = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
         state.scannedSectors = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
         state.status = sqlite3_column_int(stmt, 5);
-        state.startedAt = sqlite3_column_int64(stmt, 6);
-        state.updatedAt = sqlite3_column_int64(stmt, 7);
-        state.recoveredFiles = sqlite3_column_int64(stmt, 8);
+        state.recoveredFiles = sqlite3_column_int64(stmt, 6);
+        state.startedAt = sqlite3_column_int64(stmt, 7);
+        state.updatedAt = sqlite3_column_int64(stmt, 8);
     }
     sqlite3_finalize(stmt);
     return state;

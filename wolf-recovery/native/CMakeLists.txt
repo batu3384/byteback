@@ -38,6 +38,7 @@ set(SOURCES
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
+  src/db/runs_codec.cpp
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
@@ -58,8 +59,9 @@ set(SOURCES
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
     src/forensic/audit_logger.cpp
-    src/security/data_shredder.cpp
-    src/recovery/recovery_engine.cpp
+  src/security/data_shredder.cpp
+  src/recovery/recovery_engine.cpp
+  src/recovery/path_util.cpp
   ${SQLITE_SOURCES}
 )
 
@@ -112,6 +114,18 @@ if(WOLF_BUILD_TESTS)
     tests/test_audit_sha256.cpp
     tests/test_fat_chain.cpp
     tests/test_raid_layout.cpp
+    tests/test_runs_codec.cpp
+    tests/test_metadata_store.cpp
+    tests/test_partition_probe.cpp
+    tests/test_recovery_engine.cpp
+    tests/test_path_util.cpp
+    tests/test_disk_reader_mem.cpp
+    tests/test_fat_parser.cpp
+    tests/test_ext4_parser.cpp
+    tests/test_ntfs_parser.cpp
+    tests/test_scan_coordinator.cpp
+    tests/test_virtual_raid_io.cpp
+    tests/test_signature_carve.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -125,12 +139,33 @@ if(WOLF_BUILD_TESTS)
     src/forensic/audit_logger.cpp
     src/crypto/md5.cpp
     src/imager/ewf_writer.cpp
+    src/db/runs_codec.cpp
+    src/recovery/path_util.cpp
+    src/recovery/recovery_engine.cpp
+    src/db/metadata_store.cpp
+    src/fs/partition_scanner.cpp
+    src/fs/fat_parser.cpp
+    src/fs/ext4_parser.cpp
+    src/fs/ntfs_parser.cpp
+    src/fs/virtual_raid.cpp
+    src/scan_coordinator.cpp
+    src/carver/signature_engine.cpp
+    src/io/disk_reader_win.cpp
+    src/memory/memory_pool.cpp
+    third_party/sqlite3.c
   )
   target_link_libraries(wolf_tests
     PRIVATE
       GTest::gtest_main
   )
-  target_include_directories(wolf_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  target_include_directories(wolf_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_SOURCE_DIR}/tests
+  )
+  if(WIN32)
+    target_link_libraries(wolf_tests PRIVATE setupapi)
+  endif()
   include(GoogleTest)
   gtest_discover_tests(wolf_tests)
 endif()

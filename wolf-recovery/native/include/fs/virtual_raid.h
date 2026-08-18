@@ -34,6 +34,13 @@ class VirtualRaid {
 public:
     VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size);
 
+    // Assembly from already-opened member readers (unit tests, pre-loaded images).
+    VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size);
+
+    // Convenience: one in-memory image per member disk.
+    static VirtualRaid fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images,
+                                  size_t block_size);
+
     // Reads are read-only; write() always throws (forensic mode).
     void write(size_t offset, const std::vector<uint8_t>& data);
     std::vector<uint8_t> read(size_t offset, size_t length) const;
@@ -48,6 +55,8 @@ public:
     RaidLevel level() const { return level_; }
 
 private:
+    void initFromMembers(std::vector<std::shared_ptr<DiskReader>> members);
+
     RaidLevel level_;
     size_t num_disks_;
     uint64_t disk_size_;

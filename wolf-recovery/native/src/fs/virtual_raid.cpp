@@ -20,19 +20,47 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
         throw std::invalid_argument("RAID 10 requires an even number of disks.");
     }
 
-    disk_active_.resize(num_disks_, true);
+    std::vector<std::shared_ptr<DiskReader>> members;
+    members.reserve(drive_indices.size());
     for (int idx : drive_indices) {
-        auto reader = std::make_shared<wolf::DiskReader>();
+        auto reader = std::make_shared<DiskReader>();
         if (!reader->openDrive(idx)) {
             throw std::runtime_error("Failed to open physical drive for RAID.");
         }
-        // All array members must be readable; capacity is bounded by the smallest disk.
-        uint64_t memberSize = reader->getDiskSize();
-        if (memberSize == 0) {
-            throw std::runtime_error("RAID member disk has zero size.");
+        members.push_back(std::move(reader));
+    }
+    initFromMembers(std::move(members));
+}
+
+VirtualRaid::VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size)
+    : level_(level), num_disks_(members.size()), disk_size_(0), block_size_(block_size) {
+    if (num_disks_ < 2) throw std::invalid_argument("RAID requires at least 2 disks.");
+    initFromMembers(std::move(members));
+}
+
+VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images, size_t block_size) {
+    std::vector<std::shared_ptr<DiskReader>> members;
+    members.reserve(images.size());
+    for (auto& img : images) {
+        auto reader = std::make_shared<DiskReader>();
+        reader->attachMemoryVolume(std::move(img));
+        members.push_back(std::move(reader));
+    }
+    return VirtualRaid(level, std::move(members), block_size);
+}
+
+void VirtualRaid::initFromMembers(std::vector<std::shared_ptr<DiskReader>> members) {
+    num_disks_ = members.size();
+    disk_active_.assign(num_disks_, true);
+    disk_readers_ = std::move(members);
+    disk_size_ = 0;
+    for (const auto& reader : disk_readers_) {
+        if (!reader || !reader->isOpen()) {
+            throw std::runtime_error("RAID member reader is not open.");
         }
+        uint64_t memberSize = reader->getDiskSize();
+        if (memberSize == 0) throw std::runtime_error("RAID member disk has zero size.");
         disk_size_ = (disk_size_ == 0) ? memberSize : std::min(disk_size_, memberSize);
-        disk_readers_.push_back(reader);
     }
 }
 
