@@ -121,6 +121,9 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         // Probe the first block of the array to verify every member disk can
         // actually be read through the assembly before reporting success.
         auto probe = raid->read(0, 512);
+        if (probe.size() < 512) {
+            return fail("RAID probe read failed — member disks may be unreadable");
+        }
         bdata->raid = std::move(raid);
 
         uint64_t cap = bdata->raid->capacity();
@@ -128,7 +131,6 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         out.Set("capacity", Napi::Number::New(env, static_cast<double>(cap)));
         out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(drives.size())));
         out.Set("error", Napi::String::New(env, ""));
-        (void)probe;
         return out;
     } catch (const std::exception& e) {
         return fail(e.what());
@@ -140,15 +142,18 @@ class RecoverWorker : public Napi::AsyncWorker {
 public:
     RecoverWorker(Napi::Env& env, wolf::Engine* engine, int driveIndex,
                   const wolf::FileRecord& record, const std::string& destDir,
-                  int64_t scanId,
+                  int64_t scanId, std::shared_ptr<wolf::VirtualRaid> raid,
                   Napi::Promise::Deferred deferred)
         : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
-          record_(record), destDir_(destDir), scanId_(scanId), deferred_(deferred) {}
+          record_(record), destDir_(destDir), scanId_(scanId), raid_(std::move(raid)),
+          deferred_(deferred) {}
 
     void Execute() override {
         try {
             auto& reader = engine_->getDiskReader();
-            if (!reader.isOpen() || reader.getDriveIndex() != driveIndex_) {
+            if (raid_) {
+                reader.setRaidBackend(raid_);
+            } else if (!reader.isOpen() || reader.getDriveIndex() != driveIndex_) {
                 reader.openDrive(driveIndex_);
             }
 
@@ -189,6 +194,7 @@ private:
     wolf::FileRecord record_;
     std::string destDir_;
     int64_t scanId_ = -1;
+    std::shared_ptr<wolf::VirtualRaid> raid_;
     Napi::Promise::Deferred deferred_;
     wolf::RecoveryResult result_;
 };
@@ -236,7 +242,8 @@ Napi::Value RecoverFile(const Napi::CallbackInfo& info) {
     }
 
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
-    RecoverWorker* worker = new RecoverWorker(env, &bdata->engine, driveIndex, record, destDir, scanId, deferred);
+    RecoverWorker* worker = new RecoverWorker(env, &bdata->engine, driveIndex, record, destDir,
+                                              scanId, bdata->raid, deferred);
     worker->Queue();
 
     return deferred.Promise();

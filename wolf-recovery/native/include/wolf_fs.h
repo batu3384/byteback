@@ -26,6 +26,9 @@ public:
     ~NTFSParser() override;
 
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
+
+    bool scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes = 0);
 };
 
 class FATParser : public FileSystemParser {
@@ -53,6 +56,9 @@ public:
     ~Ext4Parser() override;
 
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
+
+    bool scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                uint64_t partitionOffsetBytes);
 };
 
 class HFSParser : public FileSystemParser {

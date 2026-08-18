@@ -1,4 +1,6 @@
 #include "wolf_io.h"
+#include "fs/virtual_raid.h"
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -74,9 +76,21 @@ std::vector<DriveInfo> DiskReader::enumerateDrives() {
             // Detect bus type for SSD/HDD/USB
             switch (desc->BusType) {
                 case BusTypeUsb: info.type = "USB"; break;
-                case BusTypeSata:
-                case BusTypeAta: info.type = "HDD"; break;
                 case BusTypeNvme: info.type = "SSD"; break;
+                case BusTypeSata:
+                case BusTypeAta: {
+                    info.type = "HDD";
+                    STORAGE_PROPERTY_QUERY spq = {};
+                    spq.PropertyId = StorageDeviceSeekPenaltyProperty;
+                    spq.QueryType = PropertyStandardQuery;
+                    DEVICE_SEEK_PENALTY_DESCRIPTOR penalty = {};
+                    if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY,
+                            &spq, sizeof(spq), &penalty, sizeof(penalty),
+                            &bytesReturned, NULL) && penalty.Version >= sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR)) {
+                        if (!penalty.IncursSeekPenalty) info.type = "SSD";
+                    }
+                    break;
+                }
                 default: info.type = "Unknown"; break;
             }
         }
@@ -141,6 +155,24 @@ void DiskReader::closeDrive() {
     }
     diskSize_ = 0;
     currentDriveIndex_ = -1;
+    raidBackend_.reset();
+}
+
+void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
+    raidBackend_ = std::move(raid);
+    if (raidBackend_) {
+        diskSize_ = raidBackend_->capacity();
+        sectorSize_ = 512;
+        currentDriveIndex_ = -1;
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(static_cast<HANDLE>(handle_));
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+    }
+}
+
+bool DiskReader::hasRaidBackend() const {
+    return static_cast<bool>(raidBackend_);
 }
 
 void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
@@ -170,6 +202,38 @@ std::vector<uint64_t> DiskReader::getBadSectors() const {
 
 ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
     ReadResult result = { false, 0, "" };
+
+    if (sectorSize_ == 0) sectorSize_ = 512;
+
+    if (raidBackend_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        try {
+            auto data = raidBackend_->read(static_cast<size_t>(offsetBytes),
+                                           static_cast<size_t>(sizeBytes));
+            if (data.size() < sizeBytes) {
+                std::memset(buffer, 0, sizeBytes);
+                if (!data.empty()) {
+                    std::memcpy(buffer, data.data(), data.size());
+                }
+                noteBadRead(offsetBytes, sizeBytes);
+                result.success = true;
+                result.bytesRead = sizeBytes;
+                return result;
+            }
+            std::memcpy(buffer, data.data(), sizeBytes);
+            result.success = true;
+            result.bytesRead = sizeBytes;
+            return result;
+        } catch (const std::exception& e) {
+            result.error = e.what();
+            std::memset(buffer, 0, sizeBytes);
+            noteBadRead(offsetBytes, sizeBytes);
+            return result;
+        }
+    }
 
     if (handle_ == INVALID_HANDLE_VALUE) {
         result.error = "No drive opened";
@@ -239,7 +303,10 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
     return result;
 }
 
-uint64_t DiskReader::getDiskSize() const { return diskSize_; }
+uint64_t DiskReader::getDiskSize() const {
+    if (raidBackend_) return raidBackend_->capacity();
+    return diskSize_;
+}
 uint32_t DiskReader::getSectorSize() const { return sectorSize_; }
 int DiskReader::getDriveIndex() const { return currentDriveIndex_; }
 bool DiskReader::isOpen() const { return handle_ != INVALID_HANDLE_VALUE; }

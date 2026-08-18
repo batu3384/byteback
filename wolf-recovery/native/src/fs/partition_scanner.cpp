@@ -4,6 +4,45 @@
 
 namespace wolf {
 
+VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, uint32_t sectorSize) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) return VolumeFsKind::Unknown;
+    if (sectorSize == 0) sectorSize = 512;
+
+    std::vector<uint8_t> boot(sectorSize);
+    if (!reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()).success) {
+        return VolumeFsKind::Unknown;
+    }
+
+    if (boot.size() >= 16 && std::memcmp(boot.data() + 3, "NTFS    ", 8) == 0 &&
+        boot[510] == 0x55 && boot[511] == 0xAA) {
+        return VolumeFsKind::Ntfs;
+    }
+    if (boot.size() >= 16 && std::memcmp(boot.data() + 3, "EXFAT   ", 8) == 0) {
+        return VolumeFsKind::ExFat;
+    }
+    if (boot.size() >= 90 && std::memcmp(boot.data() + 82, "FAT32   ", 8) == 0 &&
+        boot[510] == 0x55 && boot[511] == 0xAA) {
+        return VolumeFsKind::Fat;
+    }
+    if (boot.size() >= 62 && std::memcmp(boot.data() + 54, "FAT16   ", 8) == 0 &&
+        boot[510] == 0x55 && boot[511] == 0xAA) {
+        return VolumeFsKind::Fat;
+    }
+    if (boot.size() >= 62 && std::memcmp(boot.data() + 54, "FAT12   ", 8) == 0) {
+        return VolumeFsKind::Fat;
+    }
+
+    uint32_t sbRead = ((2048 + sectorSize - 1) / sectorSize) * sectorSize;
+    std::vector<uint8_t> extBuf(sbRead);
+    if (reader.readSectors(partitionOffsetBytes, sbRead, extBuf.data()).success &&
+        extBuf.size() >= 1026) {
+        uint16_t magic = *reinterpret_cast<uint16_t*>(extBuf.data() + 1024 + 0x38);
+        if (magic == 0xEF53) return VolumeFsKind::Ext4;
+    }
+
+    return VolumeFsKind::Unknown;
+}
+
 #pragma pack(push, 1)
 struct MBRPartitionEntry {
     uint8_t bootIndicator;

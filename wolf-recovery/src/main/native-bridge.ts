@@ -1,105 +1,28 @@
-export interface DriveInfo {
-  index: number
-  model: string
-  serial: string
-  sizeBytes: number
-  sectorSize: number
-  type: string
-}
+export type {
+  DriveInfo,
+  FileRecord,
+  DataRun,
+  SmartStatus,
+  ScanState,
+  RecoverResult,
+  RaidAssemblyResult,
+  PartitionInfo,
+  TimelineEvent,
+  TimelineResult,
+  ProgressCallback,
+  FileFoundCallback,
+} from '../shared/ipc-contract'
 
-export interface FileRecord {
-  id: number
-  parentId: number
-  name: string
-  extension: string
-  path: string
-  sizeBytes: number
-  status: number
-  confidence: number
-  category: string
-  startSector?: number
-  endSector?: number
-  runs?: Array<{ offset: number; length: number }>
-}
-
-export interface SmartStatus {
-  isValid: boolean
-  driveModel?: string
-  healthScore?: string
-  temperatureC?: number
-  powerOnHours?: number
-  reallocatedSectors?: number
-  pendingSectors?: number
-  /** NVMe Health Info Log fields (-1 = not reported by this drive). */
-  isNvme?: boolean
-  percentageUsed?: number
-  availableSpare?: number
-  availableSpareThreshold?: number
-  criticalWarning?: number
-  unsafeShutdowns?: number
-  mediaErrors?: number
-  /** Total bytes written (ATA 0xF1 host-writes or NVMe data units written). */
-  totalBytesWritten?: number
-  /** SSD detection via seek-penalty query — drives the TRIM warning. */
-  isSsd?: boolean
-  seekPenaltyKnown?: boolean
-}
-
-export interface ScanState {
-  id: number
-  driveIndex: number
-  scanType: string
-  totalSectors: number
-  scannedSectors: number
-  status: number
-  recoveredFiles?: number
-}
-
-export interface RecoverResult {
-  success: boolean
-  destPath?: string
-  bytesRecovered?: number
-  md5Hash?: string
-  error?: string
-}
-
-export type ProgressCallback = (data: { current: number; total: number }) => void
-export type FileFoundCallback = (data: { name: string; size: number }) => void
-
-/** Result of assembling a virtual RAID array over physical disks. */
-export interface RaidAssemblyResult {
-  success: boolean
-  /** Logical capacity of the assembled array in bytes (0 on failure). */
-  capacity: number
-  /** Number of member disks in the array. */
-  numDisks: number
-  /** Human-readable failure reason; empty string on success. */
-  error: string
-}
-
-/** One point on the unified timeline (USN journal and other sources). */
-export interface TimelineEvent {
-  id: number
-  timestamp: number
-  eventType: string
-  fileName: string
-  mftRef: number
-  source: string
-}
-
-export interface TimelineResult {
-  total: number
-  events: TimelineEvent[]
-}
-
-/** A partition parsed from a drive's MBR or GPT table. */
-export interface PartitionInfo {
-  type: string
-  startSector: number
-  sizeInSectors: number
-  label: string
-  isActive: boolean
-}
+import type {
+  DriveInfo,
+  FileRecord,
+  PartitionInfo,
+  ScanState,
+  TimelineResult,
+  SmartStatus,
+  RaidAssemblyResult,
+  RecoverResult,
+} from '../shared/ipc-contract'
 
 interface WolfEngine {
   getVersion(): string

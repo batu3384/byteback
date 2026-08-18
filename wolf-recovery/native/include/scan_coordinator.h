@@ -5,10 +5,13 @@
 #include <atomic>
 #include <functional>
 #include <vector>
+#include <memory>
 #include "wolf_fs.h"
 #include "wolf_carver.h"
 
 namespace wolf {
+
+class VirtualRaid;
 
 class ScanCoordinator {
 public:
@@ -22,7 +25,8 @@ public:
     void startScan(const std::string& drivePath, const std::string& scanType,
                    FileSystemParser::FileRecordCallback onFileFound,
                    ProgressCallback onProgress,
-                   std::vector<uint64_t>* badSectorOut = nullptr);
+                   std::vector<uint64_t>* badSectorOut = nullptr,
+                   std::shared_ptr<VirtualRaid> raid = nullptr);
     
     void stopScan();
 
@@ -33,7 +37,8 @@ private:
     void scanWorker(std::string drivePath, std::string scanType,
                     FileSystemParser::FileRecordCallback onFileFound,
                     ProgressCallback onProgress,
-                    std::vector<uint64_t>* badSectorOut);
+                    std::vector<uint64_t>* badSectorOut,
+                    std::shared_ptr<VirtualRaid> raid);
 };
 
 } // namespace wolf

@@ -136,7 +136,7 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("WMV Video", ".wmv", "Video", {0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("3GP Video", ".3gp", "Video", {0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x33, 0x67, 0x70}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("WebM Video", ".webm", "Video", {0x1A, 0x45, 0xDF, 0xA3}, {}, 4ULL * 1024 * 1024 * 1024);
-    addSig("MPEG-TS", ".ts", "Video", {0x47}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("MPEG-TS", ".ts", "Video", {0x47, 0x40, 0x00}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("M4V Video", ".m4v", "Video", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4D, 0x34, 0x56}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("SWF Flash", ".swf", "Video", {0x46, 0x57, 0x53}, {}, 100 * 1024 * 1024);
 

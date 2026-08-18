@@ -58,10 +58,18 @@ function App(): React.ReactElement {
       // buffer to avoid unbounded growth during huge scans; ScanView/ResultsView
       // continue to paginate authoritative data from the SQLite store, this list
       // is for instant UI feedback during scanning.
-      cleanupFileFound = window.api.onScanFileFound((data: { name: string, size: number }) => {
+      cleanupFileFound = window.api.onScanFileFound((data) => {
         setFilesFound(prev => {
-          if (prev.length >= 5000) return prev // soft cap; DB remains source of truth
-          return [...prev, { name: data.name, sizeBytes: data.size, status: 0 }]
+          if (prev.length >= 5000) return prev
+          if (typeof data.id === 'number' && data.id >= 0) {
+            const idx = prev.findIndex(f => f.id === data.id)
+            if (idx >= 0) {
+              const next = [...prev]
+              next[idx] = { ...prev[idx], ...data }
+              return next
+            }
+          }
+          return [...prev, data]
         })
       })
     }

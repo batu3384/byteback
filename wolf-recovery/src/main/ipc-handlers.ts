@@ -268,8 +268,6 @@ export function registerIpcHandlers(): void {
         title: 'Hedef Klasör Seçin',
         properties: ['openDirectory', 'createDirectory'],
       }
-      // Bind to the focused window when available so the dialog is modal to it;
-      // otherwise fall back to the windowless overload.
       const result = focused
         ? await dialog.showOpenDialog(focused, opts)
         : await dialog.showOpenDialog(opts)
@@ -277,6 +275,28 @@ export function registerIpcHandlers(): void {
       return result.filePaths[0]
     } catch (err) {
       console.error('[IPC] pick-directory error:', err)
+      return null
+    }
+  })
+
+  ipcMain.handle('pick-save-image', async (_event, format: 'raw' | 'ewf') => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const ext = format === 'ewf' ? 'E01' : 'dd'
+      const opts: Electron.SaveDialogOptions = {
+        title: 'Disk İmajını Kaydet',
+        defaultPath: `wolf-image-${new Date().toISOString().slice(0, 10)}.${ext}`,
+        filters: format === 'ewf'
+          ? [{ name: 'EnCase EWF', extensions: ['E01', 'e01'] }]
+          : [{ name: 'RAW Image', extensions: ['dd', 'img', 'raw'] }],
+      }
+      const target = focused
+        ? await dialog.showSaveDialog(focused, opts)
+        : await dialog.showSaveDialog(opts)
+      if (target.canceled || !target.filePath) return null
+      return target.filePath
+    } catch (err) {
+      console.error('[IPC] pick-save-image error:', err)
       return null
     }
   })

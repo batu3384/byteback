@@ -2,6 +2,40 @@
 // timeline and the audit-log reader. See bridge_common.h for the context.
 #include "bridge_common.h"
 
+namespace {
+Napi::Array RunsToJs(Napi::Env env, const std::vector<wolf::FileRecord::DataRun>& runs) {
+    Napi::Array arr = Napi::Array::New(env, runs.size());
+    for (size_t i = 0; i < runs.size(); ++i) {
+        Napi::Object runObj = Napi::Object::New(env);
+        runObj.Set("startSector", Napi::Number::New(env, static_cast<double>(runs[i].startSector)));
+        runObj.Set("sectorCount", Napi::Number::New(env, static_cast<double>(runs[i].sectorCount)));
+        arr[i] = runObj;
+    }
+    return arr;
+}
+
+Napi::Object FileRecordToJs(Napi::Env env, const wolf::FileRecord& fr) {
+    Napi::Object fileObj = Napi::Object::New(env);
+    fileObj.Set("id", Napi::Number::New(env, static_cast<double>(fr.id)));
+    fileObj.Set("parentId", Napi::Number::New(env, static_cast<double>(fr.parentId)));
+    fileObj.Set("name", Napi::String::New(env, fr.name));
+    fileObj.Set("extension", Napi::String::New(env, fr.extension));
+    fileObj.Set("path", Napi::String::New(env, fr.path));
+    fileObj.Set("sizeBytes", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
+    fileObj.Set("startSector", Napi::Number::New(env, static_cast<double>(fr.startSector)));
+    fileObj.Set("endSector", Napi::Number::New(env, static_cast<double>(fr.endSector)));
+    fileObj.Set("status", Napi::Number::New(env, fr.status));
+    fileObj.Set("compressed", Napi::Boolean::New(env, fr.compressed));
+    fileObj.Set("confidence", Napi::Number::New(env, fr.confidence));
+    fileObj.Set("category", Napi::String::New(env, fr.category));
+    fileObj.Set("source", Napi::String::New(env, fr.source));
+    fileObj.Set("createdAt", Napi::Number::New(env, static_cast<double>(fr.createdAt)));
+    fileObj.Set("modifiedAt", Napi::Number::New(env, static_cast<double>(fr.modifiedAt)));
+    fileObj.Set("runs", RunsToJs(env, fr.runs));
+    return fileObj;
+}
+} // namespace
+
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -53,18 +87,7 @@ Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
     Napi::Array result = Napi::Array::New(env, files.size());
 
     for (size_t i = 0; i < files.size(); ++i) {
-        Napi::Object fileObj = Napi::Object::New(env);
-        fileObj.Set("id", Napi::Number::New(env, static_cast<double>(files[i].id)));
-        fileObj.Set("parentId", Napi::Number::New(env, static_cast<double>(files[i].parentId)));
-        fileObj.Set("name", Napi::String::New(env, files[i].name));
-        fileObj.Set("extension", Napi::String::New(env, files[i].extension));
-        fileObj.Set("path", Napi::String::New(env, files[i].path));
-        fileObj.Set("sizeBytes", Napi::Number::New(env, static_cast<double>(files[i].sizeBytes)));
-        fileObj.Set("status", Napi::Number::New(env, files[i].status));
-        fileObj.Set("compressed", Napi::Boolean::New(env, files[i].compressed));
-        fileObj.Set("confidence", Napi::Number::New(env, files[i].confidence));
-        fileObj.Set("category", Napi::String::New(env, files[i].category));
-        result[i] = fileObj;
+        result[i] = FileRecordToJs(env, files[i]);
     }
     return result;
     NAPI_CATCH
@@ -262,9 +285,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
 
         auto callback = [fr](Napi::Env env, Napi::Function jsCallback) {
-            Napi::Object obj = Napi::Object::New(env);
+            Napi::Object obj = FileRecordToJs(env, fr);
             obj.Set("type", Napi::String::New(env, "file"));
-            obj.Set("name", Napi::String::New(env, fr.name));
             obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
             jsCallback.Call({obj});
         };
@@ -294,7 +316,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         context->tsfn.BlockingCall(callback);
     };
 
-    context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress, &context->badSectors);
+    context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
+                                   &context->badSectors, bdata->raid);
 
     return Napi::Number::New(env, static_cast<double>(context->scanId));
     NAPI_CATCH

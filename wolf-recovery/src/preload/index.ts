@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   recoverFile: (driveIndex: number, fileRecord: any, destDir: string, scanId?: number) =>
     ipcRenderer.invoke('recover-file', driveIndex, fileRecord, destDir, scanId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),
+  pickSaveImage: (format: 'raw' | 'ewf') => ipcRenderer.invoke('pick-save-image', format),
 
   removeAllScanListeners: () => {
     ipcRenderer.removeAllListeners('scan-progress')

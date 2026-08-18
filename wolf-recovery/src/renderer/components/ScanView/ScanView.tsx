@@ -90,18 +90,15 @@ function ScanView({
           setTotalFiles(count)
           
           const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit)
-          if (pageData && pageData.length > 0) {
+          if (pageData) {
             setFilesFound(prev => {
-              // Create a Set of existing IDs for O(1) lookup
-              const existingIds = new Set(prev.map(f => f.id));
-              
-              // Only add files that aren't already in the list
-              const newFiles = pageData.filter((newFile: any) => !existingIds.has(newFile.id));
-              
-              if (newFiles.length === 0) return prev;
-              
-              return [...prev, ...newFiles];
-            });
+              const byId = new Map<number, any>()
+              for (const f of prev) {
+                if (typeof f.id === 'number' && f.id >= 0) byId.set(f.id, f)
+              }
+              for (const f of pageData) byId.set(f.id, f)
+              return Array.from(byId.values()).sort((a, b) => a.id - b.id)
+            })
           }
         } catch (e) {
           console.error("Pagination error", e)
@@ -112,7 +109,7 @@ function ScanView({
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [driveIndex, activeScanId, setFilesFound])
+  }, [driveIndex, activeScanId, setFilesFound, page])
 
   const formatTime = (seconds: number) => {
     if (seconds < 0) return "--:--:--"

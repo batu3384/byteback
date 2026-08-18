@@ -12,6 +12,23 @@ namespace wolf {
 RecoveryEngine::RecoveryEngine() {}
 RecoveryEngine::~RecoveryEngine() {}
 
+namespace {
+
+std::string safeBasename(const std::string& name) {
+    std::filesystem::path p(name);
+    std::string base = p.filename().string();
+    if (base.empty() || base == "." || base == "..") base = "recovered_file.bin";
+    for (char& c : base) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+            c == '"' || c == '<' || c == '>' || c == '|') {
+            c = '_';
+        }
+    }
+    return base;
+}
+
+} // namespace
+
 RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord& record,
                                             const std::string& destDir, ProgressCallback onProgress,
                                             std::atomic<bool>* isRunning) {
@@ -19,7 +36,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     result.success = false;
     result.bytesRecovered = 0;
 
-    if (!reader.isOpen()) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) {
         result.error = "Disk is not open";
         return result;
     }
@@ -32,7 +49,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     // Create destination directory if needed
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = destDir + "/" + record.name;
+    std::string destPath = destDir + "/" + safeBasename(record.name);
     result.destPath = destPath;
 
     std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
@@ -190,14 +207,14 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     result.success = false;
     result.bytesRecovered = 0;
 
-    if (!reader.isOpen()) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) {
         result.error = "Disk is not open";
         return result;
     }
 
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = destDir + "/" + record.name;
+    std::string destPath = destDir + "/" + safeBasename(record.name);
     result.destPath = destPath;
 
     std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);

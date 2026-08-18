@@ -150,15 +150,30 @@ function ImagerView(): React.ReactElement {
         </div>
 
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Hedef Dizin (Tam Yol: Örn: D:\Kopya.dd)</label>
-          <input 
-            type="text" 
-            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
-            placeholder="D:\Kopya_Disk1.dd" 
-            value={destPath}
-            onChange={(e) => setDestPath(e.target.value)}
-            disabled={imaging}
-          />
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Hedef İmaj Dosyası</label>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input 
+              type="text" 
+              style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+              placeholder="D:\Kopya_Disk1.dd" 
+              value={destPath}
+              onChange={(e) => setDestPath(e.target.value)}
+              disabled={imaging}
+            />
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={imaging}
+              onClick={async () => {
+                if (!window.api?.pickSaveImage) return
+                const picked = await window.api.pickSaveImage(format)
+                if (picked) setDestPath(picked)
+              }}
+              style={{ padding: '0 16px', whiteSpace: 'nowrap' }}
+            >
+              Gözat...
+            </button>
+          </div>
         </div>
 
         <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>

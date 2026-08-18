@@ -190,6 +190,7 @@ struct InodeMeta {
 // corrupt trees). Physical runs are converted to sector units.
 static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
                               uint32_t blockSize, uint32_t sectorSize,
+                              uint64_t volumeOffsetBytes,
                               std::vector<FileRecord::DataRun>& runs,
                               int depthBudget) {
     const Ext4_ExtentHeader* hdr = reinterpret_cast<const Ext4_ExtentHeader*>(nodeBytes);
@@ -203,7 +204,7 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
             uint64_t len = ext[i].ee_len & 0x7FFF; // mask the unwritten bit
             if (len == 0 || physBlock == 0) continue;
             FileRecord::DataRun run;
-            run.startSector = physBlock * blockSize / sectorSize;
+            run.startSector = (volumeOffsetBytes + physBlock * blockSize) / sectorSize;
             run.sectorCount = len * blockSize / sectorSize;
             runs.push_back(run);
         }
@@ -218,27 +219,32 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
         std::vector<uint8_t> child(blockSize);
         // Read via the aligned helper pattern: block offsets are sector-
         // aligned in practice (blockSize >= 1024, multiple of 512).
-        if (!reader.readSectors(childBlock * blockSize, blockSize, child.data()).success) continue;
-        collectExtentRuns(reader, child.data(), blockSize, sectorSize, runs, depthBudget - 1);
+        if (!reader.readSectors(volumeOffsetBytes + childBlock * blockSize, blockSize, child.data()).success) continue;
+        collectExtentRuns(reader, child.data(), blockSize, sectorSize, volumeOffsetBytes, runs, depthBudget - 1);
     }
 }
 
 bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
-    if (!reader.isOpen()) return false;
+    return scanAt(reader, callback, isRunning, 0);
+}
+
+bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                        uint64_t volumeOffsetBytes) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
 
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
     uint32_t sb_read_len = ((2048 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> sb_buffer(sb_read_len);
-    if (!reader.readSectors(0, sb_read_len, sb_buffer.data()).success) return false;
+    if (!reader.readSectors(volumeOffsetBytes, sb_read_len, sb_buffer.data()).success) return false;
 
     Ext4_SuperBlock* sb = reinterpret_cast<Ext4_SuperBlock*>(sb_buffer.data() + 1024);
     if (sb->s_magic != 0xEF53) {
         bool found = false;
         uint32_t search_len = 4 * 1024 * 1024;
         std::vector<uint8_t> search_buf(search_len);
-        if (reader.readSectors(0, search_len, search_buf.data()).success) {
+        if (reader.readSectors(volumeOffsetBytes, search_len, search_buf.data()).success) {
             for (uint32_t i = 1024; i < search_len - 1024; i += 512) {
                 sb = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
                 if (sb->s_magic == 0xEF53) {
@@ -271,7 +277,7 @@ bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
     }
 
     uint64_t gdt_block = (block_size == 1024) ? 2 : 1;
-    uint64_t gdt_offset = gdt_block * block_size;
+    uint64_t gdt_offset = volumeOffsetBytes + gdt_block * block_size;
 
     uint64_t gdt_bytes = static_cast<uint64_t>(num_groups) * desc_size;
     uint32_t gdt_read_len = ((gdt_bytes + sectorSize - 1) / sectorSize) * sectorSize;
@@ -298,7 +304,7 @@ bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
 
         if (inode_table_block == 0) continue;
 
-        uint64_t inode_table_offset = inode_table_block * block_size;
+        uint64_t inode_table_offset = volumeOffsetBytes + inode_table_block * block_size;
         uint64_t inode_table_bytes = static_cast<uint64_t>(inodes_per_group) * inode_size;
 
         uint32_t inode_read_len = ((inode_table_bytes + sectorSize - 1) / sectorSize) * sectorSize;
@@ -344,12 +350,12 @@ bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atom
 
                 if (inode->i_flags & EXT4_EXTENTS_FLAG) {
                     collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
-                                      block_size, sectorSize, meta.runs, 5);
+                                      block_size, sectorSize, volumeOffsetBytes, meta.runs, 5);
                 } else if (inode->i_block[0] != 0) {
                     // Legacy direct-block mapping: only the first direct block
                     // is mapped (indirect blocks are not followed yet).
                     FileRecord::DataRun run;
-                    run.startSector = (static_cast<uint64_t>(inode->i_block[0]) * block_size) / sectorSize;
+                    run.startSector = (volumeOffsetBytes + static_cast<uint64_t>(inode->i_block[0]) * block_size) / sectorSize;
                     run.sectorCount = std::min((uint64_t)block_size / sectorSize, (file_size + sectorSize - 1) / sectorSize);
                     meta.runs.push_back(run);
                 }
