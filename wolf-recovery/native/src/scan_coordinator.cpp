@@ -142,8 +142,12 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
         }
     } else if (scanType == "deep") {
         CarvingEngine carver;
-        // ponytail: signatures path resolved relative to executable; upgrade: pass from JS side
-        carver.loadSignatures("signatures.json");
+        // Optional user-defined signature set. Resolved relative to the
+        // working directory (dev: project root; packaged app: install dir);
+        // falls back to the embedded ~114-signature table when absent.
+        if (!carver.loadSignatures("resources/signatures.json")) {
+            carver.loadSignatures("signatures.json");
+        }
         carver.scan(reader, callbackWrapper, &isRunning);
     }
 
