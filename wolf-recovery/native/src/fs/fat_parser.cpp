@@ -1,5 +1,6 @@
 #include "wolf_fs.h"
 #include "fs/ntfs_util.h"
+#include "fs/fat_chain.h"
 #include <iostream>
 #include <cstring>
 #include <algorithm>
@@ -103,21 +104,15 @@ namespace wolf {
 
 namespace {
 // CA-002 fix: convert a FAT/exFAT cluster chain into physical sector runs.
-// The old code stored the raw cluster number in fr.startSector, which the
-// recovery engine then multiplied by sectorSize — reading a completely
-// unrelated disk region. The real sector of cluster N is
-// dataStartSector + (N-2) * sectorsPerCluster, and the chain comes from the
-// FAT table itself. Deleted files may have cleared chains: the walk is
-// bounded and cycle-checked, and stops at the first unusable entry, keeping
-// whatever it reconstructed so far.
+// The chain math (EOC/bad thresholds, cycle guard, sector mapping) lives in
+// fs/fat_chain.cpp and is unit-tested; this adapter only reads FAT entries
+// off the disk and translates run shapes.
 std::vector<FileRecord::DataRun> buildRunsFromChain(
     DiskReader& reader, uint64_t fatStartSector, uint32_t bytesPerSector,
     int fatBits, uint32_t firstCluster, uint32_t sectorsPerCluster,
     uint64_t dataStartSector, size_t maxClusters) {
-    std::vector<FileRecord::DataRun> runs;
-    if (firstCluster < 2 || sectorsPerCluster == 0) return runs;
 
-    auto readFatEntry = [&](uint32_t cluster) -> uint32_t {
+    fat::FatEntryReader readEntry = [&](uint32_t cluster) -> uint32_t {
         uint64_t byteOffset = (fatBits == 12) ? (uint64_t)cluster * 3 / 2
                           : (fatBits == 16) ? (uint64_t)cluster * 2
                           : (uint64_t)cluster * 4;
@@ -133,34 +128,12 @@ std::vector<FileRecord::DataRun> buildRunsFromChain(
         return (cluster & 1) ? (v >> 4) : (v & 0xFFF);
     };
 
-    auto isEoc = [&](uint32_t v) -> bool {
-        if (fatBits == 12) return v >= 0xFF8;
-        if (fatBits == 16) return v >= 0xFFF8;
-        return v >= 0x0FFFFFF8;
-    };
-    auto isBad = [&](uint32_t v) -> bool {
-        if (fatBits == 12) return v == 0xFF7;
-        if (fatBits == 16) return v == 0xFFF7;
-        return v == 0x0FFFFFF7;
-    };
-
-    std::vector<uint32_t> seen;
-    uint32_t clus = firstCluster;
-    while (clus >= 2 && !isEoc(clus) && runs.size() < maxClusters) {
-        // cycle / repeated cluster guard
-        bool repeated = false;
-        for (uint32_t c : seen) if (c == clus) { repeated = true; break; }
-        if (repeated) break;
-        seen.push_back(clus);
-
-        FileRecord::DataRun run;
-        run.startSector = dataStartSector + (uint64_t)(clus - 2) * sectorsPerCluster;
-        run.sectorCount = sectorsPerCluster;
-        runs.push_back(run);
-
-        uint32_t next = readFatEntry(clus);
-        if (next < 2 || isBad(next)) break;
-        clus = next;
+    auto chain = fat::chainRuns(std::move(readEntry), fatBits, firstCluster,
+                                sectorsPerCluster, dataStartSector, maxClusters);
+    std::vector<FileRecord::DataRun> runs;
+    runs.reserve(chain.size());
+    for (const auto& r : chain) {
+        runs.push_back({r.startSector, r.sectorCount});
     }
     return runs;
 }
@@ -511,25 +484,9 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
         std::vector<uint16_t> name;   // accumulated name units
     } pending;
 
+    // DOS date/time conversion lives in fs/fat_chain.cpp (unit-tested).
     auto dosTimestampToUnix = [](uint16_t date, uint16_t time) -> int64_t {
-        // DOS date/time: year 1980+, 2-second granularity. Convert to Unix
-        // seconds using days-from-civil arithmetic.
-        int year = ((date >> 9) & 0x7F) + 1980;
-        int month = (date >> 5) & 0x0F;
-        int day = date & 0x1F;
-        int hour = (time >> 11) & 0x1F;
-        int minute = (time >> 5) & 0x3F;
-        int second = (time & 0x1F) * 2;
-        if (month < 1 || month > 12 || day < 1 || day > 31) return 0;
-        // days from 1970-01-01 (Howard Hinnant's civil-from-days inverse)
-        long long y = year;
-        y -= month <= 2;
-        long long era = (y >= 0 ? y : y - 399) / 400;
-        unsigned yoe = static_cast<unsigned>(y - era * 400);
-        unsigned doy = (153u * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-        unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        long long days = era * 146097 + static_cast<long long>(doe) - 719468;
-        return static_cast<int64_t>(days) * 86400 + hour * 3600 + minute * 60 + second;
+        return fat::dosTimestampToUnix(date, time);
     };
 
     auto emitPending = [&](const std::string& currentPath) {

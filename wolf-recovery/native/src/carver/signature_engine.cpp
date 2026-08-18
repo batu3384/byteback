@@ -25,6 +25,7 @@ int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) 
         ext == "jar")                   return validateZip(data, size);
     if (ext == "pdf")                   return validatePdf(data, size);
     if (ext == "gz" || ext == "gzip" || ext == "tgz") return validateGzip(data, size);
+    if (ext == "riff")                  return validateRiff(data, size);
     return 90; // no structural validator — trust the header/footer match
 }
 } // namespace
@@ -90,7 +91,10 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("BMP Image", ".bmp", "Image", {0x42, 0x4D}, {}, 50 * 1024 * 1024);
     addSig("TIFF Image (LE)", ".tiff", "Image", {0x49, 0x49, 0x2A, 0x00}, {}, 100 * 1024 * 1024);
     addSig("TIFF Image (BE)", ".tiff", "Image", {0x4D, 0x4D, 0x00, 0x2A}, {}, 100 * 1024 * 1024);
-    addSig("WebP Image", ".webp", "Image", {0x52, 0x49, 0x46, 0x46}, {}, 30 * 1024 * 1024); // RIFF header, WebP subtype
+    // CA-006: single RIFF-container signature. The subtype (WEBP/AVI/WAVE)
+    // lives at bytes 8..11 and is resolved by validateRiff at emit time —
+    // the old trio of same-magic signatures triple-reported every RIFF file.
+    addSig("RIFF Container", ".riff", "Container", {0x52, 0x49, 0x46, 0x46}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("HEIC Image", ".heic", "Image", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63}, {}, 30 * 1024 * 1024);
     addSig("PSD Photoshop", ".psd", "Image", {0x38, 0x42, 0x50, 0x53}, {}, 500 * 1024 * 1024);
     addSig("ICO Icon", ".ico", "Image", {0x00, 0x00, 0x01, 0x00}, {}, 1 * 1024 * 1024);
@@ -106,8 +110,11 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("PDF Document", ".pdf", "Document", {0x25, 0x50, 0x44, 0x46, 0x2D}, {0x25, 0x25, 0x45, 0x4F, 0x46}, 100 * 1024 * 1024);
     addSig("RTF Document", ".rtf", "Document", {0x7B, 0x5C, 0x72, 0x74, 0x66, 0x31}, {0x7D}, 20 * 1024 * 1024);
     addSig("MS Office (OLE2)", ".doc", "Document", {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, {}, 100 * 1024 * 1024);
-    addSig("OpenDocument Text", ".odt", "Document", {0x50, 0x4B, 0x03, 0x04}, {}, 50 * 1024 * 1024);
-    addSig("EPUB eBook", ".epub", "Document", {0x50, 0x4B, 0x03, 0x04}, {}, 50 * 1024 * 1024);
+    // CA-006: odt/epub/pages removed — they share the PK magic with
+    // ZIP and produced duplicate records for the same bytes. One signature
+    // (ZIP/DOCX/XLSX below) covers the whole container family; the format
+    // distinction needs container-content inspection, which is out of scope
+    // for header/footer carving.
     addSig("CHM Help File", ".chm", "Document", {0x49, 0x54, 0x53, 0x46, 0x03, 0x00, 0x00, 0x00}, {}, 30 * 1024 * 1024);
     addSig("XML Document", ".xml", "Document", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 50 * 1024 * 1024);
     addSig("HTML Page", ".html", "Document", {0x3C, 0x21, 0x44, 0x4F, 0x43, 0x54, 0x59, 0x50, 0x45}, {}, 10 * 1024 * 1024);
@@ -122,7 +129,6 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("MP4 Video", ".mp4", "Video", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("MP4 Video (Alt)", ".mp4", "Video", {0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("MP4 Video (Alt2)", ".mp4", "Video", {0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("AVI Video", ".avi", "Video", {0x52, 0x49, 0x46, 0x46}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("MKV Video", ".mkv", "Video", {0x1A, 0x45, 0xDF, 0xA3}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("MPEG Video", ".mpg", "Video", {0x00, 0x00, 0x01, 0xBA}, {0x00, 0x00, 0x01, 0xB9}, 2ULL * 1024 * 1024 * 1024);
     addSig("MOV Video", ".mov", "Video", {0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74}, {}, 4ULL * 1024 * 1024 * 1024);
@@ -140,7 +146,6 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("MP3 Audio", ".mp3", "Audio", {0x49, 0x44, 0x33}, {}, 20 * 1024 * 1024);
     addSig("MP3 Audio (no ID3)", ".mp3", "Audio", {0xFF, 0xFB}, {}, 20 * 1024 * 1024);
     addSig("FLAC Audio", ".flac", "Audio", {0x66, 0x4C, 0x61, 0x43}, {}, 100 * 1024 * 1024);
-    addSig("WAV Audio", ".wav", "Audio", {0x52, 0x49, 0x46, 0x46}, {}, 100 * 1024 * 1024);
     addSig("OGG Audio", ".ogg", "Audio", {0x4F, 0x67, 0x67, 0x53}, {}, 100 * 1024 * 1024);
     addSig("AAC Audio", ".aac", "Audio", {0xFF, 0xF1}, {}, 20 * 1024 * 1024);
     addSig("WMA Audio", ".wma", "Audio", {0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}, {}, 50 * 1024 * 1024);
@@ -231,7 +236,6 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("JPEG2000 JP2", ".jp2", "Image", {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 50 * 1024 * 1024);
     addSig("Canon CR3 RAW", ".cr3", "Image", {0x66, 0x74, 0x79, 0x70, 0x63, 0x72, 0x78, 0x20}, {}, 100 * 1024 * 1024);
     // Documents
-    addSig("Apple Pages", ".pages", "Document", {0x50, 0x4B, 0x03, 0x04}, {}, 100 * 1024 * 1024); // ZIP-based; viewer disambiguates
     addSig("Windows EDB", ".edb", "Database", {0xEF, 0xCD, 0xAB, 0x89}, {}, 500 * 1024 * 1024);
     addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 50 * 1024 * 1024);
     // Archives / containers
@@ -364,7 +368,7 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
             // Handle Header Matches
             for (int sigId : acNodes[currentState].headerMatches) {
                 const auto& sig = signatures[sigId];
-                
+
                 // Avoid duplicates for the same signature that overlap
                 bool alreadyActive = false;
                 for (const auto& ac : activeCarves) {
@@ -373,7 +377,19 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                         break;
                     }
                 }
-                
+                // CA-006: signatures that share a magic (leftover collisions)
+                // must not open a SECOND carve at the same bytes — one
+                // candidate per start offset, whatever the family.
+                if (!alreadyActive) {
+                    uint64_t thisStart = currentAbsoluteOffset - sig.header.size() + 1;
+                    for (const auto& ac : activeCarves) {
+                        if (thisStart >= ac.startOffset && thisStart - ac.startOffset < 512) {
+                            alreadyActive = true;
+                            break;
+                        }
+                    }
+                }
+
                 if (!alreadyActive) {
                     ActiveCarve ac;
                     ac.sigId = sigId;
@@ -412,22 +428,30 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             // removing one contiguous gap makes the object
                             // validate, report the two fragments as data runs so
                             // recovery stitches them correctly.
+                            // CA-001 fix: the search steps on sector boundaries
+                            // (filesystems allocate there — published BGC does the
+                            // same), the gap ceiling is clamped to 64 KiB inside
+                            // bgc.cpp, and a per-scan attempt budget keeps junk
+                            // candidates from stalling the scan.
                             bool bgcRescued = false;
                             BgcResult bgc{};
-                            if (actualSize > 4096 && actualSize <= (256u << 10)) {
+                            if (bgcBudget_ > 0 &&
+                                actualSize > 4096 && actualSize <= (256u << 10)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
                                 auto rres = reader.readSectors(it->startOffset, alignedSize, alignedBuf.data());
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
                                     if (confidence >= 40 && confidence < 85) {
+                                        --bgcBudget_;
                                         bgc = bifragmentedGapCarve(
                                             alignedBuf.data(), static_cast<size_t>(actualSize),
                                             0, static_cast<size_t>(actualSize),
                                             static_cast<size_t>(actualSize) / 4,
                                             [&ext](const uint8_t* d, size_t n) {
                                                 return dispatchValidator(ext, d, n);
-                                            });
+                                            },
+                                            sectorSize);
                                         bgcRescued = bgc.found;
                                     }
                                 }
@@ -437,12 +461,34 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                                 confidence = 70;
                             }
 
+                            // CA-006: resolve the RIFF subtype into the real
+                            // extension so the record is named what it is.
+                            // Independent 512-byte header read — works for
+                            // candidates of every size, not just the BGC window.
+                            std::string effExt = ext;
+                            std::string effName = it->filename;
+                            if (ext == "riff") {
+                                uint8_t hdr[512];
+                                uint32_t hdrAligned = ((512u + sectorSize - 1) / sectorSize) * sectorSize;
+                                std::vector<uint8_t> hdrBuf(hdrAligned);
+                                if (reader.readSectors(it->startOffset, hdrAligned, hdrBuf.data()).success) {
+                                    std::memcpy(hdr, hdrBuf.data(), 512);
+                                    if (const char* sub = wolf::carver::detectRiffSubtype(hdr, 512)) {
+                                        effExt = sub;
+                                        auto dot = effName.find_last_of('.');
+                                        if (dot != std::string::npos) effName = effName.substr(0, dot);
+                                        effName += std::string(".") + sub;
+                                    }
+                                }
+                            }
                             if (bgcRescued) {
+                                std::string effExtBgc = effExt;
+                                std::string effNameBgc = effName; // already subtype-resolved above
                                 FileRecord fr;
                                 fr.id = 0;
                                 fr.parentId = 0;
-                                fr.name = it->filename;
-                                fr.extension = ext;
+                                fr.name = effNameBgc;
+                                fr.extension = effExtBgc;
                                 fr.path = "/recovered_raw/" + fr.name;
                                 fr.sizeBytes = actualSize - bgc.gapLen;
                                 fr.startSector = it->startSector;
@@ -468,8 +514,8 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             FileRecord fr;
                             fr.id = 0;
                             fr.parentId = 0;
-                            fr.name = it->filename;
-                            fr.extension = ext;
+                            fr.name = effName;
+                            fr.extension = effExt;
                             fr.path = "/recovered_raw/" + fr.name;
                             fr.sizeBytes = actualSize;
                             fr.startSector = it->startSector;

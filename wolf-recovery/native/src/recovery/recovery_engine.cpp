@@ -64,7 +64,12 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             compressedLen += (uint64_t)run.sectorCount * sectorSize;
         }
         if (compressedLen > 0 && compressedLen <= kMaxCompressedBuffer) {
-            std::vector<uint8_t> compressed(static_cast<size_t>(compressedLen));
+            // CA-009: readSectors rounds the read length UP to sector
+            // boundaries; today every `want` is already a sector multiple
+            // (runs are sectorCount*sectorSize), but the invariant is implicit
+            // — pay one sector of slack so a future byte-exact contributor
+            // cannot overflow the tail.
+            std::vector<uint8_t> compressed(static_cast<size_t>(compressedLen) + sectorSize);
             uint64_t filled = 0;
             for (const auto& run : record.runs) {
                 if (isRunning && !(*isRunning)) break;

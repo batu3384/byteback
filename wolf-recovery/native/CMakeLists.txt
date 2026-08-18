@@ -46,6 +46,8 @@ set(SOURCES
     src/fs/partition_scanner.cpp
     src/fs/virtual_raid.cpp
     src/fs/raid6_math.cpp
+    src/fs/fat_chain.cpp
+    src/fs/raid_layout.cpp
     src/imager/disk_imager.cpp
     src/imager/ewf_writer.cpp
     src/crypto/md5.cpp
@@ -107,6 +109,9 @@ if(WOLF_BUILD_TESTS)
     tests/test_bgc.cpp
     tests/test_raid6_math.cpp
     tests/test_ewf.cpp
+    tests/test_audit_sha256.cpp
+    tests/test_fat_chain.cpp
+    tests/test_raid_layout.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -115,6 +120,9 @@ if(WOLF_BUILD_TESTS)
     src/math/entropy.cpp
     src/carver/bgc.cpp
     src/fs/raid6_math.cpp
+    src/fs/fat_chain.cpp
+    src/fs/raid_layout.cpp
+    src/forensic/audit_logger.cpp
     src/crypto/md5.cpp
     src/imager/ewf_writer.cpp
   )

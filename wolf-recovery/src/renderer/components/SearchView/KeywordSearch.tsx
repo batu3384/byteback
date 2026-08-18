@@ -57,6 +57,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ filesFound }) => {
               style={{ flex: 1, background: 'transparent', border: 'none', padding: '12px 16px', color: 'var(--text-main)', outline: 'none', fontSize: '1rem' }}
               placeholder="Anahtar kelime girin (örn. 'fatura', 'sözleşme', '.xlsx')"
               value={query}
+              maxLength={200}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />

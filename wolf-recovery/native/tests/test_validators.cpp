@@ -170,3 +170,28 @@ TEST(Crc32, KnownVectors) {
     // Empty input CRC is 0.
     EXPECT_EQ(crc32(nullptr, 0), 0u);
 }
+
+// ---------------- RIFF container (CA-006) ----------------
+TEST(RiffValidator, SubtypeDetection) {
+    // RIFF....WEBP
+    std::vector<uint8_t> webp = {'R','I','F','F', 0x10,0,0,0, 'W','E','B','P'};
+    EXPECT_STREQ(detectRiffSubtype(webp.data(), webp.size()), "webp");
+    EXPECT_EQ(validateRiff(webp.data(), webp.size()), 90);
+
+    std::vector<uint8_t> avi = {'R','I','F','F', 0,0,0,0, 'A','V','I',' '};
+    EXPECT_STREQ(detectRiffSubtype(avi.data(), avi.size()), "avi");
+    EXPECT_EQ(validateRiff(avi.data(), avi.size()), 90);
+
+    std::vector<uint8_t> wav = {'R','I','F','F', 0,0,0,0, 'W','A','V','E'};
+    EXPECT_STREQ(detectRiffSubtype(wav.data(), wav.size()), "wav");
+
+    // Unknown subtype -> no detection, low structural score.
+    std::vector<uint8_t> other = {'R','I','F','F', 0,0,0,0, 'X','X','X','X'};
+    EXPECT_EQ(detectRiffSubtype(other.data(), other.size()), nullptr);
+    EXPECT_EQ(validateRiff(other.data(), other.size()), 15);
+
+    // Too short / not RIFF.
+    EXPECT_EQ(detectRiffSubtype(webp.data(), 8), nullptr);
+    EXPECT_EQ(validateRiff(webp.data(), 8), 0);
+    EXPECT_EQ(validateRiff(other.data() + 4, 8), 0);
+}
