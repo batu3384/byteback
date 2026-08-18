@@ -1,0 +1,9 @@
+# Workspace-level ignores. The product lives in wolf-recovery/ (which has its
+# own .gitignore); these cover editor/agent tool state that must never be
+# committed.
+
+# Agent session/tool state
+.zcode/
+.cursor/
+.mimosa/
+
