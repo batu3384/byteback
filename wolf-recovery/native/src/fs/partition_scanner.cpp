@@ -17,7 +17,8 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
         boot[510] == 0x55 && boot[511] == 0xAA) {
         return VolumeFsKind::Ntfs;
     }
-    if (boot.size() >= 16 && std::memcmp(boot.data() + 3, "EXFAT   ", 8) == 0) {
+    if (boot.size() >= 16 && std::memcmp(boot.data() + 3, "EXFAT   ", 8) == 0 &&
+        boot.size() >= 512 && boot[510] == 0x55 && boot[511] == 0xAA) {
         return VolumeFsKind::ExFat;
     }
     if (boot.size() >= 90 && std::memcmp(boot.data() + 82, "FAT32   ", 8) == 0 &&

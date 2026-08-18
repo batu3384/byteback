@@ -1,5 +1,6 @@
 #include "wolf_recovery.h"
 #include "wolf_memory.h"
+#include "recovery/path_util.h"
 #include "crypto/wolf_md5.h"
 #include "fs/ntfs_util.h"
 #include <fstream>
@@ -11,23 +12,6 @@ namespace wolf {
 
 RecoveryEngine::RecoveryEngine() {}
 RecoveryEngine::~RecoveryEngine() {}
-
-namespace {
-
-std::string safeBasename(const std::string& name) {
-    std::filesystem::path p(name);
-    std::string base = p.filename().string();
-    if (base.empty() || base == "." || base == "..") base = "recovered_file.bin";
-    for (char& c : base) {
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
-            c == '"' || c == '<' || c == '>' || c == '|') {
-            c = '_';
-        }
-    }
-    return base;
-}
-
-} // namespace
 
 RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord& record,
                                             const std::string& destDir, ProgressCallback onProgress,
@@ -49,7 +33,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     // Create destination directory if needed
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = destDir + "/" + safeBasename(record.name);
+    std::string destPath = uniqueDestPath(destDir, record.name);
     result.destPath = destPath;
 
     std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
@@ -214,7 +198,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
 
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = destDir + "/" + safeBasename(record.name);
+    std::string destPath = uniqueDestPath(destDir, record.name);
     result.destPath = destPath;
 
     std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
