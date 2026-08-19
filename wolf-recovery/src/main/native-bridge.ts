@@ -19,6 +19,7 @@ import type {
   PartitionInfo,
   ScanState,
   TimelineResult,
+  ScanSummary,
   SmartStatus,
   RaidAssemblyResult,
   RecoverResult,
@@ -32,6 +33,11 @@ interface WolfEngine {
   initDatabase(path: string): boolean
   getFileCount(scanId: number): number
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
+  searchFiles(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string): FileRecord[]
+  searchFileContent(scanId: number, query: string, offset: number, limit: number): FileRecord[]
+  startContentSearch(scanId: number, query: string, callback: (data: any) => void): boolean
+  stopContentSearch(): void
+  getScanSummary(scanId: number): ScanSummary
   getScanState(scanId: number): ScanState
   getLatestScanId(): number
   getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
@@ -54,12 +60,36 @@ interface WolfEngine {
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
+  getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number }
   recoverFile(
     driveIndex: number,
     fileRecord: FileRecord,
     destDir: string,
     scanId?: number,
-  ): RecoverResult
+  ): Promise<RecoverResult>
+  recoverFilesBatch(
+    driveIndex: number,
+    fileRecords: FileRecord[],
+    destDir: string,
+    scanId?: number,
+  ): Promise<{ succeeded: number; failed: number; results: RecoverResult[] }>
+  getCaseInfo(): {
+    caseNumber: string
+    investigator: string
+    agency: string
+    notes: string
+    createdAt: number
+    updatedAt: number
+  }
+  setCaseInfo(info: {
+    caseNumber?: string
+    investigator?: string
+    agency?: string
+    notes?: string
+  }): boolean
+  loadNsrl(path: string): { ok: boolean; count: number; path: string }
+  lookupNsrl(md5Hex: string): boolean
+  getNsrlStats(): { count: number; path: string }
 }
 
 let engine: WolfEngine | null = null
