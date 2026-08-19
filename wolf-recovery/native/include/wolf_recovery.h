@@ -5,15 +5,17 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <vector>
 
 namespace wolf {
 
 struct RecoveryResult {
-    bool success;
+    bool success = false;
     std::string destPath;
-    uint64_t bytesRecovered;
+    uint64_t bytesRecovered = 0;
     std::string error;
     std::string md5Hash;
+    bool zeroFilled = false; // at least one read was padded/failed
 };
 
 struct BatchRecoverySummary {

@@ -42,3 +42,17 @@ TEST(NsrlLookup, RejectsInvalidHashes) {
     EXPECT_FALSE(nsrl.contains("not-a-hash"));
     EXPECT_FALSE(nsrl.contains("abc"));
 }
+
+TEST(NsrlLookup, OfficialRdsUsesMd5ColumnNotSha1) {
+    const char* path = "test_nsrl_rds.txt";
+    {
+        std::ofstream out(path);
+        out << "da39a3ee5e6b4b0d3255bfef95601890afd80709,d41d8cd98f00b204e9800998ecf8427e,00000000\n";
+    }
+
+    NsrlLookup nsrl;
+    ASSERT_TRUE(nsrl.loadFromFile(path));
+    EXPECT_EQ(nsrl.size(), 1u);
+    EXPECT_TRUE(nsrl.contains("d41d8cd98f00b204e9800998ecf8427e"));
+    std::remove(path);
+}

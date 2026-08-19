@@ -146,3 +146,21 @@ TEST_F(MetadataStoreTest, CorruptRunsJsonYieldsEmptyRuns) {
     ASSERT_EQ(files.size(), 1u);
     EXPECT_TRUE(files[0].runs.empty());
 }
+
+TEST_F(MetadataStoreTest, InsertFilesBatchFailsWhenClosed) {
+    store_.close();
+    FileRecord r;
+    r.name = "x.bin";
+    EXPECT_FALSE(store_.insertFilesBatch(1, {r}));
+}
+
+TEST_F(MetadataStoreTest, GetFileByIdHonorsScanId) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "a.bin";
+    r.sizeBytes = 1;
+    int64_t id = store_.insertFile(scanId, r);
+    ASSERT_GT(id, 0);
+    EXPECT_EQ(store_.getFileById(id, scanId).name, "a.bin");
+    EXPECT_EQ(store_.getFileById(id, scanId + 99).id, -1);
+}

@@ -114,7 +114,8 @@ std::vector<DriveInfo> DiskReader::enumerateDrives() {
 }
 
 bool DiskReader::openDrive(int driveIndex) {
-    closeDrive();
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
 
     // Fresh session, fresh telemetry (closeDrive may keep the handle null
     // but the counters belong to the previous volume).
@@ -150,7 +151,8 @@ bool DiskReader::openDrive(int driveIndex) {
 }
 
 bool DiskReader::openVolumePath(const std::string& path) {
-    closeDrive();
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
     {
         std::lock_guard<std::mutex> lock(badSectorMutex_);
         badSectorReads_ = 0;
@@ -192,6 +194,11 @@ bool DiskReader::openVolumePath(const std::string& path) {
 }
 
 void DiskReader::closeDrive() {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
+}
+
+void DiskReader::closeDriveUnlocked() {
     if (handle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(static_cast<HANDLE>(handle_));
         handle_ = INVALID_HANDLE_VALUE;
@@ -204,6 +211,7 @@ void DiskReader::closeDrive() {
 }
 
 void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     raidBackend_ = std::move(raid);
     if (raidBackend_) {
         diskSize_ = raidBackend_->capacity();
@@ -217,11 +225,13 @@ void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
 }
 
 bool DiskReader::hasRaidBackend() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     return static_cast<bool>(raidBackend_);
 }
 
 void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize) {
-    closeDrive();
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
     memoryImage_ = std::move(image);
     sectorSize_ = sectorSize ? sectorSize : 512;
     diskSize_ = memoryImage_.size();
@@ -230,12 +240,14 @@ void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorS
 }
 
 void DiskReader::detachMemoryVolume() {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     memoryImage_.clear();
     memoryMode_ = false;
     diskSize_ = 0;
 }
 
 bool DiskReader::hasMemoryVolume() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     return memoryMode_;
 }
 
@@ -265,7 +277,8 @@ std::vector<uint64_t> DiskReader::getBadSectors() const {
 }
 
 ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
-    ReadResult result = { false, 0, "" };
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    ReadResult result;
 
     if (sectorSize_ == 0) sectorSize_ = 512;
 
@@ -284,6 +297,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             }
             noteBadRead(offsetBytes, sizeBytes);
             result.success = true;
+            result.paddedZeros = true;
             return result;
         }
         std::memcpy(buffer, memoryImage_.data() + offsetBytes, sizeBytes);
@@ -307,6 +321,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
                 }
                 noteBadRead(offsetBytes, sizeBytes);
                 result.success = true;
+                result.paddedZeros = true;
                 result.bytesRead = sizeBytes;
                 return result;
             }
@@ -318,6 +333,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.error = e.what();
             std::memset(buffer, 0, sizeBytes);
             noteBadRead(offsetBytes, sizeBytes);
+            result.paddedZeros = true;
             return result;
         }
     }
@@ -391,12 +407,20 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
 }
 
 uint64_t DiskReader::getDiskSize() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     if (raidBackend_) return raidBackend_->capacity();
     return diskSize_;
 }
-uint32_t DiskReader::getSectorSize() const { return sectorSize_; }
-int DiskReader::getDriveIndex() const { return currentDriveIndex_; }
+uint32_t DiskReader::getSectorSize() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return sectorSize_;
+}
+int DiskReader::getDriveIndex() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return currentDriveIndex_;
+}
 bool DiskReader::isOpen() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     return handle_ != INVALID_HANDLE_VALUE || memoryMode_ || static_cast<bool>(raidBackend_);
 }
 

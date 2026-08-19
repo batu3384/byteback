@@ -226,8 +226,12 @@ void AuditLogger::LogDiskRead(const std::string& devicePath, uint64_t offset, ui
 }
 
 void AuditLogger::LogEvent(const std::string& eventMessage) {
+    std::string sanitized = eventMessage;
+    for (char& c : sanitized) {
+        if (c == '\n' || c == '\r') c = ' ';
+    }
     std::stringstream ss;
-    ss << "[" << current_time_iso() << "] EVENT | " << eventMessage;
+    ss << "[" << current_time_iso() << "] EVENT | " << sanitized;
     EnqueueLog(ss.str());
 }
 

@@ -1,7 +1,6 @@
 #include "scan_coordinator.h"
 #include "fs/partition_scanner.h"
 #include "fs/virtual_raid.h"
-#include "fs/vss_scanner.h"
 #include "wolf_fs.h"
 #include <iostream>
 #include <chrono>
@@ -23,9 +22,29 @@ void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
     if (!reader.hasRaidBackend()) return;
     if (fr.source.empty()) return;
-    if (fr.source == "vss_snapshot" || fr.source == "bitlocker_detect") return;
+    if (fr.source == "vss_snapshot" || fr.source == "vss_unbound" || fr.source == "bitlocker_detect") return;
     if (fr.source.rfind("raid_", 0) == 0) return;
     fr.source = "raid_" + fr.source;
+}
+
+bool looksLikeBitLocker(const uint8_t* boot, size_t n) {
+    // OEM name at offset 3 is "-FVE-FS-" (8 bytes). Older code matched a
+    // 10-byte fake "-FVEF-SYS-" that never appears on real BitLocker volumes.
+    return n >= 11 && std::memcmp(boot + 3, "-FVE-FS-", 8) == 0;
+}
+
+void emitBitLocker(const FileSystemParser::FileRecordCallback& onFileFound, uint64_t startSector) {
+    FileRecord fr;
+    fr.id = -1;
+    fr.name = "[BitLocker] Birim sifreli - kurtarma anahtari gerekli";
+    fr.path = "/";
+    fr.sizeBytes = 0;
+    fr.startSector = startSector;
+    fr.status = 2;
+    fr.confidence = 100;
+    fr.category = "Encrypted";
+    fr.source = "bitlocker_detect";
+    onFileFound(fr);
 }
 
 void runQuickScan(DiskReader& reader,
@@ -46,21 +65,13 @@ void runQuickScan(DiskReader& reader,
         syncBadSectors(reader, badSectorOut);
     };
 
+    bool bitlockerVolume = false;
     {
         std::vector<uint8_t> boot(sectorSize);
         if (reader.readSectors(0, sectorSize, boot.data()).success &&
-            boot.size() >= 16 &&
-            std::memcmp(boot.data() + 3, "-FVEF-SYS-", 10) == 0) {
-            FileRecord fr;
-            fr.id = -1;
-            fr.name = "[BitLocker] Birim sifreli - kurtarma anahtari gerekli";
-            fr.path = "/";
-            fr.sizeBytes = 0;
-            fr.status = 2;
-            fr.confidence = 100;
-            fr.category = "Encrypted";
-            fr.source = "bitlocker_detect";
-            onFileFound(fr);
+            looksLikeBitLocker(boot.data(), boot.size())) {
+            emitBitLocker(onFileFound, 0);
+            bitlockerVolume = true;
         }
     }
 
@@ -76,6 +87,16 @@ void runQuickScan(DiskReader& reader,
 
         uint64_t offsetBytes = part.startSector * sectorSize;
         uint64_t partSizeBytes = part.sizeInSectors * sectorSize;
+
+        {
+            std::vector<uint8_t> boot(sectorSize);
+            if (reader.readSectors(offsetBytes, sectorSize, boot.data()).success &&
+                looksLikeBitLocker(boot.data(), boot.size())) {
+                emitBitLocker(onFileFound, part.startSector);
+                continue;
+            }
+        }
+
         VolumeFsKind kind = probeVolumeAt(reader, offsetBytes, sectorSize);
 
         switch (kind) {
@@ -121,10 +142,21 @@ void runQuickScan(DiskReader& reader,
     }
 
 #ifdef _WIN32
-    scanVssSnapshots(onFileFound, onProgress, isRunning);
+    {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "[VSS] Snapshot tarama baglanmadi - host karisimi kapali";
+        fr.path = "/";
+        fr.sizeBytes = 0;
+        fr.status = 2;
+        fr.confidence = 100;
+        fr.category = "Metadata";
+        fr.source = "vss_unbound";
+        onFileFound(fr);
+    }
 #endif
 
-    if (!anyFsScanned) {
+    if (!anyFsScanned && !bitlockerVolume) {
         VolumeFsKind kind0 = probeVolumeAt(reader, 0, sectorSize);
         switch (kind0) {
             case VolumeFsKind::Ntfs: {
@@ -228,7 +260,7 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
                                std::vector<uint64_t>* badSectorOut,
                                std::shared_ptr<VirtualRaid> raid,
                                FinishedCallback onFinished) {
-    if (isRunning) return;
+    stopScan();
     isRunning = true;
 
     scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
@@ -237,11 +269,9 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
 }
 
 void ScanCoordinator::stopScan() {
-    if (isRunning) {
-        isRunning = false;
-        if (scanThread.joinable()) {
-            scanThread.join();
-        }
+    isRunning = false;
+    if (scanThread.joinable()) {
+        scanThread.join();
     }
 }
 

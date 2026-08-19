@@ -1,10 +1,11 @@
 #include "wolf_imager.h"
 #include "wolf_memory.h"
+#include "crypto/wolf_md5.h"
 #include <fstream>
-#include <iostream>
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include <memory>
 
 namespace wolf {
 
@@ -16,26 +17,29 @@ DiskImager::~DiskImager() {
 
 void DiskImager::startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
                               ImageFormat format, const EwfOptions& ewfOpts) {
-    if (isRunning_) return;
+    stopImaging();
     isRunning_ = true;
     lastImageMd5_.clear();
     imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts);
 }
 
 void DiskImager::stopImaging() {
-    if (isRunning_) {
-        isRunning_ = false;
-        if (imagingThread_.joinable()) {
-            imagingThread_.join();
-        }
+    isRunning_ = false;
+    if (imagingThread_.joinable()) {
+        imagingThread_.join();
     }
 }
 
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
                              ImageFormat format, EwfOptions ewfOpts) {
+    auto fail = [&]() {
+        if (onProgress) onProgress(0, 0);
+        isRunning_ = false;
+    };
+
     DiskReader reader;
     if (!reader.openDrive(driveIndex)) {
-        isRunning_ = false;
+        fail();
         return;
     }
 
@@ -44,30 +48,31 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = diskSize / sectorSize;
 
-    // Use a large buffer for fast sequential reading (e.g. 16MB)
     const uint32_t chunkSectors = (16 * 1024 * 1024) / sectorSize;
     const uint32_t chunkSize = chunkSectors * sectorSize;
     auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
 
-    std::ofstream rawOut;          // Raw format
-    std::unique_ptr<EwfWriter> ewf; // EWF format
+    std::ofstream rawOut;
+    std::unique_ptr<EwfWriter> ewf;
+    crypto::Md5 rawMd5;
 
     if (format == ImageFormat::Ewf) {
         ewf = std::make_unique<EwfWriter>();
         if (ewfOpts.examiner.empty()) ewfOpts.examiner = "Wolf Recovery";
         if (!ewf->open(destPath, totalSectors, sectorSize, ewfOpts)) {
-            isRunning_ = false;
+            fail();
             return;
         }
     } else {
         rawOut.open(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
         if (!rawOut.is_open()) {
-            isRunning_ = false;
+            fail();
             return;
         }
     }
 
     uint64_t sector = 0;
+    bool writeOk = true;
 
     while (sector < totalSectors) {
         if (!isRunning_) break;
@@ -75,46 +80,56 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
         uint32_t sectorsToRead = std::min<uint64_t>(chunkSectors, totalSectors - sector);
         uint32_t bytesToRead = sectorsToRead * sectorSize;
 
-        auto t1 = std::chrono::high_resolution_clock::now();
         auto res = reader.readSectors(sector * sectorSize, bytesToRead, poolBuf->data());
-        auto t2 = std::chrono::high_resolution_clock::now();
 
-        auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-
+        const uint8_t* outPtr = poolBuf->data();
+        size_t outLen = bytesToRead;
+        std::vector<uint8_t> zeros;
         if (!res.success || res.bytesRead == 0) {
             badSectorReads_.fetch_add(sectorsToRead);
+            zeros.assign(bytesToRead, 0);
+            outPtr = zeros.data();
+            outLen = bytesToRead;
+        } else {
+            outLen = static_cast<size_t>(res.bytesRead);
+            if (res.paddedZeros) badSectorReads_.fetch_add(1);
         }
 
-        if (res.success && res.bytesRead > 0) {
-            if (ewf) ewf->write(poolBuf->data(), res.bytesRead);
-            else rawOut.write(reinterpret_cast<const char*>(poolBuf->data()), res.bytesRead);
+        if (ewf) {
+            if (!ewf->write(outPtr, outLen)) {
+                writeOk = false;
+                break;
+            }
         } else {
-            // Write zeros for bad sectors to maintain image geometry
-            std::vector<char> zeros(bytesToRead, 0);
-            if (ewf) ewf->write(reinterpret_cast<const uint8_t*>(zeros.data()), zeros.size());
-            else rawOut.write(zeros.data(), zeros.size());
+            rawOut.write(reinterpret_cast<const char*>(outPtr), static_cast<std::streamsize>(outLen));
+            rawMd5.update(outPtr, outLen);
+            if (!rawOut.good()) {
+                writeOk = false;
+                break;
+            }
         }
 
         sector += sectorsToRead;
-
-        // Report progress
         onProgress(sector, totalSectors);
     }
 
-    if (ewf) {
-        if (ewf->finish()) {
-            lastImageMd5_ = ewf->md5Hex();
-        }
-    } else {
-        rawOut.close();
+    if (!writeOk) {
+        fail();
+        return;
     }
 
-    // CA-003 fix: the loop's final progress event fires BEFORE finish()
-    // computes the digest, so the MD5 field always arrived empty. Emit one
-    // more completion event after the digest exists — the UI keys off this
-    // one to show the chain-of-custody panel.
-    onProgress(totalSectors, totalSectors);
+    if (ewf) {
+        if (!ewf->finish()) {
+            fail();
+            return;
+        }
+        lastImageMd5_ = ewf->md5Hex();
+    } else {
+        rawOut.close();
+        lastImageMd5_ = rawMd5.finalHex();
+    }
 
+    onProgress(totalSectors, totalSectors);
     isRunning_ = false;
 }
 

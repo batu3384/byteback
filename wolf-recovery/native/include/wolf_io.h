@@ -21,9 +21,10 @@ struct DriveInfo {
 };
 
 struct ReadResult {
-    bool success;
-    uint64_t bytesRead;
+    bool success = false;
+    uint64_t bytesRead = 0;
     std::string error;
+    bool paddedZeros = false; // short/failed read was zero-padded
 };
 
 class DiskReader {
@@ -75,7 +76,9 @@ public:
 
 private:
     void noteBadRead(uint64_t startSectorBytes, uint32_t sizeBytes);
+    void closeDriveUnlocked();
 
+    mutable std::mutex ioMutex_;
     mutable std::mutex badSectorMutex_;
     uint64_t badSectorReads_ = 0;
     std::vector<uint64_t> badSectorList_; // capped; representative samples

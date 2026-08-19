@@ -158,9 +158,10 @@ bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
     uint8_t kind = node[0];
     uint16_t numRecords = be16(node.data() + 4);
     if (numRecords == 0) return true;
+    if (!hfsOffsetTableFits(ctx.blockSize, numRecords)) return true;
 
     std::vector<uint16_t> offsets(numRecords + 1);
-    size_t offTable = ctx.blockSize - (numRecords + 1) * 2;
+    size_t offTable = ctx.blockSize - static_cast<size_t>(numRecords + 1) * 2;
     for (uint16_t i = 0; i <= numRecords; ++i) {
         offsets[i] = be16(node.data() + offTable + i * 2);
     }
@@ -281,9 +282,10 @@ bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
     uint8_t kind = node[0];
     uint16_t numRecords = be16(node.data() + 4);
     if (numRecords == 0) return true;
+    if (!hfsOffsetTableFits(ctx.blockSize, numRecords)) return true;
 
     std::vector<uint16_t> offsets(numRecords + 1);
-    size_t offTable = ctx.blockSize - (numRecords + 1) * 2;
+    size_t offTable = ctx.blockSize - static_cast<size_t>(numRecords + 1) * 2;
     for (uint16_t i = 0; i <= numRecords; ++i) {
         offsets[i] = be16(node.data() + offTable + i * 2);
     }

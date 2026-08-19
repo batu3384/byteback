@@ -29,3 +29,9 @@ TEST(PathUtil, UniqueDestPathAppendsSuffix) {
 
     std::filesystem::remove_all(dir);
 }
+
+TEST(PathUtil, DestDirRejectsDotDot) {
+    EXPECT_FALSE(destDirIsSafe("C:\\out\\..\\Windows"));
+    EXPECT_FALSE(destDirIsSafe("../evil"));
+    EXPECT_TRUE(destDirIsSafe("C:\\cases\\wolf"));
+}

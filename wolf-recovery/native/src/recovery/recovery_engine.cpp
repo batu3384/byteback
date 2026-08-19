@@ -10,6 +10,33 @@
 
 namespace wolf {
 
+namespace {
+
+bool destReady(RecoveryResult& result, const std::string& destDir) {
+    if (!destDirIsSafe(destDir)) {
+        result.error = "unsafe destination directory";
+        return false;
+    }
+    return true;
+}
+
+bool isDiscoveryOnly(const std::string& source) {
+    return source == "apfs_volume" || source == "apfs_container" ||
+           source == "bitlocker_detect" || source == "vss_unbound" ||
+           source == "hfs_limit";
+}
+
+bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const std::string& name) {
+    result.destPath = uniqueDestPath(destDir, name);
+    if (result.destPath.empty()) {
+        result.error = "too many name collisions in destination";
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 RecoveryEngine::RecoveryEngine() {}
 RecoveryEngine::~RecoveryEngine() {}
 
@@ -20,25 +47,33 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     result.success = false;
     result.bytesRecovered = 0;
 
+    if (!destReady(result, destDir)) return result;
+
     if (!reader.isOpen() && !reader.hasRaidBackend()) {
         result.error = "Disk is not open";
         return result;
     }
 
-    if (record.runs.empty()) {
-        // No data runs — fall back to carved file recovery (contiguous sectors)
-        return recoverCarvedFile(reader, record, destDir, onProgress, isRunning);
+    if (isDiscoveryOnly(record.source)) {
+        result.error = "discovery-only record; no recoverable data";
+        return result;
     }
 
-    // Create destination directory if needed
+    if (record.runs.empty()) {
+        if (record.source == "carver" || record.source == "carver_bgc" || record.source.empty()) {
+            return recoverCarvedFile(reader, record, destDir, onProgress, isRunning);
+        }
+        result.error = "no data runs; resident content not extracted";
+        return result;
+    }
+
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = uniqueDestPath(destDir, record.name);
-    result.destPath = destPath;
+    if (!applyUniquePath(result, destDir, record.name)) return result;
 
-    std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!outFile.is_open()) {
-        result.error = "Could not open destination file: " + destPath;
+        result.error = "Could not open destination file: " + result.destPath;
         return result;
     }
 
@@ -88,8 +123,9 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                 auto res = reader.readSectors(run.startSector * sectorSize,
                                               static_cast<uint32_t>(((want + sectorSize - 1) / sectorSize) * sectorSize),
                                               compressed.data() + filled);
-                if (!res.success || res.bytesRead < want) {
+                if (!res.success || res.bytesRead < want || res.paddedZeros) {
                     std::memset(compressed.data() + filled, 0, static_cast<size_t>(want));
+                    result.zeroFilled = true;
                 }
                 filled += want;
             }
@@ -155,7 +191,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             auto res = reader.readSectors(runOffsetBytes + runBytesRead, toRead, poolBuf->data());
             
             if (!res.success || res.bytesRead == 0) {
-                // Bad sector — write zeros to maintain offset integrity
+                result.zeroFilled = true;
                 uint32_t zeroSize = std::min(toRead, (uint32_t)(totalBytes - bytesWritten));
                 std::vector<char> zeros(zeroSize, 0);
                 outFile.write(zeros.data(), zeroSize);
@@ -164,6 +200,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                 runBytesRead += toRead;
                 continue;
             }
+            if (res.paddedZeros) result.zeroFilled = true;
 
             // Don't write beyond the actual file size
             uint32_t writeSize = (uint32_t)std::min((uint64_t)res.bytesRead, totalBytes - bytesWritten);
@@ -191,19 +228,25 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     result.success = false;
     result.bytesRecovered = 0;
 
+    if (!destReady(result, destDir)) return result;
+
     if (!reader.isOpen() && !reader.hasRaidBackend()) {
         result.error = "Disk is not open";
         return result;
     }
 
+    if (isDiscoveryOnly(record.source)) {
+        result.error = "discovery-only record; no recoverable data";
+        return result;
+    }
+
     std::filesystem::create_directories(destDir);
 
-    std::string destPath = uniqueDestPath(destDir, record.name);
-    result.destPath = destPath;
+    if (!applyUniquePath(result, destDir, record.name)) return result;
 
-    std::ofstream outFile(destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!outFile.is_open()) {
-        result.error = "Could not open destination file: " + destPath;
+        result.error = "Could not open destination file: " + result.destPath;
         return result;
     }
 
@@ -228,6 +271,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
         auto res = reader.readSectors(startOffset + bytesWritten, toRead, poolBuf->data());
         
         if (!res.success || res.bytesRead == 0) {
+            result.zeroFilled = true;
             uint32_t zeroSize = std::min(toRead, (uint32_t)(totalBytes - bytesWritten));
             std::vector<char> zeros(zeroSize, 0);
             outFile.write(zeros.data(), zeroSize);
@@ -235,6 +279,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
             bytesWritten += zeroSize;
             continue;
         }
+        if (res.paddedZeros) result.zeroFilled = true;
 
         uint32_t writeSize = (uint32_t)std::min((uint64_t)res.bytesRead, totalBytes - bytesWritten);
         outFile.write(reinterpret_cast<const char*>(poolBuf->data()), writeSize);
