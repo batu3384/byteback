@@ -58,7 +58,7 @@ declare global {
       onImagingProgress: (callback: (data: { current: number; total: number; md5?: string }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
-      readHexData: (driveIndex: number, offset: number, size: number) => Promise<number[]>
+      readHexData: (driveIndex: number, offset: number, size: number) => Promise<number[] | null>
 
       getFileCount: (scanId: number) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
@@ -76,7 +76,7 @@ declare global {
       getAuditLog: (maxLines?: number) => Promise<string[]>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
-      startWipe: (targetPath: string) => Promise<boolean>
+      pickAndWipeFile: () => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number }>
 

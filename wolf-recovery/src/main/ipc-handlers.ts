@@ -3,6 +3,8 @@ import { join } from 'path'
 import { getEngine } from './native-bridge'
 
 export function registerIpcHandlers(): void {
+  const allowedImageDest = new Set<string>()
+
   // Initialize SQLite database on startup
   try {
     const engine = getEngine()
@@ -167,11 +169,15 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] read-hex-data error:', err)
     }
-    return []
+    return null
   })
 
   ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string) => {
     try {
+      if (!destPath || !allowedImageDest.has(destPath)) {
+        event.reply('imaging-progress', { current: 0, total: 0 })
+        return
+      }
       const engine = getEngine()
 
       const callback = (data: any) => {
@@ -244,6 +250,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('search-files', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => {
     try {
+      if (useRegex && typeof query === 'string' && query.length > 128) return []
       const engine = getEngine()
       return engine.searchFiles(scanId, query, offset ?? 0, limit ?? 100, !!useRegex, category ?? '')
     } catch (err) {
@@ -300,12 +307,34 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('start-wipe', async (_event, targetPath: string) => {
+  ipcMain.handle('pick-and-wipe-file', async () => {
     try {
-      const engine = getEngine()
-      return await engine.startWipe(targetPath)
+      const focused = BrowserWindow.getFocusedWindow()
+      const openOpts: Electron.OpenDialogOptions = {
+        title: 'İmha edilecek dosyayı seçin',
+        properties: ['openFile'],
+      }
+      const picked = focused
+        ? await dialog.showOpenDialog(focused, openOpts)
+        : await dialog.showOpenDialog(openOpts)
+      if (picked.canceled || picked.filePaths.length === 0) return false
+
+      const target = picked.filePaths[0]
+      const win = focused ?? BrowserWindow.getAllWindows()[0]
+      if (!win) return false
+      const confirm = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['İptal', 'Dosyayı imha et'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Dosya imhası',
+        message: 'Seçilen dosya geri alınamaz biçimde üzerine yazılacak.',
+        detail: target,
+      })
+      if (confirm.response !== 1) return false
+      return await getEngine().startWipe(target)
     } catch (err) {
-      console.error('[IPC] start-wipe error:', err)
+      console.error('[IPC] pick-and-wipe-file error:', err)
       return false
     }
   })
@@ -354,6 +383,7 @@ export function registerIpcHandlers(): void {
         ? await dialog.showSaveDialog(focused, opts)
         : await dialog.showSaveDialog(opts)
       if (target.canceled || !target.filePath) return null
+      allowedImageDest.add(target.filePath)
       return target.filePath
     } catch (err) {
       console.error('[IPC] pick-save-image error:', err)

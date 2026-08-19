@@ -69,6 +69,7 @@ export interface RecoverResult {
   bytesRecovered?: number
   md5Hash?: string
   error?: string
+  zeroFilled?: boolean
 }
 
 export interface ScanSummary {

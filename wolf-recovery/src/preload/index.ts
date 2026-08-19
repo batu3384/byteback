@@ -69,7 +69,7 @@ contextBridge.exposeInMainWorld('api', {
   getAuditLog: (maxLines?: number) => ipcRenderer.invoke('get-audit-log', maxLines),
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
 
-  startWipe: (targetPath: string) => ipcRenderer.invoke('start-wipe', targetPath),
+  pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
   getRaidState: () => ipcRenderer.invoke('get-raid-state'),
