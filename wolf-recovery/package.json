@@ -39,7 +39,11 @@
     "directories": {
       "output": "release"
     },
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "native/build/Release/**"
+    ],
     "files": [
       "out/**/*",
       "native/build/Release/wolf_engine.node",
