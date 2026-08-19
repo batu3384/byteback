@@ -85,7 +85,7 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
             {isHealthy && !hasWarnings ? <ShieldCheck size={32} color="var(--success-green)" /> : <AlertTriangle size={32} color={hasWarnings ? 'var(--warning-yellow)' : 'var(--alert-red)'} />}
             <div style={{ flex: 1 }}>
               <h3 style={{ fontSize: '1.2rem', marginBottom: '4px' }}>
-                {isHealthy && !hasWarnings ? 'Sürücü Sağlıklı' : hasWarnings ? 'Uyarı: Potansiyel Risk' : 'Kritik: Arıza Riski'}
+                {isHealthy && !hasWarnings ? 'KALİBRASYONSUZ triyaj: eşik altında' : hasWarnings ? 'Uyarı: Potansiyel Risk' : 'Kritik: Arıza Riski'}
               </h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Model: {smartData.driveModel || 'Bilinmiyor'}

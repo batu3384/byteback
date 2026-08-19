@@ -3,6 +3,7 @@ import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List } from 'lucide-react'
 import type { FileRecord } from '../../../shared/ipc-contract'
 import { sourceDisplayLabel } from '../../../shared/source-label'
+import { csvCell } from '../../../shared/html-escape'
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -120,6 +121,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
 
     let successCount = 0
     let failedCount = 0
+    let zeroFilledCount = 0
 
     if (filesToRecover.length > 1 && window.api.recoverFilesBatch) {
       try {
@@ -131,6 +133,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         )
         successCount = res.succeeded
         failedCount = res.failed
+        zeroFilledCount = (res.results ?? []).filter((r) => r.zeroFilled).length
       } catch {
         failedCount = filesToRecover.length
       }
@@ -143,8 +146,10 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             destDir,
             effectiveScanId > 0 ? effectiveScanId : undefined,
           )
-          if (res.success) successCount++
-          else failedCount++
+          if (res.success) {
+            successCount++
+            if (res.zeroFilled) zeroFilledCount++
+          } else failedCount++
         } catch {
           failedCount++
         }
@@ -152,7 +157,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
 
     setIsRecovering(false)
-    alert(`Kurtarma Tamamlandı!\nBaşarılı: ${successCount}\nBaşarısız: ${failedCount}\nHedef: ${destDir}`)
+    alert(`Kurtarma Tamamlandı!\nBaşarılı: ${successCount}\nBaşarısız: ${failedCount}\nSıfır doldurulmuş okuma: ${zeroFilledCount}\nHedef: ${destDir}`)
   }
 
   const toggleSelection = (id: number) => {
@@ -178,12 +183,8 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         modifiedAt: raw?.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
       }
     })
-    const esc = (v: unknown) => {
-      const s = String(v ?? '')
-      return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
     const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
-    const csv = [header.join(';'), ...rows.map((r) => header.map((h) => esc((r as any)[h])).join(';'))].join('\r\n')
+    const csv = [header.join(';'), ...rows.map((r) => header.map((h) => csvCell((r as any)[h])).join(';'))].join('\r\n')
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -228,7 +229,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     rawPath: typeof f.path === 'string' ? f.path : '',
     size: formatSize(f.sizeBytes || 0),
     path: 'Kurtarılanlar',
-    status: f.status === 0 ? 'Kurtarılabilir' : 'Kısmen Bozuk',
+    status: f.status === 1 ? 'Allocated / in-use' : 'Silinmiş / unallocated',
     type: getFileType(getExtension(f.name)),
     sourceLabel: sourceDisplayLabel(f.source),
   }))
@@ -421,9 +422,9 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                     <td style={{ padding: '12px' }}>
                       <span style={{ 
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                        background: f.status === 'Kurtarılabilir' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
-                        color: f.status === 'Kurtarılabilir' ? 'var(--success-green)' : 'var(--warning-yellow)',
-                        border: `1px solid ${f.status === 'Kurtarılabilir' ? 'var(--success-green)' : 'var(--warning-yellow)'}`
+                        background: f.status.startsWith('Silinmiş') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                        color: f.status.startsWith('Silinmiş') ? 'var(--success-green)' : 'var(--warning-yellow)',
+                        border: `1px solid ${f.status.startsWith('Silinmiş') ? 'var(--success-green)' : 'var(--warning-yellow)'}`
                       }}>
                         {f.status}
                       </span>

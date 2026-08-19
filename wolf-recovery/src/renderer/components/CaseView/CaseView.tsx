@@ -125,9 +125,12 @@ function CaseView(): React.ReactElement {
 
       <div className="case-nsrl glass-panel">
         <h3>NSRL MD5 seti</h3>
-        <p>Kullanıcı dosyası: satır başına 32 hex veya CSV ilk sütun. Gömülü RDS yok.</p>
+        <p>Kullanıcı dosyası: 32 hex MD5 herhangi CSV sütununda. Resmi RDS SHA-1 ilk sütunu atlanır. Gömülü RDS yok.</p>
         {nsrlError && <p className="case-field-error" role="alert">{nsrlError}</p>}
         <p>Yüklü hash: {nsrl.count}{nsrl.path ? ` · ${nsrl.path}` : ''}</p>
+        {nsrl.count === 0 && nsrl.path ? (
+          <p className="case-field-error" role="status">0 MD5 yüklendi. SHA-1 sütunu atlandı veya dosya boş.</p>
+        ) : null}
         <button type="button" className="btn-secondary" onClick={() => void handleNsrl()}>
           <FolderOpen size={16} aria-hidden="true" /> NSRL dosyası seç
         </button>
