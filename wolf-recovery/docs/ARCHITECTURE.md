@@ -36,8 +36,8 @@ window.api                 native-bridge.ts          │
 | `recovery/` | Dosyayı diskten hedefe yazma | `recovery_engine.cpp` (sparse/LZNT1 açma, MD5) |
 | `imager/` | Disk imajlama | `disk_imager.cpp` (raw/EWF seçimi), `ewf_writer.cpp` (E01 konteyneri) |
 | `crypto/` | Ortak özet fonksiyonları | `md5.cpp` (RFC 1321 vektörlü) |
-| `db/` | SQLite üstveri deposu | `metadata_store.cpp` (dosyalar, taramalar, zaman çizelgesi) |
-| `forensic/` | Hash zincirli denetim günlüğü | `audit_logger.cpp` (SHA-256, RFC 6234 vektörlü) |
+| `db/` | SQLite üstveri deposu | `metadata_store.cpp` (taramalar/dosyalar), `metadata_store_case.cpp`, `metadata_store_content.cpp` |
+| `forensic/` | Denetim günlüğü + NSRL MD5 seti | `audit_logger.cpp` (SHA-256, RFC 6234), `nsrl_lookup.cpp` |
 | `smart/` | ATA SMART + NVMe sağlık günlüğü | `smart_monitor.cpp` |
 | `bridge/` | NAPI bağlayıcıları, konuya göre bölünmüş | `bridge_common.h`, `bridge_{drives,scan,imager,wipe}.cpp`, `napi_bridge.cpp` (yalnızca Init) |
 | `security/` | Dosya imhası (aygıt yolları reddedilir) | `data_shredder.cpp` |

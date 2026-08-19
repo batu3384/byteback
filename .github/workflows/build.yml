@@ -77,6 +77,21 @@ jobs:
           ctest --test-dir native/build -C Release --output-on-failure
         shell: pwsh
 
+      - name: E01 ewfinfo cross-check (optional)
+        run: |
+          $ewf = Get-Command ewfinfo -ErrorAction SilentlyContinue
+          if ($ewf) {
+            $env:WOLF_EWFINFO = $ewf.Source
+            ctest --test-dir native/build -C Release -R "Ewf.OptionalEwfinfoCrossCheck" --output-on-failure
+          } else {
+            Write-Host "ewfinfo not on PATH — skipping E01 cross-check"
+          }
+        shell: pwsh
+
+      - name: Renderer unit tests (Vitest)
+        run: npm run test
+        shell: pwsh
+
       - name: Upload native addon artifact
         uses: actions/upload-artifact@v4
         with:
