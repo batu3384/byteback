@@ -82,7 +82,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
               value={sector} 
               onChange={(e) => setSector(Number(e.target.value))}
               min="0"
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '80px', outline: 'none', fontFamily: 'monospace' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '80px', fontFamily: 'monospace' }}
             />
           </div>
           <button className="btn-secondary" onClick={() => setSector(s => s + 1)} style={{ padding: '6px 12px' }}>Sonraki <ChevronRight size={16} /></button>

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './ReportGenerator.css';
 import { FileText, Download, CheckCircle, Clock, ShieldCheck, PieChart } from 'lucide-react';
+import type { ScanSummary } from '../../../shared/ipc-contract';
+import { APP_VERSION } from '../../../shared/app-version';
 
 interface ReportGeneratorProps {
-  scanResults?: any;
-  filesFound?: any[];
+  scanId: number;
+  scanElapsed: number;
 }
 
 /** Compute the real SHA-256 of the report content via the Web Crypto API. */
@@ -16,12 +18,21 @@ async function sha256Hex(text: string): Promise<string> {
     .join('');
 }
 
-const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanResults, filesFound = [] }) => {
+const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }) => {
   const [generating, setGenerating] = useState(false);
   const [reportHtml, setReportHtml] = useState<string | null>(null);
   const [reportHash, setReportHash] = useState<string>('');
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfDone, setPdfDone] = useState('');
+  const [summary, setSummary] = useState<ScanSummary | null>(null);
+
+  useEffect(() => {
+    if (scanId > 0 && window.api?.getScanSummary) {
+      window.api.getScanSummary(scanId).then(setSummary).catch(() => setSummary(null));
+    } else {
+      setSummary(null);
+    }
+  }, [scanId]);
 
   const generateReport = async () => {
     setGenerating(true);
@@ -48,41 +59,55 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
 </table>
 ` : '';
 
-      const imgCount = filesFound.filter((f: any) => f.category === 'Image').length;
-      const vidCount = filesFound.filter((f: any) => f.category === 'Video').length;
-      const docCount = filesFound.filter((f: any) => f.category === 'Document').length;
-      const audCount = filesFound.filter((f: any) => f.category === 'Audio').length;
-      const arcCount = filesFound.filter((f: any) => f.category === 'Archive').length;
-      const othCount = filesFound.length - (imgCount + vidCount + docCount + audCount + arcCount);
+      const imgCount = summary?.imageFiles ?? 0;
+      const vidCount = summary?.videoFiles ?? 0;
+      const docCount = summary?.documentFiles ?? 0;
+      const audCount = summary?.audioFiles ?? 0;
+      const arcCount = summary?.archiveFiles ?? 0;
+      const totalFiles = summary?.totalFiles ?? 0;
+      const othCount = totalFiles - (imgCount + vidCount + docCount + audCount + arcCount);
 
       // The integrity hash covers everything except the hash field itself:
       // build the body first, hash it, then splice the digest into the
       // template. This is a REAL computation, not a claim — the footer states
       // exactly what is covered so an examiner can verify it independently.
+      let caseNumber = ''
+      let investigator = ''
+      let agency = ''
+      try {
+        const caseInfo = await window.api?.getCaseInfo?.()
+        caseNumber = caseInfo?.caseNumber?.trim() ?? ''
+        investigator = caseInfo?.investigator?.trim() ?? ''
+        agency = caseInfo?.agency?.trim() ?? ''
+      } catch { /* case metadata optional */ }
+
       const body = `
-<h1>🐺 Wolf Recovery — Adli Bilişim (Forensic) Kurtarma Raporu</h1>
+<h1>Wolf Recovery — Adli Bilişim Kurtarma Raporu</h1>
 <div class="header-meta">
   <div><strong>Tarih:</strong> ${dateStr} ${timeStr}</div>
-  <div><strong>Yazılım:</strong> Wolf Recovery</div>
-  <div><strong>Uzman:</strong> [İsim Girin]</div>
+  <div><strong>Yazılım:</strong> Wolf Recovery v${APP_VERSION}</div>
+  <div><strong>Uzman:</strong> ${investigator || 'Dava kaydında yok'}</div>
 </div>
 
 <h2>1. Vaka Bilgileri</h2>
 <table>
   <tr><th>Alan</th><th>Değer</th></tr>
-  <tr><td>Vaka Numarası</td><td>WR-${Date.now()}</td></tr>
+  <tr><td>Vaka Numarası</td><td>${caseNumber || 'Dava numarası yok'}</td></tr>
+  <tr><td>Kurum</td><td>${agency || '—'}</td></tr>
   <tr><td>Rapor Tarihi</td><td>${now.toLocaleString('tr-TR')}</td></tr>
-  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery (Native C++ Engine)</td></tr>
+  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery ${APP_VERSION} (Native C++ Engine)</td></tr>
   <tr><td>İşletim Sistemi</td><td>Windows</td></tr>
 </table>
 
 <h2>2. Delil (Kanıt) Özeti</h2>
 <table>
   <tr><th>Metrik</th><th>Değer</th></tr>
-  <tr><td>Bulunan Toplam Dosya</td><td>${scanResults?.totalFiles || filesFound.length}</td></tr>
-  <tr><td>Kurtarılabilir (Tam)</td><td>${scanResults?.recoverableFiles ?? filesFound.filter((f: any) => f.status === 0).length}</td></tr>
-  <tr><td>Kısmen Üzerine Yazılmış</td><td>${scanResults?.partialFiles ?? filesFound.filter((f: any) => f.status !== 0).length}</td></tr>
-  <tr><td>Tarama Süresi</td><td>${scanResults?.duration ?? 'Kayıt yok'}</td></tr>
+  <tr><td>Bulunan Toplam Dosya</td><td>${totalFiles}</td></tr>
+  <tr><td>Kurtarılabilir (Tam)</td><td>${summary?.deletedFiles ?? 0}</td></tr>
+  <tr><td>Kısmen Üzerine Yazılmış</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
+  <tr><td>Tarama Süresi</td><td>${scanElapsed} sn</td></tr>
+  <tr><td>USN Zaman Çizelgesi Olayları</td><td>${summary?.timelineEvents ?? 0}</td></tr>
+  <tr><td>USN Oluşturma / Silme / Yeniden Adlandırma</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
 </table>
 
 <h2>3. Gözetim Zinciri (Chain of Custody)</h2>
@@ -93,12 +118,12 @@ yazma işlemi yapmamaktadır. Kaynak medyanın içerik bütünlüğü tarama boy
 <h2>4. Dosya Kategorileri Dağılımı</h2>
 <table>
   <tr><th>Kategori</th><th>Dosya Sayısı</th></tr>
-  <tr><td>📸 Resimler</td><td>${imgCount}</td></tr>
-  <tr><td>🎬 Videolar</td><td>${vidCount}</td></tr>
-  <tr><td>📄 Belgeler</td><td>${docCount}</td></tr>
-  <tr><td>🎵 Ses Dosyaları</td><td>${audCount}</td></tr>
-  <tr><td>📦 Arşivler</td><td>${arcCount}</td></tr>
-  <tr><td>💾 Diğer</td><td>${othCount}</td></tr>
+  <tr><td>Resimler</td><td>${imgCount}</td></tr>
+  <tr><td>Videolar</td><td>${vidCount}</td></tr>
+  <tr><td>Belgeler</td><td>${docCount}</td></tr>
+  <tr><td>Ses Dosyaları</td><td>${audCount}</td></tr>
+  <tr><td>Arşivler</td><td>${arcCount}</td></tr>
+  <tr><td>Diğer</td><td>${othCount}</td></tr>
 </table>
 ${auditSection}
 `;
@@ -198,7 +223,7 @@ ${body}
             <PieChart size={24} color="var(--accent-blue)" />
             <div>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Bulunan Dosyalar</h4>
-              <p style={{ fontWeight: 500 }}>{filesFound.length}</p>
+              <p style={{ fontWeight: 500 }}>{summary?.totalFiles ?? (scanId > 0 ? '…' : '0')}</p>
             </div>
           </div>
 

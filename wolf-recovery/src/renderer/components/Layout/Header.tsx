@@ -11,13 +11,14 @@ const pageTitles: Record<string, string> = {
   scan: 'Aktif Tarama',
   results: 'Kurtarma Sonuçları',
   hex: 'Hex İnceleyici',
-  imager: 'İmaj Alma (DD)',
+  imager: 'İmaj (RAW / E01)',
   smart: 'S.M.A.R.T. Durumu',
   search: 'Kelime Arama',
   report: 'Adli Rapor',
   shredder: 'Veri Yok Edici',
   raid: 'Sanal RAID Oluştur',
   timeline: 'Olay Zaman Çizelgesi',
+  case: 'Dava / NSRL',
 }
 
 function Header({ title }: HeaderProps): React.ReactElement {

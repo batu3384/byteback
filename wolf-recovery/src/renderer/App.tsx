@@ -12,8 +12,9 @@ import RaidBuilder from './components/VirtualRaid/RaidBuilder'
 import ReportGenerator from './components/ReportView/ReportGenerator'
 import KeywordSearch from './components/SearchView/KeywordSearch'
 import TimelineView from './components/TimelineView/TimelineView'
+import CaseView from './components/CaseView/CaseView'
 
-type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline'
+type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline' | 'case'
 
 function App(): React.ReactElement {
   const [activePage, setActivePage] = useState<Page>('dashboard')
@@ -41,14 +42,22 @@ function App(): React.ReactElement {
     // Setup Global IPC Listeners ONLY ONCE
     let cleanupProgress: (() => void) | undefined
     let cleanupFileFound: (() => void) | undefined
+    let cleanupComplete: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
       cleanupProgress = window.api.onScanProgress((data: { current: number, total: number, badSectors?: number[] }) => {
         setScanProgress({ current: data.current, total: data.total, badSectors: data.badSectors ?? [] })
-        if (data.current >= data.total && data.total > 0) {
-          setScanStatus('Tarama Tamamlandı')
-          if (timerRef.current) clearInterval(timerRef.current)
-        }
+      })
+    }
+
+    if (window.api && window.api.onScanComplete) {
+      cleanupComplete = window.api.onScanComplete(({ scanId, status }) => {
+        if (scanId > 0) setActiveScanId(scanId)
+        if (status === 1) setScanStatus('Tarama Tamamlandı')
+        else if (status === 2) setScanStatus('Tarama İptal Edildi')
+        else setScanStatus('Tarama Başarısız')
+        if (timerRef.current) clearInterval(timerRef.current)
+        setScanProgress(prev => ({ ...prev, current: prev.total > 0 ? prev.total : prev.current }))
       })
     }
 
@@ -60,7 +69,12 @@ function App(): React.ReactElement {
       // is for instant UI feedback during scanning.
       cleanupFileFound = window.api.onScanFileFound((data) => {
         setFilesFound(prev => {
-          if (prev.length >= 5000) return prev
+          if (prev.length >= 5000) {
+            if (data.source === 'hfs_limit' && !prev.some(f => f.source === 'hfs_limit')) {
+              return [...prev.slice(0, 4999), data]
+            }
+            return prev
+          }
           if (typeof data.id === 'number' && data.id >= 0) {
             const idx = prev.findIndex(f => f.id === data.id)
             if (idx >= 0) {
@@ -77,6 +91,7 @@ function App(): React.ReactElement {
     return () => {
       if (cleanupProgress) cleanupProgress()
       if (cleanupFileFound) cleanupFileFound()
+      if (cleanupComplete) cleanupComplete()
     }
   }, []);
 
@@ -105,13 +120,29 @@ function App(): React.ReactElement {
     }, 1000)
   }
 
+  const handleStartRaidScan = (scanType: string) => {
+    setSelectedDrive(-1)
+    setScanConfig({ driveIndex: -1, scanType })
+    setFilesFound([])
+    setScanProgress({ current: 0, total: 100, badSectors: [] })
+    setScanStatus('RAID Taraması Sürüyor...')
+    setScanElapsed(0)
+    setActivePage('scan')
+    if (window.api?.startScan) {
+      window.api.startScan(-1, scanType).then(id => {
+        if (id > 0) setActiveScanId(id)
+      })
+    }
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => setScanElapsed(prev => prev + 1), 1000)
+  }
+
   const handleStopScan = () => {
     if (window.api && window.api.stopScan) {
       window.api.stopScan()
     }
     if (timerRef.current) clearInterval(timerRef.current)
     setScanStatus('Tarama İptal Edildi')
-    setActiveScanId(-1)
   }
 
   const handleAction = (page: Page, data?: any) => {
@@ -143,11 +174,11 @@ function App(): React.ReactElement {
       case 'results':
         return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} scanId={activeScanId} />
       case 'search':
-        return <KeywordSearch filesFound={filesFound} />
+        return <KeywordSearch scanId={activeScanId} />
       case 'timeline':
         return <TimelineView scanId={activeScanId} />
       case 'report':
-        return <ReportGenerator scanResults={{ totalFiles: filesFound.length, recoverableFiles: filesFound.filter(f => f.status === 0).length, partialFiles: filesFound.filter(f => f.status !== 0).length, duration: scanElapsed + ' sn' }} filesFound={filesFound} />
+        return <ReportGenerator scanId={activeScanId} scanElapsed={scanElapsed} />
       case 'hex':
         return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} />
       case 'smart':
@@ -157,7 +188,9 @@ function App(): React.ReactElement {
       case 'shredder':
         return <ShredderView drives={[]} /> // Will fetch drives via Dashboard or pass down
       case 'raid':
-        return <RaidBuilder />
+        return <RaidBuilder onStartRaidScan={handleStartRaidScan} />
+      case 'case':
+        return <CaseView />
       default: 
         return <Dashboard onStartScan={handleStartScan} onAction={handleAction} />
     }

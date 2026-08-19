@@ -1,6 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List } from 'lucide-react'
+import type { FileRecord } from '../../../shared/ipc-contract'
+import { sourceDisplayLabel } from '../../../shared/source-label'
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -8,17 +10,94 @@ interface ResultsViewProps {
   scanId?: number
 }
 
+const PAGE_SIZE = 500
+
 function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
   const [filter, setFilter] = useState('all')
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
   const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree')
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
+  const [dbFiles, setDbFiles] = useState<FileRecord[]>([])
+  const [totalCount, setTotalCount] = useState(0)
+  const [page, setPage] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
+  const [hfsTruncated, setHfsTruncated] = useState(false)
+
+  const effectiveScanId = scanId && scanId > 0 ? scanId : -1
+
+  const loadPage = useCallback(async (scan: number, pageIndex: number) => {
+    if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
+    setLoading(true)
+    try {
+      const [count, pageData] = await Promise.all([
+        window.api.getFileCount(scan),
+        window.api.getFilesPage(scan, pageIndex * PAGE_SIZE, PAGE_SIZE),
+      ])
+      setTotalCount(count)
+      setDbFiles(pageData)
+      setRecordById(prev => {
+        const next = new Map(prev)
+        for (const f of pageData) next.set(f.id, f)
+        return next
+      })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (effectiveScanId > 0) {
+      loadPage(effectiveScanId, page)
+    } else {
+      setDbFiles([])
+      setTotalCount(filesFound.length)
+    }
+  }, [effectiveScanId, page, loadPage, filesFound.length])
+
+  useEffect(() => {
+    const localHit = (effectiveScanId > 0 ? dbFiles : filesFound).some(
+      (f: { source?: string }) => f.source === 'hfs_limit',
+    )
+    if (localHit) {
+      setHfsTruncated(true)
+      return
+    }
+    if (effectiveScanId <= 0 || !window.api?.searchFiles) {
+      setHfsTruncated(false)
+      return
+    }
+    void window.api
+      .searchFiles(effectiveScanId, 'catalog truncated', 0, 8)
+      .then((rows) => setHfsTruncated(rows.some((r) => r.source === 'hfs_limit')))
+      .catch(() => setHfsTruncated(false))
+  }, [effectiveScanId, dbFiles, filesFound])
+
+  const sourceFiles: FileRecord[] = effectiveScanId > 0
+    ? dbFiles
+    : filesFound.map((f, i) => ({
+        id: typeof f.id === 'number' ? f.id : i,
+        name: f.name ?? '',
+        sizeBytes: f.sizeBytes ?? f.size ?? 0,
+        status: f.status ?? 0,
+        path: f.path,
+        category: f.category,
+        confidence: f.confidence,
+        startSector: f.startSector,
+        endSector: f.endSector,
+        createdAt: f.createdAt,
+        modifiedAt: f.modifiedAt,
+        runs: f.runs,
+        source: f.source,
+      }))
 
   const handleRecover = async () => {
     if (selectedFiles.size === 0) return
-    if (driveIndex === null) {
-      alert('Kurtarma için bir sürücü seçili değil. Önce bir disk taraması başlatın.')
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
+    const effectiveDrive = driveIndex !== null ? driveIndex : -1
+    if (effectiveDrive < 0 && !raidState.active) {
+      alert('Kurtarma için bir sürücü veya aktif RAID dizisi gerekli.')
       return
     }
     if (!window.api?.recoverFile) {
@@ -27,23 +106,43 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
 
     setIsRecovering(true)
-
-    // Use the real native directory picker instead of a hardcoded path.
     let destDir = await window.api.pickDirectory()
     if (!destDir) {
-      // User cancelled the dialog.
       setIsRecovering(false)
       return
+    }
+
+    const filesToRecover: FileRecord[] = []
+    for (const id of selectedFiles) {
+      const fileToRecover = recordById.get(id) ?? sourceFiles.find(f => f.id === id)
+      if (fileToRecover) filesToRecover.push(fileToRecover)
     }
 
     let successCount = 0
     let failedCount = 0
 
-    for (const id of selectedFiles) {
-      const fileToRecover = filesFound.find(f => f.id === id) || filesFound[id]
-      if (fileToRecover) {
+    if (filesToRecover.length > 1 && window.api.recoverFilesBatch) {
+      try {
+        const res = await window.api.recoverFilesBatch(
+          effectiveDrive,
+          filesToRecover,
+          destDir,
+          effectiveScanId > 0 ? effectiveScanId : undefined,
+        )
+        successCount = res.succeeded
+        failedCount = res.failed
+      } catch {
+        failedCount = filesToRecover.length
+      }
+    } else {
+      for (const fileToRecover of filesToRecover) {
         try {
-          const res = await window.api.recoverFile(driveIndex, fileToRecover, destDir, scanId)
+          const res = await window.api.recoverFile(
+            effectiveDrive,
+            fileToRecover,
+            destDir,
+            effectiveScanId > 0 ? effectiveScanId : undefined,
+          )
           if (res.success) successCount++
           else failedCount++
         } catch {
@@ -63,28 +162,27 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     setSelectedFiles(newSel)
   }
 
-  // Export the filtered results as CSV. UTF-8 BOM keeps Excel happy with
-  // Turkish filenames; fields are escaped per RFC 4180.
   const exportCsv = () => {
     const rows = filteredFiles.map((f) => {
-      const raw = filesFound.find((x) => x.id === f.id) ?? {}
+      const raw: FileRecord | undefined = recordById.get(f.id) ?? sourceFiles.find((x) => x.id === f.id)
       return {
         name: f.name,
-        sizeBytes: raw.sizeBytes ?? raw.size ?? '',
-        category: raw.category ?? '',
-        confidence: raw.confidence ?? '',
-        status: raw.status,
-        path: raw.path ?? '',
-        startSector: raw.startSector ?? '',
-        createdAt: raw.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
-        modifiedAt: raw.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
+        sizeBytes: raw?.sizeBytes ?? '',
+        category: raw?.category ?? '',
+        confidence: raw?.confidence ?? '',
+        status: raw?.status ?? '',
+        path: raw?.path ?? '',
+        source: raw?.source ?? f.sourceLabel ?? '',
+        startSector: raw?.startSector ?? '',
+        createdAt: raw?.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
+        modifiedAt: raw?.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
       }
     })
     const esc = (v: unknown) => {
       const s = String(v ?? '')
       return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'startSector', 'createdAt', 'modifiedAt']
+    const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
     const csv = [header.join(';'), ...rows.map((r) => header.map((h) => esc((r as any)[h])).join(';'))].join('\r\n')
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -124,21 +222,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
   }
 
-  const mappedFiles = filesFound.map((f) => ({
-    id: typeof f.id === 'number' ? f.id : -1,
+  const mappedFiles = sourceFiles.map((f) => ({
+    id: f.id,
     name: f.name,
     rawPath: typeof f.path === 'string' ? f.path : '',
-    size: formatSize(f.sizeBytes || f.size),
+    size: formatSize(f.sizeBytes || 0),
     path: 'Kurtarılanlar',
     status: f.status === 0 ? 'Kurtarılabilir' : 'Kısmen Bozuk',
-    type: getFileType(getExtension(f.name))
+    type: getFileType(getExtension(f.name)),
+    sourceLabel: sourceDisplayLabel(f.source),
   }))
 
   const filteredFiles = mappedFiles.filter(f => filter === 'all' || f.type === filter)
 
-  // ---- Directory tree ----
-  // Build a nested tree from the reconstructed paths (NTFS results carry
-  // real paths from the INDX/MFT pass; carved files fall under "Kurtarılanlar").
   interface TreeNode {
     name: string
     path: string
@@ -150,7 +246,6 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     for (const f of filteredFiles) {
       const raw = (f.rawPath || '/Kurtarılanlar/' + f.name).replace(/\\/g, '/').replace(/^\/+/, '')
       const parts = raw.split('/').filter(Boolean)
-      // The path usually ends with the file name; use it as the leaf when it matches.
       let node = root
       const dirParts = parts.length > 1 && parts[parts.length - 1] === f.name ? parts.slice(0, -1) : parts
       for (const part of dirParts) {
@@ -201,6 +296,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} style={{ width: 14, height: 14 }} />
           {getIconForType(f.type)}
           <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+          {f.sourceLabel ? <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', flexShrink: 0 }}>{f.sourceLabel}</span> : null}
           <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>{f.size}</span>
         </div>
       )
@@ -219,12 +315,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
   }
 
+  const displayTotal = effectiveScanId > 0 ? totalCount : filesFound.length
+  const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE))
+
   return (
     <div className="results-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="results-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px' }}>
         <div className="results-info">
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kurtarma Sonuçları</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Taranan disk üzerinde tespit edilen {filesFound.length} dosya</p>
+          <p style={{ color: 'var(--text-muted)' }}>
+            Taranan disk üzerinde tespit edilen {displayTotal.toLocaleString('tr-TR')} dosya
+            {effectiveScanId > 0 && totalPages > 1 ? ` — sayfa ${page + 1}/${totalPages}` : ''}
+            {loading ? ' (yükleniyor...)' : ''}
+          </p>
         </div>
         <div className="results-actions" style={{ display: 'flex', gap: '12px' }}>
           <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0}>
@@ -241,6 +344,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           </button>
         </div>
       </div>
+
+      {hfsTruncated && (
+        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
+          HFS+ katalog tavanı: tarama 25.000 dosyada kesildi. Eksik dosyalar sessizce düşmedi; kaynak sütununda işaretli.
+        </div>
+      )}
+
+      {effectiveScanId > 0 && totalPages > 1 && (
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+          <button className="btn-secondary" disabled={page === 0 || loading} onClick={() => setPage(p => Math.max(0, p - 1))}>Önceki</button>
+          <button className="btn-secondary" disabled={page >= totalPages - 1 || loading} onClick={() => setPage(p => p + 1)}>Sonraki</button>
+        </div>
+      )}
 
       <div className="results-content glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div className="filters" style={{ display: 'flex', gap: '8px', padding: '16px 24px', borderBottom: '1px solid var(--panel-border)', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -278,13 +394,14 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Dosya Adı</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Boyut</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Konum</th>
+                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kaynak</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Durum</th>
               </tr>
             </thead>
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     Bu kategoride dosya bulunamadı.
                   </td>
                 </tr>
@@ -300,6 +417,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                     </td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.size}</td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.path}</td>
+                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
                     <td style={{ padding: '12px' }}>
                       <span style={{ 
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',

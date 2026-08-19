@@ -20,21 +20,11 @@
   width: 28px;
   height: 28px;
   background: var(--text-main);
+  color: var(--bg-color);
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  overflow: hidden;
-}
-.logo-icon::after {
-  content: '';
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  background: var(--bg-color);
-  border-radius: 3px;
-  transform: rotate(45deg);
 }
 
 .sidebar-logo h1 {
@@ -71,6 +61,11 @@
   border: none;
   cursor: pointer;
   transition: var(--transition-smooth);
+}
+
+.nav-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 .nav-btn:hover {

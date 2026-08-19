@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
+import { ewfNeedsSegmentWarning } from '../../../shared/ewf-limits'
 
 interface DriveInfo {
   index: number
@@ -72,6 +73,15 @@ function ImagerView(): React.ReactElement {
       return
     }
 
+    if (format === 'ewf') {
+      const drive = drives.find(d => d.index === Number(selectedDrive))
+      if (drive && ewfNeedsSegmentWarning(drive.sizeBytes)) {
+        const proceed = window.confirm(
+          'Bu disk 4 GiB üzeri. Tek segment E01 tablo alanı uint32; çıktı bozuk veya kesik olabilir. Yine de E01 yazılsın mı? (RAW önerilir veya ileride çoklu segment.)'
+        )
+        if (!proceed) return
+      }
+    }
     setImaging(true)
     setStatus('İmaj Alınıyor...')
     setProgress({ current: 0, total: 0 })
@@ -103,6 +113,9 @@ function ImagerView(): React.ReactElement {
   }
 
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
+  const selectedDriveInfo = selectedDrive === '' ? undefined : drives.find(d => d.index === Number(selectedDrive))
+  const showEwfSegmentWarning =
+    format === 'ewf' && !!selectedDriveInfo && ewfNeedsSegmentWarning(selectedDriveInfo.sizeBytes)
 
   return (
     <div className="imager-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
@@ -111,8 +124,8 @@ function ImagerView(): React.ReactElement {
           <Save size={32} color="var(--accent-blue)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Disk İmaj Alma (RAW Kopyalama)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Seçilen diskin donanım seviyesinde sektör-sektör kopyasını alır. Yeni native C++ motoru üzerinden tam veri bütünlüğü (bit-by-bit) garantisi sağlar.</p>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Disk İmaj Alma (RAW / E01)</h2>
+          <p style={{ color: 'var(--text-muted)' }}>Sektör-sektör kopya. E01 tek segment, sıkıştırmasız; 4 GiB üstü tablo tavanı vardır.</p>
         </div>
       </div>
 
@@ -122,7 +135,8 @@ function ImagerView(): React.ReactElement {
             <Server size={16} /> Kaynak Sürücü
           </label>
           <select 
-            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+            className="form-select"
+            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             value={selectedDrive} 
             onChange={(e) => setSelectedDrive(e.target.value === '' ? '' : Number(e.target.value))}
             disabled={imaging}
@@ -141,12 +155,18 @@ function ImagerView(): React.ReactElement {
           <select
             value={format}
             onChange={(e) => setFormat(e.target.value as 'raw' | 'ewf')}
-            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+            className="form-select"
+            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             disabled={imaging}
           >
             <option value="raw" style={{ background: 'var(--bg-surface)' }}>RAW (DD) Birebir Kopya (.dd, .img)</option>
             <option value="ewf" style={{ background: 'var(--bg-surface)' }}>E01 (EnCase Forensic) + MD5 Hash (.E01)</option>
           </select>
+          {showEwfSegmentWarning && (
+            <p role="status" style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
+              Seçilen disk 4 GiB üzeri. Tek segment E01 tablo alanı uint32; çıktı kesik veya bozuk olabilir. RAW önerilir.
+            </p>
+          )}
         </div>
 
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -154,7 +174,8 @@ function ImagerView(): React.ReactElement {
           <div style={{ display: 'flex', gap: '8px' }}>
             <input 
               type="text" 
-              style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }}
+              className="form-input"
+              style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
               placeholder="D:\Kopya_Disk1.dd" 
               value={destPath}
               onChange={(e) => setDestPath(e.target.value)}

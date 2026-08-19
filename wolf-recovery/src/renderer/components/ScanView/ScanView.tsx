@@ -30,6 +30,7 @@ function ScanView({
   const [page, setPage] = useState(0)
   const [totalFiles, setTotalFiles] = useState(0)
   const [selectedFile, setSelectedFile] = useState<any>(null)
+  const [hfsTruncated, setHfsTruncated] = useState(false)
   const limit = 50
 
   // Sliding Window ETA
@@ -93,11 +94,18 @@ function ScanView({
           if (pageData) {
             setFilesFound(prev => {
               const byId = new Map<number, any>()
+              let limitHit: any = null
               for (const f of prev) {
                 if (typeof f.id === 'number' && f.id >= 0) byId.set(f.id, f)
+                else if (f.source === 'hfs_limit') limitHit = f
               }
-              for (const f of pageData) byId.set(f.id, f)
-              return Array.from(byId.values()).sort((a, b) => a.id - b.id)
+              for (const f of pageData) {
+                byId.set(f.id, f)
+                if (f.source === 'hfs_limit') limitHit = null
+              }
+              const next = Array.from(byId.values()).sort((a, b) => a.id - b.id)
+              if (limitHit && !next.some(f => f.source === 'hfs_limit')) next.push(limitHit)
+              return next
             })
           }
         } catch (e) {
@@ -110,6 +118,21 @@ function ScanView({
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [driveIndex, activeScanId, setFilesFound, page])
+
+  useEffect(() => {
+    if (filesFound.some((f) => f.source === 'hfs_limit')) {
+      setHfsTruncated(true)
+      return
+    }
+    if (activeScanId <= 0 || !window.api?.searchFiles) {
+      setHfsTruncated(false)
+      return
+    }
+    void window.api
+      .searchFiles(activeScanId, 'catalog truncated', 0, 8)
+      .then((rows) => setHfsTruncated(rows.some((r) => r.source === 'hfs_limit')))
+      .catch(() => setHfsTruncated(false))
+  }, [filesFound, activeScanId])
 
   const formatTime = (seconds: number) => {
     if (seconds < 0) return "--:--:--"
@@ -163,6 +186,12 @@ function ScanView({
           </div>
         </div>
       </div>
+
+      {hfsTruncated && (
+        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
+          HFS+ katalog 25.000 dosyada kesildi. Kalan kayıtlar bu taramada yok; sentinel satır kaynak sütununda görünür.
+        </div>
+      )}
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
         <DiskMapVisualizer

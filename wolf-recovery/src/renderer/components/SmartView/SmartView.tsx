@@ -97,6 +97,11 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
               {smartData.healthScore || 'N/A'}
             </div>
           </div>
+          {!smartData.isNvme && (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '-8px' }}>
+              ATA sağlık skoru KALİBRASYONSUZ heuristic (η=500, β=1.5). Ömür tahmini değil; triyaj eşiği.
+            </p>
+          )}
 
           {(smartData.criticalWarning ?? 0) !== 0 && (
             <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239, 68, 68, 0.05)' }}>
