@@ -19,7 +19,7 @@ export function registerIpcHandlers(): void {
       return engine.getVersion()
     } catch (err) {
       console.error('[IPC] get-version error:', err)
-      return '1.0.0 (Native Error)'
+      return '0.1.0 (native error)'
     }
   })
 
@@ -63,11 +63,13 @@ export function registerIpcHandlers(): void {
         if (data.type === 'progress') {
           event.sender.send('scan-progress', { current: data.current, total: data.total, badSectors: data.badSectors })
         } else if (data.type === 'file') {
-          event.sender.send('scan-file-found', { name: data.name, size: data.size })
+          event.sender.send('scan-file-found', data)
+        } else if (data.type === 'complete') {
+          event.sender.send('scan-complete', { scanId: data.scanId, status: data.status })
         }
       }
       
-      const drivePath = String(driveIndex)
+      const drivePath = driveIndex === -1 ? 'raid' : String(driveIndex)
       console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType)
       return engine.startScan(drivePath, scanType, callback)
 
@@ -240,6 +242,64 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('search-files', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => {
+    try {
+      const engine = getEngine()
+      return engine.searchFiles(scanId, query, offset ?? 0, limit ?? 100, !!useRegex, category ?? '')
+    } catch (err) {
+      console.error('[IPC] search-files error:', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number) => {
+    try {
+      const engine = getEngine()
+      return engine.searchFileContent(scanId, query, offset ?? 0, limit ?? 100)
+    } catch (err) {
+      console.error('[IPC] search-file-content error:', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('start-content-search', async (event, scanId: number, query: string) => {
+    try {
+      const engine = getEngine()
+      const callback = (data: any) => {
+        if (data.type === 'progress') {
+          event.sender.send('content-search-progress', { current: data.current, total: data.total })
+        } else if (data.type === 'match') {
+          event.sender.send('content-search-match', data)
+        } else if (data.type === 'complete') {
+          event.sender.send('content-search-complete', { status: data.status })
+        }
+      }
+      return engine.startContentSearch(scanId, query, callback)
+    } catch (err) {
+      console.error('[IPC] start-content-search error:', err)
+      return false
+    }
+  })
+
+  ipcMain.on('stop-content-search', () => {
+    try {
+      const engine = getEngine()
+      engine.stopContentSearch()
+    } catch (err) {
+      console.error('[IPC] stop-content-search error:', err)
+    }
+  })
+
+  ipcMain.handle('get-scan-summary', (_event, scanId: number) => {
+    try {
+      const engine = getEngine()
+      return engine.getScanSummary(scanId)
+    } catch (err) {
+      console.error('[IPC] get-scan-summary error:', err)
+      return null
+    }
+  })
+
   ipcMain.handle('start-wipe', async (_event, targetPath: string) => {
     try {
       const engine = getEngine()
@@ -309,6 +369,83 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
       return { success: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileRecords: any[], destDir: string, scanId?: number) => {
+    try {
+      const engine = getEngine()
+      return await engine.recoverFilesBatch(driveIndex, fileRecords, destDir, scanId)
+    } catch (err) {
+      console.error('[IPC] recover-files-batch error:', err)
+      return { succeeded: 0, failed: fileRecords?.length ?? 0, results: [], error: String(err) }
+    }
+  })
+
+  ipcMain.handle('get-raid-state', () => {
+    try {
+      return getEngine().getRaidState()
+    } catch (err) {
+      console.error('[IPC] get-raid-state error:', err)
+      return { active: false, capacity: 0, numDisks: 0, level: -1 }
+    }
+  })
+
+  ipcMain.handle('get-case-info', () => {
+    try {
+      return getEngine().getCaseInfo()
+    } catch (err) {
+      console.error('[IPC] get-case-info error:', err)
+      return { caseNumber: '', investigator: '', agency: '', notes: '', createdAt: 0, updatedAt: 0 }
+    }
+  })
+
+  ipcMain.handle('set-case-info', (_event, info: Record<string, string>) => {
+    try {
+      return getEngine().setCaseInfo(info)
+    } catch (err) {
+      console.error('[IPC] set-case-info error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('lookup-nsrl', (_event, md5Hex: string) => {
+    try {
+      return getEngine().lookupNsrl(md5Hex)
+    } catch (err) {
+      console.error('[IPC] lookup-nsrl error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('get-nsrl-stats', () => {
+    try {
+      return getEngine().getNsrlStats()
+    } catch (err) {
+      console.error('[IPC] get-nsrl-stats error:', err)
+      return { count: 0, path: '' }
+    }
+  })
+
+  ipcMain.handle('pick-and-load-nsrl', async () => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const opts: Electron.OpenDialogOptions = {
+        title: 'NSRL MD5 seti',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Hash list', extensions: ['txt', 'csv', 'hash'] },
+          { name: 'All files', extensions: ['*'] },
+        ],
+      }
+      const result = focused
+        ? await dialog.showOpenDialog(focused, opts)
+        : await dialog.showOpenDialog(opts)
+      if (result.canceled || result.filePaths.length === 0) return null
+      return getEngine().loadNsrl(result.filePaths[0])
+    } catch (err) {
+      console.error('[IPC] pick-and-load-nsrl error:', err)
+      return { ok: false, count: 0, path: '' }
     }
   })
 }

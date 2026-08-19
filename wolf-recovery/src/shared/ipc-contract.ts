@@ -71,7 +71,22 @@ export interface RecoverResult {
   error?: string
 }
 
+export interface ScanSummary {
+  totalFiles: number
+  deletedFiles: number
+  imageFiles: number
+  documentFiles: number
+  videoFiles: number
+  audioFiles: number
+  archiveFiles: number
+  timelineEvents?: number
+  usnCreates?: number
+  usnDeletes?: number
+  usnRenames?: number
+}
+
 export type ProgressCallback = (data: { current: number; total: number; badSectors?: number[] }) => void
+export type ScanCompleteCallback = (data: { scanId: number; status: number }) => void
 export type FileFoundCallback = (data: FileRecord & { type?: string; size?: number }) => void
 
 export interface RaidAssemblyResult {
@@ -79,6 +94,19 @@ export interface RaidAssemblyResult {
   capacity: number
   numDisks: number
   error: string
+}
+
+export interface RaidState {
+  active: boolean
+  capacity: number
+  numDisks: number
+  level: number
+}
+
+export interface BatchRecoverResult {
+  succeeded: number
+  failed: number
+  results: RecoverResult[]
 }
 
 export interface TimelineEvent {
@@ -101,4 +129,19 @@ export interface PartitionInfo {
   sizeInSectors: number
   label: string
   isActive: boolean
+}
+
+export interface CaseInfo {
+  caseNumber: string
+  investigator: string
+  agency: string
+  notes: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NsrlStats {
+  ok?: boolean
+  count: number
+  path: string
 }
