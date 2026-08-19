@@ -7,3 +7,7 @@
 .cursor/
 .mimosa/
 
+# Bundled renderer/main (also ignored inside wolf-recovery/)
+wolf-recovery/out/
+
+
