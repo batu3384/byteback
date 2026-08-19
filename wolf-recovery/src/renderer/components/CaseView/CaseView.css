@@ -1,0 +1,75 @@
+.case-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  max-width: 720px;
+  margin: 0 auto;
+  padding-top: var(--space-xl);
+}
+
+.case-header {
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
+  padding: var(--space-lg);
+}
+
+.case-header h2 {
+  margin-bottom: 4px;
+}
+
+.case-header p,
+.case-nsrl p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.case-alert {
+  padding: var(--space-md);
+  border-left: 4px solid var(--alert-red);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.case-alert h3 {
+  margin-bottom: 4px;
+}
+
+.case-form,
+.case-nsrl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--space-lg);
+}
+
+.case-form input,
+.case-form textarea {
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  color: var(--text-main);
+}
+
+.case-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-sm);
+}
+
+.case-saved {
+  color: var(--success-green);
+  font-size: 0.85rem;
+}
+
+.case-field-error {
+  color: var(--alert-red);
+}
+
+.case-nsrl button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+}

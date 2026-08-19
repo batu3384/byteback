@@ -57,6 +57,11 @@
   outline: none;
 }
 
+.raid-type-select:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .disk-list {
   display: flex;
   flex-direction: column;

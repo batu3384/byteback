@@ -66,6 +66,11 @@
   transition: var(--transition-smooth);
 }
 
+.sector-input:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .sector-input:focus {
   border-color: var(--neon-cyan);
   box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);

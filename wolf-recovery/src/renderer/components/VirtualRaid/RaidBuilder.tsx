@@ -8,7 +8,11 @@ interface Disk {
   capacity: string;
 }
 
-const RaidBuilder: React.FC = () => {
+interface RaidBuilderProps {
+  onStartRaidScan?: (scanType: string) => void
+}
+
+const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const [availableDisks, setAvailableDisks] = useState<Disk[]>([]);
   const [raidArray, setRaidArray] = useState<Disk[]>([]);
   const [raidType, setRaidType] = useState<string>('RAID 5');
@@ -69,7 +73,8 @@ const RaidBuilder: React.FC = () => {
       setIsBuilding(false);
       if (res && res.success) {
         const capGb = res.capacity ? (res.capacity / (1024 ** 3)).toFixed(2) : '?';
-        alert(`${raidType} dizisi başarıyla oluşturuldu!\n\nKapasite: ${capGb} GB\nDisk sayısı: ${res.numDisks}\n\nArtık bu diziyi normal bir disk gibi tarayabilirsiniz.`);
+        alert(`${raidType} dizisi başarıyla oluşturuldu!\n\nKapasite: ${capGb} GB\nDisk sayısı: ${res.numDisks}`);
+        if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         const why = res && res.error ? `\n\nHata: ${res.error}` : '';
         alert(`${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`);
@@ -154,7 +159,7 @@ const RaidBuilder: React.FC = () => {
                 className="raid-type-select"
                 value={raidType}
                 onChange={(e) => setRaidType(e.target.value)}
-                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '6px 12px', borderRadius: '6px', outline: 'none' }}
+                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '6px 12px', borderRadius: '6px' }}
               >
                 <option value="RAID 0">RAID 0 (Stripe)</option>
                 <option value="RAID 1">RAID 1 (Mirror)</option>

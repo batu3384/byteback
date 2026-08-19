@@ -64,7 +64,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
               <Server size={16} /> Hedef Sürücü
             </label>
             <select
-              style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none', opacity: 0.5 }}
+              style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', opacity: 0.5 }}
               value={selectedDrive || ''}
               onChange={(e) => setSelectedDrive(Number(e.target.value))}
               disabled
@@ -80,7 +80,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
 
           <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Güvenlik Standardı</label>
-            <select style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem', outline: 'none' }} disabled>
+            <select style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }} disabled>
               <option>US DoD 5220.22-M (3-Pass Wipe)</option>
             </select>
           </div>

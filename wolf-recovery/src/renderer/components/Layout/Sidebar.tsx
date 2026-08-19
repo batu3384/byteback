@@ -1,6 +1,7 @@
 import React from 'react'
 import './Sidebar.css'
-import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock } from 'lucide-react'
+import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock, Briefcase, Shield } from 'lucide-react'
+import { APP_VERSION } from '../../../shared/app-version'
 
 interface SidebarProps {
   activePage: string
@@ -14,18 +15,21 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
     { id: 'results', label: 'Kurtarma Sonuçları', icon: <FolderSearch size={20} strokeWidth={1.5} /> },
     { id: 'search', label: 'Kelime Arama', icon: <FileSearch size={20} strokeWidth={1.5} /> },
     { id: 'hex', label: 'Hex İnceleyici', icon: <Binary size={20} strokeWidth={1.5} /> },
-    { id: 'imager', label: 'İmaj Alma (DD)', icon: <HardDriveDownload size={20} strokeWidth={1.5} /> },
+    { id: 'imager', label: 'İmaj (RAW / E01)', icon: <HardDriveDownload size={20} strokeWidth={1.5} /> },
     { id: 'smart', label: 'S.M.A.R.T. Durumu', icon: <Activity size={20} strokeWidth={1.5} /> },
     { id: 'shredder', label: 'Veri Yok Edici', icon: <ShieldAlert size={20} strokeWidth={1.5} /> },
     { id: 'raid', label: 'Sanal RAID Oluştur', icon: <Database size={20} strokeWidth={1.5} /> },
     { id: 'timeline', label: 'Olay Zaman Çizelgesi', icon: <Clock size={20} strokeWidth={1.5} /> },
     { id: 'report', label: 'Adli Rapor (PDF)', icon: <FileText size={20} strokeWidth={1.5} /> },
+    { id: 'case', label: 'Dava / NSRL', icon: <Briefcase size={20} strokeWidth={1.5} /> },
   ]
 
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <div className="logo-icon">🐺</div>
+        <div className="logo-icon" aria-hidden="true">
+          <Shield size={16} strokeWidth={2} />
+        </div>
         <h1>Wolf Recovery</h1>
       </div>
       <nav className="sidebar-nav">
@@ -46,7 +50,7 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
       
       <div className="sidebar-footer">
         <div className="pro-badge">PRO MAX</div>
-        <div className="version-info">Adli Bilişim Sürümü (v1.0.0)</div>
+        <div className="version-info">Adli Bilişim Sürümü (v{APP_VERSION})</div>
       </div>
     </aside>
   )

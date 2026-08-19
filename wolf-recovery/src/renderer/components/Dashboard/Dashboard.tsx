@@ -49,7 +49,8 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         const latestId = await window.api.getLatestScanId()
         if (latestId > 0) {
           const state = await window.api.getScanState(latestId)
-          if (state && (state.status === 0 || state.status === 1)) {
+          // status 0 = running; bridge stores 1=complete (legacy mapping).
+          if (state && state.status === 0) {
             setActiveSession(state)
           }
         }
