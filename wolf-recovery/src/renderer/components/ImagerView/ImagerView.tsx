@@ -36,6 +36,12 @@ function ImagerView(): React.ReactElement {
     let cleanupProgress: (() => void) | undefined
     if (window.api && window.api.onImagingProgress) {
       cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string }) => {
+        if (data.total === 0) {
+          setStatus('İmaj alma başarısız (açma/yazma hatası veya E01 4 GiB tavan)')
+          setImaging(false)
+          if (timerRef.current) clearInterval(timerRef.current)
+          return
+        }
         setProgress(data)
 
         setLatencies(prev => {
@@ -76,10 +82,8 @@ function ImagerView(): React.ReactElement {
     if (format === 'ewf') {
       const drive = drives.find(d => d.index === Number(selectedDrive))
       if (drive && ewfNeedsSegmentWarning(drive.sizeBytes)) {
-        const proceed = window.confirm(
-          'Bu disk 4 GiB üzeri. Tek segment E01 tablo alanı uint32; çıktı bozuk veya kesik olabilir. Yine de E01 yazılsın mı? (RAW önerilir veya ileride çoklu segment.)'
-        )
-        if (!proceed) return
+        alert('Bu disk 4 GiB üzeri. Tek segment E01 reddedilir (uint32 tablo). RAW seçin.')
+        return
       }
     }
     setImaging(true)
@@ -178,7 +182,7 @@ function ImagerView(): React.ReactElement {
               style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
               placeholder="D:\Kopya_Disk1.dd" 
               value={destPath}
-              onChange={(e) => setDestPath(e.target.value)}
+              readOnly
               disabled={imaging}
             />
             <button

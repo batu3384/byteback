@@ -192,6 +192,11 @@ function ScanView({
           HFS+ katalog 25.000 dosyada kesildi. Kalan kayıtlar bu taramada yok; sentinel satır kaynak sütununda görünür.
         </div>
       )}
+      {filesFound.length >= 5000 && (
+        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
+          Canlı liste 5000 kayıt tavanında. Tam envanter SQLite sayfasındadır.
+        </div>
+      )}
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
         <DiskMapVisualizer

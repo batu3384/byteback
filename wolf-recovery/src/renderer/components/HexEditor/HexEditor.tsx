@@ -14,6 +14,7 @@ let globalSectorCache = 0;
 function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.ReactElement {
   const [sector, setSector] = useState(globalSectorCache)
   const [data, setData] = useState<number[]>([])
+  const [readFailed, setReadFailed] = useState(false)
   const [loading, setLoading] = useState(false)
 
   // Update cache whenever sector changes
@@ -28,15 +29,18 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
       const offset = secIndex * sectorSize
       if (window.api && window.api.readHexData) {
         const result = await window.api.readHexData(driveIndex, offset, sectorSize)
-        if (result && Array.isArray(result)) {
+        if (result && Array.isArray(result) && result.length > 0) {
+          setReadFailed(false)
           setData(result)
         } else {
-          setData(new Array(sectorSize).fill(0))
+          setReadFailed(true)
+          setData([])
         }
       }
     } catch (err) {
       console.error(err)
-      setData(new Array(sectorSize).fill(0))
+      setReadFailed(true)
+      setData([])
     } finally {
       setLoading(false)
     }
@@ -89,6 +93,12 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
           <button className="btn-primary" onClick={() => fetchSector(sector)} style={{ padding: '6px 12px' }}><Search size={16} /> Git</button>
         </div>
       </div>
+
+      {readFailed && (
+        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', marginBottom: '16px', borderLeft: '4px solid var(--alert-red)' }}>
+          Sektör okunamadı. Sıfır dolu ızgara gösterilmiyor.
+        </div>
+      )}
 
       <div className="entropy-indicator glass-panel" style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
         <span style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-main)', width: '120px' }}>Sektör Entropisi:</span>

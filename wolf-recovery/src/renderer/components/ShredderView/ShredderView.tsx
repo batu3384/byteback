@@ -20,12 +20,12 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
     };
   }, []);
 
-  const handleShred = () => {
-    // CA-001: disk-wide free-space wiping is disabled until a filesystem-aware
-    // implementation exists. The native worker rejects device paths outright,
-    // and this handler no longer sends a drive index anywhere.
-    alert('Boş alan imhası geçici olarak devre dışıdır (denetim bulgusu CA-001). Motor, yanlışlıkla tüm diski ezmesini önlemek için fiziksel sürücü hedeflerini reddediyor.');
-  };
+  const handleFileWipe = async () => {
+    if (!window.api?.pickAndWipeFile) return
+    setStatus('shredding')
+    const ok = await window.api.pickAndWipeFile()
+    setStatus(ok ? 'done' : 'idle')
+  }
 
 
   return (
@@ -86,6 +86,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
           </div>
 
           {status === 'idle' && (
+            <>
             <button
               className="btn-danger shred-btn"
               disabled
@@ -94,6 +95,15 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
             >
               <ShieldAlert size={20} /> BOŞ ALAN İMHASI DEVRE DIŞI
             </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => void handleFileWipe()}
+              style={{ padding: '12px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
+            >
+              <FileWarning size={18} /> Dosya imha et (onaylı iletişim kutusu)
+            </button>
+            </>
           )}
 
           {status === 'shredding' && (
@@ -112,8 +122,8 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
           {status === 'done' && (
             <div className="shred-success glass-panel" style={{ padding: '24px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.2)', textAlign: 'center' }}>
               <CheckCircle size={48} color="var(--success-green)" style={{ margin: '0 auto 16px' }} />
-              <h3 style={{ color: 'var(--success-green)', marginBottom: '8px', fontSize: '1.2rem' }}>İmha İşlemi Tamamlandı</h3>
-              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>Seçilen sürücüdeki boş alanlar güvenli bir şekilde (3 Pass) üzerine yazılarak imha edildi.</p>
+              <h3 style={{ color: 'var(--success-green)', marginBottom: '8px', fontSize: '1.2rem' }}>Dosya İmhası Tamamlandı</h3>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>Seçilen dosya üzerine yazıldı. Disk boş alan imhası hâlâ kapalı.</p>
               <button className="btn-secondary" onClick={() => setStatus('idle')}>Başka Bir Sürücü Temizle</button>
             </div>
           )}

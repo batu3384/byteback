@@ -3,6 +3,7 @@ import './ReportGenerator.css';
 import { FileText, Download, CheckCircle, Clock, ShieldCheck, PieChart } from 'lucide-react';
 import type { ScanSummary } from '../../../shared/ipc-contract';
 import { APP_VERSION } from '../../../shared/app-version';
+import { htmlEscape } from '../../../shared/html-escape';
 
 interface ReportGeneratorProps {
   scanId: number;
@@ -55,7 +56,7 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
 <code>wolf_recovery.db.audit.log</code> dosyasındadır.</p>
 <table>
   <tr><th>Olay</th></tr>
-  ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${l.replace(/</g, '&lt;')}</td></tr>`).join('\n  ')}
+  ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${htmlEscape(l)}</td></tr>`).join('\n  ')}
 </table>
 ` : '';
 
@@ -84,18 +85,18 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
       const body = `
 <h1>Wolf Recovery — Adli Bilişim Kurtarma Raporu</h1>
 <div class="header-meta">
-  <div><strong>Tarih:</strong> ${dateStr} ${timeStr}</div>
-  <div><strong>Yazılım:</strong> Wolf Recovery v${APP_VERSION}</div>
-  <div><strong>Uzman:</strong> ${investigator || 'Dava kaydında yok'}</div>
+  <div><strong>Tarih:</strong> ${htmlEscape(dateStr)} ${htmlEscape(timeStr)}</div>
+  <div><strong>Yazılım:</strong> Wolf Recovery v${htmlEscape(APP_VERSION)}</div>
+  <div><strong>Uzman:</strong> ${htmlEscape(investigator || 'Dava kaydında yok')}</div>
 </div>
 
 <h2>1. Vaka Bilgileri</h2>
 <table>
   <tr><th>Alan</th><th>Değer</th></tr>
-  <tr><td>Vaka Numarası</td><td>${caseNumber || 'Dava numarası yok'}</td></tr>
-  <tr><td>Kurum</td><td>${agency || '—'}</td></tr>
-  <tr><td>Rapor Tarihi</td><td>${now.toLocaleString('tr-TR')}</td></tr>
-  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery ${APP_VERSION} (Native C++ Engine)</td></tr>
+  <tr><td>Vaka Numarası</td><td>${htmlEscape(caseNumber || 'Dava numarası yok')}</td></tr>
+  <tr><td>Kurum</td><td>${htmlEscape(agency || '—')}</td></tr>
+  <tr><td>Rapor Tarihi</td><td>${htmlEscape(now.toLocaleString('tr-TR'))}</td></tr>
+  <tr><td>Yazılım Sürümü</td><td>Wolf Recovery ${htmlEscape(APP_VERSION)} (Native C++ Engine)</td></tr>
   <tr><td>İşletim Sistemi</td><td>Windows</td></tr>
 </table>
 
@@ -103,17 +104,16 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
 <table>
   <tr><th>Metrik</th><th>Değer</th></tr>
   <tr><td>Bulunan Toplam Dosya</td><td>${totalFiles}</td></tr>
-  <tr><td>Kurtarılabilir (Tam)</td><td>${summary?.deletedFiles ?? 0}</td></tr>
-  <tr><td>Kısmen Üzerine Yazılmış</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
+  <tr><td>Silinmiş / unallocated (status=0)</td><td>${summary?.deletedFiles ?? 0}</td></tr>
+  <tr><td>Allocated / in-use (status=1)</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
   <tr><td>Tarama Süresi</td><td>${scanElapsed} sn</td></tr>
   <tr><td>USN Zaman Çizelgesi Olayları</td><td>${summary?.timelineEvents ?? 0}</td></tr>
   <tr><td>USN Oluşturma / Silme / Yeniden Adlandırma</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
 </table>
 
 <h2>3. Gözetim Zinciri (Chain of Custody)</h2>
-<p>Bu tarama sırasındaki tüm disk erişim işlemleri Salt-Okunur (Read-Only) modda gerçekleştirilmiştir.
-Motor, fiziksel diske yalnızca okuma amacıyla açmakta (GENERIC_READ) ve imajlama dışında hiçbir
-yazma işlemi yapmamaktadır. Kaynak medyanın içerik bütünlüğü tarama boyunca korunmuştur.</p>
+<p>Disk açılışı GENERIC_READ kullanır; FILE_SHARE_WRITE açıktır ve yazma-engelleyici yoktur.
+Kurtarma çıktısı, disk imajı ve dosya imhası hedefe yazar. Kaynak medyaya yazılmadığı iddia edilmez.</p>
 
 <h2>4. Dosya Kategorileri Dağılımı</h2>
 <table>

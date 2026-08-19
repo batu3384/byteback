@@ -38,6 +38,10 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
 
   const handleSearch = async () => {
     if (!query.trim()) return;
+    if (useRegex && query.length > 128) {
+      setRegexError('Regex en fazla 128 karakter.');
+      return;
+    }
     if (scanId <= 0) {
       setRegexError('Önce bir tarama tamamlayın.');
       return;
@@ -136,7 +140,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="search-header glass-panel" style={{ padding: '24px' }}>
         <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması (Keyword Search)</h2>
-        <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması.</p>
+        <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması. 16 MiB üstü dosyalar içerik indeksine alınmaz.</p>
       </div>
 
       <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>

@@ -11,6 +11,11 @@ describe('sourceDisplayLabel', () => {
     expect(sourceDisplayLabel('hfs_limit')).toBe('HFS katalog tavanı')
   })
 
+  it('marks unbound VSS and BitLocker discovery', () => {
+    expect(sourceDisplayLabel('vss_unbound')).toBe('VSS bağlanmadı (host karışımı kapalı)')
+    expect(sourceDisplayLabel('bitlocker_detect')).toBe('BitLocker (şifre çözme yok)')
+  })
+
   it('passes through other sources', () => {
     expect(sourceDisplayLabel('mft')).toBe('mft')
     expect(sourceDisplayLabel(undefined)).toBe('')
