@@ -37,6 +37,17 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
         [](Napi::Env) {}
     );
 
+    wolf::EwfOptions ewfOpts;
+    wolf::CaseInfo caseInfo = bdata->engine.getMetadataStore().getCaseInfo();
+    if (!caseInfo.caseNumber.empty()) ewfOpts.caseNumber = caseInfo.caseNumber;
+    if (!caseInfo.investigator.empty()) ewfOpts.examiner = caseInfo.investigator;
+    else ewfOpts.examiner = "Wolf Recovery";
+    if (!caseInfo.notes.empty()) ewfOpts.notes = caseInfo.notes;
+    if (!caseInfo.agency.empty()) {
+        if (!ewfOpts.notes.empty()) ewfOpts.notes += " | ";
+        ewfOpts.notes += "Agency: " + caseInfo.agency;
+    }
+
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
     auto imagerPtr = &(context->imager);
     auto onProgress = [context, lastProgress, imagerPtr](uint64_t current, uint64_t total) {
@@ -67,7 +78,7 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
         "IMAGING_START | drive=" + std::to_string(driveIndex) +
         " | dest=" + destPath + " | format=" + (format == wolf::ImageFormat::Ewf ? "ewf" : "raw"));
 
-    context->imager.startImaging(driveIndex, destPath, onProgress, format);
+    context->imager.startImaging(driveIndex, destPath, onProgress, format, ewfOpts);
 
     return Napi::Boolean::New(env, true);
     NAPI_CATCH

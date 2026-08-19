@@ -40,6 +40,9 @@ public:
     // Open a drive for reading (returns false on failure)
     bool openDrive(int driveIndex);
 
+    // Open a volume device path (VSS shadow copy, \\.\X:, etc.).
+    bool openVolumePath(const std::string& volumePath);
+
     // Close current drive
     void closeDrive();
 

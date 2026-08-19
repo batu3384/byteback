@@ -22,15 +22,27 @@ void runQuickScan(DiskReader& reader,
                   std::atomic<bool>* isRunning,
                   std::vector<uint64_t>* badSectorOut = nullptr);
 
+void runCarveScan(DiskReader& reader,
+                  FileSystemParser::FileRecordCallback onFileFound,
+                  ScanProgressCallback onProgress,
+                  std::atomic<bool>* isRunning,
+                  std::vector<uint64_t>* badSectorOut = nullptr);
+
+// Metadata quick scan followed by signature carving (professional "deep" mode).
 void runDeepScan(DiskReader& reader,
                  FileSystemParser::FileRecordCallback onFileFound,
                  ScanProgressCallback onProgress,
                  std::atomic<bool>* isRunning,
                  std::vector<uint64_t>* badSectorOut = nullptr);
 
+// Prefix file sources with raid_ when scanning through VirtualRaid.
+void tagRaidScanSource(FileRecord& fr, const DiskReader& reader);
+
 class ScanCoordinator {
 public:
     using ProgressCallback = std::function<void(uint64_t currentSector, uint64_t totalSectors)>;
+    // status: 1=complete, 2=stopped, 3=failed
+    using FinishedCallback = std::function<void(int status)>;
     
     ScanCoordinator();
     ~ScanCoordinator();
@@ -41,7 +53,8 @@ public:
                    FileSystemParser::FileRecordCallback onFileFound,
                    ProgressCallback onProgress,
                    std::vector<uint64_t>* badSectorOut = nullptr,
-                   std::shared_ptr<VirtualRaid> raid = nullptr);
+                   std::shared_ptr<VirtualRaid> raid = nullptr,
+                   FinishedCallback onFinished = nullptr);
     
     void stopScan();
 
@@ -53,7 +66,8 @@ private:
                     FileSystemParser::FileRecordCallback onFileFound,
                     ProgressCallback onProgress,
                     std::vector<uint64_t>* badSectorOut,
-                    std::shared_ptr<VirtualRaid> raid);
+                    std::shared_ptr<VirtualRaid> raid,
+                    FinishedCallback onFinished);
 };
 
 } // namespace wolf

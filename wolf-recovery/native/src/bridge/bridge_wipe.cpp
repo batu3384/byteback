@@ -2,6 +2,35 @@
 // and file recovery. See bridge_common.h for the shared context.
 #include "bridge_common.h"
 
+namespace {
+
+wolf::FileRecord FileRecordFromJs(Napi::Object fileObj) {
+    wolf::FileRecord record;
+    record.id = fileObj.Has("id") ? (int64_t)fileObj.Get("id").As<Napi::Number>().DoubleValue() : 0;
+    record.name = fileObj.Has("name") ? fileObj.Get("name").As<Napi::String>().Utf8Value() : "unknown.bin";
+    record.extension = fileObj.Has("extension") ? fileObj.Get("extension").As<Napi::String>().Utf8Value() : "";
+    record.path = fileObj.Has("path") ? fileObj.Get("path").As<Napi::String>().Utf8Value() : "";
+    record.sizeBytes = fileObj.Has("sizeBytes") ? (uint64_t)fileObj.Get("sizeBytes").As<Napi::Number>().DoubleValue() : 0;
+    record.startSector = fileObj.Has("startSector") ? (uint64_t)fileObj.Get("startSector").As<Napi::Number>().DoubleValue() : 0;
+    record.endSector = fileObj.Has("endSector") ? (uint64_t)fileObj.Get("endSector").As<Napi::Number>().DoubleValue() : 0;
+    record.status = fileObj.Has("status") ? fileObj.Get("status").As<Napi::Number>().Int32Value() : 0;
+    record.compressed = fileObj.Has("compressed") && fileObj.Get("compressed").As<Napi::Boolean>().Value();
+    record.source = fileObj.Has("source") ? fileObj.Get("source").As<Napi::String>().Utf8Value() : "";
+    if (fileObj.Has("runs") && fileObj.Get("runs").IsArray()) {
+        Napi::Array runsArr = fileObj.Get("runs").As<Napi::Array>();
+        for (uint32_t i = 0; i < runsArr.Length(); i++) {
+            Napi::Object runObj = runsArr.Get(i).As<Napi::Object>();
+            wolf::FileRecord::DataRun dr;
+            dr.startSector = (uint64_t)runObj.Get("startSector").As<Napi::Number>().DoubleValue();
+            dr.sectorCount = (uint64_t)runObj.Get("sectorCount").As<Napi::Number>().DoubleValue();
+            record.runs.push_back(dr);
+        }
+    }
+    return record;
+}
+
+} // namespace
+
 class WipeWorker : public Napi::AsyncWorker {
 public:
     WipeWorker(Napi::Env& env, const std::string& path, Napi::Promise::Deferred deferred)
@@ -153,7 +182,7 @@ public:
             auto& reader = engine_->getDiskReader();
             if (raid_) {
                 reader.setRaidBackend(raid_);
-            } else if (!reader.isOpen() || reader.getDriveIndex() != driveIndex_) {
+            } else if (driveIndex_ >= 0 && (!reader.isOpen() || reader.getDriveIndex() != driveIndex_)) {
                 reader.openDrive(driveIndex_);
             }
 
@@ -213,39 +242,142 @@ Napi::Value RecoverFile(const Napi::CallbackInfo& info) {
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     Napi::Object fileObj = info[1].As<Napi::Object>();
     std::string destDir = info[2].As<Napi::String>().Utf8Value();
-    // Optional 4th arg: scanId for the recovery counter (CA-008).
     int64_t scanId = (info.Length() >= 4 && info[3].IsNumber())
                      ? info[3].As<Napi::Number>().Int64Value() : -1;
 
-    wolf::FileRecord record;
-    record.id = fileObj.Has("id") ? (int64_t)fileObj.Get("id").As<Napi::Number>().DoubleValue() : 0;
-    record.name = fileObj.Has("name") ? fileObj.Get("name").As<Napi::String>().Utf8Value() : "unknown.bin";
-    record.extension = fileObj.Has("extension") ? fileObj.Get("extension").As<Napi::String>().Utf8Value() : "";
-    record.path = fileObj.Has("path") ? fileObj.Get("path").As<Napi::String>().Utf8Value() : "";
-    record.sizeBytes = fileObj.Has("sizeBytes") ? (uint64_t)fileObj.Get("sizeBytes").As<Napi::Number>().DoubleValue() : 0;
-    record.startSector = fileObj.Has("startSector") ? (uint64_t)fileObj.Get("startSector").As<Napi::Number>().DoubleValue() : 0;
-    record.endSector = fileObj.Has("endSector") ? (uint64_t)fileObj.Get("endSector").As<Napi::Number>().DoubleValue() : 0;
-    record.status = fileObj.Has("status") ? fileObj.Get("status").As<Napi::Number>().Int32Value() : 0;
-    record.compressed = fileObj.Has("compressed") && fileObj.Get("compressed").As<Napi::Boolean>().Value();
-    record.source = fileObj.Has("source") ? fileObj.Get("source").As<Napi::String>().Utf8Value() : "";
-
-    // Parse data runs if provided
-    if (fileObj.Has("runs") && fileObj.Get("runs").IsArray()) {
-        Napi::Array runsArr = fileObj.Get("runs").As<Napi::Array>();
-        for (uint32_t i = 0; i < runsArr.Length(); i++) {
-            Napi::Object runObj = runsArr.Get(i).As<Napi::Object>();
-            wolf::FileRecord::DataRun dr;
-            dr.startSector = (uint64_t)runObj.Get("startSector").As<Napi::Number>().DoubleValue();
-            dr.sectorCount = (uint64_t)runObj.Get("sectorCount").As<Napi::Number>().DoubleValue();
-            record.runs.push_back(dr);
-        }
-    }
+    wolf::FileRecord record = FileRecordFromJs(fileObj);
 
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
     RecoverWorker* worker = new RecoverWorker(env, &bdata->engine, driveIndex, record, destDir,
                                               scanId, bdata->raid, deferred);
     worker->Queue();
 
+    return deferred.Promise();
+    NAPI_CATCH
+}
+
+Napi::Value GetRaidState(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    Napi::Object out = Napi::Object::New(env);
+    if (!bdata || !bdata->raid) {
+        out.Set("active", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("level", Napi::Number::New(env, -1));
+        return out;
+    }
+    out.Set("active", Napi::Boolean::New(env, true));
+    out.Set("capacity", Napi::Number::New(env, static_cast<double>(bdata->raid->capacity())));
+    out.Set("numDisks", Napi::Number::New(env, static_cast<double>(bdata->raid->num_disks())));
+    out.Set("level", Napi::Number::New(env, static_cast<int>(bdata->raid->level())));
+    return out;
+    NAPI_CATCH
+}
+
+class BatchRecoverWorker : public Napi::AsyncWorker {
+public:
+    BatchRecoverWorker(Napi::Env& env, wolf::Engine* engine, int driveIndex,
+                       std::vector<wolf::FileRecord> records, const std::string& destDir,
+                       int64_t scanId, std::shared_ptr<wolf::VirtualRaid> raid,
+                       Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
+          records_(std::move(records)), destDir_(destDir), scanId_(scanId),
+          raid_(std::move(raid)), deferred_(deferred) {}
+
+    void Execute() override {
+        try {
+            auto& reader = engine_->getDiskReader();
+            if (raid_) reader.setRaidBackend(raid_);
+            else if (!reader.isOpen() || reader.getDriveIndex() != driveIndex_) {
+                reader.openDrive(driveIndex_);
+            }
+            wolf::RecoveryEngine recovery;
+            summary_ = recovery.recoverFilesBatch(reader, records_, destDir_);
+            if (scanId_ > 0) {
+                for (int i = 0; i < summary_.succeeded; ++i)
+                    engine_->getMetadataStore().incrementRecovered(scanId_);
+            }
+        } catch (const std::exception& e) {
+            error_ = e.what();
+        } catch (...) {
+            error_ = "Unknown batch recovery error";
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (!error_.empty()) {
+            deferred_.Reject(Napi::String::New(env, error_));
+            return;
+        }
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("succeeded", Napi::Number::New(env, summary_.succeeded));
+        out.Set("failed", Napi::Number::New(env, summary_.failed));
+        Napi::Array arr = Napi::Array::New(env, summary_.results.size());
+        for (size_t i = 0; i < summary_.results.size(); ++i) {
+            const auto& r = summary_.results[i];
+            Napi::Object item = Napi::Object::New(env);
+            item.Set("success", Napi::Boolean::New(env, r.success));
+            item.Set("destPath", Napi::String::New(env, r.destPath));
+            item.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(r.bytesRecovered)));
+            item.Set("error", Napi::String::New(env, r.error));
+            item.Set("md5Hash", Napi::String::New(env, r.md5Hash));
+            arr[i] = item;
+        }
+        out.Set("results", arr);
+        deferred_.Resolve(out);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        deferred_.Reject(Napi::String::New(Env(), e.what()));
+    }
+
+private:
+    wolf::Engine* engine_;
+    int driveIndex_;
+    std::vector<wolf::FileRecord> records_;
+    std::string destDir_;
+    int64_t scanId_ = -1;
+    std::shared_ptr<wolf::VirtualRaid> raid_;
+    Napi::Promise::Deferred deferred_;
+    wolf::BatchRecoverySummary summary_;
+    std::string error_;
+};
+
+Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsArray() || !info[2].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, fileRecords[], destDir").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return env.Undefined();
+
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    Napi::Array arr = info[1].As<Napi::Array>();
+    std::string destDir = info[2].As<Napi::String>().Utf8Value();
+    int64_t scanId = (info.Length() >= 4 && info[3].IsNumber())
+                     ? info[3].As<Napi::Number>().Int64Value() : -1;
+
+    std::vector<wolf::FileRecord> records;
+    records.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        if (!arr.Get(i).IsObject()) continue;
+        records.push_back(FileRecordFromJs(arr.Get(i).As<Napi::Object>()));
+    }
+    if (records.empty()) {
+        Napi::TypeError::New(env, "No file records to recover").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    BatchRecoverWorker* worker = new BatchRecoverWorker(env, &bdata->engine, driveIndex,
+                                                        std::move(records), destDir, scanId,
+                                                        bdata->raid, deferred);
+    worker->Queue();
     return deferred.Promise();
     NAPI_CATCH
 }

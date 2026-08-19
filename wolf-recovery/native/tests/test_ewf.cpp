@@ -20,6 +20,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 using namespace wolf;
 using wolf::crypto::md5Hex;
@@ -241,4 +242,48 @@ TEST(Ewf, RejectsUnalignedWritesAndDoubleOpen) {
     EXPECT_TRUE(w2.write(sec.data(), sec.size()));
     EXPECT_TRUE(w2.finish());
     ::remove(path.c_str());
+}
+
+// CA-004: optional independent reader cross-check when WOLF_EWFINFO is set
+// (CI passes the path to libewf's ewfinfo when installed).
+TEST(Ewf, OptionalEwfinfoCrossCheck) {
+    const char* tool = std::getenv("WOLF_EWFINFO");
+    if (!tool || !*tool) {
+        GTEST_SKIP() << "Set WOLF_EWFINFO to the ewfinfo binary path";
+    }
+
+    std::string path = "crosscheck_ewf.E01";
+    const uint64_t kSectors = 8;
+    std::vector<uint8_t> img(kSectors * 512, 0x5A);
+
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+    const std::string expectMd5 = w.md5Hex();
+
+    std::string cmd = std::string("\"") + tool + "\" \"" + path + "\"";
+#ifdef _WIN32
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    ASSERT_NE(pipe, nullptr) << "Failed to run: " << cmd;
+
+    std::string output;
+    char buf[512];
+    while (fgets(buf, sizeof(buf), pipe)) output += buf;
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    ::remove(path.c_str());
+
+    std::string needle = expectMd5;
+    for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::string hay = output;
+    for (char& c : hay) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    EXPECT_NE(hay.find(needle), std::string::npos)
+        << "ewfinfo output did not contain MD5 " << expectMd5 << "\n---\n" << output;
 }

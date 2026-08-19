@@ -26,6 +26,7 @@ int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) 
     if (ext == "pdf")                   return validatePdf(data, size);
     if (ext == "gz" || ext == "gzip" || ext == "tgz") return validateGzip(data, size);
     if (ext == "riff")                  return validateRiff(data, size);
+    if (ext == "ts")                    return validateMpegTs(data, size);
     return 90; // no structural validator — trust the header/footer match
 }
 } // namespace

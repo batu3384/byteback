@@ -1,71 +1,70 @@
 #include "wolf_fs.h"
-#include "wolf_memory.h"
-#include <iostream>
+#include "fs/hfs_catalog.h"
 #include <cstring>
-#include <string>
-#include <vector>
 
 namespace wolf {
 
 HFSParser::HFSParser() {}
 HFSParser::~HFSParser() {}
 
-bool HFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
-    if (!reader.isOpen()) return false;
-    
-    uint64_t diskSize = reader.getDiskSize();
+bool HFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
+                       uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes) {
+    if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
+
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
-    
-    const uint32_t chunkSectors = (4 * 1024 * 1024) / sectorSize;
-    const uint32_t chunkSize = chunkSectors * sectorSize;
-    auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
-    auto& buffer = *poolBuf;
-    
-    uint64_t maxSector = diskSize / sectorSize;
-    int foundCount = 0;
+    uint64_t volumeStartSector = partitionOffsetBytes / sectorSize;
+    uint64_t volumeEndSector = reader.getDiskSize() / sectorSize;
+    if (partitionSizeBytes > 0) {
+        volumeEndSector = std::min(volumeEndSector, volumeStartSector + partitionSizeBytes / sectorSize);
+    }
 
-    for (uint64_t sector = 0; sector < maxSector; sector += chunkSectors) {
+    bool catalogOk = scanHfsPlusCatalog(reader, partitionOffsetBytes, partitionSizeBytes, callback, isRunning);
+
+  auto progress = [&](uint64_t sector) {
+        FileRecord tick;
+        tick.id = -1;
+        tick.startSector = sector;
+        callback(tick);
+    };
+
+    if (catalogOk) {
+        progress(volumeEndSector);
+        return true;
+    }
+
+    // Fallback: superblock signature discovery within partition bounds.
+    const uint32_t chunkSectors = std::max<uint32_t>(1, (4 * 1024 * 1024) / sectorSize);
+    for (uint64_t sector = volumeStartSector; sector < volumeEndSector; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
-        
-        auto res = reader.readSectors(sector * sectorSize, chunkSize, buffer.data());
+        std::vector<uint8_t> buf(chunkSectors * sectorSize);
+        auto res = reader.readSectors(sector * sectorSize, static_cast<uint32_t>(buf.size()), buf.data());
         if (!res.success) continue;
-
-        for (uint32_t i = 0; i < res.bytesRead; i += sectorSize) {
-            if (i + 1536 > res.bytesRead) break;
-            
-            // HFS+ Volume Header is typically at offset 1024. Magic is 'H+' (0x48 0x2B) or 'HX' (0x48 0x58)
-            uint16_t magic = *reinterpret_cast<uint16_t*>(buffer.data() + i + 1024);
-            // In Big Endian, H+ is 0x482B. On Little Endian (x86), it's 0x2B48.
-            if (magic == 0x2B48 || magic == 0x5848) {
+        for (uint32_t i = 0; i + 1536 <= res.bytesRead; i += sectorSize) {
+            uint16_t magic = static_cast<uint16_t>(buf[i + 1024] | (buf[i + 1025] << 8));
+            if (magic == 0x482B || magic == 0x5848) {
                 FileRecord fr;
-                fr.id = foundCount++;
-                fr.parentId = 0;
-                fr.name = "HFSPlus_VolumeHeader_" + std::to_string(foundCount) + ".bin";
-                fr.extension = "bin";
-                fr.path = "/recovered_hfs/" + fr.name;
-                fr.sizeBytes = 512; // Volume header size
+                fr.id = -1;
+                fr.name = "HFSPlus_VolumeHeader.bin";
+                fr.path = "/recovered_hfs/";
+                fr.sizeBytes = 512;
                 fr.startSector = sector + (i / sectorSize);
-                fr.endSector = fr.startSector + (512 / sectorSize);
-                if (fr.endSector == fr.startSector) fr.endSector++;
+                fr.endSector = fr.startSector + 1;
                 fr.status = 1;
-                fr.confidence = 90;
+                fr.confidence = 60;
                 fr.category = "System";
                 fr.source = "hfs_vh";
-                fr.createdAt = 0;
-                fr.modifiedAt = 0;
-                
                 callback(fr);
-                break; // Skip the rest of the sector
+                break;
             }
         }
-        
-        FileRecord progressTick;
-        progressTick.id = -1;
-        progressTick.startSector = sector + chunkSectors;
-        callback(progressTick);
+        progress(sector + chunkSectors);
     }
     return true;
+}
+
+bool HFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
+    return scanAt(reader, callback, isRunning, 0, 0);
 }
 
 } // namespace wolf

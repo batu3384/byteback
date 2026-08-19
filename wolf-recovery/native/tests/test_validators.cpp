@@ -195,3 +195,15 @@ TEST(RiffValidator, SubtypeDetection) {
     EXPECT_EQ(validateRiff(webp.data(), 8), 0);
     EXPECT_EQ(validateRiff(other.data() + 4, 8), 0);
 }
+
+// ---------------- MPEG-TS ----------------
+TEST(MpegTsValidator, RejectsShortOrMisalignedSync) {
+    const uint8_t junk[] = {0x47, 0x40, 0x00, 0x01, 0x02};
+    EXPECT_EQ(validateMpegTs(junk, sizeof(junk)), 0);
+}
+
+TEST(MpegTsValidator, AcceptsFiveAlignedPackets) {
+    std::vector<uint8_t> buf(188 * 5, 0);
+    for (size_t i = 0; i < 5; ++i) buf[i * 188] = 0x47;
+    EXPECT_GE(validateMpegTs(buf.data(), buf.size()), 90);
+}

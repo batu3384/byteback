@@ -1,0 +1,38 @@
+#pragma once
+
+#include "wolf_db.h"
+#include "wolf_fs.h"
+#include "wolf_io.h"
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace wolf {
+
+struct VssSnapshotInfo {
+    int index = 0;
+    std::string devicePath;
+    int64_t discoveredAt = 0;
+    int64_t createdAt = 0; // volume object creation time (0 if unknown)
+    uint64_t sizeBytes = 0;
+};
+
+// Enumerate Windows volume shadow copies (no-op on non-Windows builds).
+std::vector<VssSnapshotInfo> enumerateVssSnapshots();
+
+using VssScanProgressFn = std::function<void(uint64_t currentSector, uint64_t totalSectors)>;
+
+// Scan one mounted VSS volume; file records use source=vss_ntfs / vss_fat.
+void scanVssVolumeFilesystem(DiskReader& volumeReader, const VssSnapshotInfo& snap,
+                             FileSystemParser::FileRecordCallback onFileFound,
+                             VssScanProgressFn onProgress,
+                             std::atomic<bool>* isRunning);
+
+// Emit vss_snapshot markers and scan each enumerated shadow copy.
+void scanVssSnapshots(FileSystemParser::FileRecordCallback onFileFound,
+                      VssScanProgressFn onProgress,
+                      std::atomic<bool>* isRunning);
+
+} // namespace wolf

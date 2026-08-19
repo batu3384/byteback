@@ -1,6 +1,8 @@
 #include "scan_coordinator.h"
 #include "fs/partition_scanner.h"
 #include "fs/virtual_raid.h"
+#include "fs/vss_scanner.h"
+#include "wolf_fs.h"
 #include <iostream>
 #include <chrono>
 #include <cstring>
@@ -18,6 +20,14 @@ void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
 
 } // namespace
 
+void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
+    if (!reader.hasRaidBackend()) return;
+    if (fr.source.empty()) return;
+    if (fr.source == "vss_snapshot" || fr.source == "bitlocker_detect") return;
+    if (fr.source.rfind("raid_", 0) == 0) return;
+    fr.source = "raid_" + fr.source;
+}
+
 void runQuickScan(DiskReader& reader,
                   FileSystemParser::FileRecordCallback onFileFound,
                   ProgressCallback onProgress,
@@ -29,10 +39,10 @@ void runQuickScan(DiskReader& reader,
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
-        // Progress ticks use id=-1 with an empty name; real files (FAT/exFAT)
-        // also use id=-1 but always carry a name.
-        if (!fr.name.empty() || fr.id != -1) onFileFound(fr);
-        onProgress(fr.startSector, totalSectors);
+        FileRecord out = fr;
+        tagRaidScanSource(out, reader);
+        if (!out.name.empty() || out.id != -1) onFileFound(out);
+        onProgress(out.startSector, totalSectors);
         syncBadSectors(reader, badSectorOut);
     };
 
@@ -91,10 +101,28 @@ void runQuickScan(DiskReader& reader,
                 }
                 break;
             }
+            case VolumeFsKind::Apfs: {
+                APFSParser apfs;
+                if (apfs.scanAt(reader, callbackWrapper, isRunning, offsetBytes, partSizeBytes)) {
+                    anyFsScanned = true;
+                }
+                break;
+            }
+            case VolumeFsKind::Hfs: {
+                HFSParser hfs;
+                if (hfs.scanAt(reader, callbackWrapper, isRunning, offsetBytes, partSizeBytes)) {
+                    anyFsScanned = true;
+                }
+                break;
+            }
             default:
                 break;
         }
     }
+
+#ifdef _WIN32
+    scanVssSnapshots(onFileFound, onProgress, isRunning);
+#endif
 
     if (!anyFsScanned) {
         VolumeFsKind kind0 = probeVolumeAt(reader, 0, sectorSize);
@@ -115,6 +143,16 @@ void runQuickScan(DiskReader& reader,
                 ext4.scan(reader, callbackWrapper, isRunning);
                 break;
             }
+            case VolumeFsKind::Apfs: {
+                APFSParser apfs;
+                apfs.scanAt(reader, callbackWrapper, isRunning, 0, 0);
+                break;
+            }
+            case VolumeFsKind::Hfs: {
+                HFSParser hfs;
+                hfs.scanAt(reader, callbackWrapper, isRunning, 0, 0);
+                break;
+            }
             default: {
                 NTFSParser ntfs;
                 if (!ntfs.scan(reader, callbackWrapper, isRunning)) {
@@ -130,6 +168,30 @@ void runQuickScan(DiskReader& reader,
     }
 }
 
+void runCarveScan(DiskReader& reader,
+                  FileSystemParser::FileRecordCallback onFileFound,
+                  ProgressCallback onProgress,
+                  std::atomic<bool>* isRunning,
+                  std::vector<uint64_t>* badSectorOut) {
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    uint64_t totalSectors = reader.getDiskSize() / sectorSize;
+
+    auto callbackWrapper = [&](const FileRecord& fr) {
+        if (isRunning && !(*isRunning)) return;
+        FileRecord out = fr;
+        tagRaidScanSource(out, reader);
+        if (!out.name.empty() || out.id != -1) onFileFound(out);
+        onProgress(out.startSector, totalSectors);
+        syncBadSectors(reader, badSectorOut);
+    };
+    CarvingEngine carver;
+    if (!carver.loadSignatures("resources/signatures.json")) {
+        carver.loadSignatures("signatures.json");
+    }
+    carver.scan(reader, callbackWrapper, isRunning);
+}
+
 void runDeepScan(DiskReader& reader,
                  FileSystemParser::FileRecordCallback onFileFound,
                  ProgressCallback onProgress,
@@ -139,20 +201,19 @@ void runDeepScan(DiskReader& reader,
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = reader.getDiskSize() / sectorSize;
 
-    auto callbackWrapper = [&](const FileRecord& fr) {
-        if (isRunning && !(*isRunning)) return;
-        // Progress ticks use id=-1 with an empty name; real files (FAT/exFAT)
-        // also use id=-1 but always carry a name.
-        if (!fr.name.empty() || fr.id != -1) onFileFound(fr);
-        onProgress(fr.startSector, totalSectors);
-        syncBadSectors(reader, badSectorOut);
+    auto quickProgress = [&](uint64_t current, uint64_t total) {
+        uint64_t denom = total > 0 ? total : 1;
+        onProgress(current / 2, denom);
     };
+    runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut);
+    if (isRunning && !(*isRunning)) return;
 
-    CarvingEngine carver;
-    if (!carver.loadSignatures("resources/signatures.json")) {
-        carver.loadSignatures("signatures.json");
-    }
-    carver.scan(reader, callbackWrapper, isRunning);
+    auto carveProgress = [&](uint64_t current, uint64_t total) {
+        uint64_t denom = total > 0 ? total : 1;
+        onProgress(denom / 2 + current / 2, denom);
+    };
+    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut);
+    onProgress(totalSectors, totalSectors);
 }
 
 ScanCoordinator::ScanCoordinator() : isRunning(false) {}
@@ -165,12 +226,14 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
                                FileSystemParser::FileRecordCallback onFileFound,
                                ProgressCallback onProgress,
                                std::vector<uint64_t>* badSectorOut,
-                               std::shared_ptr<VirtualRaid> raid) {
+                               std::shared_ptr<VirtualRaid> raid,
+                               FinishedCallback onFinished) {
     if (isRunning) return;
     isRunning = true;
 
     scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
-                             onFileFound, onProgress, badSectorOut, std::move(raid));
+                             onFileFound, onProgress, badSectorOut, std::move(raid),
+                             std::move(onFinished));
 }
 
 void ScanCoordinator::stopScan() {
@@ -186,17 +249,24 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 FileSystemParser::FileRecordCallback onFileFound,
                                 ProgressCallback onProgress,
                                 std::vector<uint64_t>* badSectorOut,
-                                std::shared_ptr<VirtualRaid> raid) {
+                                std::shared_ptr<VirtualRaid> raid,
+                                FinishedCallback onFinished) {
     DiskReader reader;
     if (raid) {
         reader.setRaidBackend(std::move(raid));
+    } else if (drivePath == "raid") {
+        if (onFinished) onFinished(3);
+        isRunning = false;
+        return;
     } else {
         int driveIndex = 0;
         try { driveIndex = std::stoi(drivePath); } catch (...) {
+            if (onFinished) onFinished(3);
             isRunning = false;
             return;
         }
         if (!reader.openDrive(driveIndex)) {
+            if (onFinished) onFinished(3);
             isRunning = false;
             return;
         }
@@ -214,6 +284,9 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
 
     syncBadSectors(reader, badSectorOut);
     onProgress(totalSectors, totalSectors);
+
+    const int status = isRunning ? 1 : 2;
+    if (onFinished) onFinished(status);
     isRunning = false;
 }
 

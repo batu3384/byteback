@@ -56,6 +56,16 @@ struct ScanState {
     int64_t recoveredFiles = 0; // successful recoveries recorded for this scan
 };
 
+// Singleton forensic case metadata (E01 header + audit context).
+struct CaseInfo {
+    std::string caseNumber;
+    std::string investigator;
+    std::string agency;
+    std::string notes;
+    int64_t createdAt = 0;
+    int64_t updatedAt = 0;
+};
+
 class MetadataStore {
 public:
     MetadataStore();
@@ -73,9 +83,39 @@ public:
 
     // Scan state
     int64_t createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors);
+    bool setScanTotalSectors(int64_t scanId, uint64_t totalSectors);
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
     bool completeScan(int64_t scanId, int status);
     ScanState getScanState(int64_t scanId);
+
+    struct ScanSummary {
+        int64_t totalFiles = 0;
+        int64_t deletedFiles = 0;
+        int64_t imageFiles = 0;
+        int64_t documentFiles = 0;
+        int64_t videoFiles = 0;
+        int64_t audioFiles = 0;
+        int64_t archiveFiles = 0;
+        int64_t timelineEvents = 0;
+        int64_t usnCreates = 0;
+        int64_t usnDeletes = 0;
+        int64_t usnRenames = 0;
+    };
+    ScanSummary getScanSummary(int64_t scanId);
+    std::vector<FileRecord> searchFiles(int64_t scanId, const std::string& query,
+                                        int offset, int limit, bool useRegex,
+                                        const std::string& categoryFilter = "");
+    int64_t searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
+                             const std::string& categoryFilter = "");
+
+    // Content FTS — first 256 KB text sample per file, indexed during content search.
+    bool upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text);
+    std::string getContentSample(int64_t fileId);
+    int64_t getContentIndexCount(int64_t scanId);
+    bool isContentIndexComplete(int64_t scanId);
+    std::vector<int64_t> searchContentFts(int64_t scanId, const std::string& query,
+                                          int offset, int limit);
+    FileRecord getFileById(int64_t fileId);
 
     // CA-008: real session + recovery bookkeeping.
     int64_t getLatestScanId();
@@ -86,6 +126,9 @@ public:
     std::vector<TimelineEvent> getTimelineEvents(int64_t scanId, int offset, int limit,
                                                  const std::string& eventTypeFilter = "");
     int64_t getTimelineEventCount(int64_t scanId, const std::string& eventTypeFilter = "");
+
+    CaseInfo getCaseInfo();
+    bool setCaseInfo(const CaseInfo& info);
 
 private:
     bool createTables();

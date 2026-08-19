@@ -348,5 +348,30 @@ inline bool parseUsnRecord(const uint8_t* data, size_t available, UsnRecord& out
     return true;
 }
 
+// Score an MFT-sourced file record for the Results UI. Allocated records
+// start at 100 (minus USA damage). Deleted records start lower and gain
+// confidence only when recoverable payload survives (data runs or resident
+// bytes). ponytail: no cross-check with USN yet — Phase 1b can boost when
+// a matching USN DELETE exists for the same MFT ref.
+inline int scoreMftConfidence(bool inUse, bool usaOk, bool isDirectory,
+                              uint64_t sizeBytes, bool hasDataRuns,
+                              bool hasResidentPayload) {
+    int score;
+    if (inUse) {
+        score = 100;
+        if (!usaOk) score -= 25;
+        return score < 0 ? 0 : score;
+    }
+    score = 45;
+    if (hasDataRuns && sizeBytes > 0) score += 35;
+    else if (hasResidentPayload && sizeBytes > 0) score += 25;
+    else if (sizeBytes > 0) score += 10;
+    if (isDirectory) score -= 10;
+    if (!usaOk) score -= 20;
+    if (score < 0) return 0;
+    if (score > 95) return 95;
+    return score;
+}
+
 } // namespace ntfs
 } // namespace wolf

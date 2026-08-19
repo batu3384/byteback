@@ -248,5 +248,19 @@ inline int validateGzip(const uint8_t* data, size_t size) {
     return 85;
 }
 
+// ---- MPEG Transport Stream ----
+// 188-byte packets each begin with sync byte 0x47. A lone 0x47 0x40 0x00
+// prefix is extremely common in random disk data; require several aligned
+// packets before accepting a carve (CA-008).
+inline int validateMpegTs(const uint8_t* data, size_t size) {
+    constexpr size_t kPacket = 188;
+    constexpr int kPackets = 5;
+    if (size < kPacket * kPackets) return 0;
+    for (int i = 0; i < kPackets; ++i) {
+        if (data[i * kPacket] != 0x47) return 0;
+    }
+    return 92;
+}
+
 } // namespace carver
 } // namespace wolf

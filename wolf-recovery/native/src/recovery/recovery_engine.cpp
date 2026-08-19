@@ -251,4 +251,21 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     return result;
 }
 
+BatchRecoverySummary RecoveryEngine::recoverFilesBatch(DiskReader& reader,
+                                                       const std::vector<FileRecord>& records,
+                                                       const std::string& destDir,
+                                                       ProgressCallback onProgress,
+                                                       std::atomic<bool>* isRunning) {
+    BatchRecoverySummary summary;
+    summary.results.reserve(records.size());
+    for (const auto& record : records) {
+        if (isRunning && !(*isRunning)) break;
+        RecoveryResult one = recoverFile(reader, record, destDir, onProgress, isRunning);
+        summary.results.push_back(one);
+        if (one.success) ++summary.succeeded;
+        else ++summary.failed;
+    }
+    return summary;
+}
+
 } // namespace wolf

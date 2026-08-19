@@ -27,6 +27,23 @@ TEST(ScanCoordinator, QuickScanFindsFatOnMbrPartition) {
     EXPECT_TRUE(found);
 }
 
+TEST(ScanCoordinator, BitLockerDetectsFveHeader) {
+    std::vector<uint8_t> disk(512 * 8, 0);
+    std::memcpy(disk.data() + 3, "-FVEF-SYS-", 10);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    bool bitlocker = false;
+    for (const auto& s : sources) if (s == "bitlocker_detect") bitlocker = true;
+    EXPECT_TRUE(bitlocker);
+}
+
 TEST(ScanCoordinator, DeepScanCarvesPng) {
     auto img = wolf::testfix::buildPngCarveDisk();
     DiskReader reader;
@@ -34,7 +51,7 @@ TEST(ScanCoordinator, DeepScanCarvesPng) {
 
     std::vector<std::string> sources;
     std::atomic<bool> running{true};
-    runDeepScan(reader, [&](const FileRecord& fr) {
+    runCarveScan(reader, [&](const FileRecord& fr) {
         if (fr.id != -1) sources.push_back(fr.source);
     }, [&](uint64_t, uint64_t) {}, &running, nullptr);
 

@@ -3,6 +3,8 @@
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
+#include <regex>
+#include <cctype>
 
 namespace wolf {
 
@@ -10,6 +12,74 @@ namespace {
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
+}
+
+std::string buildFtsMatch(const std::string& query) {
+    std::string out;
+    std::string token;
+    auto flush = [&]() {
+        if (token.empty()) return;
+        if (!out.empty()) out += " AND ";
+        std::string esc;
+        for (char c : token) {
+            if (c == '"') esc += "\"\"";
+            else esc += c;
+        }
+        out += "\"" + esc + "\"*";
+        token.clear();
+    };
+    for (char c : query) {
+        if (std::isspace(static_cast<unsigned char>(c))) flush();
+        else token += c;
+    }
+    flush();
+    return out.empty() ? "\"\"" : out;
+}
+
+bool ensureFtsIndex(sqlite3* db) {
+    const char* ftsSql = R"(
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+            scan_id UNINDEXED,
+            name,
+            path,
+            extension
+        );
+    )";
+    if (sqlite3_exec(db, ftsSql, nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+
+    const char* triggers = R"(
+        CREATE TRIGGER IF NOT EXISTS files_fts_ai AFTER INSERT ON files BEGIN
+          INSERT INTO files_fts(rowid, scan_id, name, path, extension)
+          VALUES (new.id, new.scan_id, new.name, COALESCE(new.path,''), COALESCE(new.extension,''));
+        END;
+        CREATE TRIGGER IF NOT EXISTS files_fts_ad AFTER DELETE ON files BEGIN
+          INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension)
+          VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension);
+        END;
+        CREATE TRIGGER IF NOT EXISTS files_fts_au AFTER UPDATE ON files BEGIN
+          INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension)
+          VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension);
+          INSERT INTO files_fts(rowid, scan_id, name, path, extension)
+          VALUES (new.id, new.scan_id, new.name, COALESCE(new.path,''), COALESCE(new.extension,''));
+        END;
+    )";
+    sqlite3_exec(db, triggers, nullptr, nullptr, nullptr);
+
+    const char* backfill = R"(
+        INSERT INTO files_fts(rowid, scan_id, name, path, extension)
+        SELECT f.id, f.scan_id, f.name, COALESCE(f.path,''), COALESCE(f.extension,'')
+        FROM files f
+        WHERE f.id NOT IN (SELECT rowid FROM files_fts);
+    )";
+    sqlite3_exec(db, backfill, nullptr, nullptr, nullptr);
+    return true;
+}
+
+bool ensureContentFtsIndex(sqlite3* db) {
+    const char* ftsSql = R"(
+        CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(body);
+    )";
+    return sqlite3_exec(db, ftsSql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 } // namespace
 
@@ -38,6 +108,8 @@ bool MetadataStore::open(const std::string& dbPath) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN runs_json TEXT DEFAULT '';", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
+        ensureFtsIndex(db_);
+        ensureContentFtsIndex(db_);
     }
     return ok;
 }
@@ -103,6 +175,17 @@ bool MetadataStore::createTables() {
         CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension);
         CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
         CREATE INDEX IF NOT EXISTS idx_files_confidence ON files(confidence);
+
+        CREATE TABLE IF NOT EXISTS case_info (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            case_number TEXT NOT NULL DEFAULT '',
+            investigator TEXT NOT NULL DEFAULT '',
+            agency TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO case_info (id) VALUES (1);
     )";
 
     char* errMsg = nullptr;
@@ -217,6 +300,22 @@ int64_t MetadataStore::createScan(int driveIndex, const std::string& scanType, u
     int64_t id = (rc == SQLITE_DONE) ? sqlite3_last_insert_rowid(db_) : -1;
     sqlite3_finalize(stmt);
     return id;
+}
+
+bool MetadataStore::setScanTotalSectors(int64_t scanId, uint64_t totalSectors) {
+    const char* sql = "UPDATE scans SET total_sectors = ?, updated_at = ? WHERE id = ?";
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(totalSectors));
+    sqlite3_bind_int64(stmt, 2, now);
+    sqlite3_bind_int64(stmt, 3, scanId);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
 }
 
 bool MetadataStore::updateScanProgress(int64_t scanId, uint64_t scannedSectors) {
@@ -444,6 +543,218 @@ int64_t MetadataStore::getTimelineEventCount(int64_t scanId, const std::string& 
     if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return n;
+}
+
+MetadataStore::ScanSummary MetadataStore::getScanSummary(int64_t scanId) {
+    const char* sql = R"(
+        SELECT COUNT(*),
+               SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'Image' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'Document' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'Video' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'Audio' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN category = 'Archive' THEN 1 ELSE 0 END)
+        FROM files WHERE scan_id = ?
+    )";
+    ScanSummary summary;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return summary;
+    sqlite3_bind_int64(stmt, 1, scanId);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        summary.totalFiles = sqlite3_column_int64(stmt, 0);
+        summary.deletedFiles = sqlite3_column_int64(stmt, 1);
+        summary.imageFiles = sqlite3_column_int64(stmt, 2);
+        summary.documentFiles = sqlite3_column_int64(stmt, 3);
+        summary.videoFiles = sqlite3_column_int64(stmt, 4);
+        summary.audioFiles = sqlite3_column_int64(stmt, 5);
+        summary.archiveFiles = sqlite3_column_int64(stmt, 6);
+    }
+    sqlite3_finalize(stmt);
+
+    const char* tlSql = R"(
+        SELECT COUNT(*),
+               SUM(CASE WHEN event_type = 'create' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN event_type = 'delete' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN event_type IN ('rename_old','rename_new') THEN 1 ELSE 0 END)
+        FROM timeline_events WHERE scan_id = ?
+    )";
+    if (sqlite3_prepare_v2(db_, tlSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, scanId);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            summary.timelineEvents = sqlite3_column_int64(stmt, 0);
+            summary.usnCreates = sqlite3_column_int64(stmt, 1);
+            summary.usnDeletes = sqlite3_column_int64(stmt, 2);
+            summary.usnRenames = sqlite3_column_int64(stmt, 3);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return summary;
+}
+
+namespace {
+FileRecord rowToFileRecord(sqlite3_stmt* stmt) {
+    FileRecord r;
+    r.id = sqlite3_column_int64(stmt, 0);
+    r.parentId = sqlite3_column_int64(stmt, 1);
+    r.name = safe_column_text(stmt, 2);
+    r.extension = safe_column_text(stmt, 3);
+    r.path = safe_column_text(stmt, 4);
+    r.sizeBytes = static_cast<uint64_t>(sqlite3_column_int64(stmt, 5));
+    r.startSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 6));
+    r.endSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 7));
+    r.status = sqlite3_column_int(stmt, 8);
+    r.compressed = sqlite3_column_int(stmt, 9) != 0;
+    r.confidence = sqlite3_column_int(stmt, 10);
+    r.category = safe_column_text(stmt, 11);
+    r.source = safe_column_text(stmt, 12);
+    r.createdAt = sqlite3_column_int64(stmt, 13);
+    r.modifiedAt = sqlite3_column_int64(stmt, 14);
+    r.runs = deserializeRuns(safe_column_text(stmt, 15));
+    return r;
+}
+} // namespace
+
+std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::string& query,
+                                                   int offset, int limit, bool useRegex,
+                                                   const std::string& categoryFilter) {
+    std::vector<FileRecord> records;
+    if (query.empty() || limit <= 0) return records;
+
+    const char* baseSql = R"(
+        SELECT id, parent_id, name, extension, path, size_bytes,
+               start_sector, end_sector, status, compressed, confidence, category, source,
+               created_at, modified_at, runs_json
+        FROM files WHERE scan_id = ?
+    )";
+
+    if (!useRegex) {
+        std::string match = buildFtsMatch(query);
+        std::string sql = R"(
+            SELECT f.id, f.parent_id, f.name, f.extension, f.path, f.size_bytes,
+                   f.start_sector, f.end_sector, f.status, f.compressed, f.confidence, f.category, f.source,
+                   f.created_at, f.modified_at, f.runs_json
+            FROM files f
+            INNER JOIN files_fts fts ON f.id = fts.rowid
+            WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
+              AND (? = '' OR f.category = ?)
+            ORDER BY f.id LIMIT ? OFFSET ?
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, scanId);
+            sqlite3_bind_int64(stmt, 2, scanId);
+            sqlite3_bind_text(stmt, 3, match.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, categoryFilter.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 5, categoryFilter.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_int(stmt, 6, limit);
+            sqlite3_bind_int(stmt, 7, offset);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                records.push_back(rowToFileRecord(stmt));
+            }
+            sqlite3_finalize(stmt);
+            if (!records.empty()) return records;
+        }
+
+        std::string likeSql = std::string(baseSql) +
+            " AND (? = '' OR category = ?) "
+            " AND (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(path) LIKE LOWER(?) ESCAPE '\\') "
+            "ORDER BY id LIMIT ? OFFSET ?";
+        std::string pattern = "%";
+        for (char c : query) {
+            if (c == '%' || c == '_' || c == '\\') pattern += '\\';
+            pattern += c;
+        }
+        pattern += '%';
+        if (sqlite3_prepare_v2(db_, likeSql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return records;
+        sqlite3_bind_int64(stmt, 1, scanId);
+        sqlite3_bind_text(stmt, 2, categoryFilter.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, categoryFilter.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 4, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 6, limit);
+        sqlite3_bind_int(stmt, 7, offset);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            records.push_back(rowToFileRecord(stmt));
+        }
+        sqlite3_finalize(stmt);
+        return records;
+    }
+
+    std::regex re;
+    try {
+        re = std::regex(query, std::regex::icase | std::regex::ECMAScript);
+    } catch (const std::regex_error&) {
+        return records;
+    }
+
+    std::string sql = std::string(baseSql) + " AND (? = '' OR category = ?) ORDER BY id";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return records;
+    sqlite3_bind_int64(stmt, 1, scanId);
+    sqlite3_bind_text(stmt, 2, categoryFilter.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, categoryFilter.c_str(), -1, SQLITE_STATIC);
+
+    int skipped = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        FileRecord r = rowToFileRecord(stmt);
+        const std::string hay = r.name + " " + r.path;
+        if (!std::regex_search(hay, re)) continue;
+        if (skipped < offset) {
+            ++skipped;
+            continue;
+        }
+        records.push_back(std::move(r));
+        if (static_cast<int>(records.size()) >= limit) break;
+    }
+    sqlite3_finalize(stmt);
+    return records;
+}
+
+int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
+                                        const std::string& categoryFilter) {
+    if (query.empty()) return 0;
+
+    if (!useRegex) {
+        std::string match = buildFtsMatch(query);
+        const char* sql = R"(
+            SELECT COUNT(*) FROM files f
+            INNER JOIN files_fts fts ON f.id = fts.rowid
+            WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
+              AND (? = '' OR f.category = ?)
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
+        sqlite3_bind_int64(stmt, 1, scanId);
+        sqlite3_bind_int64(stmt, 2, scanId);
+        sqlite3_bind_text(stmt, 3, match.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, categoryFilter.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 5, categoryFilter.c_str(), -1, SQLITE_STATIC);
+        int64_t n = 0;
+        if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+        if (n > 0) return n;
+    }
+
+    auto page = searchFiles(scanId, query, 0, 1000000, useRegex, categoryFilter);
+    return static_cast<int64_t>(page.size());
+}
+
+FileRecord MetadataStore::getFileById(int64_t fileId) {
+    FileRecord r;
+    r.id = -1;
+    if (!db_ || fileId <= 0) return r;
+    const char* sql = R"(
+        SELECT id, parent_id, name, extension, path, size_bytes,
+               start_sector, end_sector, status, compressed, confidence, category, source,
+               created_at, modified_at, runs_json
+        FROM files WHERE id = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return r;
+    sqlite3_bind_int64(stmt, 1, fileId);
+    if (sqlite3_step(stmt) == SQLITE_ROW) r = rowToFileRecord(stmt);
+    sqlite3_finalize(stmt);
+    return r;
 }
 
 } // namespace wolf
