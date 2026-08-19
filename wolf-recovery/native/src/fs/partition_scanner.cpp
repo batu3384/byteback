@@ -33,6 +33,19 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
         return VolumeFsKind::Fat;
     }
 
+    if (boot.size() >= 36 && std::memcmp(boot.data() + 32, "NXSB", 4) == 0) {
+        return VolumeFsKind::Apfs;
+    }
+
+    uint32_t hfsRead = ((1024 + 2 + sectorSize - 1) / sectorSize) * sectorSize;
+    std::vector<uint8_t> hfsBuf(hfsRead);
+    if (reader.readSectors(partitionOffsetBytes, hfsRead, hfsBuf.data()).success &&
+        hfsBuf.size() >= 1026) {
+        if (hfsBuf[1024] == 0x48 && (hfsBuf[1025] == 0x2B || hfsBuf[1025] == 0x58)) {
+            return VolumeFsKind::Hfs;
+        }
+    }
+
     uint32_t sbRead = ((2048 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> extBuf(sbRead);
     if (reader.readSectors(partitionOffsetBytes, sbRead, extBuf.data()).success &&

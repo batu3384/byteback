@@ -28,6 +28,7 @@ add_definitions(-DNAPI_VERSION=8)
 # Source files
 set(SQLITE_SOURCES third_party/sqlite3.c)
 set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
+set_source_files_properties(${SQLITE_SOURCES} PROPERTIES COMPILE_DEFINITIONS "SQLITE_ENABLE_FTS5")
 
 set(SOURCES
   src/bridge/napi_bridge.cpp
@@ -35,15 +36,23 @@ set(SOURCES
   src/bridge/bridge_scan.cpp
   src/bridge/bridge_imager.cpp
   src/bridge/bridge_wipe.cpp
+  src/bridge/bridge_ops.cpp
   src/wolf_engine.cpp
   src/io/disk_reader_win.cpp
   src/db/metadata_store.cpp
+  src/db/metadata_store_case.cpp
+  src/db/metadata_store_content.cpp
   src/db/runs_codec.cpp
   src/fs/ntfs_parser.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
+    src/fs/apfs_container.cpp
+    src/fs/hfs_catalog.cpp
+    src/fs/ntfs_logfile.cpp
+    src/fs/vss_scanner.cpp
+    src/search/content_search.cpp
     src/fs/partition_scanner.cpp
     src/fs/virtual_raid.cpp
     src/fs/raid6_math.cpp
@@ -59,6 +68,7 @@ set(SOURCES
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
     src/forensic/audit_logger.cpp
+    src/forensic/nsrl_lookup.cpp
   src/security/data_shredder.cpp
   src/recovery/recovery_engine.cpp
   src/recovery/path_util.cpp
@@ -123,9 +133,19 @@ if(WOLF_BUILD_TESTS)
     tests/test_fat_parser.cpp
     tests/test_ext4_parser.cpp
     tests/test_ntfs_parser.cpp
+    tests/test_ntfs_logfile.cpp
+    tests/test_usn_summary.cpp
+    tests/test_vss_scan.cpp
+    tests/test_raid_scan.cpp
+    tests/test_content_search.cpp
+    tests/test_apple_fs.cpp
     tests/test_scan_coordinator.cpp
+    tests/test_nsrl.cpp
+    tests/test_case_info.cpp
+    tests/test_fuzz_runs_codec.cpp
     tests/test_virtual_raid_io.cpp
     tests/test_signature_carve.cpp
+    tests/test_e2e_scan_recover.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -137,15 +157,25 @@ if(WOLF_BUILD_TESTS)
     src/fs/fat_chain.cpp
     src/fs/raid_layout.cpp
     src/forensic/audit_logger.cpp
+    src/forensic/nsrl_lookup.cpp
     src/crypto/md5.cpp
     src/imager/ewf_writer.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp
     src/recovery/recovery_engine.cpp
     src/db/metadata_store.cpp
+    src/db/metadata_store_case.cpp
+    src/db/metadata_store_content.cpp
     src/fs/partition_scanner.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
+    src/fs/hfs_parser.cpp
+    src/fs/apfs_parser.cpp
+    src/fs/apfs_container.cpp
+    src/fs/hfs_catalog.cpp
+    src/fs/ntfs_logfile.cpp
+    src/fs/vss_scanner.cpp
+    src/search/content_search.cpp
     src/fs/ntfs_parser.cpp
     src/fs/virtual_raid.cpp
     src/scan_coordinator.cpp

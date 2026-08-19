@@ -84,21 +84,64 @@ TEST_F(MetadataStoreTest, ScanStateNamedColumns) {
     EXPECT_EQ(st.status, 0);
 }
 
+TEST_F(MetadataStoreTest, SearchFilesFindsByName) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord a;
+    a.name = "fatura_ocak.pdf";
+    a.path = "/docs/fatura_ocak.pdf";
+    a.extension = "pdf";
+    a.sizeBytes = 100;
+    a.status = 0;
+    store_.insertFile(scanId, a);
+
+    FileRecord b;
+    b.name = "rapor.docx";
+    b.path = "/docs/rapor.docx";
+    b.sizeBytes = 200;
+    b.status = 0;
+    store_.insertFile(scanId, b);
+
+    auto hits = store_.searchFiles(scanId, "fatura", 0, 10, false);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].name, "fatura_ocak.pdf");
+}
+
+TEST_F(MetadataStoreTest, SearchFilesRegexMode) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "IMG_2024_001.JPG";
+    r.path = "/photos";
+    r.sizeBytes = 1;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    auto hits = store_.searchFiles(scanId, R"(IMG_\d+)", 0, 10, true);
+    ASSERT_EQ(hits.size(), 1u);
+}
+
 TEST_F(MetadataStoreTest, CorruptRunsJsonYieldsEmptyRuns) {
     int64_t scanId = store_.createScan(0, "quick", 100);
     FileRecord r;
     r.name = "x.bin";
     r.sizeBytes = 1;
     r.status = 0;
-    store_.insertFile(scanId, r);
+    int64_t fileId = store_.insertFile(scanId, r);
+    ASSERT_GT(fileId, 0);
 
-    // Inject corrupt JSON directly.
+    store_.close();
     sqlite3* db = nullptr;
     ASSERT_EQ(sqlite3_open(path_.c_str(), &db), SQLITE_OK);
+    sqlite3_exec(db, "DROP TRIGGER IF EXISTS files_fts_au;", nullptr, nullptr, nullptr);
     std::string sql = "UPDATE files SET runs_json='[[oops]]' WHERE scan_id=" + std::to_string(scanId);
-    ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    char* errMsg = nullptr;
+    int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &errMsg);
+    ASSERT_EQ(rc, SQLITE_OK) << (errMsg ? errMsg : "unknown");
+    if (errMsg) sqlite3_free(errMsg);
     sqlite3_close(db);
+    std::filesystem::remove(path_ + "-wal");
+    std::filesystem::remove(path_ + "-shm");
 
+    ASSERT_TRUE(store_.open(path_));
     auto files = store_.getFiles(scanId, 0, 1);
     ASSERT_EQ(files.size(), 1u);
     EXPECT_TRUE(files[0].runs.empty());

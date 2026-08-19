@@ -1,6 +1,7 @@
 #include "wolf_fs.h"
 #include "wolf_memory.h"
 #include "fs/ntfs_util.h"
+#include "fs/ntfs_logfile.h"
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -276,6 +277,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 std::vector<AdsEntry> adsEntries;
 
                 // Parse Attributes
+                bool mainStreamResident = false;
                 uint32_t attrOffset = header->firstAttributeOffset;
                 bool nameFound = false;
 
@@ -356,6 +358,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                                 } else {
                                     fileSize = resAttr->valueLength;
                                     dataRuns.clear();
+                                    mainStreamResident = resAttr->valueLength > 0;
                                 }
                             }
                         } else {
@@ -443,11 +446,9 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 fr.endSector = dataRuns.empty() ? fr.startSector + (recordSize / sectorSize) : finalEndSector;
                 fr.runs = dataRuns;
                 fr.status = (header->flags & ntfs::RECORD_FLAG_IN_USE) ? 1 : 0; // 1 = Allocated, 0 = Deleted
-                // Start from the allocated/deleted baseline, then dock records
-                // whose USA fixup failed (partially overwritten / stale slack):
-                // their attributes may be partially corrupt.
-                fr.confidence = fr.status ? 100 : 80;
-                if (!usaOk) fr.confidence = std::max(0, fr.confidence - 25);
+                const bool inUse = fr.status != 0;
+                fr.confidence = ntfs::scoreMftConfidence(
+                    inUse, usaOk, isDirectory, fileSize, !dataRuns.empty(), mainStreamResident);
                 // Directories are reported as a distinct category so the UI can
                 // render a folder tree; they carry no recoverable $DATA payload.
                 fr.category = isDirectory ? "Folder" : categoryForName(filename);
@@ -636,6 +637,8 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             pos += take;
         }
     }
+
+    scanNtfsLogFileHints(reader, partitionOffsetBytes, callback, isRunning);
 
     return true;
 }

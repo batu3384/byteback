@@ -15,11 +15,11 @@ DiskImager::~DiskImager() {
 }
 
 void DiskImager::startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
-                              ImageFormat format) {
+                              ImageFormat format, const EwfOptions& ewfOpts) {
     if (isRunning_) return;
     isRunning_ = true;
     lastImageMd5_.clear();
-    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format);
+    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts);
 }
 
 void DiskImager::stopImaging() {
@@ -31,7 +31,8 @@ void DiskImager::stopImaging() {
     }
 }
 
-void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress, ImageFormat format) {
+void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
+                             ImageFormat format, EwfOptions ewfOpts) {
     DiskReader reader;
     if (!reader.openDrive(driveIndex)) {
         isRunning_ = false;
@@ -53,9 +54,8 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
 
     if (format == ImageFormat::Ewf) {
         ewf = std::make_unique<EwfWriter>();
-        EwfOptions opts;
-        opts.examiner = "Wolf Recovery";
-        if (!ewf->open(destPath, totalSectors, sectorSize, opts)) {
+        if (ewfOpts.examiner.empty()) ewfOpts.examiner = "Wolf Recovery";
+        if (!ewf->open(destPath, totalSectors, sectorSize, ewfOpts)) {
             isRunning_ = false;
             return;
         }

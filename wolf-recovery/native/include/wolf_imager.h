@@ -26,7 +26,8 @@ public:
     ~DiskImager();
 
     void startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
-                      ImageFormat format = ImageFormat::Raw);
+                      ImageFormat format = ImageFormat::Raw,
+                      const EwfOptions& ewfOpts = EwfOptions());
     void stopImaging();
 
     // MD5 hex of the imaged data; valid after imaging completes (EWF only,
@@ -39,7 +40,8 @@ public:
     uint64_t badSectorReads() const { return badSectorReads_.load(); }
 
 private:
-    void imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress, ImageFormat format);
+    void imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
+                       ImageFormat format, EwfOptions ewfOpts);
 
     std::atomic<bool> isRunning_;
     std::thread imagingThread_;

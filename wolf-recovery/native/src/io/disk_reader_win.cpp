@@ -149,6 +149,48 @@ bool DiskReader::openDrive(int driveIndex) {
     return true;
 }
 
+bool DiskReader::openVolumePath(const std::string& path) {
+    closeDrive();
+    {
+        std::lock_guard<std::mutex> lock(badSectorMutex_);
+        badSectorReads_ = 0;
+        badSectorList_.clear();
+    }
+
+    std::wstring wpath(path.begin(), path.end());
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
+        nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    handle_ = h;
+    currentDriveIndex_ = -1;
+    sectorSize_ = 512;
+    diskSize_ = 0;
+
+    DISK_GEOMETRY_EX geo{};
+    DWORD bytesReturned = 0;
+    if (DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+            nullptr, 0, &geo, sizeof(geo), &bytesReturned, nullptr)) {
+        diskSize_ = geo.DiskSize.QuadPart;
+        if (geo.Geometry.BytesPerSector) sectorSize_ = geo.Geometry.BytesPerSector;
+        return true;
+    }
+
+    GET_LENGTH_INFORMATION len{};
+    if (DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO,
+            nullptr, 0, &len, sizeof(len), &bytesReturned, nullptr)) {
+        diskSize_ = len.Length.QuadPart;
+        return true;
+    }
+
+    CloseHandle(h);
+    handle_ = INVALID_HANDLE_VALUE;
+    return false;
+}
+
 void DiskReader::closeDrive() {
     if (handle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(static_cast<HANDLE>(handle_));

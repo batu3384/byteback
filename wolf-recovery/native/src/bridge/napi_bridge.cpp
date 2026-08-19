@@ -23,6 +23,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getLatestScanId", Napi::Function::New(env, GetLatestScanId));
     exports.Set("getTimelineEvents", Napi::Function::New(env, GetTimelineEvents));
     exports.Set("getAuditLog", Napi::Function::New(env, GetAuditLog));
+    exports.Set("searchFiles", Napi::Function::New(env, SearchFiles));
+    exports.Set("searchFileContent", Napi::Function::New(env, SearchFileContent));
+    exports.Set("startContentSearch", Napi::Function::New(env, StartContentSearch));
+    exports.Set("stopContentSearch", Napi::Function::New(env, StopContentSearch));
+    exports.Set("getScanSummary", Napi::Function::New(env, GetScanSummary));
     exports.Set("startScan", Napi::Function::New(env, StartScan));
     exports.Set("stopScan", Napi::Function::New(env, StopScan));
 
@@ -33,7 +38,16 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // bridge_wipe.cpp
     exports.Set("startWipe", Napi::Function::New(env, StartWipe));
     exports.Set("reconstructRaid", Napi::Function::New(env, ReconstructRaid));
+    exports.Set("getRaidState", Napi::Function::New(env, GetRaidState));
     exports.Set("recoverFile", Napi::Function::New(env, RecoverFile));
+    exports.Set("recoverFilesBatch", Napi::Function::New(env, RecoverFilesBatch));
+
+    // bridge_ops.cpp
+    exports.Set("getCaseInfo", Napi::Function::New(env, GetCaseInfo));
+    exports.Set("setCaseInfo", Napi::Function::New(env, SetCaseInfo));
+    exports.Set("loadNsrl", Napi::Function::New(env, LoadNsrl));
+    exports.Set("lookupNsrl", Napi::Function::New(env, LookupNsrl));
+    exports.Set("getNsrlStats", Napi::Function::New(env, GetNsrlStats));
 
     return exports;
 }

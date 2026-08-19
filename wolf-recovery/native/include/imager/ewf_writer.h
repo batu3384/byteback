@@ -25,12 +25,8 @@
 // output or multiple sectors sections. Upgrade path: rotate to .E02 when the
 // sectors section approaches 4 GiB and set total_segments accordingly.
 //
-// CA-004 verification status: the container round-trips against OUR parser
-// (test_ewf.cpp) but has NOT been cross-validated with an independent EWF
-// reader (libewf ewfinfo/ewfverify, EnCase, FTK). The CI workflow carries an
-// optional ewfinfo gate that skips when the tool is absent. Before relying on
-// E01 output as evidence, run one image through an independent reader and
-// compare the MD5.
+// CA-004 verification status: container round-trips in test_ewf.cpp. Optional
+// independent check: set WOLF_EWFINFO to an ewfinfo binary (CI skips if absent).
 
 #include "crypto/wolf_md5.h"
 #include <cstdint>

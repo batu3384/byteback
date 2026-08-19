@@ -69,6 +69,23 @@ TEST(PartitionProbe, Ext4Magic) {
     EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Ext4);
 }
 
+TEST(PartitionProbe, ApfsNxsbMagic) {
+    auto img = makeImage(16);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Apfs);
+}
+
+TEST(PartitionProbe, HfsPlusMagic) {
+    auto img = makeImage(16);
+    img[1024] = 0x48;
+    img[1025] = 0x2B;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Hfs);
+}
+
 TEST(PartitionProbe, UnknownOnEmpty) {
     auto img = makeImage(8);
     DiskReader reader;

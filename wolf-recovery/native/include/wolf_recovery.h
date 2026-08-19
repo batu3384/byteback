@@ -16,6 +16,12 @@ struct RecoveryResult {
     std::string md5Hash;
 };
 
+struct BatchRecoverySummary {
+    int succeeded = 0;
+    int failed = 0;
+    std::vector<RecoveryResult> results;
+};
+
 class RecoveryEngine {
 public:
     RecoveryEngine();
@@ -32,6 +38,12 @@ public:
     RecoveryResult recoverCarvedFile(DiskReader& reader, const FileRecord& record,
                                      const std::string& destDir, ProgressCallback onProgress = nullptr,
                                      std::atomic<bool>* isRunning = nullptr);
+
+    BatchRecoverySummary recoverFilesBatch(DiskReader& reader,
+                                           const std::vector<FileRecord>& records,
+                                           const std::string& destDir,
+                                           ProgressCallback onProgress = nullptr,
+                                           std::atomic<bool>* isRunning = nullptr);
 };
 
 } // namespace wolf
