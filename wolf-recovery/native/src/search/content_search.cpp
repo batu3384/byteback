@@ -207,10 +207,12 @@ void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,
             reader.setRaidBackend(std::move(raid));
         } else if (driveIndex < 0 || !reader.openDrive(driveIndex)) {
             if (onFinished) onFinished(3);
+            running_ = false;
             return;
         }
         runContentSearch(store, reader, scanId, query, opts, onMatch, onProgress, &running_);
         if (onFinished) onFinished(running_.load() ? 1 : 2);
+        running_ = false;
     });
 }
 

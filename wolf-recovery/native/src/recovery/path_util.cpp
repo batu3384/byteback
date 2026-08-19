@@ -28,7 +28,12 @@ std::string uniqueDestPath(const std::string& destDir, const std::string& name) 
             (stem.string() + "_" + std::to_string(n) + ext.string());
         if (!std::filesystem::exists(candidate)) return candidate.string();
     }
-    return first.string();
+    return {};
+}
+
+bool destDirIsSafe(const std::string& destDir) {
+    if (destDir.empty()) return false;
+    return destDir.find("..") == std::string::npos;
 }
 
 } // namespace wolf

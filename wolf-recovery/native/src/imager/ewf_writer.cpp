@@ -12,6 +12,7 @@
 //   digest      : 16 raw MD5 bytes over the image data
 #include "imager/ewf_writer.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace wolf {
@@ -58,6 +59,12 @@ bool EwfWriter::open(const std::string& destPath,
                      const EwfOptions& opts) {
     if (outFile_.is_open()) return false;
     if (bytesPerSector == 0 || opts.sectorsPerChunk == 0) return false;
+    // ponytail: single-segment EWF table offsets are uint32. Refuse >4 GiB
+    // instead of wrapping currentChunkBytes_ and emitting a corrupt E01.
+    if (totalSectors > 0 &&
+        totalSectors > (0xffffffffULL / static_cast<uint64_t>(bytesPerSector))) {
+        return false;
+    }
 
     outFile_.open(destPath, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
     if (!outFile_.is_open()) return false;
@@ -133,6 +140,7 @@ bool EwfWriter::open(const std::string& destPath,
 
 bool EwfWriter::write(const uint8_t* data, size_t length) {
     if (!outFile_.is_open() || length % bytesPerSector_ != 0) return false;
+    if (currentChunkBytes_ > 0xffffffffULL) return false;
 
     // Track chunk boundaries: a new table entry starts whenever the stream
     // crosses a multiple of the chunk size.
@@ -141,10 +149,12 @@ bool EwfWriter::write(const uint8_t* data, size_t length) {
     while (pos < length) {
         uint64_t before = bytesWritten_;
         if (before % chunkBytes == 0) {
+            if (currentChunkBytes_ > 0xffffffffULL) return false;
             chunkOffsets_.push_back(static_cast<uint32_t>(currentChunkBytes_));
         }
         uint64_t spaceInChunk = chunkBytes - (before % chunkBytes);
         size_t take = static_cast<size_t>(std::min<uint64_t>(spaceInChunk, length - pos));
+        if (currentChunkBytes_ + take > 0xffffffffULL) return false;
         outFile_.write(reinterpret_cast<const char*>(data + pos), take);
         imageMd5_.update(data + pos, take);
         bytesWritten_ += take;

@@ -186,8 +186,19 @@ public:
                 reader.openDrive(driveIndex_);
             }
 
+            wolf::FileRecord rec = record_;
+            if (scanId_ > 0 && rec.id > 0) {
+                wolf::FileRecord dbRec = engine_->getMetadataStore().getFileById(rec.id, scanId_);
+                if (dbRec.id <= 0) {
+                    result_.success = false;
+                    result_.error = "file id not in scan";
+                    return;
+                }
+                rec = dbRec;
+            }
+
             wolf::RecoveryEngine recovery;
-            result_ = recovery.recoverFile(reader, record_, destDir_);
+            result_ = recovery.recoverFile(reader, rec, destDir_);
 
             // CA-008: real recovery counter feeds the Dashboard stat.
             if (result_.success && scanId_ > 0) {
@@ -210,6 +221,7 @@ public:
         obj.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(result_.bytesRecovered)));
         obj.Set("error", Napi::String::New(env, result_.error));
         obj.Set("md5Hash", Napi::String::New(env, result_.md5Hash));
+        obj.Set("zeroFilled", Napi::Boolean::New(env, result_.zeroFilled));
         deferred_.Resolve(obj);
     }
 
@@ -294,7 +306,15 @@ public:
                 reader.openDrive(driveIndex_);
             }
             wolf::RecoveryEngine recovery;
-            summary_ = recovery.recoverFilesBatch(reader, records_, destDir_);
+            std::vector<wolf::FileRecord> recs = records_;
+            if (scanId_ > 0) {
+                for (auto& rec : recs) {
+                    if (rec.id <= 0) continue;
+                    wolf::FileRecord dbRec = engine_->getMetadataStore().getFileById(rec.id, scanId_);
+                    if (dbRec.id > 0) rec = dbRec;
+                }
+            }
+            summary_ = recovery.recoverFilesBatch(reader, recs, destDir_);
             if (scanId_ > 0) {
                 for (int i = 0; i < summary_.succeeded; ++i)
                     engine_->getMetadataStore().incrementRecovered(scanId_);
@@ -324,6 +344,7 @@ public:
             item.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(r.bytesRecovered)));
             item.Set("error", Napi::String::New(env, r.error));
             item.Set("md5Hash", Napi::String::New(env, r.md5Hash));
+            item.Set("zeroFilled", Napi::Boolean::New(env, r.zeroFilled));
             arr[i] = item;
         }
         out.Set("results", arr);

@@ -234,6 +234,7 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
 
 bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecord>& records) {
     if (records.empty()) return true;
+    if (!db_) return false;
 
     sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
 
@@ -269,8 +270,13 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
         sqlite3_bind_int64(stmt, 15, r.modifiedAt);
         sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
 
-        sqlite3_step(stmt);
+        const int rc = sqlite3_step(stmt);
         sqlite3_reset(stmt);
+        if (rc != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
     }
 
     sqlite3_finalize(stmt);
@@ -619,6 +625,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
                                                    const std::string& categoryFilter) {
     std::vector<FileRecord> records;
     if (query.empty() || limit <= 0) return records;
+    if (useRegex && query.size() > 128) return records;
 
     const char* baseSql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
@@ -695,7 +702,10 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
     sqlite3_bind_text(stmt, 3, categoryFilter.c_str(), -1, SQLITE_STATIC);
 
     int skipped = 0;
+    int scanned = 0;
+    constexpr int kMaxRegexRows = 20000;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (++scanned > kMaxRegexRows) break;
         FileRecord r = rowToFileRecord(stmt);
         const std::string hay = r.name + " " + r.path;
         if (!std::regex_search(hay, re)) continue;
@@ -735,15 +745,20 @@ int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query
         if (n > 0) return n;
     }
 
-    auto page = searchFiles(scanId, query, 0, 1000000, useRegex, categoryFilter);
+    auto page = searchFiles(scanId, query, 0, 10000, useRegex, categoryFilter);
     return static_cast<int64_t>(page.size());
 }
 
-FileRecord MetadataStore::getFileById(int64_t fileId) {
+FileRecord MetadataStore::getFileById(int64_t fileId, int64_t scanId) {
     FileRecord r;
     r.id = -1;
     if (!db_ || fileId <= 0) return r;
-    const char* sql = R"(
+    const char* sql = scanId > 0 ? R"(
+        SELECT id, parent_id, name, extension, path, size_bytes,
+               start_sector, end_sector, status, compressed, confidence, category, source,
+               created_at, modified_at, runs_json
+        FROM files WHERE id = ? AND scan_id = ?
+    )" : R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
                created_at, modified_at, runs_json
@@ -752,6 +767,7 @@ FileRecord MetadataStore::getFileById(int64_t fileId) {
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return r;
     sqlite3_bind_int64(stmt, 1, fileId);
+    if (scanId > 0) sqlite3_bind_int64(stmt, 2, scanId);
     if (sqlite3_step(stmt) == SQLITE_ROW) r = rowToFileRecord(stmt);
     sqlite3_finalize(stmt);
     return r;

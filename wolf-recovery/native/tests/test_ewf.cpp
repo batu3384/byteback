@@ -287,3 +287,9 @@ TEST(Ewf, OptionalEwfinfoCrossCheck) {
     EXPECT_NE(hay.find(needle), std::string::npos)
         << "ewfinfo output did not contain MD5 " << expectMd5 << "\n---\n" << output;
 }
+
+TEST(Ewf, OpenRejectsOver4GiB) {
+    EwfWriter w;
+    const uint64_t sectors = (0x100000000ull / 512ull) + 1ull;
+    EXPECT_FALSE(w.open("too_big.E01", sectors, 512));
+}

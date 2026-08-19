@@ -3,6 +3,7 @@
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -29,7 +30,7 @@ TEST(ScanCoordinator, QuickScanFindsFatOnMbrPartition) {
 
 TEST(ScanCoordinator, BitLockerDetectsFveHeader) {
     std::vector<uint8_t> disk(512 * 8, 0);
-    std::memcpy(disk.data() + 3, "-FVEF-SYS-", 10);
+    std::memcpy(disk.data() + 3, "-FVE-FS-", 8);
     DiskReader reader;
     reader.attachMemoryVolume(std::move(disk));
 
@@ -42,6 +43,31 @@ TEST(ScanCoordinator, BitLockerDetectsFveHeader) {
     bool bitlocker = false;
     for (const auto& s : sources) if (s == "bitlocker_detect") bitlocker = true;
     EXPECT_TRUE(bitlocker);
+}
+
+TEST(ScanCoordinator, BitLockerIgnoresFakeTenByteOem) {
+    std::vector<uint8_t> disk(512 * 8, 0);
+    std::memcpy(disk.data() + 3, "-FVEF-SYS-", 10);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    for (const auto& s : sources) EXPECT_NE(s, "bitlocker_detect");
+}
+
+TEST(ScanCoordinator, StartScanTwiceJoinsPreviousThread) {
+    ScanCoordinator coord;
+    auto onFile = [](const FileRecord&) {};
+    auto onProg = [](uint64_t, uint64_t) {};
+    coord.startScan("not-a-number", "quick", onFile, onProg);
+    coord.startScan("also-bad", "quick", onFile, onProg);
+    coord.stopScan();
+    SUCCEED();
 }
 
 TEST(ScanCoordinator, DeepScanCarvesPng) {

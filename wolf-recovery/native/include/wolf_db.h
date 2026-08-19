@@ -24,7 +24,7 @@ struct FileRecord {
     };
     std::vector<DataRun> runs;
     bool compressed = false; // NTFS: $DATA has a compression unit (LZNT1)
-    int status;            // 0=Intact, 1=PartialOverwrite, 2=FullOverwrite, 3=Unknown
+    int status;            // 0=deleted/unallocated, 1=in-use/allocated, 2=encrypted/other
     int confidence;        // 0-100
     std::string category;  // "Image", "Document", "Video", etc.
     std::string source;    // "mft", "fat", "carve", "fragment"
@@ -115,7 +115,7 @@ public:
     bool isContentIndexComplete(int64_t scanId);
     std::vector<int64_t> searchContentFts(int64_t scanId, const std::string& query,
                                           int offset, int limit);
-    FileRecord getFileById(int64_t fileId);
+    FileRecord getFileById(int64_t fileId, int64_t scanId = -1);
 
     // CA-008: real session + recovery bookkeeping.
     int64_t getLatestScanId();

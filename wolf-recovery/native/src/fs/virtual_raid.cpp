@@ -150,7 +150,9 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
         }
 
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
-        readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx]);
+        if (!readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx])) {
+            throw std::runtime_error("RAID 0 member I/O failed (no redundancy)");
+        }
 
         res_idx += read_len;
         offset += read_len;
@@ -189,18 +191,18 @@ std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const
         uint64_t disk_offset = static_cast<uint64_t>(stripe_index) * block_size_ + offset_in_block;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
 
-        if (disk_active_[data_disk]) {
+        const bool dataOk = disk_active_[data_disk] &&
             readMemberAligned(data_disk, disk_offset, read_len, &result[res_idx]);
-        } else {
+        if (!dataOk) {
             // XOR-reconstruct: D_failed = P XOR (all other data blocks).
             std::vector<uint8_t> reconstructed(block_size_, 0);
             std::vector<uint8_t> temp(block_size_);
             for (size_t i = 0; i < num_disks_; ++i) {
                 if (i == data_disk) continue;
-                if (!disk_active_[i]) {
-                    throw std::runtime_error("RAID 5 read failed: multiple disks failed");
+                if (!disk_active_[i] ||
+                    !readMemberAligned(i, stripe_index * block_size_, block_size_, temp.data())) {
+                    throw std::runtime_error("RAID 5 read failed: multiple disks unreadable");
                 }
-                readMemberAligned(i, stripe_index * block_size_, block_size_, temp.data());
                 for (size_t b = 0; b < block_size_; ++b) {
                     reconstructed[b] ^= temp[b];
                 }
@@ -240,16 +242,20 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
         uint64_t stripe_base = static_cast<uint64_t>(stripe_index) * block_size_;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
 
-        if (disk_active_[data_disk]) {
-            readMemberAligned(data_disk, stripe_base + offset_in_block, read_len, &result[res_idx]);
+        if (disk_active_[data_disk] &&
+            readMemberAligned(data_disk, stripe_base + offset_in_block, read_len, &result[res_idx])) {
+            // Direct data hit.
         } else {
             // Count failed *data* disks in this stripe (P/Q loss alone does
-            // not affect reads).
+            // not affect reads). Treat I/O failure on data_disk as a fail.
             size_t failedData = 0;
             size_t failed[2] = {0, 0};
             for (size_t i = 0; i < num_disks_; ++i) {
                 if (i == p_disk || i == q_disk) continue;
-                if (!disk_active_[i]) { if (failedData < 2) failed[failedData] = i; failedData++; }
+                if (!disk_active_[i] || i == data_disk) {
+                    if (failedData < 2) failed[failedData] = i;
+                    failedData++;
+                }
             }
 
             if (failedData == 1) {

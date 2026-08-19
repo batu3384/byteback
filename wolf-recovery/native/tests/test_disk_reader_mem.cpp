@@ -32,6 +32,7 @@ TEST(DiskReaderMem, ShortReadZeroFillsAndRecordsBadSector) {
     EXPECT_TRUE(res.success);
     EXPECT_EQ(buf[0], 0);
     EXPECT_EQ(buf[512], 0);
+    EXPECT_TRUE(res.paddedZeros);
     EXPECT_GT(reader.getBadSectorReads(), 0u);
 }
 

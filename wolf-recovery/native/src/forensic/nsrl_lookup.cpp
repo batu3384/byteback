@@ -21,15 +21,30 @@ bool NsrlLookup::loadFromFile(const std::string& path) {
     hashes_.clear();
     lastPath_ = path;
 
+    auto strip = [](std::string token) {
+        while (!token.empty() && (token.front() == '"' || token.front() == ' ' || token.front() == '\t')) {
+            token.erase(token.begin());
+        }
+        while (!token.empty() && (token.back() == '"' || token.back() == ' ' ||
+                                  token.back() == '\t' || token.back() == '\r')) {
+            token.pop_back();
+        }
+        return token;
+    };
+
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') continue;
-        // NSRL RDS CSV rows embed MD5 in the first column; accept bare hex too.
-        std::string token = line;
-        const auto comma = token.find(',');
-        if (comma != std::string::npos) token = token.substr(0, comma);
-        if (!normalizeMd5(token)) continue;
-        hashes_.insert(token);
+        size_t start = 0;
+        while (start <= line.size()) {
+            const auto comma = line.find(',', start);
+            const std::string token = strip(
+                comma == std::string::npos ? line.substr(start) : line.substr(start, comma - start));
+            std::string hex = token;
+            if (normalizeMd5(hex)) hashes_.insert(hex);
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
     }
     return true;
 }

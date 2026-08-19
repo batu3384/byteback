@@ -1,6 +1,7 @@
 #include "wolf_recovery.h"
 #include "wolf_io.h"
 #include <gtest/gtest.h>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -98,5 +99,52 @@ TEST_F(RecoveryEngineTest, FailsWhenDiskClosed) {
 
     RecoveryEngine engine;
     auto result = engine.recoverCarvedFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+}
+
+TEST_F(RecoveryEngineTest, RefusesEmptyRunsForMetadataSource) {
+    std::vector<uint8_t> img(512, 0x41);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "resident.bin";
+    rec.sizeBytes = 16;
+    rec.startSector = 0;
+    rec.source = "mft";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error.find("resident"), std::string::npos);
+}
+
+TEST_F(RecoveryEngineTest, CarverEmptyRunsStillRecover) {
+    std::vector<uint8_t> img(512, 0x42);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "carved.bin";
+    rec.sizeBytes = 4;
+    rec.startSector = 0;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success);
+}
+
+TEST_F(RecoveryEngineTest, RejectsUnsafeDestDir) {
+    std::vector<uint8_t> img(512, 0x42);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    FileRecord rec;
+    rec.name = "x.bin";
+    rec.sizeBytes = 1;
+    rec.startSector = 0;
+    rec.source = "carver";
+    RecoveryEngine engine;
+    auto result = engine.recoverCarvedFile(reader, rec, dest_ + "/../evil");
     EXPECT_FALSE(result.success);
 }

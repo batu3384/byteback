@@ -214,3 +214,11 @@ TEST(HfsCatalog, EmitsSentinelWhenHittingMaxFiles) {
     EXPECT_EQ(std::count_if(hits.begin(), hits.end(),
                             [](const FileRecord& r) { return r.source == "hfs_catalog"; }), 1);
 }
+
+TEST(HfsCatalog, OffsetTableFitsRejectsUnderflow) {
+    EXPECT_TRUE(hfsOffsetTableFits(4096, 1));
+    EXPECT_TRUE(hfsOffsetTableFits(14, 0));
+    EXPECT_FALSE(hfsOffsetTableFits(13, 0));
+    EXPECT_FALSE(hfsOffsetTableFits(4096, 65535));
+    EXPECT_FALSE(hfsOffsetTableFits(16, 8));
+}
