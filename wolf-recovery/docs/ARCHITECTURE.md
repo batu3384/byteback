@@ -35,7 +35,7 @@ window.api                 native-bridge.ts          │
 | `carver/` | İmza tabanlı kurtarma | `signature_engine.cpp` (Aho-Corasick + FOV + BGC kurtarma yolu), `bgc.cpp` (iki parçalı gap carving) |
 | `recovery/` | Dosyayı diskten hedefe yazma | `recovery_engine.cpp` (sparse/LZNT1 açma, MD5) |
 | `imager/` | Disk imajlama | `disk_imager.cpp` (raw/EWF seçimi), `ewf_writer.cpp` (E01 konteyneri) |
-| `crypto/` | Özet + AES-128-XTS (FVEK decrypt) | `md5.cpp`, `aes_xts.cpp` |
+| `crypto/` | Özet + AES-128/256-XTS (FVEK) + AES-CCM + SHA-256 | `md5.cpp`, `aes_xts.cpp`, `aes_ccm.cpp`, `sha256.cpp` |
 | `db/` | SQLite üstveri deposu | `metadata_store.cpp` (taramalar/dosyalar), `metadata_store_case.cpp`, `metadata_store_content.cpp` |
 | `forensic/` | Denetim günlüğü + NSRL MD5 seti | `audit_logger.cpp` (SHA-256, RFC 6234), `nsrl_lookup.cpp` |
 | `smart/` | ATA SMART + NVMe sağlık günlüğü | `smart_monitor.cpp` |
@@ -58,8 +58,7 @@ Kritik matematiğin tamamı birim testlidir (`native/tests/`; bu makinede
   ayrıştırıcılarıyla gidiş-dönüş testleri.
 
 Sahne arkasında kalan spek sınırları (BitLocker şifre kırma yok — FVEK hex
-varsa XTS decrypt, GPU PFAC yok, APFS tam snapshot/omap değil — nx_fs_oid +
-256 blok + omap yaprak paddr, hızlı NTFS `$MFT` run yürüyüşü) README’de yazılıdır.
+varsa XTS decrypt, GPU PFAC yok, APFS recursive omap btree (tam snapshot değil), hızlı NTFS `$MFT` run yürüyüşü) README’de yazılıdır.
 
 ## Çalışma Zamanı Varlıkları
 
