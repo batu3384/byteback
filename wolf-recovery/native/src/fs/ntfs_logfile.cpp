@@ -1,6 +1,7 @@
 #include "fs/ntfs_logfile.h"
 #include "fs/ntfs_util.h"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <unordered_set>
@@ -174,12 +175,44 @@ bool collectUnnamedData(const uint8_t* mftRec, uint32_t mftSize, DiskReader& rea
     return false;
 }
 
+} // namespace
+
+std::string NtfsLogHintCollector::lowerKey(const std::string& name) {
+    std::string out = name;
+    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+void NtfsLogHintCollector::add(const std::string& name, uint64_t mftRef) {
+    if (name.size() < 4) return;
+    auto key = lowerKey(name);
+    auto it = byLowerName_.find(key);
+    if (it == byLowerName_.end() || mftRef != UINT64_MAX) {
+        byLowerName_[key] = NtfsLogHint{name, mftRef};
+    }
+}
+
+bool NtfsLogHintCollector::findByName(const std::string& name, uint64_t* mftRefOut) const {
+    auto it = byLowerName_.find(lowerKey(name));
+    if (it == byLowerName_.end()) return false;
+    if (mftRefOut) *mftRefOut = it->second.mftRef;
+    return true;
+}
+
+namespace {
+
 void emitFilenameHint(const std::string& name, int confidence,
                       FileSystemParser::FileRecordCallback& callback,
-                      std::unordered_set<std::string>& seen) {
+                      std::unordered_set<std::string>& seen,
+                      NtfsLogHintCollector* collector,
+                      uint64_t mftRef) {
     if (name.size() < 4 || seen.count(name)) return;
     if (name.find('.') == std::string::npos) return;
     seen.insert(name);
+    if (collector) {
+        collector->add(name, mftRef);
+        return;
+    }
 
     FileRecord fr;
     fr.id = -1;
@@ -197,7 +230,8 @@ void emitFilenameHint(const std::string& name, int confidence,
 void scanUtf16Hints(const uint8_t* data, uint32_t len, int confidence,
                     FileSystemParser::FileRecordCallback& callback,
                     std::unordered_set<std::string>& seen,
-                    std::atomic<bool>* isRunning, int maxHints) {
+                    std::atomic<bool>* isRunning, int maxHints,
+                    NtfsLogHintCollector* collector) {
     int hints = 0;
     for (uint32_t i = 0; i + 8 < len && (maxHints == 0 || hints < maxHints); i += 2) {
         if (isRunning && !(*isRunning)) break;
@@ -217,7 +251,14 @@ void scanUtf16Hints(const uint8_t* data, uint32_t len, int confidence,
         if (chars.size() < 4) continue;
         std::string name = utf16LeToUtf8(chars.data(), chars.size());
         if (seen.count(name)) continue;
-        emitFilenameHint(name, confidence, callback, seen);
+        uint64_t mftRef = UINT64_MAX;
+        if (i >= 8) {
+            uint64_t ref = 0;
+            for (int b = 0; b < 8; ++b) ref |= static_cast<uint64_t>(data[i - 8 + b]) << (8 * b);
+            ref &= 0x0000FFFFFFFFFFFFULL;
+            if (ref > 0 && ref < 0x0FFFFFFFFFFFULL) mftRef = ref;
+        }
+        emitFilenameHint(name, confidence, callback, seen, collector, mftRef);
         ++hints;
         i = static_cast<uint32_t>(j);
     }
@@ -226,7 +267,8 @@ void scanUtf16Hints(const uint8_t* data, uint32_t len, int confidence,
 void scanRcrdRecords(const uint8_t* data, uint32_t len, int confidence,
                      FileSystemParser::FileRecordCallback& callback,
                      std::unordered_set<std::string>& seen,
-                     std::atomic<bool>* isRunning, int maxHints) {
+                     std::atomic<bool>* isRunning, int maxHints,
+                     NtfsLogHintCollector* collector) {
     int hints = 0;
     for (uint32_t i = 0; i + sizeof(LogRecordHeader) < len && (maxHints == 0 || hints < maxHints); ++i) {
         if (isRunning && !(*isRunning)) break;
@@ -241,7 +283,7 @@ void scanRcrdRecords(const uint8_t* data, uint32_t len, int confidence,
 
         size_t before = seen.size();
         scanUtf16Hints(data + clientStart, hdr->clientDataLength, confidence,
-                       callback, seen, isRunning, maxHints - hints);
+                       callback, seen, isRunning, maxHints - hints, collector);
         hints += static_cast<int>(seen.size() - before);
         i += std::max<uint32_t>(8, hdr->clientDataOffset + hdr->clientDataLength) - 1;
     }
@@ -251,7 +293,8 @@ void scanRcrdRecords(const uint8_t* data, uint32_t len, int confidence,
 
 void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
                           FileSystemParser::FileRecordCallback callback,
-                          std::atomic<bool>* isRunning) {
+                          std::atomic<bool>* isRunning,
+                          NtfsLogHintCollector* collector) {
     if (!reader.isOpen() && !reader.hasRaidBackend()) return;
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
@@ -305,9 +348,9 @@ void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
 
     std::unordered_set<std::string> seen;
     scanRcrdRecords(logBuf.data(), static_cast<uint32_t>(logBuf.size()), 58,
-                    callback, seen, isRunning, 0);
+                    callback, seen, isRunning, 0, collector);
     scanUtf16Hints(logBuf.data(), static_cast<uint32_t>(logBuf.size()), 35,
-                   callback, seen, isRunning, 0);
+                   callback, seen, isRunning, 0, collector);
 }
 
 } // namespace wolf
