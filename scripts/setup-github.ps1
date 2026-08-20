@@ -11,7 +11,8 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
   gh auth status | Out-Null
-  if (git remote get-url origin 2>$null) {
+  $origin = git remote 2>$null | Select-String -Pattern '^origin$' -Quiet
+  if ($origin) {
     Write-Host 'Remote origin already set:' (git remote get-url origin)
     git push -u origin main
     exit 0
