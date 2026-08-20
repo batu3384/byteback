@@ -35,16 +35,17 @@ window.api                 native-bridge.ts          │
 | `carver/` | İmza tabanlı kurtarma | `signature_engine.cpp` (Aho-Corasick + FOV + BGC kurtarma yolu), `bgc.cpp` (iki parçalı gap carving) |
 | `recovery/` | Dosyayı diskten hedefe yazma | `recovery_engine.cpp` (sparse/LZNT1 açma, MD5) |
 | `imager/` | Disk imajlama | `disk_imager.cpp` (raw/EWF seçimi), `ewf_writer.cpp` (E01 konteyneri) |
-| `crypto/` | Ortak özet fonksiyonları | `md5.cpp` (RFC 1321 vektörlü) |
+| `crypto/` | Özet + AES-128-XTS (FVEK decrypt) | `md5.cpp`, `aes_xts.cpp` |
 | `db/` | SQLite üstveri deposu | `metadata_store.cpp` (taramalar/dosyalar), `metadata_store_case.cpp`, `metadata_store_content.cpp` |
 | `forensic/` | Denetim günlüğü + NSRL MD5 seti | `audit_logger.cpp` (SHA-256, RFC 6234), `nsrl_lookup.cpp` |
 | `smart/` | ATA SMART + NVMe sağlık günlüğü | `smart_monitor.cpp` |
 | `bridge/` | NAPI bağlayıcıları, konuya göre bölünmüş | `bridge_common.h`, `bridge_{drives,scan,imager,wipe}.cpp`, `napi_bridge.cpp` (yalnızca Init) |
-| `security/` | Dosya imhası (aygıt yolları reddedilir) | `data_shredder.cpp` |
+| `security/` | Dosya/boş alan imhası; PhysicalDrive seri kapısı | `data_shredder.cpp` |
 
 ## Doğruluk Güvencesi
 
-Kritik matematiğin tamamı birim testlidir (`native/tests/`, 86 test):
+Kritik matematiğin tamamı birim testlidir (`native/tests/`; bu makinede
+`ctest -C Release` 194 geçti, `Ewf.OptionalEwfinfoCrossCheck` skip):
 
 - **MD5 / SHA-256** — RFC 1321 / RFC 6234 vektörleri, zincir katlama testi.
 - **GF(2⁸) Reed-Solomon** — alan aksiyomları, üs tablosu, iki-disk kaybı
@@ -56,8 +57,9 @@ Kritik matematiğin tamamı birim testlidir (`native/tests/`, 86 test):
 - **LZNT1 / USA fixup / USN / entropi / EWF konteyner** — kendi format
   ayrıştırıcılarıyla gidiş-dönüş testleri.
 
-Sahne arkasında kalan spek sınırları (BitLocker şifre kırma yok, GPU PFAC yok)
-ilgili dosyalarda ve README'de yazılıdır.
+Sahne arkasında kalan spek sınırları (BitLocker şifre kırma yok — FVEK hex
+varsa XTS decrypt, GPU PFAC yok, APFS tam snapshot/omap değil — nx_fs_oid +
+256 blok + omap yaprak paddr, hızlı NTFS `$MFT` run yürüyüşü) README’de yazılıdır.
 
 ## Çalışma Zamanı Varlıkları
 
@@ -74,7 +76,8 @@ npm run build:native   # C++ motoru derle (cmake-js)
 npm run dev            # native + electron-vite geliştirme oturumu
 npm run typecheck      # tsc (web + node)
 npm run test           # Vitest (renderer)
-npm run test:native    # GoogleTest (86 test)
+npm run test:native    # GoogleTest via ctest (sayı ctest çıktısına bağlı)
+npm run test:e2e       # Playwright Electron duman (önce `npm run build`)
 npm run dist           # NSIS kurulum paketi (release/)
 ```
 
