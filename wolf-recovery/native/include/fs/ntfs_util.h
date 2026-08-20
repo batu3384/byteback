@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -371,6 +372,29 @@ inline int scoreMftConfidence(bool inUse, bool usaOk, bool isDirectory,
     if (score < 0) return 0;
     if (score > 95) return 95;
     return score;
+}
+
+// Boot sector $MFT location. recBytes is 512..4096. mftLcn 0 means unknown.
+inline bool parseNtfsBoot(const uint8_t* boot, size_t n, uint32_t& bytesPerSector,
+                          uint32_t& sectorsPerCluster, uint64_t& mftLcn, uint32_t& recBytes) {
+    if (!boot || n < 0x48) return false;
+    if (std::memcmp(boot + 3, "NTFS    ", 8) != 0) return false;
+    bytesPerSector = static_cast<uint32_t>(boot[0x0B] | (boot[0x0C] << 8));
+    if (bytesPerSector != 512 && bytesPerSector != 1024 && bytesPerSector != 2048 &&
+        bytesPerSector != 4096) {
+        bytesPerSector = 512;
+    }
+    sectorsPerCluster = boot[0x0D];
+    if (sectorsPerCluster == 0) sectorsPerCluster = 8;
+    mftLcn = 0;
+    for (int i = 0; i < 8; ++i) mftLcn |= static_cast<uint64_t>(boot[0x30 + i]) << (8 * i);
+    const int8_t cpr = static_cast<int8_t>(boot[0x40]);
+    const uint32_t clusterBytes = bytesPerSector * sectorsPerCluster;
+    if (cpr < 0) recBytes = 1u << static_cast<unsigned>(-cpr);
+    else if (cpr > 0) recBytes = static_cast<uint32_t>(cpr) * clusterBytes;
+    else recBytes = 1024;
+    if (recBytes < 512 || recBytes > 4096) recBytes = 1024;
+    return true;
 }
 
 } // namespace ntfs

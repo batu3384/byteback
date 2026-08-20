@@ -182,13 +182,63 @@ TEST_F(RecoveryEngineTest, LoadRecoverRecordRejectsMissingIds) {
     std::filesystem::remove(path);
 }
 
-TEST_F(RecoveryEngineTest, ZeroFilledDoesNotCountAsRecovered) {
-    RecoveryResult r;
-    r.success = true;
-    r.zeroFilled = true;
-    EXPECT_FALSE(countsAsRecovered(r));
-    r.zeroFilled = false;
-    EXPECT_TRUE(countsAsRecovered(r));
+TEST_F(RecoveryEngineTest, PaddedReadIsNotSuccess) {
+    std::vector<uint8_t> img(512, 0x41);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "past_eof.bin";
+    rec.sizeBytes = 512;
+    rec.runs = {{8, 1}};
+    rec.source = "ntfs_mft";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.zeroFilled);
+}
+
+TEST_F(RecoveryEngineTest, DiscoveryOnlySourcesRefuse) {
+    DiskReader reader;
+    reader.attachMemoryVolume(std::vector<uint8_t>(512, 0));
+    FileRecord rec;
+    rec.name = "vol";
+    rec.source = "apfs_file";
+    rec.runs = {{1, 1}};
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error.find("discovery"), std::string::npos);
+}
+
+TEST(RecoveryHelpers, BindReaderRejectsVssWithoutVolume) {
+    DiskReader reader;
+    FileRecord rec;
+    rec.source = "vss_ntfs";
+    rec.path = "/VSS99/x";
+    rec.runs = {{0, 1}};
+    std::string err;
+    EXPECT_FALSE(bindReaderForRecord(reader, rec, 0, nullptr, err));
+    EXPECT_FALSE(err.empty());
+}
+
+TEST(RecoveryHelpers, ApplyBoundFvekSkipsVssCopiesPhysical) {
+    DiskReader src, destVss, destPhys;
+    uint8_t key[32] = {};
+    key[0] = 0x11;
+    ASSERT_TRUE(src.setXtsFvek128(key, 32));
+
+    FileRecord vss;
+    vss.source = "vss_ntfs";
+    vss.path = "/VSS1/x";
+    applyBoundFvek(destVss, src, vss);
+    EXPECT_FALSE(destVss.hasXtsFvek());
+
+    FileRecord phys;
+    phys.source = "ntfs_mft";
+    applyBoundFvek(destPhys, src, phys);
+    EXPECT_TRUE(destPhys.hasXtsFvek());
 }
 
 TEST_F(RecoveryEngineTest, RejectsUnsafeDestDir) {

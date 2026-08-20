@@ -41,4 +41,8 @@ void scanVssSnapshotsBound(DiskReader& evidence,
                            VssScanProgressFn onProgress,
                            std::atomic<bool>* isRunning);
 
+// Recover/content-search must open this path, not the evidence PhysicalDrive.
+// Empty if the record is not a VSS file payload.
+std::string vssDevicePathFromRecord(const FileRecord& rec);
+
 } // namespace wolf

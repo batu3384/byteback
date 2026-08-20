@@ -1,4 +1,5 @@
 #include "fs/partition_scanner.h"
+#include "fs/volume_identity.h"
 #include "wolf_io.h"
 #include <gtest/gtest.h>
 #include <cstring>
@@ -91,4 +92,14 @@ TEST(PartitionProbe, UnknownOnEmpty) {
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
     EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Unknown);
+}
+
+TEST(VolumeIdentity, SerialSizeMismatchRejected) {
+    VolumeIdentity ev;
+    ev.serial = 0xAABBCCDD;
+    ev.sizeBytes = 1000;
+    EXPECT_TRUE(volumeIdentityMatches(ev, 0xAABBCCDD, 1000));
+    EXPECT_TRUE(volumeIdentityMatches(ev, 0xAABBCCDD, 0));
+    EXPECT_FALSE(volumeIdentityMatches(ev, 0xAABBCCDD, 2000));
+    EXPECT_FALSE(volumeIdentityMatches(ev, 0x1, 1000));
 }

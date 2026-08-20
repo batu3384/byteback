@@ -52,8 +52,8 @@ void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
     callback(fr);
 }
 
-void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t blockOff,
-                             uint32_t sectorSize, int& fileIndex,
+void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t partitionOffsetBytes,
+                             uint64_t blockOff, uint32_t sectorSize, int& fileIndex,
                              FileSystemParser::FileRecordCallback& callback,
                              std::unordered_set<std::string>& seenNames) {
     if (blockSize < 64) return;
@@ -87,8 +87,27 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
             fr.source = "apfs_file";
             callback(fr);
         } else if (typ == kApfsTypeFileExtent && i + 24 < blockSize) {
+            uint64_t lenFlags = readLe64(block + i + 8);
+            uint64_t len = lenFlags & ((1ull << 56) - 1);
             uint64_t phys = readLe64(block + i + 16);
-            (void)phys;
+            if (phys == 0 || len == 0) continue;
+            FileRecord fr;
+            fr.id = fileIndex++;
+            fr.name = "extent_" + std::to_string(phys);
+            fr.path = "/apfs/extent/" + std::to_string(phys);
+            fr.sizeBytes = len;
+            fr.startSector = (partitionOffsetBytes + phys * blockSize) / sectorSize;
+            FileRecord::DataRun run;
+            run.startSector = fr.startSector;
+            run.sectorCount = (len + sectorSize - 1) / sectorSize;
+            if (run.sectorCount == 0) run.sectorCount = 1;
+            fr.runs.push_back(run);
+            fr.endSector = run.startSector + run.sectorCount;
+            fr.status = 0;
+            fr.confidence = 60;
+            fr.category = "Document";
+            fr.source = "apfs_extent";
+            callback(fr);
         }
     }
 }
@@ -109,6 +128,23 @@ bool tryApsbAt(DiskReader& reader, uint64_t off, uint32_t blockSize, uint32_t se
 }
 
 } // namespace
+
+void collectOmapLeafPaddrs(const uint8_t* block, uint32_t blockSize, uint64_t blockCount,
+                           std::vector<uint64_t>& paddrs) {
+    if (!block || blockSize < 80) return;
+    uint32_t otype = readLe32(block + 24) & 0xFFFFu;
+    if (otype != kObjBtreeNode) return;
+    uint16_t level = static_cast<uint16_t>(block[34] | (block[35] << 8));
+    if (level != 0) return;
+    uint32_t nkeys = readLe32(block + 36);
+    if (nkeys == 0 || nkeys > 4096) return;
+    for (uint32_t i = 0; i < nkeys; ++i) {
+        uint32_t off = 56 + i * 24;
+        if (off + 24 > blockSize) break;
+        uint64_t paddr = readLe64(block + off + 16);
+        if (paddr > 0 && paddr < blockCount) paddrs.push_back(paddr);
+    }
+}
 
 bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                        uint64_t partitionSizeBytes,
@@ -172,15 +208,42 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
     }
 
     std::vector<uint8_t> block(static_cast<size_t>(blockSize));
-    for (uint64_t i = 0; i < blockCount; ++i) {
+    const uint64_t probe = std::min(blockCount, uint64_t{256});
+    for (uint64_t i = 0; i < probe; ++i) {
         if (isRunning && !(*isRunning)) break;
         uint64_t off = partitionOffsetBytes + i * blockSize;
         if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) continue;
         if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {
             tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol, callback);
         }
-        scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), off, sectorSize,
-                                fileIndex, callback, seenNames);
+        scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
+                                off, sectorSize, fileIndex, callback, seenNames);
+    }
+
+    uint64_t omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
+    if (omapOid > 0 && omapOid < blockCount) {
+        std::vector<uint8_t> omapBlk;
+        if (readBlock(reader, partitionOffsetBytes + omapOid * blockSize, static_cast<uint32_t>(blockSize), omapBlk) &&
+            omapBlk.size() >= 56) {
+            uint64_t treeOid = readLe64(omapBlk.data() + 48);
+            if (treeOid == 0 || treeOid >= blockCount) treeOid = omapOid;
+            std::vector<uint8_t> treeBlk;
+            if (readBlock(reader, partitionOffsetBytes + treeOid * blockSize, static_cast<uint32_t>(blockSize), treeBlk)) {
+                std::vector<uint64_t> paddrs;
+                collectOmapLeafPaddrs(treeBlk.data(), static_cast<uint32_t>(blockSize), blockCount, paddrs);
+                for (uint64_t paddr : paddrs) {
+                    if (isRunning && !(*isRunning)) break;
+                    if (paddr < probe) continue;
+                    uint64_t off = partitionOffsetBytes + paddr * blockSize;
+                    if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) continue;
+                    if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {
+                        tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol, callback);
+                    }
+                    scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
+                                            off, sectorSize, fileIndex, callback, seenNames);
+                }
+            }
+        }
     }
 
     FileRecord tick;

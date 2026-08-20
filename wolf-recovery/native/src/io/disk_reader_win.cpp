@@ -1,5 +1,6 @@
 #include "wolf_io.h"
 #include "fs/virtual_raid.h"
+#include "crypto/wolf_aes.h"
 #include <cstring>
 #include <algorithm>
 
@@ -14,7 +15,7 @@
 namespace wolf {
 
 DiskReader::DiskReader()
-    : handle_(INVALID_HANDLE_VALUE), diskSize_(0), sectorSize_(512), currentDriveIndex_(-1) {}
+    : handle_(INVALID_HANDLE_VALUE), diskSize_(0), sectorSize_(512), currentDriveIndex_(-1), shareWrite_(false) {}
 
 DiskReader::~DiskReader() {
     closeDrive();
@@ -128,11 +129,20 @@ bool DiskReader::openDrive(int driveIndex) {
     wchar_t path[64];
     swprintf_s(path, L"\\\\.\\PhysicalDrive%d", driveIndex);
 
+    shareWrite_ = false;
     handle_ = CreateFileW(path, GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SHARE_READ,
         NULL, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
         NULL);
+    if (handle_ == INVALID_HANDLE_VALUE) {
+        handle_ = CreateFileW(path, GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
+            NULL);
+        if (handle_ != INVALID_HANDLE_VALUE) shareWrite_ = true;
+    }
 
     if (handle_ == INVALID_HANDLE_VALUE) return false;
 
@@ -160,11 +170,20 @@ bool DiskReader::openVolumePath(const std::string& path) {
     }
 
     std::wstring wpath(path.begin(), path.end());
+    shareWrite_ = false;
     HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_SHARE_READ,
         nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
         nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        h = CreateFileW(wpath.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED,
+            nullptr);
+        if (h != INVALID_HANDLE_VALUE) shareWrite_ = true;
+    }
     if (h == INVALID_HANDLE_VALUE) return false;
 
     handle_ = h;
@@ -205,6 +224,7 @@ void DiskReader::closeDriveUnlocked() {
     }
     diskSize_ = 0;
     currentDriveIndex_ = -1;
+    shareWrite_ = false;
     raidBackend_.reset();
     memoryImage_.clear();
     memoryMode_ = false;
@@ -249,6 +269,53 @@ void DiskReader::detachMemoryVolume() {
 bool DiskReader::hasMemoryVolume() const {
     std::lock_guard<std::mutex> lock(ioMutex_);
     return memoryMode_;
+}
+
+bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    if (!key32 || n != 32) {
+        xtsEnabled_ = false;
+        return false;
+    }
+    std::memcpy(xtsKey_, key32, 32);
+    xtsEnabled_ = true;
+    return true;
+}
+
+void DiskReader::clearXtsFvek() {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    xtsEnabled_ = false;
+    std::memset(xtsKey_, 0, sizeof(xtsKey_));
+}
+
+bool DiskReader::hasXtsFvek() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return xtsEnabled_;
+}
+
+void DiskReader::copyXtsFvekFrom(const DiskReader& src) {
+    if (this == &src) return;
+    uint8_t key[32];
+    bool en = false;
+    {
+        std::lock_guard<std::mutex> lock(src.ioMutex_);
+        en = src.xtsEnabled_;
+        std::memcpy(key, src.xtsKey_, 32);
+    }
+    if (en) setXtsFvek128(key, 32);
+    else clearXtsFvek();
+}
+
+void DiskReader::maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
+    if (!xtsEnabled_ || !buffer || sizeBytes == 0) return;
+    uint32_t ss = sectorSize_ ? sectorSize_ : 512;
+    if (ss == 0 || ss % 16 != 0) return;
+    for (uint32_t o = 0; o + ss <= sizeBytes; o += ss) {
+        uint64_t sec = (offsetBytes + o) / ss;
+        uint8_t tweak[16] = {};
+        for (int i = 0; i < 8; ++i) tweak[i] = static_cast<uint8_t>(sec >> (8 * i));
+        crypto::xtsAes128Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+    }
 }
 
 void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
@@ -303,6 +370,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         std::memcpy(buffer, memoryImage_.data() + offsetBytes, sizeBytes);
         result.success = true;
         result.bytesRead = sizeBytes;
+        maybeDecryptXts(offsetBytes, sizeBytes, buffer);
         return result;
     }
 
@@ -328,6 +396,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             std::memcpy(buffer, data.data(), sizeBytes);
             result.success = true;
             result.bytesRead = sizeBytes;
+            maybeDecryptXts(offsetBytes, sizeBytes, buffer);
             return result;
         } catch (const std::exception& e) {
             result.error = e.what();
@@ -393,6 +462,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
     if (bRead) {
         result.success = true;
         result.bytesRead = bytesRead;
+        maybeDecryptXts(offsetBytes, static_cast<uint32_t>(bytesRead), buffer);
     } else {
         result.error = "ReadFile failed: error " + std::to_string(err);
         if (err == ERROR_CRC || err == ERROR_IO_DEVICE) {
@@ -418,6 +488,10 @@ uint32_t DiskReader::getSectorSize() const {
 int DiskReader::getDriveIndex() const {
     std::lock_guard<std::mutex> lock(ioMutex_);
     return currentDriveIndex_;
+}
+bool DiskReader::openedWithWriteShare() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return shareWrite_;
 }
 bool DiskReader::isOpen() const {
     std::lock_guard<std::mutex> lock(ioMutex_);

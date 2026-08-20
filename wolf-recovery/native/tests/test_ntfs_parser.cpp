@@ -73,6 +73,90 @@ std::vector<uint8_t> buildNtfsMftCarveDisk() {
     return img;
 }
 
+std::vector<uint8_t> buildNtfsBootMftWalkDisk() {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 1024);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "doc.txt";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    writeLe64(img, attr + 56, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    const size_t orphan = 40 * ss;
+    std::memcpy(img.data() + orphan, "FILE", 4);
+    writeLe16(img, orphan + 0x14, 0x38);
+    writeLe16(img, orphan + 0x16, 0x01);
+    writeLe32(img, orphan + 0x18, 256);
+    writeLe32(img, orphan + 0x1C, 1024);
+    attr = orphan + 0x38;
+    const char* oname = "orphan.bin";
+    const size_t onameLen = 10;
+    const size_t ofn = 66 + onameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + ofn));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(ofn));
+    writeLe16(img, attr + 20, 24);
+    img[attr + 24 + 64] = static_cast<uint8_t>(onameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < onameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(oname[i]));
+    attr += 16 + 8 + ofn;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+    return img;
+}
+
 } // namespace
 
 TEST(NtfsParser, CarvesMftFileRecord) {
@@ -108,4 +192,40 @@ TEST(NtfsParser, ExtractsResidentDataBytes) {
 
     ASSERT_EQ(payload.size(), 5u);
     EXPECT_EQ(std::string(payload.begin(), payload.end()), "hello");
+}
+
+TEST(NtfsParser, WalksMftFromBootLcnIgnoresOrphan) {
+    auto img = buildNtfsBootMftWalkDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) names.push_back(fr.name);
+    }, &running, 0, 0, false));
+    bool doc = false, orphan = false;
+    for (const auto& n : names) {
+        if (n == "doc.txt") doc = true;
+        if (n == "orphan.bin") orphan = true;
+    }
+    EXPECT_TRUE(doc);
+    EXPECT_FALSE(orphan);
+}
+
+TEST(NtfsParser, CarveOrphansFindsFileOutsideMftRuns) {
+    auto img = buildNtfsBootMftWalkDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) names.push_back(fr.name);
+    }, &running, 0, 0, true));
+    bool orphan = false;
+    for (const auto& n : names) {
+        if (n == "orphan.bin") orphan = true;
+    }
+    EXPECT_TRUE(orphan);
 }

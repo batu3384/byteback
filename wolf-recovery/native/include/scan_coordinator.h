@@ -20,7 +20,8 @@ void runQuickScan(DiskReader& reader,
                   FileSystemParser::FileRecordCallback onFileFound,
                   ScanProgressCallback onProgress,
                   std::atomic<bool>* isRunning,
-                  std::vector<uint64_t>* badSectorOut = nullptr);
+                  std::vector<uint64_t>* badSectorOut = nullptr,
+                  bool ntfsCarveOrphans = true);
 
 void runCarveScan(DiskReader& reader,
                   FileSystemParser::FileRecordCallback onFileFound,

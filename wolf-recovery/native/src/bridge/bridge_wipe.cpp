@@ -1,6 +1,7 @@
 // bridge_wipe.cpp — file / free-space wipe (device-guarded, CA-001), virtual RAID assembly
 // and file recovery. See bridge_common.h for the shared context.
 #include "bridge_common.h"
+#include "fs/vss_scanner.h"
 #include <filesystem>
 
 class WipeWorker : public Napi::AsyncWorker {
@@ -9,13 +10,8 @@ public:
         : Napi::AsyncWorker(env), path_(path), deferred_(deferred), success_(false) {}
 
     void Execute() override {
-        // CA-001 fix: this worker used to rewrite a numeric drive index into
-        // \\.\PhysicalDrive<N> and hand the DEVICE to shred_file() — which
-        // would either always fail (device size unreadable) or overwrite the
-        // entire physical disk, contradicting the UI's "free-space only"
-        // promise. The device path is now rejected outright: shred_file is a
-        // FILE shredder and must never see a drive. Free-space wiping needs a
-        // filesystem-aware implementation; until then the UI disables it.
+        // Device paths never reach shred_file. Directories use filler + DoD
+        // free-space wipe; files use three-pass shred. PhysicalDrive is refused.
         bool isNumber = !path_.empty() && std::all_of(path_.begin(), path_.end(), ::isdigit);
         bool isDevice = path_.rfind("\\\\?\\", 0) == 0 || path_.rfind("\\\\.", 0) == 0 ||
                         path_.find("PhysicalDrive") != std::string::npos;
@@ -70,6 +66,101 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
     WipeWorker* worker = new WipeWorker(env, targetPath, deferred);
     worker->Queue();
 
+    return deferred.Promise();
+    NAPI_CATCH
+}
+
+static bool parseFvekHex(const std::string& hex, uint8_t out[32]) {
+    if (hex.size() != 64) return false;
+    auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (int i = 0; i < 32; ++i) {
+        int hi = nibble(hex[static_cast<size_t>(i) * 2]);
+        int lo = nibble(hex[static_cast<size_t>(i) * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return true;
+}
+
+Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 1 || !info[0].IsString()) {
+        return Napi::Boolean::New(env, false);
+    }
+    std::string hex = info[0].As<Napi::String>().Utf8Value();
+    wolf::DiskReader& reader = bdata->engine.getDiskReader();
+    if (hex.empty()) {
+        reader.clearXtsFvek();
+        return Napi::Boolean::New(env, true);
+    }
+    uint8_t key[32];
+    if (!parseFvekHex(hex, key)) return Napi::Boolean::New(env, false);
+    bool ok = reader.setXtsFvek128(key, 32);
+    if (ok) forensic::AuditLogger::GetInstance().LogEvent("BITLOCKER_FVEK_SET");
+    return Napi::Boolean::New(env, ok);
+    NAPI_CATCH
+}
+
+class PhysicalWipeWorker : public Napi::AsyncWorker {
+public:
+    PhysicalWipeWorker(Napi::Env& env, int index, std::string typed, std::string actual,
+                       uint64_t sizeBytes, Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), index_(index), typed_(std::move(typed)), actual_(std::move(actual)),
+          sizeBytes_(sizeBytes), deferred_(deferred), success_(false) {}
+
+    void Execute() override {
+        security::DataShredder shredder;
+        success_ = shredder.shred_physical_drive(index_, typed_, actual_, sizeBytes_);
+    }
+    void OnOK() override {
+        deferred_.Resolve(Napi::Boolean::New(Env(), success_));
+    }
+    void OnError(const Napi::Error& e) override {
+        deferred_.Reject(Napi::Boolean::New(Env(), false));
+        (void)e;
+    }
+private:
+    int index_;
+    std::string typed_;
+    std::string actual_;
+    uint64_t sizeBytes_;
+    Napi::Promise::Deferred deferred_;
+    bool success_;
+};
+
+Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, typedSerial").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return Napi::Boolean::New(env, false);
+    int index = info[0].As<Napi::Number>().Int32Value();
+    std::string typed = info[1].As<Napi::String>().Utf8Value();
+    auto drives = bdata->engine.getDiskReader().enumerateDrives();
+    std::string actual;
+    uint64_t sizeBytes = 0;
+    for (const auto& d : drives) {
+        if (d.index == index) {
+            actual = d.serial;
+            sizeBytes = d.sizeBytes;
+            break;
+        }
+    }
+    if (actual.empty() || sizeBytes < 512) return Napi::Boolean::New(env, false);
+    forensic::AuditLogger::GetInstance().LogEvent(
+        "PHYSICAL_WIPE_START | drive=" + std::to_string(index));
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    (new PhysicalWipeWorker(env, index, typed, actual, sizeBytes, deferred))->Queue();
     return deferred.Promise();
     NAPI_CATCH
 }
@@ -174,10 +265,6 @@ public:
 
     void Execute() override {
         try {
-            wolf::DiskReader reader;
-            if (raid_) reader.setRaidBackend(raid_);
-            else if (driveIndex_ >= 0) reader.openDrive(driveIndex_);
-
             wolf::FileRecord rec;
             std::string err;
             if (!wolf::loadRecoverRecord(engine_->getMetadataStore(), scanId_, fileId_, rec, err)) {
@@ -185,7 +272,13 @@ public:
                 result_.error = err;
                 return;
             }
-
+            wolf::DiskReader reader;
+            if (!wolf::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                result_.success = false;
+                result_.error = err;
+                return;
+            }
+            wolf::applyBoundFvek(reader, engine_->getDiskReader(), rec);
             wolf::RecoveryEngine recovery;
             result_ = recovery.recoverFile(reader, rec, destDir_);
             if (wolf::countsAsRecovered(result_) && scanId_ > 0) {
@@ -292,9 +385,6 @@ public:
 
     void Execute() override {
         try {
-            wolf::DiskReader reader;
-            if (raid_) reader.setRaidBackend(raid_);
-            else if (driveIndex_ >= 0) reader.openDrive(driveIndex_);
             wolf::RecoveryEngine recovery;
             for (int64_t id : fileIds_) {
                 wolf::FileRecord rec;
@@ -307,12 +397,22 @@ public:
                     ++summary_.failed;
                     continue;
                 }
+                wolf::DiskReader reader;
+                if (!wolf::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                    one.success = false;
+                    one.error = err;
+                    summary_.results.push_back(one);
+                    ++summary_.failed;
+                    continue;
+                }
+                wolf::applyBoundFvek(reader, engine_->getDiskReader(), rec);
                 one = recovery.recoverFile(reader, rec, destDir_);
                 summary_.results.push_back(one);
-                if (one.success) ++summary_.succeeded;
-                else ++summary_.failed;
-                if (wolf::countsAsRecovered(one) && scanId_ > 0) {
-                    engine_->getMetadataStore().incrementRecovered(scanId_);
+                if (wolf::countsAsRecovered(one)) {
+                    ++summary_.succeeded;
+                    if (scanId_ > 0) engine_->getMetadataStore().incrementRecovered(scanId_);
+                } else {
+                    ++summary_.failed;
                 }
             }
         } catch (const std::exception& e) {

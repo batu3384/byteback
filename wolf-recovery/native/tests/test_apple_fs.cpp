@@ -277,6 +277,74 @@ TEST(ApfsContainer, CatalogEmitsHashedDirRec) {
     EXPECT_TRUE(sawFile);
 }
 
+TEST(ApfsContainer, FileExtentEmitsRecoverableRuns) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(8 * bs, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);
+    writeLe64At(img.data() + 40, 8);
+
+    uint8_t* node = img.data() + 2 * bs;
+    writeLe32(node + 24, 2);
+    writeLe32(node + 36, 1);
+    const uint64_t hdr = (8ull << 48) | 1ull;
+    writeLe64At(node + 56, hdr);
+    writeLe64At(node + 64, 4096);
+    writeLe64At(node + 72, 3);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    FileRecord extent;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_extent") extent = fr;
+    }, &running);
+    EXPECT_EQ(extent.source, "apfs_extent");
+    ASSERT_EQ(extent.runs.size(), 1u);
+    EXPECT_EQ(extent.runs[0].startSector, (3ull * bs) / 512);
+}
+
+TEST(ApfsContainer, OmapFollowsPaddrPast256Probe) {
+    const uint32_t bs = 4096;
+    const uint64_t blocks = 320;
+    std::vector<uint8_t> img(static_cast<size_t>(blocks * bs), 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);
+    writeLe64At(img.data() + 40, blocks);
+    writeLe64At(img.data() + 0xA0, 5);
+
+    uint8_t* omap = img.data() + 5 * bs;
+    writeLe64At(omap + 48, 6);
+
+    uint8_t* tree = img.data() + 6 * bs;
+    writeLe32(tree + 24, 2);
+    writeLe32(tree + 36, 1);
+    writeLe64At(tree + 56, 1);
+    writeLe64At(tree + 64, 1);
+    writeLe64At(tree + 72, 300);
+
+    uint8_t* node = img.data() + 300 * bs;
+    writeLe32(node + 24, 2);
+    node[32] = 2;
+    writeLe32(node + 36, 1);
+    const uint64_t hdr = (9ull << 48) | 7ull;
+    writeLe64At(node + 56, hdr);
+    const char* name = "far.txt";
+    const uint32_t nlen = 8;
+    writeLe32(node + 64, nlen);
+    std::memcpy(node + 68, name, 7);
+    node[68 + 7] = 0;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawFile = false;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_file" && fr.name == "far.txt") sawFile = true;
+    }, &running);
+    EXPECT_TRUE(sawFile);
+}
+
 TEST(HfsCatalog, OffsetTableFitsRejectsUnderflow) {
     EXPECT_TRUE(hfsOffsetTableFits(4096, 1));
     EXPECT_TRUE(hfsOffsetTableFits(14, 0));

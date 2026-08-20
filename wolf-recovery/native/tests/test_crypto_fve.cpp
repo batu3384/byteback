@@ -59,6 +59,51 @@ TEST(XtsAes128, Ieee1619ZeroKeyZeroTweak) {
     EXPECT_EQ(std::memcmp(ct, expect, 16), 0);
 }
 
+TEST(XtsAes128, DecryptRoundTrip) {
+    uint8_t key[32];
+    for (int i = 0; i < 32; ++i) key[i] = static_cast<uint8_t>(i + 1);
+    uint8_t tweak[16] = {1};
+    uint8_t pt[32];
+    for (int i = 0; i < 32; ++i) pt[i] = static_cast<uint8_t>(0xA0 + i);
+    uint8_t ct[32], back[32];
+    ASSERT_TRUE(wolf::crypto::xtsAes128Crypt(key, tweak, pt, ct, 32, true));
+    ASSERT_TRUE(wolf::crypto::xtsAes128Crypt(key, tweak, ct, back, 32, false));
+    EXPECT_EQ(std::memcmp(pt, back, 32), 0);
+}
+
+TEST(DiskReaderXts, DecryptsMemorySectorWithFvek) {
+    uint8_t key[32] = {};
+    uint8_t tweak[16] = {};
+    std::vector<uint8_t> pt(512, 0x3C);
+    std::vector<uint8_t> ct(512);
+    ASSERT_TRUE(wolf::crypto::xtsAes128Crypt(key, tweak, pt.data(), ct.data(), 512, true));
+    DiskReader reader;
+    reader.attachMemoryVolume(ct);
+    ASSERT_TRUE(reader.setXtsFvek128(key, 32));
+    std::vector<uint8_t> out(512);
+    auto res = reader.readSectors(0, 512, out.data());
+    ASSERT_TRUE(res.success);
+    EXPECT_EQ(std::memcmp(out.data(), pt.data(), 512), 0);
+}
+
+TEST(DiskReaderXts, CopyFvekDecryptsOtherReader) {
+    uint8_t key[32] = {};
+    uint8_t tweak[16] = {};
+    std::vector<uint8_t> pt(512, 0x3C);
+    std::vector<uint8_t> ct(512);
+    ASSERT_TRUE(wolf::crypto::xtsAes128Crypt(key, tweak, pt.data(), ct.data(), 512, true));
+    DiskReader src;
+    src.attachMemoryVolume(ct);
+    ASSERT_TRUE(src.setXtsFvek128(key, 32));
+    DiskReader dest;
+    dest.attachMemoryVolume(std::vector<uint8_t>(ct));
+    dest.copyXtsFvekFrom(src);
+    std::vector<uint8_t> out(512);
+    auto res = dest.readSectors(0, 512, out.data());
+    ASSERT_TRUE(res.success);
+    EXPECT_EQ(std::memcmp(out.data(), pt.data(), 512), 0);
+}
+
 TEST(BitLockerFve, ParsesMetadataMethodAndGuid) {
     std::vector<uint8_t> boot(512, 0);
     std::memcpy(boot.data() + 3, "-FVE-FS-", 8);

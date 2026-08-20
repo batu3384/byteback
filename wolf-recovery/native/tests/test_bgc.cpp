@@ -103,3 +103,11 @@ TEST(Bgc, TinySpanReturnsSizeMax) {
     std::vector<uint8_t> disk(8, 0);
     EXPECT_FALSE(bifragmentedGapCarve(disk.data(), disk.size(), 0, 3, 32, validateJpeg).found);
 }
+
+TEST(Bgc, HonorsMaxGapAbove64KiB) {
+    auto s = buildSplitJpeg(/*splitAt=*/8, /*gapLen=*/10);
+    BgcResult r = bifragmentedGapCarve(s.disk.data(), s.disk.size(),
+                                       s.headerOff, s.footerOff,
+                                       /*maxGap=*/128 * 1024, validateJpeg);
+    EXPECT_TRUE(r.found);
+}

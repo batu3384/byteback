@@ -166,3 +166,20 @@ TEST(UsaFixup, ReturnsFalseOnSequenceMismatch) {
 
     EXPECT_FALSE(applyUsaFixup(rec.data(), 1024, 512, usaOffset, 3));
 }
+
+TEST(NtfsBoot, ParsesMftLcnAndRecordSize) {
+    std::vector<uint8_t> boot(512, 0);
+    std::memcpy(boot.data() + 3, "NTFS    ", 8);
+    boot[0x0B] = 0x00;
+    boot[0x0C] = 0x02;
+    boot[0x0D] = 8;
+    boot[0x30] = 1;
+    boot[0x40] = 0xF6;
+    uint32_t bps = 0, spc = 0, rec = 0;
+    uint64_t lcn = 0;
+    ASSERT_TRUE(wolf::ntfs::parseNtfsBoot(boot.data(), boot.size(), bps, spc, lcn, rec));
+    EXPECT_EQ(bps, 512u);
+    EXPECT_EQ(spc, 8u);
+    EXPECT_EQ(lcn, 1u);
+    EXPECT_EQ(rec, 1024u);
+}
