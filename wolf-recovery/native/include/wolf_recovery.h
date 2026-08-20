@@ -19,6 +19,8 @@ struct RecoveryResult {
     std::string error;
     std::string md5Hash;
     bool zeroFilled = false; // at least one read was padded/failed
+    int validationScore = -1; // -1 = not checked; 0..100 when carve validation ran
+    std::string validationError;
 };
 
 inline bool countsAsRecovered(const RecoveryResult& r) {
