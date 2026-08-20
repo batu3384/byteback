@@ -8,6 +8,7 @@ const ShredderView: React.FC = () => {
   const [drives, setDrives] = useState<{ index: number; model?: string; serial?: string; type?: string; sizeBytes?: number }[]>([])
   const [wipeIndex, setWipeIndex] = useState(0)
   const [typedSerial, setTypedSerial] = useState('')
+  const [confirmPhrase, setConfirmPhrase] = useState('')
 
   React.useEffect(() => {
     if (!window.api?.listDrives) return
@@ -32,11 +33,13 @@ const ShredderView: React.FC = () => {
   }
 
   const handlePhysicalWipe = async () => {
-    if (!window.api?.wipePhysicalDrive || !typedSerial.trim()) return
+    if (!window.api?.wipePhysicalDrive || !typedSerial.trim() || confirmPhrase !== 'IMHA') return
     setStatus('shredding')
-    const ok = await window.api.wipePhysicalDrive(wipeIndex, typedSerial)
+    const ok = await window.api.wipePhysicalDrive(wipeIndex, typedSerial, confirmPhrase)
     setStatus(ok ? 'done' : 'failed')
   }
+
+  const selectedDrive = drives.find((d) => d.index === wipeIndex)
 
   return (
     <div className="shredder-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
@@ -100,14 +103,26 @@ const ShredderView: React.FC = () => {
                 onChange={(e) => setTypedSerial(e.target.value)}
                 style={{ padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
               />
+              <input
+                aria-label="Onay için IMHA yazın"
+                placeholder='Onay: "IMHA" yazın'
+                value={confirmPhrase}
+                onChange={(e) => setConfirmPhrase(e.target.value.toUpperCase())}
+                style={{ padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+              />
+              {selectedDrive && (
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  Hedef: {selectedDrive.model || 'disk'} — {selectedDrive.serial || 'seri yok'} — {selectedDrive.type || 'Unknown'}
+                </p>
+              )}
               <button
                 type="button"
                 className="btn-danger"
-                disabled={!typedSerial.trim() || drives.length === 0}
+                disabled={!typedSerial.trim() || confirmPhrase !== 'IMHA' || drives.length === 0}
                 onClick={() => void handlePhysicalWipe()}
                 style={{ padding: '12px' }}
               >
-                PhysicalDrive imha (seri + onay)
+                PhysicalDrive imha (seri + IMHA + onay)
               </button>
             </>
           )}
