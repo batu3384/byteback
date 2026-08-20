@@ -277,6 +277,41 @@ TEST(ApfsContainer, CatalogEmitsHashedDirRec) {
     EXPECT_TRUE(sawFile);
 }
 
+TEST(ApfsContainer, DirRecWithExtentAttachesRuns) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(8 * bs, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);
+    writeLe64At(img.data() + 40, 8);
+
+    uint8_t* node = img.data() + 2 * bs;
+    writeLe32(node + 24, 2);
+    node[32] = 2;
+    writeLe32(node + 36, 2);
+    const uint64_t dirHdr = (9ull << 48) | 42ull;
+    writeLe64At(node + 56, dirHdr);
+    const char* name = "data.bin";
+    writeLe32(node + 64, 9);
+    std::memcpy(node + 68, name, 8);
+    node[68 + 8] = 0;
+    const uint64_t extHdr = (8ull << 48) | 42ull;
+    writeLe64At(node + 88, extHdr);
+    writeLe64At(node + 96, 8192);
+    writeLe64At(node + 104, 4);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    FileRecord hit;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_file" && fr.name == "data.bin") hit = fr;
+    }, &running);
+    EXPECT_EQ(hit.source, "apfs_file");
+    ASSERT_EQ(hit.runs.size(), 1u);
+    EXPECT_EQ(hit.runs[0].startSector, (4ull * bs) / 512);
+    EXPECT_GE(hit.confidence, 80);
+}
+
 TEST(ApfsContainer, FileExtentEmitsRecoverableRuns) {
     const uint32_t bs = 4096;
     std::vector<uint8_t> img(8 * bs, 0);

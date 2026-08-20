@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -64,9 +65,17 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
     uint32_t nkeys = readLe32(block + 36);
     if (nkeys == 0 || nkeys > 4096) return;
 
+    struct DirHit {
+        uint64_t oid = 0;
+        std::string name;
+    };
+    std::vector<DirHit> dirs;
+    std::unordered_map<uint64_t, std::vector<FileRecord::DataRun>> extents;
+
     for (uint32_t i = 56; i + 16 < blockSize; i += 8) {
         uint64_t hdr = readLe64(block + i);
         uint64_t typ = hdr >> 48;
+        uint64_t oid = hdr & ((1ull << 48) - 1);
         if (typ == kApfsTypeDirRec) {
             uint32_t nlh = readLe32(block + i + 8);
             uint32_t nlen = nlh & 0x3FFu;
@@ -74,41 +83,74 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
             if (block[i + 12 + nlen - 1] != 0) continue;
             std::string name(reinterpret_cast<const char*>(block + i + 12), nlen - 1);
             if (name.empty() || seenNames.count(name)) continue;
-            seenNames.insert(name);
-            FileRecord fr;
-            fr.id = fileIndex++;
-            fr.name = name;
-            fr.path = "/apfs/" + name;
-            fr.startSector = blockOff / sectorSize;
-            fr.endSector = fr.startSector + 1;
-            fr.status = 0;
-            fr.confidence = 70;
-            fr.category = "Document";
-            fr.source = "apfs_file";
-            callback(fr);
+            dirs.push_back({oid, name});
         } else if (typ == kApfsTypeFileExtent && i + 24 < blockSize) {
             uint64_t lenFlags = readLe64(block + i + 8);
             uint64_t len = lenFlags & ((1ull << 56) - 1);
             uint64_t phys = readLe64(block + i + 16);
             if (phys == 0 || len == 0) continue;
-            FileRecord fr;
-            fr.id = fileIndex++;
-            fr.name = "extent_" + std::to_string(phys);
-            fr.path = "/apfs/extent/" + std::to_string(phys);
-            fr.sizeBytes = len;
-            fr.startSector = (partitionOffsetBytes + phys * blockSize) / sectorSize;
             FileRecord::DataRun run;
-            run.startSector = fr.startSector;
+            run.startSector = (partitionOffsetBytes + phys * blockSize) / sectorSize;
             run.sectorCount = (len + sectorSize - 1) / sectorSize;
             if (run.sectorCount == 0) run.sectorCount = 1;
-            fr.runs.push_back(run);
-            fr.endSector = run.startSector + run.sectorCount;
-            fr.status = 0;
-            fr.confidence = 60;
-            fr.category = "Document";
-            fr.source = "apfs_extent";
-            callback(fr);
+            extents[oid].push_back(run);
         }
+    }
+
+    for (const auto& d : dirs) {
+        seenNames.insert(d.name);
+        FileRecord fr;
+        fr.id = fileIndex++;
+        fr.name = d.name;
+        fr.path = "/apfs/" + d.name;
+        fr.startSector = blockOff / sectorSize;
+        fr.endSector = fr.startSector + 1;
+        fr.status = 0;
+        fr.confidence = 70;
+        fr.category = "Document";
+        fr.source = "apfs_file";
+        auto it = extents.find(d.oid);
+        if (it != extents.end() && !it->second.empty()) {
+            fr.runs = it->second;
+            fr.startSector = fr.runs.front().startSector;
+            uint64_t total = 0;
+            for (const auto& r : fr.runs) total += r.sectorCount;
+            fr.endSector = fr.startSector + total;
+            uint64_t bytes = 0;
+            for (const auto& r : fr.runs) bytes += static_cast<uint64_t>(r.sectorCount) * sectorSize;
+            fr.sizeBytes = bytes;
+            fr.confidence = 85;
+        }
+        callback(fr);
+    }
+
+    for (const auto& kv : extents) {
+        bool attached = false;
+        for (const auto& d : dirs) {
+            if (d.oid == kv.first) {
+                attached = true;
+                break;
+            }
+        }
+        if (attached) continue;
+        const auto& runs = kv.second;
+        if (runs.empty()) continue;
+        FileRecord fr;
+        fr.id = fileIndex++;
+        fr.name = "extent_" + std::to_string(kv.first);
+        fr.path = "/apfs/extent/" + std::to_string(kv.first);
+        fr.sizeBytes = 0;
+        for (const auto& r : runs) fr.sizeBytes += static_cast<uint64_t>(r.sectorCount) * sectorSize;
+        fr.runs = runs;
+        fr.startSector = runs.front().startSector;
+        uint64_t total = 0;
+        for (const auto& r : runs) total += r.sectorCount;
+        fr.endSector = fr.startSector + total;
+        fr.status = 0;
+        fr.confidence = 60;
+        fr.category = "Document";
+        fr.source = "apfs_extent";
+        callback(fr);
     }
 }
 
@@ -251,31 +293,35 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
     }
 
     uint64_t omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
-    if (omapOid > 0 && omapOid < blockCount) {
-        std::vector<uint8_t> omapBlk;
-        if (readBlock(reader, partitionOffsetBytes + omapOid * blockSize, static_cast<uint32_t>(blockSize), omapBlk) &&
-            omapBlk.size() >= 56) {
-            uint64_t treeOid = readLe64(omapBlk.data() + 48);
-            if (treeOid == 0 || treeOid >= blockCount) treeOid = omapOid;
-            std::vector<uint8_t> treeBlk;
-            if (readBlock(reader, partitionOffsetBytes + treeOid * blockSize, static_cast<uint32_t>(blockSize), treeBlk)) {
-                std::vector<uint64_t> paddrs;
-                std::unordered_set<uint64_t> visitedOmap;
-                walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, treeOid, paddrs, visitedOmap);
-                for (uint64_t paddr : paddrs) {
-                    if (isRunning && !(*isRunning)) break;
-                    if (paddr < probe) continue;
-                    uint64_t off = partitionOffsetBytes + paddr * blockSize;
-                    if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) continue;
-                    if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {
-                        tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol, callback);
-                    }
-                    scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
-                                            off, sectorSize, fileIndex, callback, seenNames);
-                }
-            }
+    uint64_t oidTreeOid = (nx.size() >= 0xB0) ? readLe64(nx.data() + 0xA8) : 0;
+    auto walkBtreeRoot = [&](uint64_t rootOid) {
+        if (rootOid == 0 || rootOid >= blockCount) return;
+        std::vector<uint8_t> rootBlk;
+        if (!readBlock(reader, partitionOffsetBytes + rootOid * blockSize, static_cast<uint32_t>(blockSize), rootBlk)) {
+            return;
         }
-    }
+        uint64_t treeOid = rootOid;
+        if (rootBlk.size() >= 56) {
+            uint64_t named = readLe64(rootBlk.data() + 48);
+            if (named > 0 && named < blockCount) treeOid = named;
+        }
+        std::vector<uint64_t> paddrs;
+        std::unordered_set<uint64_t> visitedOmap;
+        walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, treeOid, paddrs, visitedOmap);
+        for (uint64_t paddr : paddrs) {
+            if (isRunning && !(*isRunning)) break;
+            if (paddr < probe) continue;
+            uint64_t off = partitionOffsetBytes + paddr * blockSize;
+            if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) continue;
+            if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {
+                tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol, callback);
+            }
+            scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
+                                    off, sectorSize, fileIndex, callback, seenNames);
+        }
+    };
+    walkBtreeRoot(omapOid);
+    if (oidTreeOid != 0 && oidTreeOid != omapOid) walkBtreeRoot(oidTreeOid);
 
     FileRecord tick;
     tick.id = -1;
