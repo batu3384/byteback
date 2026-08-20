@@ -15,6 +15,9 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [activeSession, setActiveSession] = useState<any>(null)
+  const [latestScan, setLatestScan] = useState<any>(null)
+  const [fvekHex, setFvekHex] = useState('')
+  const [fvekStatus, setFvekStatus] = useState<string | null>(null)
 
   const fetchDrives = async () => {
     setLoading(true)
@@ -49,9 +52,10 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         const latestId = await window.api.getLatestScanId()
         if (latestId > 0) {
           const state = await window.api.getScanState(latestId)
-          // status 0 = running; bridge stores 1=complete (legacy mapping).
-          if (state && state.status === 0) {
-            setActiveSession(state)
+          if (state) {
+            setLatestScan(state)
+            if (state.status === 0) setActiveSession(state)
+            else setActiveSession(null)
           }
         }
       } catch (err) {
@@ -75,6 +79,39 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
           </div>
         </div>
       )}
+
+      <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+        Kanıt diski: motor GENERIC_READ. Windows birimi açıksa paylaşım FILE_SHARE_WRITE gerekebilir — donanım yazma koruması yoksa host OS kanıtı değiştirebilir. BitLocker: 64 hex FVEK sektör okumasını AES-128-XTS çözer; şifre/48-digit kırma yok. İmaj ham ciphertext yazar. PhysicalDrive imhası Yok Edici’de seri + onay ile.
+      </div>
+
+      <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+        <label htmlFor="fvek-hex" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>BitLocker FVEK (64 hex)</label>
+        <input
+          id="fvek-hex"
+          aria-label="BitLocker FVEK hex"
+          value={fvekHex}
+          onChange={(e) => { setFvekHex(e.target.value); setFvekStatus(null) }}
+          placeholder="boş = anahtarı temizle"
+          spellCheck={false}
+          style={{ flex: 1, minWidth: '220px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', fontFamily: 'monospace' }}
+        />
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={async () => {
+            if (!window.api?.setBitLockerFvek) {
+              setFvekStatus('API yok')
+              return
+            }
+            const hex = fvekHex.replace(/\s/g, '')
+            const ok = await window.api.setBitLockerFvek(hex)
+            setFvekStatus(ok ? (hex ? 'FVEK tarama/kurtarma okumasına uygulandı' : 'FVEK temizlendi') : 'Geçersiz (64 hex) veya motor hatası')
+          }}
+        >
+          Uygula
+        </button>
+        {fvekStatus && <span style={{ fontSize: '0.85rem' }}>{fvekStatus}</span>}
+      </div>
 
       {activeSession && (
         <div className="resume-banner glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', background: 'rgba(59, 130, 246, 0.05)' }}>
@@ -149,7 +186,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '16px', borderRadius: '12px' }}><FolderCheck size={28} color="var(--success-green)" /></div>
           <div>
-            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{activeSession?.recoveredFiles ?? 0}</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{latestScan?.recoveredFiles ?? 0}</div>
             <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Kurtarılan Dosya</div>
           </div>
         </div>

@@ -140,7 +140,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="search-header glass-panel" style={{ padding: '24px' }}>
         <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması (Keyword Search)</h2>
-        <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması. 16 MiB üstü dosyalar içerik indeksine alınmaz.</p>
+        <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması. 16 MiB üstü dosyalar içerik indeksine alınmaz. Derin tarama imzası CPU Aho-Corasick; GPU PFAC yok.</p>
       </div>
 
       <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -243,7 +243,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
                 }}>
                   <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
                   <span style={{ fontWeight: 500, flex: 1 }}>{r.name}</span>
-                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem' }}>{r.path || r.category || 'Kurtarılanlar'}</span>
+                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem' }}>{r.path || r.category || '—'}</span>
                   <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
                     {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
                   </span>

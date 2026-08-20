@@ -116,7 +116,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
       {/* Data Template Engine */}
       {data.length >= 512 && data[0] === 0x46 && data[1] === 0x49 && data[2] === 0x4C && data[3] === 0x45 && (
         <div className="template-panel glass-panel" style={{ marginBottom: '16px', padding: '16px', borderLeft: '4px solid #b700ff' }}>
-          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>🧬 NTFS MFT Kaydı Tespit Edildi</h4>
+          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>NTFS MFT kaydı</h4>
           <div style={{ display: 'flex', gap: '24px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
             <div><strong style={{ color: 'var(--text-main)' }}>0x00:</strong> <span style={{color: '#b700ff'}}>"FILE"</span> İmza</div>
             <div><strong style={{ color: 'var(--text-main)' }}>0x04:</strong> {data[4] + (data[5] << 8)} (Güncelleme Dizisi Ofseti)</div>
@@ -127,7 +127,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
 
       {data.length >= 512 && data[0] === 0xEB && data[2] === 0x90 && (
         <div className="template-panel glass-panel" style={{ marginBottom: '16px', padding: '16px', borderLeft: '4px solid var(--accent-blue)' }}>
-          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>🧬 Boot Sector Tespit Edildi (FAT/NTFS)</h4>
+          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>Boot sektörü (FAT/NTFS)</h4>
           <div style={{ display: 'flex', gap: '24px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
             <div><strong style={{ color: 'var(--text-main)' }}>0x03:</strong> <span style={{color: 'var(--accent-blue)'}}>{String.fromCharCode(...data.slice(3, 11))}</span> (OEM Adı)</div>
             <div><strong style={{ color: 'var(--text-main)' }}>0x0B:</strong> {data[11] + (data[12] << 8)} (Sektör Başına Bayt)</div>
