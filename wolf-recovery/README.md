@@ -99,14 +99,7 @@ npm run dist           # NSIS x64 kurulum paketi (release/)
 3. **Denetim** — `docs/codebase-audit/` tarihli raporlar yaşayan belgedir.
    Bir koşunun "tamamı giderildi" iddiası sonraki koşuyu kapatmaz.
 
-**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker **şifre / 48-digit
-kırma yok**. 64 hex FVEK verilirse AES-128-XTS sektör okuması çözülür
-(tarama + kurtarma; adli imaj ham ciphertext). GPU PFAC yok (imza CPU
-Aho-Corasick). APFS katalog adları keşif-only; extent run varsa kurtarılır.
-APFS: nx_fs_oid + 256 blok + omap yaprak paddr, tam snapshot/omap tree değil.
-Hızlı tarama NTFS `$MFT` run yürüyüşü (yetim FILE carve derin taramada).
-PhysicalDrive imhası: yazılan seri = liste serisi + OS onay; SSD ≠ NIST 800-88.
-Playwright Electron duman testi: `npm run test:e2e` (`out/main/main.js` şart).
+**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker recovery password yalnızca **0x0800 clear-key** koruyucusu (TPM/startup-key/password → açık hata). FVEK: 64/128 hex veya recovery password → AES-128/256-XTS tarama+kurtarma+hex (imaj ham ciphertext). GPU PFAC yok. APFS: nx_fs_oid + 256 blok + **recursive omap btree** (tam snapshot tree değil). PhysicalDrive: seri + **IMHA** + OS onay; SSD ≠ NIST 800-88. Eşzamanlı scan/imaj/wipe engellenir.
 
 ## Güvenlik Notları
 - Uygulama sektör erişimi için Yönetici gerektirir (NSIS manifestı
