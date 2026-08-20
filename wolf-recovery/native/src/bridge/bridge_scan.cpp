@@ -258,7 +258,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     if (bdata->scanContext) {
         bdata->scanContext->coordinator.stopScan();
         bdata->scanContext.reset();
-        bdata->endHeavyOp();
+        // FinalizeScanSession already endHeavyOp() after worker join.
     }
 
     if (!bdata->tryBeginHeavyOp()) {
@@ -312,7 +312,25 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 Napi::Error::New(env, "Scan is not resumable (status must be paused)").ThrowAsJavaScriptException();
                 return env.Undefined();
             }
+            if (st.scanType == "quick") {
+                bdata->endHeavyOp();
+                Napi::Error::New(env, "Quick scan cannot resume; start a new scan").ThrowAsJavaScriptException();
+                return env.Undefined();
+            }
+            if ((st.scanType == "deep" || st.scanType == "full_carve") && !st.metadataComplete) {
+                bdata->endHeavyOp();
+                Napi::Error::New(env,
+                                 "Cannot resume during metadata phase; stop and start a new scan")
+                    .ThrowAsJavaScriptException();
+                return env.Undefined();
+            }
             target.resumeAtSector = st.scannedSectors;
+            target.metadataComplete = st.metadataComplete;
+            target.carveResumeSector = st.carveResumeSector;
+            if (target.partitionStartSector < 0 && st.partitionStartSector >= 0) {
+                target.partitionStartSector = st.partitionStartSector;
+                target.partitionSizeSectors = st.partitionSizeSectors;
+            }
         }
     } else if (info[2].IsFunction()) {
         cb = info[2].As<Napi::Function>();
@@ -345,6 +363,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
     } else {
         context->scanId = bdata->engine.getMetadataStore().createScan(driveIndex, scanType, 0);
+    }
+    if (target.partitionStartSector >= 0 && target.partitionSizeSectors > 0) {
+        bdata->engine.getMetadataStore().setScanPartition(
+            context->scanId, target.partitionStartSector, target.partitionSizeSectors);
     }
     context->dedupIndex.clear();
 
@@ -444,9 +466,15 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         FinalizeScanSession(bdata, status);
     };
 
+    const int64_t checkpointScanId = context->scanId;
+    wolf::ScanCheckpointCallback onCheckpoint =
+        [engine = &bdata->engine, checkpointScanId](bool metadataComplete, uint64_t carveResume) {
+            engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, metadataComplete, carveResume);
+        };
+
     context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
                                    &context->badSectors, bdata->raid, onFinished,
-                                   &bdata->engine.getDiskReader(), target);
+                                   &bdata->engine.getDiskReader(), target, onCheckpoint);
 
     return Napi::Number::New(env, static_cast<double>(context->scanId));
     NAPI_CATCH

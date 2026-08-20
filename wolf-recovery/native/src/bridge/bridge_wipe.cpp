@@ -25,8 +25,8 @@ Napi::Object recoveryResultToJs(Napi::Env env, const wolf::RecoveryResult& r) {
 
 class WipeWorker : public Napi::AsyncWorker {
 public:
-    WipeWorker(Napi::Env& env, const std::string& path, Napi::Promise::Deferred deferred)
-        : Napi::AsyncWorker(env), path_(path), deferred_(deferred), success_(false) {}
+    WipeWorker(Napi::Env& env, BridgeData* bdata, const std::string& path, Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), bdata_(bdata), path_(path), deferred_(deferred), success_(false) {}
 
     void Execute() override {
         // Device paths never reach shred_file. Directories use filler + DoD
@@ -53,16 +53,20 @@ public:
     }
 
     void OnOK() override {
+        if (bdata_) bdata_->endHeavyOp();
         Napi::Env env = Env();
         deferred_.Resolve(Napi::Boolean::New(env, success_));
     }
 
     void OnError(const Napi::Error& e) override {
+        if (bdata_) bdata_->endHeavyOp();
         Napi::Env env = Env();
         deferred_.Reject(Napi::Boolean::New(env, false));
+        (void)e;
     }
 
 private:
+    BridgeData* bdata_;
     std::string path_;
     Napi::Promise::Deferred deferred_;
     bool success_;
@@ -78,11 +82,15 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
 
     std::string targetPath = info[0].As<Napi::String>().Utf8Value();
 
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return Napi::Boolean::New(env, false);
+    if (!bdata->tryBeginHeavyOp()) return Napi::Boolean::New(env, false);
+
     forensic::AuditLogger::GetInstance().LogEvent("WIPE_START | target=" + targetPath);
 
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
 
-    WipeWorker* worker = new WipeWorker(env, targetPath, deferred);
+    WipeWorker* worker = new WipeWorker(env, bdata, targetPath, deferred);
     worker->Queue();
 
     return deferred.Promise();

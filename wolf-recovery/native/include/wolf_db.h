@@ -49,13 +49,17 @@ struct TimelineEvent {
 struct ScanState {
     int64_t id;
     int driveIndex;
-    std::string scanType;   // "quick", "deep", "fragment"
+    std::string scanType;   // "quick", "deep", "full_carve"
     uint64_t totalSectors;
     uint64_t scannedSectors;
     int status;             // 0=Running, 1=Complete, 2=Stopped, 3=Failed, 4=Paused(resumable)
     int64_t startedAt;
     int64_t updatedAt;
-    int64_t recoveredFiles = 0; // successful recoveries recorded for this scan
+    int64_t recoveredFiles = 0;
+    int64_t partitionStartSector = -1;
+    uint64_t partitionSizeSectors = 0;
+    bool metadataComplete = false;
+    uint64_t carveResumeSector = 0;
 };
 
 // Singleton forensic case metadata (E01 header + audit context).
@@ -87,6 +91,8 @@ public:
     int64_t createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors);
     bool setScanTotalSectors(int64_t scanId, uint64_t totalSectors);
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
+    bool setScanPartition(int64_t scanId, int64_t partitionStartSector, uint64_t partitionSizeSectors);
+    bool updateScanCheckpoint(int64_t scanId, bool metadataComplete, uint64_t carveResumeSector);
     bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);
     ScanState getScanState(int64_t scanId);

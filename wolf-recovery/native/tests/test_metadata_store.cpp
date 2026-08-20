@@ -179,3 +179,28 @@ TEST_F(MetadataStoreTest, GetFileByIdHonorsScanId) {
     EXPECT_EQ(store_.getFileById(id, scanId).name, "a.bin");
     EXPECT_EQ(store_.getFileById(id, scanId + 99).id, -1);
 }
+
+TEST_F(MetadataStoreTest, ScanCheckpointAndPartitionPersist) {
+    int64_t scanId = store_.createScan(1, "deep", 1000);
+    ASSERT_TRUE(store_.setScanPartition(scanId, 2048, 4096));
+    ASSERT_TRUE(store_.updateScanCheckpoint(scanId, true, 512));
+
+    ScanState st = store_.getScanState(scanId);
+    EXPECT_EQ(st.partitionStartSector, 2048);
+    EXPECT_EQ(st.partitionSizeSectors, 4096u);
+    EXPECT_TRUE(st.metadataComplete);
+    EXPECT_EQ(st.carveResumeSector, 512u);
+}
+
+TEST_F(MetadataStoreTest, IntegrityChecksumRoundTrip) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "refs.bin";
+    r.sizeBytes = 64;
+    r.source = "refs";
+    r.integrityChecksum = 0xDEADBEEFCAFEBABEULL;
+    int64_t id = store_.insertFile(scanId, r);
+    ASSERT_GT(id, 0);
+    auto loaded = store_.getFileById(id, scanId);
+    EXPECT_EQ(loaded.integrityChecksum, r.integrityChecksum);
+}

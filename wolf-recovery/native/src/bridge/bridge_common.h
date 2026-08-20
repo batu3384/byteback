@@ -81,7 +81,10 @@ struct BridgeData {
         }
         return true;
     }
-    void endHeavyOp() { heavyOps.fetch_sub(1); }
+    void endHeavyOp() {
+        int prev = heavyOps.load();
+        while (prev > 0 && !heavyOps.compare_exchange_weak(prev, prev - 1)) {}
+    }
 };
 
 // bridge_drives.cpp — drives / partitions / raw reads / SMART

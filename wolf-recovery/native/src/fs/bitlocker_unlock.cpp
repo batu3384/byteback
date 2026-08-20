@@ -4,6 +4,12 @@
 #include "crypto/wolf_aes_ccm.h"
 #include <functional>
 #include <cstring>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace wolf {
 
@@ -33,11 +39,26 @@ uint16_t le16(const uint8_t* p) {
 
 void utf8ToUtf16Le(const std::string& passwordUtf8, std::vector<uint8_t>& wide) {
     wide.clear();
-    wide.reserve(passwordUtf8.size() * 2 + 2);
+    if (passwordUtf8.empty()) return;
+#ifdef _WIN32
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, passwordUtf8.c_str(), -1, nullptr, 0);
+    if (wlen <= 0) return;
+    std::vector<wchar_t> buf(static_cast<size_t>(wlen));
+    if (MultiByteToWideChar(CP_UTF8, 0, passwordUtf8.c_str(), -1, buf.data(), wlen) <= 0) return;
+    wide.reserve((buf.size() > 0 ? buf.size() - 1 : 0) * 2);
+    for (size_t i = 0; i + 1 < buf.size(); ++i) {
+        const wchar_t wc = buf[i];
+        wide.push_back(static_cast<uint8_t>(wc & 0xFF));
+        wide.push_back(static_cast<uint8_t>((wc >> 8) & 0xFF));
+    }
+#else
+    // ponytail: non-Windows builds use ASCII-only stretch; upgrade path = ICU/iconv.
+    wide.reserve(passwordUtf8.size() * 2);
     for (unsigned char c : passwordUtf8) {
         wide.push_back(c);
         wide.push_back(0);
     }
+#endif
 }
 
 void stretchRecoveryPassword(const std::string& passwordUtf8, uint8_t out[32]) {

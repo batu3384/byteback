@@ -412,15 +412,6 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('set-bitlocker-fvek', (_event, hex: string) => {
-    try {
-      return getEngine().setBitLockerFvek(typeof hex === 'string' ? hex : '')
-    } catch (err) {
-      console.error('[IPC] set-bitlocker-fvek error:', err)
-      return false
-    }
-  })
-
   ipcMain.handle('set-bitlocker-recovery-password', (_event, driveIndex: number, password: string) => {
     try {
       if (typeof driveIndex !== 'number' || typeof password !== 'string') {

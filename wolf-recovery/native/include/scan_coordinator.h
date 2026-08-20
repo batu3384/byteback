@@ -27,7 +27,9 @@ struct ScanBounds {
 struct ScanTarget {
     int64_t partitionStartSector = -1;
     uint64_t partitionSizeSectors = 0;
-    uint64_t resumeAtSector = 0; // ponytail: whole-disk resume; partition scope not persisted yet
+    uint64_t resumeAtSector = 0;
+    bool metadataComplete = false;
+    uint64_t carveResumeSector = 0;
     ScanBounds bounds() const {
         ScanBounds b;
         if (partitionStartSector >= 0 && partitionSizeSectors > 0) {
@@ -56,13 +58,16 @@ void runCarveScan(DiskReader& reader,
                   uint64_t resumeCarveSector = 0);
 
 // Metadata quick scan followed by signature carving (professional "deep" mode).
+using ScanCheckpointCallback = std::function<void(bool metadataComplete, uint64_t carveResumeSector)>;
+
 void runDeepScan(DiskReader& reader,
                  FileSystemParser::FileRecordCallback onFileFound,
                  ScanProgressCallback onProgress,
                  std::atomic<bool>* isRunning,
                  std::vector<uint64_t>* badSectorOut = nullptr,
                  ScanBounds bounds = {},
-                 uint64_t resumeAt = 0);
+                 ScanTarget target = {},
+                 ScanCheckpointCallback onCheckpoint = nullptr);
 
 // Metadata + full-partition signature carve (allocated + unallocated).
 void runFullCarveScan(DiskReader& reader,
@@ -71,7 +76,8 @@ void runFullCarveScan(DiskReader& reader,
                       std::atomic<bool>* isRunning,
                       std::vector<uint64_t>* badSectorOut = nullptr,
                       ScanBounds bounds = {},
-                      uint64_t resumeAt = 0);
+                      ScanTarget target = {},
+                      ScanCheckpointCallback onCheckpoint = nullptr);
 
 // Prefix file sources with raid_ when scanning through VirtualRaid.
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader);
@@ -94,7 +100,8 @@ public:
                    std::shared_ptr<VirtualRaid> raid = nullptr,
                    FinishedCallback onFinished = nullptr,
                    const DiskReader* fvekSource = nullptr,
-                   ScanTarget target = {});
+                   ScanTarget target = {},
+                   ScanCheckpointCallback onCheckpoint = nullptr);
     
     void requestStop();
     void stopScan();
@@ -110,7 +117,8 @@ private:
                     std::shared_ptr<VirtualRaid> raid,
                     FinishedCallback onFinished,
                     const DiskReader* fvekSource,
-                    ScanTarget target);
+                    ScanTarget target,
+                    ScanCheckpointCallback onCheckpoint);
 };
 
 } // namespace wolf
