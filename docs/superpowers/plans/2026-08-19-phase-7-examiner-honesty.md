@@ -1,4 +1,4 @@
-# Phase 7 — Examiner Honesty Implementation Plan
+﻿# Phase 7 â€” Examiner Honesty Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -19,8 +19,8 @@
 
 ## Files
 
-- Modify: `byteback/src/preload/index.ts`, `src/shared/types.ts`, `src/shared/ipc-contract.ts`, `src/main/ipc-handlers.ts`
-- Create: `byteback/src/renderer/components/CaseView/CaseView.tsx` (+ css)
+- Modify: `src/preload/index.ts`, `src/shared/types.ts`, `src/shared/ipc-contract.ts`, `src/main/ipc-handlers.ts`
+- Create: `src/renderer/components/CaseView/CaseView.tsx` (+ css)
 - Modify: `App.tsx`, `Sidebar.tsx`, `ReportGenerator.tsx`, `SmartView.tsx`
 - Modify: `hfs_catalog.cpp` / `hfs_catalog.h`, `scan_coordinator.cpp` (warning hook)
 - Modify: `package.json`, `README.md`, `ewf_writer.h`
@@ -32,10 +32,10 @@
 ### Task 1: Preload + IPC dialog for case/NSRL
 
 **Files:**
-- Modify: `byteback/src/preload/index.ts`
-- Modify: `byteback/src/shared/types.ts`
-- Modify: `byteback/src/shared/ipc-contract.ts`
-- Modify: `byteback/src/main/ipc-handlers.ts`
+- Modify: `src/preload/index.ts`
+- Modify: `src/shared/types.ts`
+- Modify: `src/shared/ipc-contract.ts`
+- Modify: `src/main/ipc-handlers.ts`
 
 **Interfaces:**
 - Consumes: existing `get-case-info`, `set-case-info`, `load-nsrl`, `lookup-nsrl`, `get-nsrl-stats`
@@ -86,10 +86,10 @@ Expected: PASS
 ### Task 2: CaseView UI + report fields
 
 **Files:**
-- Create: `byteback/src/renderer/components/CaseView/CaseView.tsx`
-- Create: `byteback/src/renderer/components/CaseView/CaseView.css`
+- Create: `src/renderer/components/CaseView/CaseView.tsx`
+- Create: `src/renderer/components/CaseView/CaseView.css`
 - Modify: `App.tsx`, `Sidebar.tsx` (`id: 'case'`, label `Dava`)
-- Modify: `ReportGenerator.tsx` — load `getCaseInfo`, put case number/investigator in HTML header
+- Modify: `ReportGenerator.tsx` â€” load `getCaseInfo`, put case number/investigator in HTML header
 
 **Interfaces:**
 - Consumes: Task 1 `window.api`
@@ -103,7 +103,7 @@ Fields: caseNumber, investigator, agency, notes. Save button. On failure, `role=
 
 - [ ] **Step 3: Report**
 
-`getCaseInfo` before building HTML; if empty, show "Dava numarası yok" — do not invent a number.
+`getCaseInfo` before building HTML; if empty, show "Dava numarasÄ± yok" â€” do not invent a number.
 
 - [ ] **Step 4: Typecheck**
 
@@ -115,14 +115,14 @@ Expected: PASS
 ### Task 3: HFS 25k warning (not silent)
 
 **Files:**
-- Modify: `byteback/native/include/fs/hfs_catalog.h`
-- Modify: `byteback/native/src/fs/hfs_catalog.cpp`
-- Modify: `byteback/native/src/scan_coordinator.cpp` (or FileRecord marker)
-- Modify: `byteback/native/tests/test_apple_fs.cpp`
+- Modify: `native/include/fs/hfs_catalog.h`
+- Modify: `native/src/fs/hfs_catalog.cpp`
+- Modify: `native/src/scan_coordinator.cpp` (or FileRecord marker)
+- Modify: `native/tests/test_apple_fs.cpp`
 
 **Interfaces:**
 - Consumes: `CatalogCtx::kMaxFiles`
-- Produces: when cutoff hits, insert a `FileRecord` with `name="[HFS] catalog truncated at 25000"` and `source="hfs_limit"` OR set a scan-level flag persisted in `scans` — prefer one extra FileRecord so UI/results already show it without schema change.
+- Produces: when cutoff hits, insert a `FileRecord` with `name="[HFS] catalog truncated at 25000"` and `source="hfs_limit"` OR set a scan-level flag persisted in `scans` â€” prefer one extra FileRecord so UI/results already show it without schema change.
 
 - [ ] **Step 1: Failing test**
 
@@ -145,12 +145,12 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 
 ---
 
-### Task 4: SMART KALİBRASYONSUZ copy
+### Task 4: SMART KALÄ°BRASYONSUZ copy
 
 **Files:**
-- Modify: `byteback/src/renderer/components/SmartView/SmartView.tsx`
+- Modify: `src/renderer/components/SmartView/SmartView.tsx`
 
-- [ ] **Step 1:** Under ATA (non-NVMe) score, add paragraph: `ATA sağlık skoru KALİBRASYONSUZ heuristic (η=500, β=1.5). Ömür tahmini değil.` NVMe block unchanged.
+- [ ] **Step 1:** Under ATA (non-NVMe) score, add paragraph: `ATA saÄŸlÄ±k skoru KALÄ°BRASYONSUZ heuristic (Î·=500, Î²=1.5). Ã–mÃ¼r tahmini deÄŸil.` NVMe block unchanged.
 
 - [ ] **Step 2:** Typecheck PASS
 
@@ -159,11 +159,11 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 ### Task 5: Docs + test script + sidebar honesty
 
 **Files:**
-- Modify: `byteback/README.md` (test count 145, Faz 0–6, NSRL: "UI Phase 7" or after Task 1–2 "kullanıcı dosyası")
-- Modify: `byteback/package.json` `test:native` add `-C Release`
-- Modify: `Sidebar.tsx` label `İmaj (RAW / E01)`; version from a constant matching `0.1.0`; replace emoji with `resources/icon.svg` or lucide `Shield`
+- Modify: `README.md` (test count 145, Faz 0â€“6, NSRL: "UI Phase 7" or after Task 1â€“2 "kullanÄ±cÄ± dosyasÄ±")
+- Modify: `package.json` `test:native` add `-C Release`
+- Modify: `Sidebar.tsx` label `Ä°maj (RAW / E01)`; version from a constant matching `0.1.0`; replace emoji with `resources/icon.svg` or lucide `Shield`
 - Modify: `ewf_writer.h` CA-004 comment: optional `ewfinfo` / skip
-- Modify: `ImagerView.css`, `HexEditor.css`, `ShredderView.css`, `RaidBuilder.css`, `KeywordSearch.css` — `outline: none` → `:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }`
+- Modify: `ImagerView.css`, `HexEditor.css`, `ShredderView.css`, `RaidBuilder.css`, `KeywordSearch.css` â€” `outline: none` â†’ `:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }`
 
 - [ ] **Step 1:** Apply copy/CSS
 - [ ] **Step 2:** `npm run typecheck`
@@ -175,7 +175,7 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 
 | Spec item | Task |
 |-----------|------|
-| Case form + E01 existing path | 1–2 |
+| Case form + E01 existing path | 1â€“2 |
 | NSRL picker | 1 (+ optional stats on CaseView) |
 | HFS warning | 3 |
 | SMART label | 4 |

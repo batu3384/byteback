@@ -1,8 +1,8 @@
-# Phase 0 Reliability Implementation Plan
+﻿# Phase 0 Reliability Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship trust-layer fixes: E2E scan→recover proof, honest dashboard state, MPEG-TS FOV, VSS creation timestamps.
+**Goal:** Ship trust-layer fixes: E2E scanâ†’recover proof, honest dashboard state, MPEG-TS FOV, VSS creation timestamps.
 
 **Architecture:** Extend existing `file_validators.h` dispatch, add one integration test compiling scan+db+recovery sources, minimal UI guard on scan status enum.
 
@@ -21,22 +21,22 @@
 ### Task 1: MPEG-TS structural validator
 
 **Files:**
-- Modify: `byteback/native/include/carver/file_validators.h`
-- Modify: `byteback/native/src/carver/signature_engine.cpp` (`dispatchValidator`)
-- Modify: `byteback/native/tests/test_validators.cpp`
+- Modify: `native/include/carver/file_validators.h`
+- Modify: `native/src/carver/signature_engine.cpp` (`dispatchValidator`)
+- Modify: `native/tests/test_validators.cpp`
 
 **Interfaces:**
-- Produces: `int validateMpegTs(const uint8_t* data, size_t size)` — 0 reject, ≥90 accept
+- Produces: `int validateMpegTs(const uint8_t* data, size_t size)` â€” 0 reject, â‰¥90 accept
 
-- [x] Add `validateMpegTs` — require 5×188-byte packets each starting with `0x47`
+- [x] Add `validateMpegTs` â€” require 5Ã—188-byte packets each starting with `0x47`
 - [x] Wire `ext == "ts"` in `dispatchValidator`
 - [x] Tests: valid TS buffer scores high; `0x47 0x40 0x00` junk scores 0
 
-### Task 2: E2E scan → recover test
+### Task 2: E2E scan â†’ recover test
 
 **Files:**
-- Create: `byteback/native/tests/test_e2e_scan_recover.cpp`
-- Modify: `byteback/native/CMakeLists.txt`
+- Create: `native/tests/test_e2e_scan_recover.cpp`
+- Modify: `native/CMakeLists.txt`
 
 - [x] FAT16 MBR fixture quick scan inserts into temp MetadataStore
 - [x] Recover `TEST.TXT`, assert payload `Hello FAT16` and MD5 present
@@ -44,16 +44,16 @@
 ### Task 3: Dashboard active session fix
 
 **Files:**
-- Modify: `byteback/src/renderer/components/Dashboard/Dashboard.tsx`
+- Modify: `src/renderer/components/Dashboard/Dashboard.tsx`
 
 - [x] Resume banner + stats only when `getScanState().status === 0`
 
 ### Task 4: VSS creation time
 
 **Files:**
-- Modify: `byteback/native/include/fs/vss_scanner.h`
-- Modify: `byteback/native/src/fs/vss_scanner.cpp`
-- Modify: `byteback/native/src/scan_coordinator.cpp`
+- Modify: `native/include/fs/vss_scanner.h`
+- Modify: `native/src/fs/vss_scanner.cpp`
+- Modify: `native/src/scan_coordinator.cpp`
 
 - [x] Add `createdAt` field; populate via `GetFileTime` on shadow copy handle
 - [x] Emit `fr.createdAt = snap.createdAt` for VSS records

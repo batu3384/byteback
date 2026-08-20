@@ -1,13 +1,34 @@
-# Workspace-level ignores. The product lives in byteback/ (which has its
-# own .gitignore); these cover editor/agent tool state that must never be
-# committed.
+# Byteback — build artifacts and local state
 
-# Agent session/tool state
+node_modules/
+out/
+dist/
+.vite/
+native/build/
+native/third_party/sqlite3.c
+native/third_party/sqlite3.h
+*.node
+*.obj
+*.o
+*.lib
+*.pdb
+*.ilk
+*.exp
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+.DS_Store
+Thumbs.db
+*.db
+*.sqlite
+
+playwright-report/
+test-results/
+
+# Logs & IDE / agent session state
+*.log
+debug_electron.log
 .zcode/
 .cursor/
 .mimosa/
-
-# Bundled renderer/main (also ignored inside byteback/)
-byteback/out/
-
-
+compile_commands.json
