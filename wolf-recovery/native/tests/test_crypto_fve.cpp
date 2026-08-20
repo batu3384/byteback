@@ -1,6 +1,8 @@
 #include "fs/volume_identity.h"
 #include "crypto/wolf_aes.h"
+#include "crypto/wolf_aes_ccm.h"
 #include "fs/bitlocker_fve.h"
+#include "fs/bitlocker_unlock.h"
 #include "wolf_io.h"
 #include <gtest/gtest.h>
 #include <cstring>
@@ -149,4 +151,20 @@ TEST(BitLockerFve, ParsesMetadataMethodAndGuid) {
     EXPECT_EQ(info.encryptionMethod, 6u);
     EXPECT_EQ(info.encryptionName, "AES-256-XTS");
     EXPECT_EQ(info.volumeGuidHex.substr(0, 2), "ab");
+}
+
+TEST(BitLockerPassword, StretchKeyOpenwallVector) {
+    const uint8_t salt[16] = {
+        0x13, 0x4b, 0xd2, 0x63, 0x4b, 0xa5, 0x80, 0xad,
+        0xc3, 0x75, 0x8c, 0xa5, 0xa8, 0x4d, 0x86, 0x66,
+    };
+    uint8_t key[32] = {};
+    deriveBitLockerPasswordKey("openwall@123", salt, key);
+    const uint8_t expect[32] = {
+        0xa7, 0x02, 0xf4, 0x1c, 0xf1, 0x1b, 0x0b, 0x3e,
+        0xb7, 0x3d, 0x52, 0xc0, 0x82, 0x4d, 0x12, 0x79,
+        0xe1, 0x52, 0x61, 0x32, 0x26, 0x55, 0x13, 0xd8,
+        0x03, 0xd6, 0x00, 0x4a, 0x96, 0xa8, 0x55, 0x8a,
+    };
+    EXPECT_EQ(std::memcmp(key, expect, 32), 0);
 }
