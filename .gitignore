@@ -1,4 +1,4 @@
-# Workspace-level ignores. The product lives in wolf-recovery/ (which has its
+# Workspace-level ignores. The product lives in byteback/ (which has its
 # own .gitignore); these cover editor/agent tool state that must never be
 # committed.
 
@@ -7,7 +7,7 @@
 .cursor/
 .mimosa/
 
-# Bundled renderer/main (also ignored inside wolf-recovery/)
-wolf-recovery/out/
+# Bundled renderer/main (also ignored inside byteback/)
+byteback/out/
 
 

@@ -1,7 +1,7 @@
-# Adversarial review — Wolf Recovery
+# Adversarial review — Byteback
 
 - Tarih: 2026-08-19
-- Kapsam: `wolf-recovery/` native + Electron (tam ürün, HEAD)
+- Kapsam: `byteback/` native + Electron (tam ürün, HEAD)
 - Yöntem: üç zorunlu persona (Saboteur, New Hire, Security Auditor); 2+ persona = bir seviye terfi
 - Runtime: statik kod okuma + önceki `ctest` 146/146 (birim testleri production teardown / 4 GiB E01 / gerçek FVE OEM kapsamıyor)
 - Verdict: **BLOCK**
@@ -19,7 +19,7 @@
 ## Persona notları
 
 - **Saboteur:** üretimde tarama 2, `std::terminate`; HFS hostile volume OOB; recover sıfır + `success=true`; E01 wrap; shared `DiskReader`.
-- **New Hire:** `status` üç anlama sahip (`wolf_db.h` Intact vs NTFS IN_USE vs rapor “üzerine yazılmış”); RAID 6 `fail_disk` NAPI’de yok; CoC paragrafı motorla çelişiyor.
+- **New Hire:** `status` üç anlama sahip (`byteback_db.h` Intact vs NTFS IN_USE vs rapor “üzerine yazılmış”); RAID 6 `fail_disk` NAPI’de yok; CoC paragrafı motorla çelişiyor.
 - **Security Auditor:** `startWipe` hâlâ renderer string; recover `FileRecord.runs` renderer’dan; `requireAdministrator` + `sandbox: false` + `asar: false`; rapor HTML XSS.
 
 ---
@@ -29,7 +29,7 @@
 ### AR-001 | Recover renderer `runs` güveniyor — DB yok
 
 - Persona: Security Auditor, Saboteur → **CRITICAL**
-- Yol: `native/src/bridge/bridge_wipe.cpp` `FileRecordFromJs` / `RecoverFile`; `wolf_db.h` `getFileById` (kullanılmıyor)
+- Yol: `native/src/bridge/bridge_wipe.cpp` `FileRecordFromJs` / `RecoverFile`; `byteback_db.h` `getFileById` (kullanılmıyor)
 - Kanıt: Recover, IPC nesnesindeki `runs[].startSector/sectorCount` ile okur. `scanId` yalnız `incrementRecovered`.
 - Zarar: Admin süreç rastgele sektör aralığını “kurtarıldı + MD5” diye yazar.
 
@@ -92,14 +92,14 @@
 ### AR-010 | Paylaşımlı `Engine::diskReader_` ırk koşulu
 
 - Persona: Saboteur → **CRITICAL**
-- Yol: `wolf_engine.h` tek reader; `RecoverWorker` `openDrive`/`setRaidBackend`; Hex `readSectors`
+- Yol: `byteback_engine.h` tek reader; `RecoverWorker` `openDrive`/`setRaidBackend`; Hex `readSectors`
 - Kanıt: Mutex yok. Recover handle kapatırken hex okuyabilir.
 - Zarar: AV / yanlış sektör / RAID backend’in hex’e yapışması.
 
 ### AR-011 | Rapor `status` yalanı + CoC paragrafı
 
 - Persona: Saboteur, New Hire, Security Auditor → **CRITICAL** (terfi)
-- Yol: `wolf_db.h` `0=Intact`; NTFS `IN_USE→1`; SQL `SUM(status=0)` `deletedFiles`; `ReportGenerator.tsx` bunu “Kurtarılabilir” ve kalanı “Kısmen Üzerine Yazılmış” yazar. CoC: GENERIC_READ + “imajlama dışında yazma yok” — `FILE_SHARE_WRITE`, wipe IPC, recover write.
+- Yol: `byteback_db.h` `0=Intact`; NTFS `IN_USE→1`; SQL `SUM(status=0)` `deletedFiles`; `ReportGenerator.tsx` bunu “Kurtarılabilir” ve kalanı “Kısmen Üzerine Yazılmış” yazar. CoC: GENERIC_READ + “imajlama dışında yazma yok” — `FILE_SHARE_WRITE`, wipe IPC, recover write.
 - Zarar: SHA-256’lı HTML/PDF uydurma overwrite istatistiği ve sahte gözetim zinciri.
 
 ### AR-012 | Resident NTFS / boş `runs` → MFT kaydı dump

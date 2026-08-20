@@ -1,4 +1,4 @@
-# Wolf Recovery — Examiner Honesty & Surface Design
+# Byteback — Examiner Honesty & Surface Design
 
 **Date:** 2026-08-19  
 **Status:** Draft (audit-driven; implement after plan approval)  

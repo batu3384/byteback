@@ -1,0 +1,72 @@
+#pragma once
+
+#include "byteback_db.h"
+#include "byteback_io.h"
+#include <string>
+#include <functional>
+#include <atomic>
+#include <vector>
+#include <memory>
+
+namespace byteback {
+
+class VirtualRaid;
+
+struct RecoveryResult {
+    bool success = false;
+    std::string destPath;
+    uint64_t bytesRecovered = 0;
+    std::string error;
+    std::string md5Hash;
+    bool zeroFilled = false; // at least one read was padded/failed
+    int validationScore = -1; // -1 = not checked; 0..100 when carve validation ran
+    std::string validationError;
+};
+
+inline bool countsAsRecovered(const RecoveryResult& r) {
+    return r.success && !r.zeroFilled;
+}
+
+bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
+                       FileRecord& out, std::string& err);
+
+bool isDiscoveryOnlySource(const std::string& source);
+
+// Open PhysicalDrive, RAID, or the VSS volume named on the record. False = err set.
+bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
+                         std::shared_ptr<VirtualRaid> raid, std::string& err);
+
+// Copy AES-XTS FVEK onto a recover reader. Skip VSS — Windows already presents plaintext.
+void applyBoundFvek(DiskReader& dest, const DiskReader& src, const FileRecord& rec);
+
+struct BatchRecoverySummary {
+    int succeeded = 0;
+    int failed = 0;
+    std::vector<RecoveryResult> results;
+};
+
+class RecoveryEngine {
+public:
+    RecoveryEngine();
+    ~RecoveryEngine();
+
+    using ProgressCallback = std::function<void(uint64_t bytesWritten, uint64_t totalBytes)>;
+
+    // Recover a single file from disk using its data runs (cluster chain)
+    RecoveryResult recoverFile(DiskReader& reader, const FileRecord& record, 
+                               const std::string& destDir, ProgressCallback onProgress = nullptr,
+                               std::atomic<bool>* isRunning = nullptr);
+
+    // Recover a carved file (contiguous sectors, no cluster chain)
+    RecoveryResult recoverCarvedFile(DiskReader& reader, const FileRecord& record,
+                                     const std::string& destDir, ProgressCallback onProgress = nullptr,
+                                     std::atomic<bool>* isRunning = nullptr);
+
+    BatchRecoverySummary recoverFilesBatch(DiskReader& reader,
+                                           const std::vector<FileRecord>& records,
+                                           const std::string& destDir,
+                                           ProgressCallback onProgress = nullptr,
+                                           std::atomic<bool>* isRunning = nullptr);
+};
+
+} // namespace byteback

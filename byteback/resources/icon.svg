@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Byteback product mark: sector grid + returning byte arrow. -->
+  <rect width="128" height="128" rx="24" fill="#09090B"/>
+  <g stroke="#27272A" stroke-width="2" fill="none" opacity="0.9">
+    <path d="M14 32h100M14 64h100M14 96h100"/>
+    <path d="M32 14v100M64 14v100M96 14v100"/>
+  </g>
+  <rect x="28" y="40" width="28" height="20" rx="3" fill="#FAFAFA"/>
+  <rect x="62" y="40" width="38" height="20" rx="3" fill="#3B82F6"/>
+  <path stroke="#FAFAFA" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"
+        d="M40 78h48M72 66l16 12-16 12"/>
+</svg>
