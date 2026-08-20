@@ -64,4 +64,53 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
     return out;
 }
 
+BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
+                                size_t headerOffset, size_t footerOffset,
+                                size_t maxGapBytes,
+                                const std::function<int(const uint8_t*, size_t)>& validator,
+                                size_t stepBytes, size_t attemptBudget) {
+    BgcResult out;
+    if (!disk || !validator || headerOffset >= diskSize || footerOffset <= headerOffset) {
+        return out;
+    }
+    size_t span = footerOffset - headerOffset;
+    if (span < 8) return out;
+    size_t gapLimit = maxGapBytes ? maxGapBytes : (64 * 1024);
+    if (gapLimit > span) gapLimit = span;
+    if (stepBytes == 0) stepBytes = 1;
+    if (stepBytes > span) stepBytes = span;
+
+    std::vector<uint8_t> reassembled;
+    reassembled.reserve(span);
+    size_t attempts = 0;
+
+    for (size_t g1Start = headerOffset + stepBytes; g1Start < footerOffset && attempts < attemptBudget;
+         g1Start += stepBytes) {
+        for (size_t g1Len = stepBytes; g1Len <= gapLimit && g1Start + g1Len < footerOffset; g1Len += stepBytes) {
+            size_t afterG1 = g1Start + g1Len;
+            for (size_t g2Start = afterG1 + stepBytes; g2Start < footerOffset && attempts < attemptBudget;
+                 g2Start += stepBytes) {
+                for (size_t g2Len = stepBytes; g2Len <= gapLimit && g2Start + g2Len <= footerOffset;
+                     g2Len += stepBytes) {
+                    ++attempts;
+                    reassembled.clear();
+                    reassembled.insert(reassembled.end(), disk + headerOffset, disk + g1Start);
+                    reassembled.insert(reassembled.end(), disk + afterG1, disk + g2Start);
+                    reassembled.insert(reassembled.end(), disk + (g2Start + g2Len), disk + footerOffset);
+                    int score = validator(reassembled.data(), reassembled.size());
+                    if (score >= 85) {
+                        out.found = true;
+                        out.frag1Len = g1Start - headerOffset;
+                        out.gapLen = g1Len;
+                        out.frag2Len = g2Start - afterG1;
+                        out.gap2Len = g2Len;
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace wolf

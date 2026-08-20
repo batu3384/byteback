@@ -1,6 +1,7 @@
 #include "wolf_recovery.h"
 #include "wolf_memory.h"
 #include "recovery/path_util.h"
+#include "recovery/validation.h"
 #include "crypto/wolf_md5.h"
 #include "fs/ntfs_util.h"
 #include "fs/vss_scanner.h"
@@ -31,7 +32,8 @@ bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const s
     return true;
 }
 
-void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::string& md5) {
+void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::string& md5,
+                        const FileRecord& record) {
     result.bytesRecovered = bytes;
     result.md5Hash = md5;
     if (result.zeroFilled) {
@@ -40,6 +42,7 @@ void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::strin
         return;
     }
     result.success = true;
+    applyPostRecoveryValidation(result, record);
 }
 
 } // namespace
@@ -49,7 +52,9 @@ bool isDiscoveryOnlySource(const std::string& source) {
            source == "apfs_file" || source == "bitlocker_detect" ||
            source == "bitlocker_fve" || source == "vss_unbound" ||
            source == "vss_bind" || source == "vss_snapshot" ||
-           source == "hfs_limit";
+           source == "hfs_limit" || source == "usn_journal" ||
+           source == "ntfs_logfile" || source == "ntfs_logfile_restart" ||
+           source == "carver_duplicate";
 }
 
 bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
@@ -138,6 +143,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         result.bytesRecovered = n;
         result.md5Hash = md5ctx.finalHex();
         if (onProgress) onProgress(n, n);
+        applyPostRecoveryValidation(result, record);
         return result;
     }
 
@@ -222,7 +228,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                               static_cast<std::streamsize>(writeLen));
                 md5ctx.update(inflated.data(), static_cast<size_t>(writeLen));
                 outFile.close();
-                finishRecoverWrite(result, writeLen, md5ctx.finalHex());
+                finishRecoverWrite(result, writeLen, md5ctx.finalHex(), record);
                 return result;
             }
             // Decompression failed: fall through to raw recovery so the user
@@ -295,7 +301,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     }
 
     outFile.close();
-    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex());
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record);
     return result;
 }
 
@@ -368,7 +374,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     }
 
     outFile.close();
-    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex());
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record);
     return result;
 }
 

@@ -68,6 +68,36 @@ SplitImage buildSplitJpeg(size_t splitAt, size_t gapLen) {
     s.expectedGapLocal = splitAt;
     return s;
 }
+
+SplitImage buildTriSplitJpeg(size_t split1, size_t gap1Len, size_t split2, size_t gap2Len) {
+    std::vector<uint8_t> jpeg;
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD8);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xDB);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0x03);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xDA);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0x02);
+    for (int i = 0; i < 20; ++i) jpeg.push_back(0x00);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD9);
+
+    SplitImage s;
+    s.headerOff = 24;
+    s.disk.resize(s.headerOff, 0xCC);
+    s.disk.insert(s.disk.end(), jpeg.begin(), jpeg.begin() + split1);
+    s.disk.insert(s.disk.end(), gap1Len, 0xBB);
+    s.disk.insert(s.disk.end(), jpeg.begin() + split1, jpeg.begin() + split2);
+    s.disk.insert(s.disk.end(), gap2Len, 0xDD);
+    s.disk.insert(s.disk.end(), jpeg.begin() + split2, jpeg.end());
+    s.footerOff = s.disk.size();
+    s.expectedGapLocal = split1;
+    return s;
+}
 } // namespace
 
 TEST(Bgc, FindsGapInSplitJpeg) {
@@ -110,4 +140,16 @@ TEST(Bgc, HonorsMaxGapAbove64KiB) {
                                        s.headerOff, s.footerOff,
                                        /*maxGap=*/128 * 1024, validateJpeg);
     EXPECT_TRUE(r.found);
+}
+
+TEST(Bgc, FindsTriFragmentGapInSplitJpeg) {
+    auto s = buildTriSplitJpeg(/*split1=*/6, /*gap1Len=*/8, /*split2=*/14, /*gap2Len=*/6);
+    BgcResult r = triFragmentedGapCarve(s.disk.data(), s.disk.size(),
+                                        s.headerOff, s.footerOff,
+                                        /*maxGap=*/64, validateJpeg, 1, 500000);
+    EXPECT_TRUE(r.found);
+    EXPECT_GT(r.frag1Len, 0u);
+    EXPECT_GT(r.gapLen, 0u);
+    EXPECT_GT(r.frag2Len, 0u);
+    EXPECT_GT(r.gap2Len, 0u);
 }

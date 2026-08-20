@@ -1,6 +1,7 @@
 #include "wolf_recovery.h"
 #include "wolf_io.h"
 #include "wolf_db.h"
+#include "carver/file_validators.h"
 #include <gtest/gtest.h>
 #include <cstring>
 #include <filesystem>
@@ -21,6 +22,51 @@ protected:
 
     std::string dest_;
 };
+
+namespace {
+
+std::vector<uint8_t> minimalJpegBytes() {
+    std::vector<uint8_t> jpeg;
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD8);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xDB);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0x03);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xDA);
+    jpeg.push_back(0x00);
+    jpeg.push_back(0x02);
+    for (int i = 0; i < 20; ++i) jpeg.push_back(0x00);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD9);
+    return jpeg;
+}
+
+} // namespace
+
+TEST_F(RecoveryEngineTest, CarverSourceGetsValidationScore) {
+    const auto jpeg = minimalJpegBytes();
+    ASSERT_GE(carver::validateJpeg(jpeg.data(), jpeg.size()), 85);
+
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512, jpeg.data(), jpeg.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "photo.jpg";
+    rec.sizeBytes = static_cast<int64_t>(jpeg.size());
+    rec.startSector = 1;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    EXPECT_GE(result.validationScore, 85);
+}
 
 TEST_F(RecoveryEngineTest, CarvedContiguousFile) {
     std::vector<uint8_t> img(512 * 10);
