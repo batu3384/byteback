@@ -132,17 +132,16 @@ Sonuçlar makineye bağlıdır; tablo dürüst referans içindir, pazarlama iddi
 
 ## GitHub
 
-Repo henüz remote'suz. Tek seferlik kurulum:
+Repo: **https://github.com/batu3384/byteback** (private)
+
+CI workflow (`.github/workflows/build.yml`) yerelde hazır. Push için ek scope gerekir:
 
 ```powershell
-gh auth login -h github.com -p https -w
-powershell -ExecutionPolicy Bypass -File scripts/setup-github.ps1
+gh auth refresh -h github.com -s workflow
+git add .github/workflows/build.yml
+git commit -m "ci: add GitHub Actions workflow"
+git push
 ```
-
-Bu `github.com/<hesabın>/byteback` private repo oluşturur ve `main` push eder.
-
-Eski `Desktop\disk` klasörü kaldıysa Cursor kapalıyken silin veya
-`scripts/finalize-byteback.ps1` çalıştırın (yalnızca hâlâ `disk` adındaysa rename eder).
 
 ## Lisans
 MIT License
