@@ -285,6 +285,86 @@ struct FAT_BPB {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct ExFAT_BPB {
+    uint8_t  jmp[3];
+    char     oemName[8];
+    uint8_t  reserved[53];
+    uint64_t partitionOffset;
+    uint64_t volumeLength;
+    uint32_t fatOffset;
+    uint32_t fatLength;
+    uint32_t clusterHeapOffset;
+    uint32_t clusterCount;
+    uint32_t rootDirectoryCluster;
+    uint32_t volumeSerialNumber;
+    uint16_t fileSystemRevision;
+    uint16_t volumeFlags;
+    uint8_t  bytesPerSectorShift;
+    uint8_t  sectorsPerClusterShift;
+    uint8_t  numFats;
+    uint8_t  driveSelect;
+    uint8_t  percentInUse;
+    uint8_t  reserved2[7];
+};
+#pragma pack(pop)
+
+std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volOffsetBytes,
+                                               uint64_t /*volSizeBytes*/) {
+    std::vector<SectorRange> out;
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    const uint64_t partitionOffset = volOffsetBytes / sectorSize;
+
+    std::vector<uint8_t> buffer(sectorSize);
+    if (!reader.readSectors(volOffsetBytes, sectorSize, buffer.data()).success) return out;
+    if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) != 0) return out;
+
+    const auto* bpb = reinterpret_cast<const ExFAT_BPB*>(buffer.data());
+    const uint32_t bytesPerSector = 1u << bpb->bytesPerSectorShift;
+    if (bytesPerSector != sectorSize) return out;
+    const uint32_t sectorsPerCluster = 1u << bpb->sectorsPerClusterShift;
+    if (bpb->clusterCount == 0 || bpb->clusterHeapOffset == 0) return out;
+
+    const uint64_t fatStartSector = partitionOffset + bpb->fatOffset;
+    const uint64_t dataStartSector = partitionOffset + bpb->clusterHeapOffset;
+
+    auto readFatEntry = [&](uint32_t cluster) -> uint32_t {
+        if (cluster < 2) return 0xFFFFFFFF;
+        const uint32_t entryIndex = cluster;
+        const uint64_t fatOffsetBytes = fatStartSector * bytesPerSector + static_cast<uint64_t>(entryIndex) * 4;
+        const uint64_t sectorOff = (fatOffsetBytes / bytesPerSector) * bytesPerSector;
+        const uint32_t inSector = static_cast<uint32_t>(fatOffsetBytes % bytesPerSector);
+        std::vector<uint8_t> sec(bytesPerSector);
+        if (!reader.readSectors(sectorOff, bytesPerSector, sec.data()).success) return 0xFFFFFFFF;
+        if (inSector + 4 > bytesPerSector) return 0xFFFFFFFF;
+        return static_cast<uint32_t>(sec[inSector] | (sec[inSector + 1] << 8) |
+                                     (sec[inSector + 2] << 16) | (sec[inSector + 3] << 24));
+    };
+
+    uint64_t runStartCluster = 0;
+    uint64_t runLen = 0;
+    const uint32_t lastCluster = bpb->clusterCount + 1;
+    for (uint32_t cluster = 2; cluster <= lastCluster; ++cluster) {
+        const uint32_t entry = readFatEntry(cluster);
+        const bool free = (entry == 0);
+        if (free) {
+            if (runLen == 0) runStartCluster = cluster;
+            runLen++;
+        } else if (runLen > 0) {
+            pushRange(out, dataStartSector + (runStartCluster - 2) * sectorsPerCluster,
+                      runLen * sectorsPerCluster);
+            runLen = 0;
+        }
+    }
+    if (runLen > 0) {
+        pushRange(out, dataStartSector + (runStartCluster - 2) * sectorsPerCluster,
+                  runLen * sectorsPerCluster);
+    }
+    mergeSectorRangesInPlace(out);
+    return out;
+}
+
 std::vector<SectorRange> buildFatUnallocated(DiskReader& reader, uint64_t volOffsetBytes,
                                              uint64_t /*volSizeBytes*/) {
     std::vector<SectorRange> out;
@@ -294,7 +374,7 @@ std::vector<SectorRange> buildFatUnallocated(DiskReader& reader, uint64_t volOff
 
     std::vector<uint8_t> buffer(sectorSize);
     if (!reader.readSectors(volOffsetBytes, sectorSize, buffer.data()).success) return out;
-    if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) == 0) return out; // ponytail: exFAT later
+    if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) == 0) return out;
 
     const auto* bpb = reinterpret_cast<const FAT_BPB*>(buffer.data());
     uint16_t bps = bpb->bytesPerSector;
@@ -381,6 +461,7 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
         case VolumeFsKind::Fat:
             return buildFatUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
         case VolumeFsKind::ExFat:
+            return buildExFatUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
         case VolumeFsKind::Refs:
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:
@@ -395,7 +476,6 @@ namespace {
 
 bool unallocatedMapUnsupported(VolumeFsKind kind) {
     switch (kind) {
-        case VolumeFsKind::ExFat:
         case VolumeFsKind::Refs:
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:

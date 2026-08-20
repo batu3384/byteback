@@ -208,4 +208,114 @@ inline std::vector<uint8_t> buildExt4Volume() {
     return img;
 }
 
+inline void writeLe64(std::vector<uint8_t>& img, size_t off, uint64_t v) {
+    for (int i = 0; i < 8; ++i) img[off + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
+}
+
+// NTFS superfloppy: boot $MFT walk, deleted resident doc.txt ("hello").
+inline std::vector<uint8_t> buildNtfsDeletedResidentVolume() {
+    constexpr uint32_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, ss);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 1024);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x00); // deleted (not in use)
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "doc.txt";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    writeLe64(img, attr + 56, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+    return img;
+}
+
+// exFAT: clusters 2-3 allocated, cluster 4+ free for unallocated carve.
+inline std::vector<uint8_t> buildExFatUnallocatedVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t fatOff = 24;
+    constexpr uint32_t heapOff = 25;
+    constexpr uint32_t totalSectors = 64;
+    std::vector<uint8_t> img(totalSectors * ss, 0);
+
+    std::memcpy(img.data() + 3, "EXFAT   ", 8);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+    img[108] = 9;
+    img[109] = 0;
+    img[110] = 1;
+    writeLe32(img, 80, fatOff);
+    writeLe32(img, 84, 1);
+    writeLe32(img, 88, heapOff);
+    writeLe32(img, 92, 8);
+    writeLe32(img, 96, 2);
+
+    writeLe32(img, fatOff * ss + 8, 0xFFFFFFFF);
+    writeLe32(img, fatOff * ss + 12, 0xFFFFFFFF);
+
+    const uint16_t chk = 0xBEEF;
+    size_t de = heapOff * ss;
+    img[de] = 0x85;
+    img[de + 1] = 2;
+    writeLe16(img, de + 2, chk);
+    de += 32;
+    img[de] = 0xC5;
+    writeLe16(img, de + 2, chk);
+    img[de + 6] = 8;
+    writeLe32(img, de + 20, 3);
+    writeLe64(img, de + 32, 17);
+    de += 32;
+    img[de] = 0xC1;
+    writeLe16(img, de + 2, chk);
+    static const uint8_t lostName[] = {'L',0,'O',0,'S',0,'T',0,'.',0,'D',0,'A',0,'T',0};
+    std::memcpy(img.data() + de + 4, lostName, sizeof(lostName));
+    std::memcpy(img.data() + (heapOff + 1) * ss, "recovered!", 10);
+    return img;
+}
+
 } // namespace wolf::testfix

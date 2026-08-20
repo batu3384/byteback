@@ -45,3 +45,25 @@ TEST(DedupIndex, KeepsDistinctCarveWhenNoOverlap) {
     EXPECT_FALSE(idx.markDuplicate(carve));
     EXPECT_EQ(carve.source, "carver");
 }
+
+TEST(DedupIndex, LoadFromRecordsHydratesResumeDedup) {
+    DedupIndex idx;
+    FileRecord mft;
+    mft.source = "ntfs_mft";
+    mft.startSector = 200;
+    mft.endSector = 210;
+    mft.sizeBytes = 4096;
+    mft.confidence = 90;
+    mft.path = "/Users/photo.jpg";
+    mft.name = "photo.jpg";
+    idx.loadFromRecords({mft});
+
+    FileRecord carve;
+    carve.source = "carver";
+    carve.startSector = 205;
+    carve.endSector = 212;
+    carve.sizeBytes = 4096;
+    carve.confidence = 75;
+    EXPECT_TRUE(idx.markDuplicate(carve));
+    EXPECT_EQ(carve.source, "carver_duplicate");
+}

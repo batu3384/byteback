@@ -54,6 +54,7 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
         return Napi::Array::New(env, 0);
     }
+    if (bdata->diskOpInProgress()) return Napi::Array::New(env, 0);
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     wolf::DiskReader& reader = bdata->engine.getDiskReader();

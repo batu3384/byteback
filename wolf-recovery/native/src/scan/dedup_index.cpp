@@ -3,7 +3,10 @@
 
 namespace wolf {
 
-void DedupIndex::clear() { entries_.clear(); }
+void DedupIndex::clear() {
+    entries_.clear();
+    sorted_ = true;
+}
 
 bool DedupIndex::isMetadataSource(const std::string& source) {
     if (source.empty()) return false;
@@ -42,23 +45,43 @@ void DedupIndex::observe(const FileRecord& fr) {
     e.path = fr.path;
     e.name = fr.name;
     entries_.push_back(std::move(e));
+    sorted_ = false;
 }
 
-bool DedupIndex::markDuplicate(FileRecord& fr) const {
+void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
+    for (const auto& fr : records) observe(fr);
+    ensureSorted();
+}
+
+void DedupIndex::ensureSorted() {
+    if (sorted_) return;
+    std::sort(entries_.begin(), entries_.end(),
+              [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
+    sorted_ = true;
+}
+
+bool DedupIndex::markDuplicate(FileRecord& fr) {
     if (!isCarveSource(fr.source)) return false;
+    ensureSorted();
+
     uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
     uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
 
-    for (const auto& e : entries_) {
-        if (!sectorsOverlap(e.startSector, e.endSector, fr.startSector, carveEnd)) continue;
-        uint64_t overlap = overlapSectorCount(e.startSector, e.endSector, fr.startSector, carveEnd);
-        uint64_t metaSpan = e.endSector >= e.startSector ? (e.endSector - e.startSector + 1) : 1;
+    auto it = std::lower_bound(
+        entries_.begin(), entries_.end(), fr.startSector,
+        [](const Entry& e, uint64_t sector) { return e.endSector < sector; });
+
+    for (; it != entries_.end(); ++it) {
+        if (it->startSector > carveEnd) break;
+        if (!sectorsOverlap(it->startSector, it->endSector, fr.startSector, carveEnd)) continue;
+        uint64_t overlap = overlapSectorCount(it->startSector, it->endSector, fr.startSector, carveEnd);
+        uint64_t metaSpan = it->endSector >= it->startSector ? (it->endSector - it->startSector + 1) : 1;
         const uint64_t minSpan = std::max<uint64_t>(1, std::min(carveSpan, metaSpan));
         if (overlap * 2 < minSpan) continue;
-        if (e.confidence + 5 < fr.confidence) continue;
+        if (it->confidence + 5 < fr.confidence) continue;
 
         fr.source = "carver_duplicate";
-        fr.path = "/dup_of" + (e.path.empty() ? e.name : e.path);
+        fr.path = "/dup_of" + (it->path.empty() ? it->name : it->path);
         fr.confidence = std::min(fr.confidence, 35);
         return true;
     }

@@ -122,6 +122,7 @@ Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info) {
     if (!bdata || info.Length() < 1 || !info[0].IsString()) {
         return Napi::Boolean::New(env, false);
     }
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
     std::string hex = info[0].As<Napi::String>().Utf8Value();
     wolf::DiskReader& reader = bdata->engine.getDiskReader();
     if (hex.empty()) {
@@ -144,6 +145,7 @@ Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info) {
         Napi::TypeError::New(env, "Expected driveIndex, recoveryPassword").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     std::string password = info[1].As<Napi::String>().Utf8Value();
     wolf::DiskReader& reader = bdata->engine.getDiskReader();
@@ -172,6 +174,7 @@ Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info) {
         Napi::TypeError::New(env, "Expected driveIndex, password").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     std::string password = info[1].As<Napi::String>().Utf8Value();
     wolf::DiskReader& reader = bdata->engine.getDiskReader();

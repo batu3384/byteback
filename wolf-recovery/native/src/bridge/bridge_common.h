@@ -85,7 +85,17 @@ struct BridgeData {
         int prev = heavyOps.load();
         while (prev > 0 && !heavyOps.compare_exchange_weak(prev, prev - 1)) {}
     }
+
+    bool diskOpInProgress() const { return heavyOps.load(std::memory_order_acquire) > 0; }
 };
+
+inline bool throwIfSharedReaderBusy(Napi::Env env, BridgeData* bdata) {
+    if (bdata && bdata->diskOpInProgress()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return true;
+    }
+    return false;
+}
 
 // bridge_drives.cpp — drives / partitions / raw reads / SMART
 Napi::Value GetVersion(const Napi::CallbackInfo& info);

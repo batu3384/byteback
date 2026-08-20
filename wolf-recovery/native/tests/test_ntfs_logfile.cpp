@@ -51,12 +51,13 @@ std::vector<uint8_t> buildLogfileHintDisk() {
     std::vector<uint8_t> logPayload(128, 0);
     std::memcpy(logPayload.data(), "RCRD", 4);
     const uint16_t clientOff = 32;
-    const uint16_t clientLen = 18;
+    const uint16_t clientLen = 26;
     writeLe16(logPayload, 0x10, clientLen);
     writeLe16(logPayload, 0x12, clientOff);
+    writeLe64(logPayload, clientOff, 5); // MFT ref immediately before UTF-16 name
     const wchar_t* name = L"lost.doc";
     for (size_t i = 0; name[i] != 0; ++i)
-        writeLe16(logPayload, clientOff + i * 2, static_cast<uint16_t>(name[i]));
+        writeLe16(logPayload, clientOff + 8 + i * 2, static_cast<uint16_t>(name[i]));
 
     size_t attr = logMft + 0x38;
     writeLe32(img, attr + 0, 0x80);
@@ -107,6 +108,12 @@ TEST(NtfsLogfile, CollectorStoresHintsWithoutFileCallback) {
     EXPECT_EQ(fileCallbacks, 0);
     EXPECT_GE(collector.size(), 1u);
     EXPECT_TRUE(collector.findByName("lost.doc"));
+    uint64_t mftRef = 0;
+    ASSERT_TRUE(collector.findByName("lost.doc", &mftRef));
+    EXPECT_EQ(mftRef, 5u);
+    std::string name;
+    EXPECT_TRUE(collector.findByMftRef(mftRef, &name));
+    EXPECT_EQ(name, "lost.doc");
 }
 
 TEST(NtfsLogfile, RestartPageEmitsLsn) {
