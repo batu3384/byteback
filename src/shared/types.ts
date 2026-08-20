@@ -90,8 +90,8 @@ declare global {
       getAuditLog: (maxLines?: number) => Promise<string[]>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
-      pickAndWipeFile: () => Promise<boolean>
-      pickAndWipeFreeSpace: () => Promise<boolean>
+      pickAndWipeFile: () => Promise<IpcOkResult>
+      pickAndWipeFreeSpace: () => Promise<IpcOkResult>
       wipePhysicalDrive: (driveIndex: number, typedSerial: string, confirmPhrase: string) => Promise<IpcOkResult>
       setBitLockerFvek: (hex: string) => Promise<boolean>
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>

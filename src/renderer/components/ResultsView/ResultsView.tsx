@@ -4,7 +4,16 @@ import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download,
 import type { FileRecord, FilePreviewResult } from '../../../shared/ipc-contract'
 import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
-import { formatPreviewHex, previewDataUrl } from '../../../shared/preview-utils'
+import ResultsPreviewPanel from './ResultsPreviewPanel'
+import {
+  qualityHint,
+  getExtension,
+  getFileType,
+  formatSize,
+  buildTree,
+  type MappedFile,
+  type TreeNode,
+} from './results-view-utils'
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -33,17 +42,6 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const [previewTargetId, setPreviewTargetId] = useState<number | null>(null)
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
-
-  const qualityHint = (raw?: FileRecord): string => {
-    if (!raw) return '—'
-    if (raw.source === 'carver' || raw.source === 'carver_bgc') {
-      const c = raw.confidence ?? 0
-      if (c >= 85) return 'Muhtemelen tam'
-      if (c >= 60) return 'Şüpheli'
-      return 'Zayıf'
-    }
-    return '—'
-  }
 
   const loadPreview = async (fileId: number) => {
     if (effectiveScanId <= 0 || !window.api?.readFilePreview) {
@@ -262,7 +260,6 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     previewTargetId != null
       ? recordById.get(previewTargetId) ?? sourceFiles.find((f) => f.id === previewTargetId)
       : undefined
-  const previewImgUrl = preview ? previewDataUrl(preview) : null
 
   const toggleSelection = (id: number) => {
     const newSel = new Set(selectedFiles)
@@ -306,28 +303,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
   }
 
-  const getExtension = (filename: string) => {
-    const parts = filename.split('.')
-    return parts.length > 1 ? parts.pop()?.toLowerCase() || '' : ''
-  }
-
-  const getFileType = (ext: string) => {
-    if (['jpg', 'png', 'gif', 'jpeg', 'bmp', 'webp', 'heic', 'tiff', 'svg'].includes(ext)) return 'img'
-    if (['doc', 'docx', 'pdf', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'doc'
-    if (['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv'].includes(ext)) return 'video'
-    if (['mp3', 'wav', 'flac', 'ogg', 'aac'].includes(ext)) return 'audio'
-    if (['zip', 'rar', '7z', 'gz', 'tar', 'iso'].includes(ext)) return 'archive'
-    return 'other'
-  }
-
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-  }
-
-  const mappedFiles = sourceFiles.map((f) => ({
+  const mappedFiles: MappedFile[] = sourceFiles.map((f) => ({
     id: f.id,
     name: f.name,
     rawPath: typeof f.path === 'string' ? f.path : '',
@@ -344,30 +320,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     return filter === 'all' || f.type === filter
   })
 
-  interface TreeNode {
-    name: string
-    path: string
-    dirs: Map<string, TreeNode>
-    files: typeof filteredFiles
-  }
-  const buildTree = (): TreeNode => {
-    const root: TreeNode = { name: '/', path: '', dirs: new Map(), files: [] }
-    for (const f of filteredFiles) {
-      const raw = (f.rawPath || f.name).replace(/\\/g, '/').replace(/^\/+/, '')
-      const parts = raw.split('/').filter(Boolean)
-      let node = root
-      const dirParts = parts.length > 1 && parts[parts.length - 1] === f.name ? parts.slice(0, -1) : parts
-      for (const part of dirParts) {
-        if (!node.dirs.has(part)) {
-          node.dirs.set(part, { name: part, path: (node.path ? node.path + '/' : '') + part, dirs: new Map(), files: [] })
-        }
-        node = node.dirs.get(part)!
-      }
-      node.files.push(f)
-    }
-    return root
-  }
-  const treeRoot = buildTree()
+  const treeRoot = buildTree(filteredFiles)
 
   const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode[] => {
     const out: React.ReactNode[] = []
@@ -423,7 +376,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       case 'doc': return <FileText size={18} color="var(--success-green)" />
       case 'video': return <FileVideo size={18} color="var(--alert-red)" />
       case 'audio': return <FileAudio size={18} color="var(--warning-yellow)" />
-      case 'archive': return <FileArchive size={18} color="#b700ff" />
+      case 'archive': return <FileArchive size={18} color="var(--accent-blue)" />
       default: return <File size={18} color="var(--text-muted)" />
     }
   }
@@ -473,43 +426,12 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         </div>
       )}
       {(preview || previewLoading) && (
-        <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <strong>Önizleme{previewRecord ? `: ${previewRecord.name}` : ''}</strong>
-            <button className="btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setPreview(null); setPreviewTargetId(null) }}>
-              Kapat
-            </button>
-          </div>
-          {previewLoading && !preview ? (
-            <p style={{ color: 'var(--text-muted)' }}>Okunuyor...</p>
-          ) : preview?.success ? (
-            <>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '8px' }}>
-                Tür: {preview.kind ?? 'binary'} · {preview.data?.length ?? 0} bayt
-              </p>
-              {previewImgUrl ? (
-                <img
-                  src={previewImgUrl}
-                  alt={previewRecord?.name ?? 'önizleme'}
-                  style={{ maxWidth: '100%', maxHeight: '240px', objectFit: 'contain', borderRadius: '4px' }}
-                />
-              ) : preview.kind === 'text' && preview.data ? (
-                <pre style={{ fontFamily: 'monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
-                  {new TextDecoder('utf-8', { fatal: false }).decode(preview.data.slice(0, 4096))}
-                </pre>
-              ) : preview.kind === 'pdf' ? (
-                <p style={{ color: 'var(--text-muted)' }}>PDF — yapısal önizleme yok; hex dökümü aşağıda.</p>
-              ) : null}
-              {preview.data && preview.data.length > 0 && preview.kind !== 'text' ? (
-                <pre style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '12px', maxHeight: '160px', overflow: 'auto' }}>
-                  {formatPreviewHex(preview.data)}
-                </pre>
-              ) : null}
-            </>
-          ) : (
-            <p style={{ color: 'var(--alert-red)' }}>{preview?.error ?? 'Önizleme alınamadı.'}</p>
-          )}
-        </div>
+        <ResultsPreviewPanel
+          preview={preview}
+          previewLoading={previewLoading}
+          previewRecord={previewRecord}
+          onClose={() => { setPreview(null); setPreviewTargetId(null) }}
+        />
       )}
       {hfsTruncated && (
         <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
