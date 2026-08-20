@@ -192,6 +192,9 @@ function ScanView({
           HFS+ katalog 25.000 dosyada kesildi. Kalan kayıtlar bu taramada yok; sentinel satır kaynak sütununda görünür.
         </div>
       )}
+      <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+        VSS volume serial ile bağlanır. APFS NXSB/fs_oid + katalog drec. BitLocker FVE parse (şifre kırma yok). E01 çok segment. Boş alan wipe klasör seçerek.
+      </div>
       {filesFound.length >= 5000 && (
         <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
           Canlı liste 5000 kayıt tavanında. Tam envanter SQLite sayfasındadır.

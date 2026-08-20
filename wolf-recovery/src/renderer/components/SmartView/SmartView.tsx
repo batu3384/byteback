@@ -85,7 +85,7 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
             {isHealthy && !hasWarnings ? <ShieldCheck size={32} color="var(--success-green)" /> : <AlertTriangle size={32} color={hasWarnings ? 'var(--warning-yellow)' : 'var(--alert-red)'} />}
             <div style={{ flex: 1 }}>
               <h3 style={{ fontSize: '1.2rem', marginBottom: '4px' }}>
-                {isHealthy && !hasWarnings ? 'KALİBRASYONSUZ triyaj: eşik altında' : hasWarnings ? 'Uyarı: Potansiyel Risk' : 'Kritik: Arıza Riski'}
+                {isHealthy && !hasWarnings ? 'ATA ACS: defect yok' : hasWarnings ? 'Uyarı: Potansiyel Risk' : 'Kritik: Arıza Riski'}
               </h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Model: {smartData.driveModel || 'Bilinmiyor'}
@@ -99,7 +99,7 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
           </div>
           {!smartData.isNvme && (
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '-8px' }}>
-              ATA sağlık skoru KALİBRASYONSUZ heuristic (η=500, β=1.5). Ömür tahmini değil; triyaj eşiği.
+              ATA: SMART 0x05 realloc + 0xC5 pending (ACS / Backblaze). İkisi birden Bad; biri Warning. Ömür tahmini değil.
             </p>
           )}
 

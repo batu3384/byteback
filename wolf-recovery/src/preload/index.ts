@@ -70,13 +70,15 @@ contextBridge.exposeInMainWorld('api', {
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
 
   pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),
+  pickAndWipeFreeSpace: () => ipcRenderer.invoke('pick-and-wipe-freespace'),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
+  failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),
   getRaidState: () => ipcRenderer.invoke('get-raid-state'),
-  recoverFile: (driveIndex: number, fileRecord: any, destDir: string, scanId?: number) =>
-    ipcRenderer.invoke('recover-file', driveIndex, fileRecord, destDir, scanId),
-  recoverFilesBatch: (driveIndex: number, fileRecords: any[], destDir: string, scanId?: number) =>
-    ipcRenderer.invoke('recover-files-batch', driveIndex, fileRecords, destDir, scanId),
+  recoverFile: (driveIndex: number, fileId: number, destDir: string, scanId: number) =>
+    ipcRenderer.invoke('recover-file', driveIndex, fileId, destDir, scanId),
+  recoverFilesBatch: (driveIndex: number, fileIds: number[], destDir: string, scanId: number) =>
+    ipcRenderer.invoke('recover-files-batch', driveIndex, fileIds, destDir, scanId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),
   pickSaveImage: (format: 'raw' | 'ewf') => ipcRenderer.invoke('pick-save-image', format),
   getCaseInfo: () => ipcRenderer.invoke('get-case-info'),

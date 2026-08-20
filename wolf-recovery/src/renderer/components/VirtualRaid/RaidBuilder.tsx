@@ -17,6 +17,8 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const [raidArray, setRaidArray] = useState<Disk[]>([]);
   const [raidType, setRaidType] = useState<string>('RAID 5');
   const [isBuilding, setIsBuilding] = useState(false);
+  const [assembled, setAssembled] = useState(false);
+  const [failedSlots, setFailedSlots] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (window.api && window.api.listDrives) {
@@ -72,10 +74,13 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
       const res = await window.api.reconstructRaid(driveIndices, raidLevel);
       setIsBuilding(false);
       if (res && res.success) {
+        setAssembled(true);
+        setFailedSlots(new Set());
         const capGb = res.capacity ? (res.capacity / (1024 ** 3)).toFixed(2) : '?';
         alert(`${raidType} dizisi başarıyla oluşturuldu!\n\nKapasite: ${capGb} GB\nDisk sayısı: ${res.numDisks}`);
         if (onStartRaidScan) onStartRaidScan('quick');
       } else {
+        setAssembled(false);
         const why = res && res.error ? `\n\nHata: ${res.error}` : '';
         alert(`${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`);
       }
@@ -188,6 +193,21 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
                   <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)' }}>{disk.capacity}</div>
                 </div>
+                {assembled && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'rgba(255,255,255,0.85)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={failedSlots.has(index)}
+                      disabled={failedSlots.has(index)}
+                      onChange={async () => {
+                        if (!window.api?.failRaidDisk) return;
+                        const ok = await window.api.failRaidDisk(index);
+                        if (ok) setFailedSlots(prev => new Set(prev).add(index));
+                      }}
+                    />
+                    Bozuk üye
+                  </label>
+                )}
               </div>
             ))}
             {raidArray.length === 0 && (
@@ -218,7 +238,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
               )}
             </button>
             <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
-              En az 2 disk gereklidir. Disklerin dizilim sırası XOR paritesini doğrudan etkiler.
+              En az 2 disk gereklidir. Dizi kurulduktan sonra bozuk üyeyi işaretleyin; RAID 0 o şeridi sıfırlar, RAID 5/6 parite ile okur.
             </p>
           </div>
         </div>

@@ -94,6 +94,10 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       }))
 
   const handleRecover = async () => {
+    if (effectiveScanId <= 0) {
+      alert('Kurtarma yalnız tarama veritabanındaki kayıtlardan yapılır. Tarama bitsin, sonra sonuç listesinden seçin.')
+      return
+    }
     if (selectedFiles.size === 0) return
     const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
@@ -118,33 +122,39 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       const fileToRecover = recordById.get(id) ?? sourceFiles.find(f => f.id === id)
       if (fileToRecover) filesToRecover.push(fileToRecover)
     }
+    const fileIds = filesToRecover.map((f) => f.id).filter((id) => id > 0)
+    if (fileIds.length === 0) {
+      setIsRecovering(false)
+      alert('Seçilen kayıtların SQLite kimliği yok.')
+      return
+    }
 
     let successCount = 0
     let failedCount = 0
     let zeroFilledCount = 0
 
-    if (filesToRecover.length > 1 && window.api.recoverFilesBatch) {
+    if (fileIds.length > 1 && window.api.recoverFilesBatch) {
       try {
         const res = await window.api.recoverFilesBatch(
           effectiveDrive,
-          filesToRecover,
+          fileIds,
           destDir,
-          effectiveScanId > 0 ? effectiveScanId : undefined,
+          effectiveScanId,
         )
         successCount = res.succeeded
         failedCount = res.failed
         zeroFilledCount = (res.results ?? []).filter((r) => r.zeroFilled).length
       } catch {
-        failedCount = filesToRecover.length
+        failedCount = fileIds.length
       }
     } else {
-      for (const fileToRecover of filesToRecover) {
+      for (const fileId of fileIds) {
         try {
           const res = await window.api.recoverFile(
             effectiveDrive,
-            fileToRecover,
+            fileId,
             destDir,
-            effectiveScanId > 0 ? effectiveScanId : undefined,
+            effectiveScanId,
           )
           if (res.success) {
             successCount++
