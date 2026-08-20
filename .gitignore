@@ -28,6 +28,9 @@ test-results/
 # Stale nested folder after flatten (delete locally if present)
 byteback/
 
+# Wiki sync clone (local only)
+.wiki-sync/
+
 # Logs & IDE / agent session state
 *.log
 debug_electron.log
