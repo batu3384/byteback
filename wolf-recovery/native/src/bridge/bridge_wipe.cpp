@@ -3,7 +3,25 @@
 #include "bridge_common.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_unlock.h"
+#include "recovery/preview_reader.h"
 #include <filesystem>
+
+namespace {
+
+Napi::Object recoveryResultToJs(Napi::Env env, const wolf::RecoveryResult& r) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("success", Napi::Boolean::New(env, r.success));
+    obj.Set("destPath", Napi::String::New(env, r.destPath));
+    obj.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(r.bytesRecovered)));
+    obj.Set("error", Napi::String::New(env, r.error));
+    obj.Set("md5Hash", Napi::String::New(env, r.md5Hash));
+    obj.Set("zeroFilled", Napi::Boolean::New(env, r.zeroFilled));
+    obj.Set("validationScore", Napi::Number::New(env, r.validationScore));
+    obj.Set("validationError", Napi::String::New(env, r.validationError));
+    return obj;
+}
+
+} // namespace
 
 class WipeWorker : public Napi::AsyncWorker {
 public:
@@ -134,6 +152,34 @@ Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info) {
         return Napi::String::New(env, "FVEK apply failed");
     }
     forensic::AuditLogger::GetInstance().LogEvent("BITLOCKER_RECOVERY_UNLOCK");
+    return Napi::String::New(env, "");
+    NAPI_CATCH
+}
+
+Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, password").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    std::string password = info[1].As<Napi::String>().Utf8Value();
+    wolf::DiskReader& reader = bdata->engine.getDiskReader();
+    if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
+        if (!reader.openDrive(driveIndex)) {
+            return Napi::String::New(env, "drive open failed");
+        }
+    }
+    auto unlocked = wolf::unlockBitLockerWithPassword(reader, password, 0);
+    if (!unlocked.success) {
+        return Napi::String::New(env, unlocked.error);
+    }
+    if (!reader.setXtsFvek(unlocked.fvek.data(), unlocked.fvek.size())) {
+        return Napi::String::New(env, "FVEK apply failed");
+    }
+    forensic::AuditLogger::GetInstance().LogEvent("BITLOCKER_PASSWORD_UNLOCK");
     return Napi::String::New(env, "");
     NAPI_CATCH
 }
@@ -332,14 +378,7 @@ public:
 
     void OnOK() override {
         Napi::Env env = Env();
-        Napi::Object obj = Napi::Object::New(env);
-        obj.Set("success", Napi::Boolean::New(env, result_.success));
-        obj.Set("destPath", Napi::String::New(env, result_.destPath));
-        obj.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(result_.bytesRecovered)));
-        obj.Set("error", Napi::String::New(env, result_.error));
-        obj.Set("md5Hash", Napi::String::New(env, result_.md5Hash));
-        obj.Set("zeroFilled", Napi::Boolean::New(env, result_.zeroFilled));
-        deferred_.Resolve(obj);
+        deferred_.Resolve(recoveryResultToJs(env, result_));
     }
 
     void OnError(const Napi::Error& e) override {
@@ -470,15 +509,7 @@ public:
         out.Set("failed", Napi::Number::New(env, summary_.failed));
         Napi::Array arr = Napi::Array::New(env, summary_.results.size());
         for (size_t i = 0; i < summary_.results.size(); ++i) {
-            const auto& r = summary_.results[i];
-            Napi::Object item = Napi::Object::New(env);
-            item.Set("success", Napi::Boolean::New(env, r.success));
-            item.Set("destPath", Napi::String::New(env, r.destPath));
-            item.Set("bytesRecovered", Napi::Number::New(env, static_cast<double>(r.bytesRecovered)));
-            item.Set("error", Napi::String::New(env, r.error));
-            item.Set("md5Hash", Napi::String::New(env, r.md5Hash));
-            item.Set("zeroFilled", Napi::Boolean::New(env, r.zeroFilled));
-            arr[i] = item;
+            arr[i] = recoveryResultToJs(env, summary_.results[i]);
         }
         out.Set("results", arr);
         deferred_.Resolve(out);
@@ -533,5 +564,51 @@ Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info) {
                                                         bdata->raid, deferred);
     worker->Queue();
     return deferred.Promise();
+    NAPI_CATCH
+}
+
+Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Expected driveIndex, scanId, fileId").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return env.Undefined();
+
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    int64_t scanId = info[1].As<Napi::Number>().Int64Value();
+    int64_t fileId = info[2].As<Napi::Number>().Int64Value();
+
+    wolf::FileRecord rec;
+    std::string err;
+    if (!wolf::loadRecoverRecord(bdata->engine.getMetadataStore(), scanId, fileId, rec, err)) {
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("error", Napi::String::New(env, err));
+        return out;
+    }
+
+    wolf::DiskReader reader;
+    if (!wolf::bindReaderForRecord(reader, rec, driveIndex, bdata->raid, err)) {
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("error", Napi::String::New(env, err));
+        return out;
+    }
+    wolf::applyBoundFvek(reader, bdata->engine.getDiskReader(), rec);
+
+    wolf::FilePreviewResult preview = wolf::readFilePreview(reader, rec);
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("success", Napi::Boolean::New(env, preview.success));
+    out.Set("error", Napi::String::New(env, preview.error));
+    out.Set("kind", Napi::String::New(env, preview.kind));
+    if (preview.success && !preview.data.empty()) {
+        out.Set("data", Napi::Buffer<uint8_t>::Copy(env, preview.data.data(), preview.data.size()));
+    } else {
+        out.Set("data", env.Null());
+    }
+    return out;
     NAPI_CATCH
 }

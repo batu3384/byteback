@@ -14,6 +14,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("listPartitions", Napi::Function::New(env, ListPartitions));
     exports.Set("readSectors", Napi::Function::New(env, ReadSectors));
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
+    exports.Set("resolveVolume", Napi::Function::New(env, ResolveVolume));
+    exports.Set("listVolumeLetters", Napi::Function::New(env, ListVolumeLetters));
 
     // bridge_scan.cpp
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
@@ -39,12 +41,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("startWipe", Napi::Function::New(env, StartWipe));
     exports.Set("setBitLockerFvek", Napi::Function::New(env, SetBitLockerFvek));
     exports.Set("setBitLockerRecoveryPassword", Napi::Function::New(env, SetBitLockerRecoveryPassword));
+    exports.Set("setBitLockerPassword", Napi::Function::New(env, SetBitLockerPassword));
     exports.Set("startPhysicalWipe", Napi::Function::New(env, StartPhysicalWipe));
     exports.Set("reconstructRaid", Napi::Function::New(env, ReconstructRaid));
     exports.Set("failRaidDisk", Napi::Function::New(env, FailRaidDisk));
     exports.Set("getRaidState", Napi::Function::New(env, GetRaidState));
     exports.Set("recoverFile", Napi::Function::New(env, RecoverFile));
     exports.Set("recoverFilesBatch", Napi::Function::New(env, RecoverFilesBatch));
+    exports.Set("readFilePreview", Napi::Function::New(env, ReadFilePreview));
 
     // bridge_ops.cpp
     exports.Set("getCaseInfo", Napi::Function::New(env, GetCaseInfo));
