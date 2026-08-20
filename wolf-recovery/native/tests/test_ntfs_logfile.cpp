@@ -83,13 +83,30 @@ TEST(NtfsLogfile, RcrdClientDataFindsFilename) {
     std::atomic<bool> running{true};
     scanNtfsLogFileHints(reader, 0, [&](const FileRecord& fr) {
         if (!fr.name.empty()) names.push_back(fr.name);
-    }, &running);
+    }, &running, nullptr);
 
     bool found = false;
     for (const auto& n : names) {
         if (n.find("lost.doc") != std::string::npos) found = true;
     }
     EXPECT_TRUE(found);
+}
+
+TEST(NtfsLogfile, CollectorStoresHintsWithoutFileCallback) {
+    auto disk = buildLogfileHintDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    NtfsLogHintCollector collector;
+    int fileCallbacks = 0;
+    std::atomic<bool> running{true};
+    scanNtfsLogFileHints(reader, 0, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_logfile") ++fileCallbacks;
+    }, &running, &collector);
+
+    EXPECT_EQ(fileCallbacks, 0);
+    EXPECT_GE(collector.size(), 1u);
+    EXPECT_TRUE(collector.findByName("lost.doc"));
 }
 
 TEST(NtfsLogfile, RestartPageEmitsLsn) {

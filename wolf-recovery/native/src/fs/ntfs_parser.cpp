@@ -2,6 +2,7 @@
 #include "wolf_memory.h"
 #include "fs/ntfs_util.h"
 #include "fs/ntfs_logfile.h"
+#include "fs/ntfs_path_rebuild.h"
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -257,7 +258,9 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     }
 
     struct ScanRange { uint64_t startSector; uint64_t sectorCount; };
+    struct MftByteRange { uint64_t startByte; uint64_t countBytes; };
     std::vector<ScanRange> ranges;
+    std::vector<MftByteRange> mftByteRanges;
     if (mftStartCluster > 0) {
         std::vector<uint8_t> rec0(mftRecordBytes, 0);
         uint64_t rec0Off = partitionOffsetBytes + mftStartCluster * static_cast<uint64_t>(sectorsPerCluster) * sectorSize;
@@ -266,19 +269,24 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             auto runs = unnamedDataRunsFromRecord(rec0.data(), mftRecordBytes, volumeStartSector,
                                                   sectorsPerCluster);
             for (const auto& r : runs) {
-                if (r.startSector != UINT64_MAX && r.sectorCount > 0)
+                if (r.startSector != UINT64_MAX && r.sectorCount > 0) {
                     ranges.push_back({r.startSector, r.sectorCount});
+                    mftByteRanges.push_back({r.startSector * sectorSize, r.sectorCount * sectorSize});
+                }
             }
         }
         if (ranges.empty()) {
-            ranges.push_back({volumeStartSector + mftStartCluster * sectorsPerCluster,
-                              (1024ull * mftRecordBytes + sectorSize - 1) / sectorSize});
+            uint64_t mftSec = volumeStartSector + mftStartCluster * sectorsPerCluster;
+            uint64_t secCount = (1024ull * mftRecordBytes + sectorSize - 1) / sectorSize;
+            ranges.push_back({mftSec, secCount});
+            mftByteRanges.push_back({mftSec * sectorSize, mftRecordBytes * 1024});
         }
     }
-    if (carveOrphanMft || ranges.empty()) {
+
+    std::vector<ScanRange> orphanRanges;
+    if (carveOrphanMft) {
         uint64_t full = scanEndSector > volumeStartSector ? scanEndSector - volumeStartSector : 0;
-        ranges.clear();
-        ranges.push_back({volumeStartSector, full});
+        if (full > 0) orphanRanges.push_back({volumeStartSector, full});
     }
     
     // We will scan in 4MB chunks for MFT records (RAW MFT Carving)
@@ -292,15 +300,46 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     struct TempFile {
         FileRecord fr;
         uint64_t parentId;
+        uint64_t mftRecord = UINT64_MAX;
     };
     std::vector<TempFile> tempFiles;
+    std::unordered_map<uint64_t, size_t> dedupByMft;
+    ntfs::MftIndex mftIndex;
     // Data runs of $Extend\$UsnJrnl:$J captured while carving (see the ADS
     // emit below). Populated only when the journal attribute survives.
     std::vector<FileRecord::DataRun> usnJournalRuns;
-    std::unordered_map<uint64_t, uint64_t> indxParentMap;
-    std::unordered_map<uint64_t, std::string> indxNameMap;
 
-    for (const auto& rg : ranges) {
+    auto mftRecFromAbsByte = [&](uint64_t absByte) -> uint64_t {
+        uint64_t acc = 0;
+        for (const auto& br : mftByteRanges) {
+            if (absByte >= br.startByte && absByte < br.startByte + br.countBytes)
+                return (acc + (absByte - br.startByte)) / mftRecordBytes;
+            acc += br.countBytes;
+        }
+        return UINT64_MAX;
+    };
+
+    auto ingestRecord = [&](TempFile&& tf) {
+        if (tf.mftRecord != UINT64_MAX) {
+            auto it = dedupByMft.find(tf.mftRecord);
+            if (it != dedupByMft.end()) {
+                if (tf.fr.confidence <= tempFiles[it->second].fr.confidence) return;
+                tempFiles[it->second] = std::move(tf);
+                return;
+            }
+            dedupByMft[tf.mftRecord] = tempFiles.size();
+        }
+        tempFiles.push_back(std::move(tf));
+    };
+
+    struct ScanPass { std::vector<ScanRange> ranges; bool orphan; };
+    std::vector<ScanPass> passes;
+    if (!ranges.empty()) passes.push_back({ranges, false});
+    if (!orphanRanges.empty()) passes.push_back({orphanRanges, true});
+    if (passes.empty()) return true;
+
+    for (const auto& pass : passes) {
+    for (const auto& rg : pass.ranges) {
     if (rg.sectorCount == 0) continue;
     const uint64_t rangeEnd = rg.startSector + rg.sectorCount;
     for (uint64_t sector = rg.startSector; sector < rangeEnd; sector += chunkSectors) {
@@ -312,11 +351,8 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         auto res = reader.readSectors(sector * sectorSize, thisSize, currentBuf->data());
         if (!res.success) continue;
 
-        // Iterate through the buffer in sector-sized steps (MFT records are sector-aligned)
-        for (uint32_t i = 0; i < res.bytesRead; i += sectorSize) {
-            // MFT records are typically 1024 bytes, but can be 4096. We must ensure we have at least 1024 bytes to read the header safely.
-            if (i + 1024 > res.bytesRead) break;
-            
+        const uint32_t step = pass.orphan ? sectorSize : mftRecordBytes;
+        for (uint32_t i = 0; i + 1024 <= res.bytesRead; i += step) {
             MFT_RecordHeader* header = reinterpret_cast<MFT_RecordHeader*>(currentBuf->data() + i);
             
             // Look for "FILE" signature
@@ -565,10 +601,18 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 fr.createdAt = createdAt;
                 fr.modifiedAt = modifiedAt;
                 
+                const uint64_t absByte = sector * sectorSize + i;
+                uint64_t mftRec = pass.orphan ? UINT64_MAX : mftRecFromAbsByte(absByte);
+                if (pass.orphan && mftRec != UINT64_MAX && dedupByMft.count(mftRec)) continue;
+
+                if (mftRec != UINT64_MAX)
+                    mftIndex.putFileRecord(mftRec, fileParentMftId, filename, inUse, isDirectory);
+
                 TempFile tf;
                 tf.fr = fr;
                 tf.parentId = fileParentMftId;
-                tempFiles.push_back(tf);
+                tf.mftRecord = mftRec;
+                ingestRecord(std::move(tf));
 
                 // Emit one record per Alternate Data Stream so each named
                 // stream is independently recoverable. We reuse the parent
@@ -602,7 +646,8 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     TempFile adsTf;
                     adsTf.fr = adsFr;
                     adsTf.parentId = fileParentMftId;
-                    tempFiles.push_back(adsTf);
+                    adsTf.mftRecord = mftRec;
+                    ingestRecord(std::move(adsTf));
                 }
             }
             // Look for "INDX" signature
@@ -652,8 +697,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                                 size_t available = (offset + entry->entryLength) - nameStructOffset;
                                 std::string decoded = decodeNtfsName(fnAttr, available);
                                 if (!decoded.empty()) {
-                                    indxParentMap[childMftId] = parentMftId;
-                                    indxNameMap[childMftId] = decoded;
+                                    mftIndex.putIndxHint(childMftId, parentMftId, decoded);
                                 }
                             }
                         }
@@ -670,20 +714,24 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         callback(progressTick);
     }
     }
+    }
     
-    // Post-processing: reconstruct full paths
+    // Post-processing: reconstruct full paths from MFT index + LogFile hints
+    NtfsLogHintCollector logHints;
+    scanNtfsLogFileHints(reader, partitionOffsetBytes,
+                         [&](const FileRecord& fr) {
+                             if (fr.source == "ntfs_logfile_restart") callback(fr);
+                         },
+                         isRunning, &logHints);
+
     for (auto& tf : tempFiles) {
-        uint64_t currParent = tf.parentId;
-        std::string fullPath = tf.fr.name;
-        
-        int depth = 0;
-        while (currParent != 5 && currParent != 0 && indxNameMap.count(currParent) && depth < 100) {
-            fullPath = indxNameMap[currParent] + "/" + fullPath;
-            currParent = indxParentMap[currParent];
-            depth++;
+        tf.fr.path = mftIndex.rebuildPath(tf.mftRecord, tf.fr.name, tf.parentId);
+        uint64_t logMft = UINT64_MAX;
+        if (logHints.findByName(tf.fr.name, &logMft)) {
+            tf.fr.confidence = std::min(100, tf.fr.confidence + 12);
+            if (tf.fr.source == "ntfs_mft") tf.fr.source = "ntfs_mft_logfile";
+            if (logMft != UINT64_MAX && tf.mftRecord == UINT64_MAX) tf.mftRecord = logMft;
         }
-        
-        tf.fr.path = "/Recovered/" + fullPath;
         callback(tf.fr);
     }
 
@@ -727,7 +775,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
                 FileRecord fr;
                 fr.id = -1;                       // not a scannable file
-                fr.parentId = 0;
+                fr.parentId = static_cast<int64_t>(usn.fileReference & 0x0000FFFFFFFFFFFFULL);
                 fr.name = usn.name;
                 fr.extension = "";
                 fr.path = "usn";                  // timeline marker
@@ -747,8 +795,6 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             pos += take;
         }
     }
-
-    scanNtfsLogFileHints(reader, partitionOffsetBytes, callback, isRunning);
 
     return true;
 }
