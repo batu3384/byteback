@@ -49,8 +49,8 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
       </nav>
       
       <div className="sidebar-footer">
-        <div className="pro-badge">PRO MAX</div>
-        <div className="version-info">Adli Bilişim Sürümü (v{APP_VERSION})</div>
+        <div className="pro-badge">Adli</div>
+        <div className="version-info">Sürüm v{APP_VERSION}</div>
       </div>
     </aside>
   )

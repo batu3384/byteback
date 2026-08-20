@@ -38,27 +38,29 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
     e.dataTransfer.setData('from', from);
   };
 
-  const handleDrop = (e: React.DragEvent, to: 'available' | 'array') => {
-    e.preventDefault();
-    const diskId = e.dataTransfer.getData('diskId');
-    const from = e.dataTransfer.getData('from');
-
-    if (from === to) return;
-
+  const moveDisk = (diskId: string, from: 'available' | 'array', to: 'available' | 'array') => {
+    if (from === to) return
     if (from === 'available' && to === 'array') {
-      const disk = availableDisks.find(d => d.id === diskId);
+      const disk = availableDisks.find(d => d.id === diskId)
       if (disk) {
-        setAvailableDisks(availableDisks.filter(d => d.id !== diskId));
-        setRaidArray([...raidArray, disk]);
+        setAvailableDisks(availableDisks.filter(d => d.id !== diskId))
+        setRaidArray([...raidArray, disk])
       }
     } else if (from === 'array' && to === 'available') {
-      const disk = raidArray.find(d => d.id === diskId);
+      const disk = raidArray.find(d => d.id === diskId)
       if (disk) {
-        setRaidArray(raidArray.filter(d => d.id !== diskId));
-        setAvailableDisks([...availableDisks, disk]);
+        setRaidArray(raidArray.filter(d => d.id !== diskId))
+        setAvailableDisks([...availableDisks, disk])
       }
     }
-  };
+  }
+
+  const handleDrop = (e: React.DragEvent, to: 'available' | 'array') => {
+    e.preventDefault()
+    const diskId = e.dataTransfer.getData('diskId')
+    const from = e.dataTransfer.getData('from') as 'available' | 'array'
+    moveDisk(diskId, from, to)
+  }
 
   const buildRaid = async () => {
     if (raidArray.length < 2) return;
@@ -98,7 +100,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         </div>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sanal RAID Oluşturucu (Virtual RAID Constructor)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Fiziksel sürücüleri sürükleyip bırakarak Sanal RAID Diski oluşturun. Bozulan RAID dizilerinden (Yazılımsal XOR/Striping) veri kurtarmayı sağlar.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Disk ekle/çıkar düğmeleri veya sürükle-bırak. Sıra stripe/parite yerleşimini belirler.</p>
         </div>
       </div>
 
@@ -135,6 +137,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <div className="disk-name" style={{ fontWeight: 500, color: 'var(--text-main)', marginBottom: '4px' }}>{disk.name}</div>
                   <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{disk.capacity}</div>
                 </div>
+                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'available', 'array')}>Diziye ekle</button>
               </div>
             ))}
             {availableDisks.length === 0 && (
@@ -193,6 +196,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
                   <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)' }}>{disk.capacity}</div>
                 </div>
+                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'array', 'available')}>Çıkar</button>
                 {assembled && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'rgba(255,255,255,0.85)', cursor: 'pointer' }}>
                     <input
@@ -215,7 +219,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 <div style={{ padding: '20px', border: '2px dashed var(--panel-border)', borderRadius: '12px', display: 'inline-block', marginBottom: '16px' }}>
                   <HardDrive size={32} style={{ opacity: 0.5 }} />
                 </div>
-                <p>Diskleri bu alana sürükleyerek sıralayın.</p>
+                <p>Disk ekle düğmesi veya sürükle-bırak.</p>
               </div>
             )}
           </div>

@@ -1,7 +1,7 @@
 import React from 'react'
 import type { DriveInfo } from '../../../shared/types'
 import './DriveCard.css'
-import { HardDrive, Usb, Zap, Search, Binary, Activity, ShieldAlert } from 'lucide-react'
+import { HardDrive, Usb, Zap, Search, Binary, Activity } from 'lucide-react'
 
 interface DriveCardProps {
   drive: DriveInfo
@@ -67,17 +67,21 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
       <div className="drive-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
         <button 
           className="btn-primary" 
+          type="button"
+          title="NTFS $MFT yürüyüşü + FAT/ext4/HFS/APFS + bağlı VSS"
           onClick={() => handleScan('quick')}
           style={{ flex: 1, padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px' }}
         >
-          <Zap size={18} fill="currentColor" /> Hızlı (MFT)
+          <Zap size={18} fill="currentColor" /> Dosya sistemi
         </button>
         <button 
-          className="btn-secondary" 
+          className="btn-secondary"
+          type="button"
+          title="Dosya sistemi + CPU Aho-Corasick imza (GPU yok)"
           onClick={() => handleScan('deep')}
           style={{ flex: 1, padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px' }}
         >
-          <Search size={18} /> Derin (Sektör)
+          <Search size={18} /> Derin (imza)
         </button>
         
         <div style={{ width: '100%', display: 'flex', gap: '12px' }}>

@@ -141,8 +141,7 @@ function App(): React.ReactElement {
     if (window.api && window.api.stopScan) {
       window.api.stopScan()
     }
-    if (timerRef.current) clearInterval(timerRef.current)
-    setScanStatus('Tarama İptal Edildi')
+    setScanStatus('Durduruluyor...')
   }
 
   const handleAction = (page: Page, data?: any) => {
@@ -186,7 +185,7 @@ function App(): React.ReactElement {
       case 'imager':
         return <ImagerView />
       case 'shredder':
-        return <ShredderView drives={[]} /> // Will fetch drives via Dashboard or pass down
+        return <ShredderView />
       case 'raid':
         return <RaidBuilder onStartRaidScan={handleStartRaidScan} />
       case 'case':

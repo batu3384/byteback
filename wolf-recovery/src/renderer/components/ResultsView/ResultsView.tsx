@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List } from 'lucide-react'
 import type { FileRecord } from '../../../shared/ipc-contract'
-import { sourceDisplayLabel } from '../../../shared/source-label'
+import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
 
 interface ResultsViewProps {
@@ -25,6 +25,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const [loading, setLoading] = useState(false)
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
   const [hfsTruncated, setHfsTruncated] = useState(false)
+  const [recoverReport, setRecoverReport] = useState<string | null>(null)
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
 
@@ -95,22 +96,23 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
 
   const handleRecover = async () => {
     if (effectiveScanId <= 0) {
-      alert('Kurtarma yalnız tarama veritabanındaki kayıtlardan yapılır. Tarama bitsin, sonra sonuç listesinden seçin.')
+      setRecoverReport('Kurtarma yalnız tarama veritabanındaki kayıtlardan yapılır. Tarama bitsin, sonra sonuç listesinden seçin.')
       return
     }
     if (selectedFiles.size === 0) return
     const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
     if (effectiveDrive < 0 && !raidState.active) {
-      alert('Kurtarma için bir sürücü veya aktif RAID dizisi gerekli.')
+      setRecoverReport('Kurtarma için bir sürücü veya aktif RAID dizisi gerekli.')
       return
     }
     if (!window.api?.recoverFile) {
-      alert('Kurtarma API\'si kullanılamıyor.')
+      setRecoverReport('Kurtarma API\'si kullanılamıyor.')
       return
     }
 
     setIsRecovering(true)
+    setRecoverReport(null)
     let destDir = await window.api.pickDirectory()
     if (!destDir) {
       setIsRecovering(false)
@@ -118,20 +120,41 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
 
     const filesToRecover: FileRecord[] = []
+    const skipped: string[] = []
     for (const id of selectedFiles) {
       const fileToRecover = recordById.get(id) ?? sourceFiles.find(f => f.id === id)
-      if (fileToRecover) filesToRecover.push(fileToRecover)
+      if (!fileToRecover) continue
+      const hasRuns = (fileToRecover.runs?.length ?? 0) > 0
+      if (!canRecoverSource(fileToRecover.source, hasRuns) || isDiscoveryOnlySource(fileToRecover.source)) {
+        skipped.push(`${fileToRecover.name} (${sourceDisplayLabel(fileToRecover.source)})`)
+        continue
+      }
+      filesToRecover.push(fileToRecover)
     }
     const fileIds = filesToRecover.map((f) => f.id).filter((id) => id > 0)
     if (fileIds.length === 0) {
       setIsRecovering(false)
-      alert('Seçilen kayıtların SQLite kimliği yok.')
+      setRecoverReport(
+        skipped.length
+          ? 'Seçilen kayıtlar yalnızca keşif veya SQLite kimliği yok:\n' + skipped.join('\n')
+          : 'Seçilen kayıtların SQLite kimliği yok.',
+      )
       return
     }
 
     let successCount = 0
     let failedCount = 0
     let zeroFilledCount = 0
+    const errors: string[] = []
+
+    const noteResult = (res: { success?: boolean; zeroFilled?: boolean; error?: string }, id: number) => {
+      if (res.success) successCount++
+      else {
+        failedCount++
+        if (res.error) errors.push(`#${id}: ${res.error}`)
+      }
+      if (res.zeroFilled) zeroFilledCount++
+    }
 
     if (fileIds.length > 1 && window.api.recoverFilesBatch) {
       try {
@@ -144,8 +167,12 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         successCount = res.succeeded
         failedCount = res.failed
         zeroFilledCount = (res.results ?? []).filter((r) => r.zeroFilled).length
+        for (const r of res.results ?? []) {
+          if (!r.success && r.error) errors.push(r.error)
+        }
       } catch {
         failedCount = fileIds.length
+        errors.push('Toplu kurtarma istisnası')
       }
     } else {
       for (const fileId of fileIds) {
@@ -156,18 +183,20 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             destDir,
             effectiveScanId,
           )
-          if (res.success) {
-            successCount++
-            if (res.zeroFilled) zeroFilledCount++
-          } else failedCount++
+          noteResult(res, fileId)
         } catch {
           failedCount++
+          errors.push(`#${fileId}: istisna`)
         }
       }
     }
 
     setIsRecovering(false)
-    alert(`Kurtarma Tamamlandı!\nBaşarılı: ${successCount}\nBaşarısız: ${failedCount}\nSıfır doldurulmuş okuma: ${zeroFilledCount}\nHedef: ${destDir}`)
+    const skipLine = skipped.length ? `\nAtlanan keşif kaydı: ${skipped.length}` : ''
+    const errLine = errors.length ? `\nHatalar:\n${errors.slice(0, 8).join('\n')}` : ''
+    setRecoverReport(
+      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${errLine}`,
+    )
   }
 
   const toggleSelection = (id: number) => {
@@ -238,7 +267,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     name: f.name,
     rawPath: typeof f.path === 'string' ? f.path : '',
     size: formatSize(f.sizeBytes || 0),
-    path: 'Kurtarılanlar',
+    path: typeof f.path === 'string' && f.path ? f.path : '—',
     status: f.status === 1 ? 'Allocated / in-use' : 'Silinmiş / unallocated',
     type: getFileType(getExtension(f.name)),
     sourceLabel: sourceDisplayLabel(f.source),
@@ -255,7 +284,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const buildTree = (): TreeNode => {
     const root: TreeNode = { name: '/', path: '', dirs: new Map(), files: [] }
     for (const f of filteredFiles) {
-      const raw = (f.rawPath || '/Kurtarılanlar/' + f.name).replace(/\\/g, '/').replace(/^\/+/, '')
+      const raw = (f.rawPath || f.name).replace(/\\/g, '/').replace(/^\/+/, '')
       const parts = raw.split('/').filter(Boolean)
       let node = root
       const dirParts = parts.length > 1 && parts[parts.length - 1] === f.name ? parts.slice(0, -1) : parts
@@ -356,9 +385,14 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         </div>
       </div>
 
+      {recoverReport && (
+        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', whiteSpace: 'pre-wrap' }}>
+          {recoverReport}
+        </div>
+      )}
       {hfsTruncated && (
         <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          HFS+ katalog tavanı: tarama 25.000 dosyada kesildi. Eksik dosyalar sessizce düşmedi; kaynak sütununda işaretli.
+          HFS+ katalog bu taramada limit sentinel kaydı üretti. Varsayılan tarama sınırsızdır; bu satır yalnız limit verilmişse görünür.
         </div>
       )}
 
@@ -366,6 +400,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
           <button className="btn-secondary" disabled={page === 0 || loading} onClick={() => setPage(p => Math.max(0, p - 1))}>Önceki</button>
           <button className="btn-secondary" disabled={page >= totalPages - 1 || loading} onClick={() => setPage(p => p + 1)}>Sonraki</button>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Seçim bu sayfadaki kayıtlara uygulanır ({PAGE_SIZE}/sayfa).</span>
         </div>
       )}
 

@@ -39,6 +39,8 @@ function Header({ title }: HeaderProps): React.ReactElement {
       <div className="header-actions">
         <button
           className="icon-btn"
+          type="button"
+          aria-label={theme === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
           title={theme === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         >

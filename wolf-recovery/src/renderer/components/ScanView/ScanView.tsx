@@ -151,6 +151,7 @@ function ScanView({
 
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
   const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
+  const stopping = status === 'Durduruluyor...'
 
   return (
     <div className="scan-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
@@ -165,8 +166,12 @@ function ScanView({
             {isFinished ? <CheckCircle size={32} /> : <Search size={32} className="spinner" />}
           </div>
           <div>
-            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sürücü {driveIndex} Taranıyor</h2>
-            <p style={{ color: 'var(--text-muted)' }}>{scanType === 'quick' ? 'Hızlı Tarama (MFT)' : 'Derin Tarama (Sektör)'} • {status}</p>
+            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>
+              Sürücü {driveIndex === -1 ? 'RAID' : driveIndex} taranıyor
+            </h2>
+            <p style={{ color: 'var(--text-muted)' }}>
+              {scanType === 'quick' ? 'Dosya sistemi ($MFT yürüyüşü + FAT/ext4/HFS/APFS + bağlı VSS)' : 'Derin (dosya sistemi + CPU Aho-Corasick imza; GPU yok)'} • {status}
+            </p>
           </div>
         </div>
         <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
@@ -189,11 +194,11 @@ function ScanView({
 
       {hfsTruncated && (
         <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          HFS+ katalog 25.000 dosyada kesildi. Kalan kayıtlar bu taramada yok; sentinel satır kaynak sütununda görünür.
+          HFS+ katalog limit sentinel kaydı var. Varsayılan yürüyüş sınırsız; bu uyarı yalnız limit verilmiş taramada çıkar.
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        VSS volume serial ile bağlanır. APFS NXSB/fs_oid + katalog drec. BitLocker FVE parse (şifre kırma yok). E01 çok segment. Boş alan wipe klasör seçerek.
+        VSS: volume serial + boyut ile bağlanır; kurtarma shadow copy aygıtından okur. APFS: nx_fs_oid + ilk 256 blok + omap yaprak paddr (katalog adı keşif, extent kurtarılabilir). BitLocker: FVE etiket; FVEK varsa AES-128-XTS okuma çözülür, şifre kırma yok. Derin imza: CPU Aho-Corasick, GPU PFAC yok. E01 çok segment. PhysicalDrive imhası Yok Edici’de.
       </div>
       {filesFound.length >= 5000 && (
         <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
@@ -292,7 +297,7 @@ function ScanView({
       </div>
 
       <div className="scan-actions" style={{ display: 'flex', gap: 'var(--space-md)', justifyContent: 'flex-end', marginTop: 'var(--space-md)' }}>
-        {!isFinished && (
+        {!isFinished && !stopping && (
           <button className="btn-danger" onClick={onStop} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Square size={16} fill="currentColor" /> Taramayı Durdur
           </button>
@@ -302,7 +307,12 @@ function ScanView({
             Sonuçları Görüntüle
           </button>
         )}
-        <button className="btn-secondary" onClick={onCancel}>İptal</button>
+        {isFinished && (
+          <button className="btn-secondary" onClick={onCancel}>Ana ekran</button>
+        )}
+        {stopping && (
+          <span style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>Native tarama duruyor…</span>
+        )}
       </div>
 
     </div>
