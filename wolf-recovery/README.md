@@ -16,16 +16,19 @@ yeniden kurulum, SSD/TRIM farkındalığı).
 - **NTFS**: UTF-16 dosya adları, USA fixup, $STANDARD_INFORMATION zaman
   damgaları, sparse data run'ları, LZNT1 açma, ADS (alternatif akıtlar),
   USN journal ayrıştırma, INDX slack taraması, dizin ağacı kurulumu.
+  Hızlı tarama: boot `$MFT` LCN run yürüyüşü. Derin: yetim FILE carve.
 - **FAT12/16/32 + exFAT**: FAT zincir yürüyüşü (döngü korumalı), VFAT uzun
   adlar, exFAT entry-set durum makinesi, DOS zaman damgaları.
 - **Ext2/3/4**: extent tree (derinlik destekli), directory entry'lerden
   gerçek dosya adları, silinmiş inode/dirent kanıtı.
 - **HFS+ / APFS**: HFS+ katalog B-tree (iptal edilene kadar). APFS NXSB
   (`nx_block_size`, `nx_fs_oid[100]`), APSB volume, btree yaprak drec
-  (`source=apfs_file`).
+  (`source=apfs_file`, keşif) ve file extent (`apfs_extent`, run ile kurtarma).
+  Katalog: nx_fs_oid + ilk 256 blok + omap yaprak paddr (tam container walk yok).
 - **Carving**: Aho-Corasick imza taraması (~114 gömülü imza), yapısal
   doğrulama (JPEG/PNG/ZIP/PDF/GZIP/RIFF), iki parçalı dosyalar için
   kümelenmiş BGC kurtarma yolu (sektör adımlı, tarama başına bütçeli).
+  CPU only; CUDA/OpenCL PFAC yok.
 - **RAID**: 0/1/5/6/10 — GF(2⁸) Reed-Solomon çift parite, sektör hizalı
   okuma. Bozuk üye veya I/O hatası: RAID 0 o aralığı sıfırlar (tarama
   düşmez); RAID 1 ayna dener; RAID 5/6 parite ile okur. Üye `fail_disk`
@@ -79,6 +82,7 @@ npm run build          # native + electron-vite üretim derlemesi
 npm run typecheck      # tsc (web + node)
 npm run test           # Vitest (renderer/shared)
 npm run test:native    # GoogleTest via `ctest -C Release`
+npm run test:e2e       # Playwright Electron duman (`out/main/main.js`)
 npm run dist           # NSIS x64 kurulum paketi (release/)
 ```
 
@@ -95,23 +99,27 @@ npm run dist           # NSIS x64 kurulum paketi (release/)
 3. **Denetim** — `docs/codebase-audit/` tarihli raporlar yaşayan belgedir.
    Bir koşunun "tamamı giderildi" iddiası sonraki koşuyu kapatmaz.
 
-**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker volume **şifre
-kırma yok** — FVE metadata parse + AES-XTS NIST vektörleri; FVEK/48 haneli
-anahtar yoksa birim şifreli kalır. GPU PFAC yok (taşınabilir CPU
-Aho-Corasick). Playwright E2E yok (ctest + vitest). PhysicalDrive wipe yok
-(CA-001; boş alan filler klasör ile).
+**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker **şifre / 48-digit
+kırma yok**. 64 hex FVEK verilirse AES-128-XTS sektör okuması çözülür
+(tarama + kurtarma; adli imaj ham ciphertext). GPU PFAC yok (imza CPU
+Aho-Corasick). APFS katalog adları keşif-only; extent run varsa kurtarılır.
+APFS: nx_fs_oid + 256 blok + omap yaprak paddr, tam snapshot/omap tree değil.
+Hızlı tarama NTFS `$MFT` run yürüyüşü (yetim FILE carve derin taramada).
+PhysicalDrive imhası: yazılan seri = liste serisi + OS onay; SSD ≠ NIST 800-88.
+Playwright Electron duman testi: `npm run test:e2e` (`out/main/main.js` şart).
 
 ## Güvenlik Notları
 - Uygulama sektör erişimi için Yönetici gerektirir (NSIS manifestı
   `requireAdministrator`). Renderer `sandbox` + `contextIsolation`; native
   addon yalnız main süreçte.
-- Motor kaynak diske `GENERIC_READ` ile açılır. Windows birim yöneticisi
-  için paylaşım `FILE_SHARE_READ|FILE_SHARE_WRITE` kalır — bu yazma izni
-  değildir; donanım yazma engelleyici yoksa kanıt diski host OS değiştirebilir.
+- Motor kaynak diske `GENERIC_READ` ile açılır. Önce `FILE_SHARE_READ`;
+  birim kilitlerse `FILE_SHARE_WRITE` yedek. Bu yazma izni değildir;
+  donanım yazma engelleyici yoksa kanıt diski host OS değiştirebilir.
 - Kurtarma ve imaj çıktısı kullanıcının seçtiği hedefe yazılır. Recover
   renderer `runs` kabul etmez; SQLite `fileId` + `scanId` şart.
-- Disk geneli PhysicalDrive imhası kapalı. Boş alan wipe, kullanıcının
-  seçtiği klasörün biriminde filler dosya + DoD 3 geçiş.
+- Disk geneli PhysicalDrive imhası: Yok Edici’de sürücü seç + seriyi yaz +
+  OS onay. Native katman seri eşleşmeden yazmaz. Dosya/boş alan wipe hâlâ
+  aygıt yollarını reddeder (CA-001). SSD’de DoD NIST sanitization değildir.
 - NSRL yolu renderer'dan gelmez; main-process dosya diyaloğu seçer.
 
 ## Lisans
