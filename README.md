@@ -130,5 +130,19 @@ Sonuçlar makineye bağlıdır; tablo dürüst referans içindir, pazarlama iddi
   aygıt yollarını reddeder (CA-001). SSD’de DoD NIST sanitization değildir.
 - NSRL yolu renderer'dan gelmez; main-process dosya diyaloğu seçer.
 
+## GitHub
+
+Repo henüz remote'suz. Tek seferlik kurulum:
+
+```powershell
+gh auth login -h github.com -p https -w
+powershell -ExecutionPolicy Bypass -File scripts/setup-github.ps1
+```
+
+Bu `github.com/<hesabın>/byteback` private repo oluşturur ve `main` push eder.
+
+Eski `Desktop\disk` klasörü kaldıysa Cursor kapalıyken silin veya
+`scripts/finalize-byteback.ps1` çalıştırın (yalnızca hâlâ `disk` adındaysa rename eder).
+
 ## Lisans
 MIT License
