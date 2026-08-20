@@ -1,0 +1,22 @@
+#!/bin/sh
+# Reject commits authored with agent/bot identity baked into this repo.
+name=$(git config --get user.name 2>/dev/null || true)
+email=$(git config --get user.email 2>/dev/null || true)
+
+case "$email" in
+  bot@antigravity.dev|*@cursor.*|*@agents.*)
+    echo "pre-commit: blocked bot/agent email ($email)."
+    echo "Run: powershell -ExecutionPolicy Bypass -File scripts/setup-git-identity.ps1"
+    exit 1
+    ;;
+esac
+
+case "$name" in
+  "Wolf Bot"|"Cursor Agent"|"cursor-agent"|"Composer")
+    echo "pre-commit: blocked agent author name ($name)."
+    echo "Run: powershell -ExecutionPolicy Bypass -File scripts/setup-git-identity.ps1"
+    exit 1
+    ;;
+esac
+
+exit 0
