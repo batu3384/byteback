@@ -65,6 +65,9 @@ export function registerIpcHandlers(): void {
     partitionStartSector?: number
     partitionSizeInSectors?: number
   }) => {
+    if (!dbReady) {
+      throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor — tarama başlatılamaz')
+    }
     try {
       const engine = getEngine()
       
@@ -159,12 +162,15 @@ export function registerIpcHandlers(): void {
       const engine = getEngine()
       const res = engine.readSectors(driveIndex, offset, size)
       const bytes = hexDataOrNull(res)
-      if (bytes) return bytes
-      console.warn('[IPC] read-hex-data failed:', res.error)
+      if (bytes) return { data: bytes }
+      const msg = res.error || 'Sektör okunamadı'
+      console.warn('[IPC] read-hex-data failed:', msg)
+      return { data: null, error: msg }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[IPC] read-hex-data error:', err)
+      return { data: null, error: msg }
     }
-    return null
   })
 
   ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string) => {
@@ -190,6 +196,8 @@ export function registerIpcHandlers(): void {
 
     } catch (err) {
       console.error('[IPC] start-imaging error:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      event.reply('imaging-progress', { current: 0, total: 0, error: msg })
     }
   })
   
@@ -245,6 +253,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('start-content-search', async (event, scanId: number, query: string) => {
+    if (!dbReady) {
+      return { ok: false, error: dbInitError ?? 'Veritabanı kullanılamıyor' }
+    }
     try {
       const engine = getEngine()
       const callback = (data: any) => {
@@ -256,10 +267,12 @@ export function registerIpcHandlers(): void {
           event.sender.send('content-search-complete', { status: data.status })
         }
       }
-      return engine.startContentSearch(scanId, query, callback)
+      const ok = engine.startContentSearch(scanId, query, callback)
+      return { ok: !!ok }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[IPC] start-content-search error:', err)
-      return false
+      return { ok: false, error: msg }
     }
   })
 
@@ -376,16 +389,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string, confirmPhrase?: string) => {
     try {
       if (typeof driveIndex !== 'number' || typeof typedSerial !== 'string' || !typedSerial.trim()) {
-        return false
+        return { ok: false, error: 'Geçersiz sürücü veya seri numarası' }
       }
       if (confirmPhrase !== 'IMHA') {
-        return false
+        return { ok: false, error: 'Onay ifadesi IMHA olmalı' }
       }
       const engine = getEngine()
       const drives = engine.listDrives()
       const target = drives.find((d) => d.index === driveIndex)
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-      if (!win) return false
+      if (!win) return { ok: false, error: 'Onay penceresi açılamadı' }
       const confirm = await dialog.showMessageBox(win, {
         type: 'warning',
         buttons: ['İptal', 'Diski imha et'],
@@ -395,11 +408,13 @@ export function registerIpcHandlers(): void {
         message: `PhysicalDrive${driveIndex} baştan sona DoD 3 geçiş yazılacak. Geri alınamaz.`,
         detail: `${target?.model ?? 'disk'} | seri ${target?.serial ?? '?'} | ${target?.type ?? 'Unknown'}. SSD’de NIST 800-88 sanitization değildir. Native katman yazdığınız seriyi liste serisiyle karşılaştırmadan yazmaz.`,
       })
-      if (confirm.response !== 1) return false
-      return await getEngine().startPhysicalWipe(driveIndex, typedSerial)
+      if (confirm.response !== 1) return { ok: false, error: 'İşlem iptal edildi' }
+      const ok = await getEngine().startPhysicalWipe(driveIndex, typedSerial)
+      return { ok: !!ok, error: ok ? undefined : 'Disk imhası başarısız (seri eşleşmesi veya native hata)' }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[IPC] wipe-physical-drive error:', err)
-      return false
+      return { ok: false, error: msg }
     }
   })
 

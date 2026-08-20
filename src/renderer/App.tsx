@@ -14,6 +14,7 @@ import KeywordSearch from './components/SearchView/KeywordSearch'
 import TimelineView from './components/TimelineView/TimelineView'
 import CaseView from './components/CaseView/CaseView'
 import ScanRequiredPanel from './components/ScanRequiredPanel'
+import InlineAlert from './components/InlineAlert'
 import { hasValidScanId, isScanDependentPage } from '../shared/scan-required'
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline' | 'case'
@@ -30,8 +31,17 @@ function App(): React.ReactElement {
   const [scanStatus, setScanStatus] = useState('Bekleniyor...')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
+  const [dbError, setDbError] = useState<string | null>(null)
   
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    window.api?.getDbStatus?.()
+      .then((s) => {
+        if (!s.ready) setDbError(s.error ?? 'Veritabanı başlatılamadı')
+      })
+      .catch(() => setDbError('Veritabanı durumu okunamadı'))
+  }, [])
 
   // System Engine Ready
   useEffect(() => {
@@ -114,6 +124,10 @@ function App(): React.ReactElement {
   }
 
   const handleStartScan = (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
+    if (dbError) {
+      failScan(`Veritabanı kullanılamıyor: ${dbError}`)
+      return
+    }
     const isResume = !!(scanOptions?.resumeScanId && scanOptions.resumeScanId > 0)
     setSelectedDrive(driveIndex)
     setScanConfig({ driveIndex, scanType })
@@ -144,6 +158,10 @@ function App(): React.ReactElement {
   }
 
   const handleStartRaidScan = (scanType: string) => {
+    if (dbError) {
+      failScan(`Veritabanı kullanılamıyor: ${dbError}`)
+      return
+    }
     setSelectedDrive(-1)
     setScanConfig({ driveIndex: -1, scanType })
     setFilesFound([])
@@ -241,6 +259,11 @@ function App(): React.ReactElement {
       <div className="app-main">
         <Header title={activePage} />
         <main className="app-content">
+          {dbError && (
+            <InlineAlert variant="error" title="Veritabanı kullanılamıyor">
+              Tarama, kurtarma ve rapor SQLite&apos;a bağlıdır. Hata: {dbError}. Uygulamayı yeniden başlatın.
+            </InlineAlert>
+          )}
           {renderPage()}
         </main>
       </div>

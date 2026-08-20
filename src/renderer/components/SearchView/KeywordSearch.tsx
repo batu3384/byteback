@@ -97,12 +97,14 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       }
 
       try {
-        const ok = await window.api.startContentSearch(scanId, query);
-        if (!ok) {
+        const res = await window.api.startContentSearch(scanId, query);
+        if (!res.ok) {
+          setRegexError(res.error ?? 'İçerik araması başlatılamadı (başka disk işlemi sürüyor olabilir)');
           setSearching(false);
           setSearchDone(true);
         }
-      } catch {
+      } catch (e: unknown) {
+        setRegexError(e instanceof Error ? e.message : 'İçerik araması hatası');
         setSearching(false);
         setSearchDone(true);
       }

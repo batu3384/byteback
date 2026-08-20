@@ -1,5 +1,7 @@
 # Byteback
 
+[![Build and Test](https://github.com/batu3384/byteback/actions/workflows/build.yml/badge.svg)](https://github.com/batu3384/byteback/actions/workflows/build.yml)
+
 **Professional Windows forensic imaging and data recovery.** Byteback combines a
 native C++17 engine with an Electron/React examiner surface. The engine opens
 source media with `GENERIC_READ` only; recovered bytes and image output are
@@ -120,13 +122,14 @@ Results are machine-dependent; reference only, not marketing claims.
 3. **Audits** — dated reports under `docs/codebase-audit/` are living documents.
    A “all fixed” claim in one run does not close the next audit.
 
-**Documented limits (no false crypto/product claims):** BitLocker recovery
-password supports only the **0x0800 clear-key** protector (TPM/startup-key/password
-→ explicit error). FVEK: 64/128 hex or recovery password → AES-128/256-XTS
-scan/recover/hex on raw ciphertext images. No GPU PFAC. APFS: `nx_fs_oid` + 256
-blocks + **recursive omap btree** (not full snapshot tree). PhysicalDrive wipe:
-serial match + typed **IMHA** + OS confirmation; SSD ≠ NIST 800-88. Concurrent
-scan/image/wipe operations are serialized.
+**Documented limits (no false crypto/product claims):** BitLocker unlock via
+**FVEK** (64/128 hex), **0x0800 recovery password**, or **0x2000 user password**
+(Windows only; TPM-only / startup-key protectors → explicit error). Scan/recover/hex
+on decrypted ciphertext when FVEK is set. No GPU PFAC. APFS: `nx_fs_oid` + 256
+blocks + **recursive omap btree** (not full snapshot tree). VSS: shadow-copy
+metadata enumeration during quick scan (not full VSS mount workflow). PhysicalDrive
+wipe: serial match + typed **IMHA** + OS confirmation; SSD ≠ NIST 800-88. Concurrent
+scan/image/wipe/content-search serialized via `heavyOps`.
 
 ## Security
 
@@ -145,17 +148,10 @@ scan/image/wipe operations are serialized.
 
 ## GitHub
 
-Repository: **https://github.com/batu3384/byteback** (private)
+Repository: **https://github.com/batu3384/byteback**
 
-CI workflow (`.github/workflows/build.yml`) is ready locally. Pushing it requires
-the `workflow` OAuth scope:
-
-```powershell
-gh auth refresh -h github.com -s workflow
-git add .github/workflows/build.yml
-git commit -m "ci: add GitHub Actions workflow"
-git push
-```
+CI: GitHub Actions [`build.yml`](.github/workflows/build.yml) on every push to
+`main` — typecheck, native build + ctest, Vitest, Playwright, unpackaged dist smoke.
 
 ## License
 

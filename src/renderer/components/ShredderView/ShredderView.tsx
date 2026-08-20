@@ -9,6 +9,7 @@ const ShredderView: React.FC = () => {
   const [wipeIndex, setWipeIndex] = useState(0)
   const [typedSerial, setTypedSerial] = useState('')
   const [confirmPhrase, setConfirmPhrase] = useState('')
+  const [wipeError, setWipeError] = useState<string | null>(null)
 
   React.useEffect(() => {
     if (!window.api?.listDrives) return
@@ -34,9 +35,20 @@ const ShredderView: React.FC = () => {
 
   const handlePhysicalWipe = async () => {
     if (!window.api?.wipePhysicalDrive || !typedSerial.trim() || confirmPhrase !== 'IMHA') return
+    setWipeError(null)
     setStatus('shredding')
-    const ok = await window.api.wipePhysicalDrive(wipeIndex, typedSerial, confirmPhrase)
-    setStatus(ok ? 'done' : 'failed')
+    try {
+      const res = await window.api.wipePhysicalDrive(wipeIndex, typedSerial, confirmPhrase)
+      if (res.ok) {
+        setStatus('done')
+      } else {
+        setWipeError(res.error ?? 'Disk imhası başarısız')
+        setStatus('failed')
+      }
+    } catch (e: unknown) {
+      setWipeError(e instanceof Error ? e.message : 'Disk imhası hatası')
+      setStatus('failed')
+    }
   }
 
   const selectedDrive = drives.find((d) => d.index === wipeIndex)
@@ -124,6 +136,9 @@ const ShredderView: React.FC = () => {
               >
                 PhysicalDrive imha (seri + IMHA + onay)
               </button>
+              {wipeError && (
+                <p role="alert" style={{ color: 'var(--alert-red)', fontSize: '0.85rem' }}>{wipeError}</p>
+              )}
             </>
           )}
 
