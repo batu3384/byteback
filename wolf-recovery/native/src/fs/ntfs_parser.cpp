@@ -727,9 +727,14 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     for (auto& tf : tempFiles) {
         tf.fr.path = mftIndex.rebuildPath(tf.mftRecord, tf.fr.name, tf.parentId);
         uint64_t logMft = UINT64_MAX;
-        if (logHints.findByName(tf.fr.name, &logMft)) {
+        std::string logName;
+        const bool byName = logHints.findByName(tf.fr.name, &logMft);
+        const bool byRef = !byName && tf.mftRecord != UINT64_MAX &&
+                           logHints.findByMftRef(tf.mftRecord, &logName);
+        if (byName || byRef) {
             tf.fr.confidence = std::min(100, tf.fr.confidence + 12);
             if (tf.fr.source == "ntfs_mft") tf.fr.source = "ntfs_mft_logfile";
+            if (byRef && tf.fr.name.empty()) tf.fr.name = logName;
             if (logMft != UINT64_MAX && tf.mftRecord == UINT64_MAX) tf.mftRecord = logMft;
         }
         callback(tf.fr);

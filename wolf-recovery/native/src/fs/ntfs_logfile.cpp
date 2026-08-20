@@ -190,12 +190,23 @@ void NtfsLogHintCollector::add(const std::string& name, uint64_t mftRef) {
     if (it == byLowerName_.end() || mftRef != UINT64_MAX) {
         byLowerName_[key] = NtfsLogHint{name, mftRef};
     }
+    if (mftRef != UINT64_MAX) {
+        byMftRef_[mftRef] = name;
+    }
 }
 
 bool NtfsLogHintCollector::findByName(const std::string& name, uint64_t* mftRefOut) const {
     auto it = byLowerName_.find(lowerKey(name));
     if (it == byLowerName_.end()) return false;
     if (mftRefOut) *mftRefOut = it->second.mftRef;
+    return true;
+}
+
+bool NtfsLogHintCollector::findByMftRef(uint64_t mftRef, std::string* nameOut) const {
+    if (mftRef == UINT64_MAX) return false;
+    auto it = byMftRef_.find(mftRef);
+    if (it == byMftRef_.end()) return false;
+    if (nameOut) *nameOut = it->second;
     return true;
 }
 

@@ -118,3 +118,38 @@ TEST(UnallocatedMap, FullCarveFindsPngInAllocatedCluster) {
     }
     EXPECT_TRUE(carvedAlloc);
 }
+
+TEST(UnallocatedMap, ExFatExcludesAllocatedCluster) {
+    auto exVol = wolf::testfix::buildExFatUnallocatedVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(exVol));
+
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::ExFat, 0, reader.getDiskSize());
+    ASSERT_FALSE(ranges.empty());
+
+    // heapOff=25: cluster 3 data at sector 26 (allocated), cluster 4 at sector 27 (free).
+    const uint64_t allocatedSector = 26;
+    const uint64_t freeSector = 27;
+    EXPECT_FALSE(rangeCovers(ranges, allocatedSector));
+    EXPECT_TRUE(rangeCovers(ranges, freeSector));
+}
+
+TEST(UnallocatedMap, ExFatUnallocatedCarveFindsPngInFreeCluster) {
+    auto exVol = wolf::testfix::buildExFatUnallocatedVolume();
+    const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    const uint8_t iend[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+                              0xAE, 0x42, 0x60, 0x82};
+    std::memcpy(exVol.data() + 27 * 512, pngSig, sizeof(pngSig));
+    std::memcpy(exVol.data() + 27 * 512 + 512 - sizeof(iend), iend, sizeof(iend));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(exVol));
+
+    std::atomic<bool> running{true};
+    size_t carved = 0;
+    runCarveScan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+
+    EXPECT_GE(carved, 1u);
+}

@@ -1,5 +1,8 @@
 # NTFS deleted golden fixtures
 
-Programmatic equivalents live in `volume_fixtures.h` (FAT + PNG carve cases).
+Programmatic equivalents live in `volume_fixtures.h`:
 
-Future: add binary `.img` snapshots here and wire `test_recovery_golden.cpp` to load them when present.
+- `buildNtfsDeletedResidentVolume()` — deleted MFT record with resident `doc.txt` / `hello`
+- Wired by `test_recovery_golden.cpp` (`GoldenRecovery.NtfsDeletedResidentFindAndRecover`)
+
+Optional future: add binary `.img` snapshots here for cross-tool regression.

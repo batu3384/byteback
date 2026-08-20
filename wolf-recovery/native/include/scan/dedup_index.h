@@ -11,7 +11,9 @@ class DedupIndex {
 public:
     void clear();
     void observe(const FileRecord& fr);
-    bool markDuplicate(FileRecord& fr) const;
+    void loadFromRecords(const std::vector<FileRecord>& records);
+    void ensureSorted();
+    bool markDuplicate(FileRecord& fr);
 
 private:
     struct Entry {
@@ -28,6 +30,7 @@ private:
     static bool sectorsOverlap(uint64_t aStart, uint64_t aEnd, uint64_t bStart, uint64_t bEnd);
     static uint64_t overlapSectorCount(uint64_t aStart, uint64_t aEnd, uint64_t bStart, uint64_t bEnd);
 
+    mutable bool sorted_ = true;
     std::vector<Entry> entries_;
 };
 

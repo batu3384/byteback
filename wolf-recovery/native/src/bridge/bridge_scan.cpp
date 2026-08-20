@@ -369,6 +369,15 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             context->scanId, target.partitionStartSector, target.partitionSizeSectors);
     }
     context->dedupIndex.clear();
+    if (resumeScanId > 0) {
+        constexpr int kHydratePage = 1000;
+        for (int off = 0;; off += kHydratePage) {
+            auto batch = bdata->engine.getMetadataStore().getFiles(context->scanId, off, kHydratePage);
+            if (batch.empty()) break;
+            context->dedupIndex.loadFromRecords(batch);
+            if (static_cast<int>(batch.size()) < kHydratePage) break;
+        }
+    }
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "SCAN_START | drive=" + drivePath + " | type=" + scanType + " | scanId=" + std::to_string(context->scanId) +
