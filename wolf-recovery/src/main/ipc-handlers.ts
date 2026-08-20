@@ -374,6 +374,39 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('set-bitlocker-fvek', (_event, hex: string) => {
+    try {
+      return getEngine().setBitLockerFvek(typeof hex === 'string' ? hex : '')
+    } catch (err) {
+      console.error('[IPC] set-bitlocker-fvek error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string) => {
+    try {
+      if (typeof driveIndex !== 'number' || typeof typedSerial !== 'string' || !typedSerial.trim()) {
+        return false
+      }
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      if (!win) return false
+      const confirm = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['İptal', 'Diski imha et'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'PhysicalDrive imhası',
+        message: `PhysicalDrive${driveIndex} baştan sona DoD 3 geçiş yazılacak. Geri alınamaz. SSD’de NIST 800-88 sanitization değildir.`,
+        detail: 'Native katman yazdığınız seriyi liste serisiyle karşılaştırmadan yazmaz.',
+      })
+      if (confirm.response !== 1) return false
+      return await getEngine().startPhysicalWipe(driveIndex, typedSerial)
+    } catch (err) {
+      console.error('[IPC] wipe-physical-drive error:', err)
+      return false
+    }
+  })
+
   ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
     try {
       const engine = getEngine()
