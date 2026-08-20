@@ -48,7 +48,8 @@ public:
                      const ContentSearchOptions& opts,
                      ContentMatchCallback onMatch,
                      ContentProgressCallback onProgress,
-                     ContentFinishedCallback onFinished);
+                     ContentFinishedCallback onFinished,
+                     const DiskReader* fvekSource = nullptr);
     void requestStop();
     void stopSearch();
 

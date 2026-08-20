@@ -76,11 +76,13 @@ public:
     void detachMemoryVolume();
     bool hasMemoryVolume() const;
 
-    // AES-128-XTS FVEK (32 bytes: data || tweak). Decrypts each sector after read.
-    // Empty/null clears. Not a password cracker — caller supplies the FVEK.
+    // AES-XTS FVEK: 32 bytes (AES-128-XTS) or 64 bytes (AES-256-XTS).
+    // Decrypts each sector after read. Not a password cracker — caller supplies FVEK.
+    bool setXtsFvek(const uint8_t* key, size_t keyBytes);
     bool setXtsFvek128(const uint8_t* key32, size_t n);
     void clearXtsFvek();
     bool hasXtsFvek() const;
+    size_t xtsFvekBytes() const;
     void copyXtsFvekFrom(const DiskReader& src);
 
 private:
@@ -100,8 +102,8 @@ private:
     std::shared_ptr<VirtualRaid> raidBackend_;
     std::vector<uint8_t> memoryImage_;
     bool memoryMode_ = false;
-    uint8_t xtsKey_[32]{};
-    bool xtsEnabled_ = false;
+    uint8_t xtsKey_[64]{};
+    uint8_t xtsKeyLen_ = 0; // 0=off, 32=AES-128-XTS, 64=AES-256-XTS
 
     void maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer);
 };

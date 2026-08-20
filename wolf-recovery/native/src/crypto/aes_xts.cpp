@@ -50,6 +50,66 @@ uint8_t xtime(uint8_t x) {
     return static_cast<uint8_t>((x << 1) ^ ((x >> 7) * 0x1b));
 }
 
+uint8_t gfMul(uint8_t a, uint8_t b) {
+    uint8_t p = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (b & 1) p = static_cast<uint8_t>(p ^ a);
+        uint8_t hi = static_cast<uint8_t>(a & 0x80);
+        a = static_cast<uint8_t>(a << 1);
+        if (hi) a = static_cast<uint8_t>(a ^ 0x1b);
+        b = static_cast<uint8_t>(b >> 1);
+    }
+    return p;
+}
+
+void addRoundKey(uint8_t s[16], const uint8_t* rk) {
+    for (int i = 0; i < 16; ++i) s[i] ^= rk[i];
+}
+
+void subBytes(uint8_t s[16]) {
+    for (int i = 0; i < 16; ++i) s[i] = kSbox[s[i]];
+}
+
+void invSubBytes(uint8_t s[16]) {
+    for (int i = 0; i < 16; ++i) s[i] = kInvSbox[s[i]];
+}
+
+void shiftRows(uint8_t s[16]) {
+    uint8_t t;
+    t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t;
+    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
+    t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;
+}
+
+void invShiftRows(uint8_t s[16]) {
+    uint8_t t;
+    t = s[13]; s[13] = s[9]; s[9] = s[5]; s[5] = s[1]; s[1] = t;
+    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
+    t = s[3]; s[3] = s[7]; s[7] = s[11]; s[11] = s[15]; s[15] = t;
+}
+
+void mixColumns(uint8_t s[16]) {
+    for (int c = 0; c < 4; ++c) {
+        uint8_t* p = s + c * 4;
+        uint8_t a = p[0], b = p[1], c1 = p[2], d = p[3];
+        p[0] = static_cast<uint8_t>(xtime(a) ^ xtime(b) ^ b ^ c1 ^ d);
+        p[1] = static_cast<uint8_t>(a ^ xtime(b) ^ xtime(c1) ^ c1 ^ d);
+        p[2] = static_cast<uint8_t>(a ^ b ^ xtime(c1) ^ xtime(d) ^ d);
+        p[3] = static_cast<uint8_t>(xtime(a) ^ a ^ b ^ c1 ^ xtime(d));
+    }
+}
+
+void invMixColumns(uint8_t s[16]) {
+    for (int c = 0; c < 4; ++c) {
+        uint8_t* p = s + c * 4;
+        uint8_t a = p[0], b = p[1], c1 = p[2], d = p[3];
+        p[0] = static_cast<uint8_t>(gfMul(a, 14) ^ gfMul(b, 11) ^ gfMul(c1, 13) ^ gfMul(d, 9));
+        p[1] = static_cast<uint8_t>(gfMul(a, 9) ^ gfMul(b, 14) ^ gfMul(c1, 11) ^ gfMul(d, 13));
+        p[2] = static_cast<uint8_t>(gfMul(a, 13) ^ gfMul(b, 9) ^ gfMul(c1, 14) ^ gfMul(d, 11));
+        p[3] = static_cast<uint8_t>(gfMul(a, 11) ^ gfMul(b, 13) ^ gfMul(c1, 9) ^ gfMul(d, 14));
+    }
+}
+
 void expandKey(const uint8_t key[16], uint8_t rk[176]) {
     std::memcpy(rk, key, 16);
     for (int i = 4; i < 44; ++i) {
@@ -65,30 +125,50 @@ void expandKey(const uint8_t key[16], uint8_t rk[176]) {
     }
 }
 
-void addRoundKey(uint8_t s[16], const uint8_t* rk) {
-    for (int i = 0; i < 16; ++i) s[i] ^= rk[i];
-}
-
-void subBytes(uint8_t s[16]) {
-    for (int i = 0; i < 16; ++i) s[i] = kSbox[s[i]];
-}
-
-void shiftRows(uint8_t s[16]) {
-    uint8_t t;
-    t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t;
-    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
-    t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;
-}
-
-void mixColumns(uint8_t s[16]) {
-    for (int c = 0; c < 4; ++c) {
-        uint8_t* p = s + c * 4;
-        uint8_t a = p[0], b = p[1], c1 = p[2], d = p[3];
-        p[0] = static_cast<uint8_t>(xtime(a) ^ xtime(b) ^ b ^ c1 ^ d);
-        p[1] = static_cast<uint8_t>(a ^ xtime(b) ^ xtime(c1) ^ c1 ^ d);
-        p[2] = static_cast<uint8_t>(a ^ b ^ xtime(c1) ^ xtime(d) ^ d);
-        p[3] = static_cast<uint8_t>(xtime(a) ^ a ^ b ^ c1 ^ xtime(d));
+void expandKey256(const uint8_t key[32], uint8_t rk[240]) {
+    std::memcpy(rk, key, 32);
+    for (int i = 8; i < 60; ++i) {
+        uint8_t t[4] = {rk[(i - 1) * 4], rk[(i - 1) * 4 + 1], rk[(i - 1) * 4 + 2], rk[(i - 1) * 4 + 3]};
+        if (i % 8 == 0) {
+            uint8_t tmp = t[0];
+            t[0] = static_cast<uint8_t>(kSbox[t[1]] ^ kRcon[i / 8]);
+            t[1] = kSbox[t[2]];
+            t[2] = kSbox[t[3]];
+            t[3] = kSbox[tmp];
+        } else if (i % 8 == 4) {
+            for (int j = 0; j < 4; ++j) t[j] = kSbox[t[j]];
+        }
+        for (int j = 0; j < 4; ++j) rk[i * 4 + j] = static_cast<uint8_t>(rk[(i - 8) * 4 + j] ^ t[j]);
     }
+}
+
+void aesBlockCrypt(const uint8_t* rk, int rounds, const uint8_t in[16], uint8_t out[16], bool decrypt) {
+    uint8_t s[16];
+    std::memcpy(s, in, 16);
+    if (!decrypt) {
+        addRoundKey(s, rk);
+        for (int r = 1; r < rounds; ++r) {
+            subBytes(s);
+            shiftRows(s);
+            mixColumns(s);
+            addRoundKey(s, rk + r * 16);
+        }
+        subBytes(s);
+        shiftRows(s);
+        addRoundKey(s, rk + rounds * 16);
+    } else {
+        addRoundKey(s, rk + rounds * 16);
+        for (int r = rounds - 1; r >= 1; --r) {
+            invShiftRows(s);
+            invSubBytes(s);
+            addRoundKey(s, rk + r * 16);
+            invMixColumns(s);
+        }
+        invShiftRows(s);
+        invSubBytes(s);
+        addRoundKey(s, rk);
+    }
+    std::memcpy(out, s, 16);
 }
 
 void xtsGfMul(uint8_t t[16]) {
@@ -101,95 +181,62 @@ void xtsGfMul(uint8_t t[16]) {
     if (carryIn) t[0] ^= 0x87;
 }
 
+using AesBlockFn = void (*)(const uint8_t*, const uint8_t*, uint8_t*);
+
+bool xtsAesCryptImpl(const uint8_t* key, size_t tweakKeyOff, AesBlockFn enc, AesBlockFn dec,
+                     const uint8_t tweak[16], const uint8_t* in, uint8_t* out,
+                     size_t len, bool encrypt) {
+    if (!key || !tweak || !in || !out || !enc || !dec) return false;
+    if (len == 0) return true;
+    if (len % 16 != 0) return false;
+    uint8_t t[16];
+    enc(key + tweakKeyOff, tweak, t);
+    for (size_t off = 0; off < len; off += 16) {
+        uint8_t block[16];
+        for (int i = 0; i < 16; ++i) block[i] = static_cast<uint8_t>(in[off + i] ^ t[i]);
+        uint8_t xf[16];
+        if (encrypt) enc(key, block, xf);
+        else dec(key, block, xf);
+        for (int i = 0; i < 16; ++i) out[off + i] = static_cast<uint8_t>(xf[i] ^ t[i]);
+        xtsGfMul(t);
+    }
+    return true;
+}
+
 } // namespace
 
 void aes128EncryptBlock(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]) {
     uint8_t rk[176];
     expandKey(key, rk);
-    uint8_t s[16];
-    std::memcpy(s, in, 16);
-    addRoundKey(s, rk);
-    for (int r = 1; r < 10; ++r) {
-        subBytes(s);
-        shiftRows(s);
-        mixColumns(s);
-        addRoundKey(s, rk + r * 16);
-    }
-    subBytes(s);
-    shiftRows(s);
-    addRoundKey(s, rk + 160);
-    std::memcpy(out, s, 16);
-}
-
-uint8_t gfMul(uint8_t a, uint8_t b) {
-    uint8_t p = 0;
-    for (int i = 0; i < 8; ++i) {
-        if (b & 1) p = static_cast<uint8_t>(p ^ a);
-        uint8_t hi = static_cast<uint8_t>(a & 0x80);
-        a = static_cast<uint8_t>(a << 1);
-        if (hi) a = static_cast<uint8_t>(a ^ 0x1b);
-        b = static_cast<uint8_t>(b >> 1);
-    }
-    return p;
-}
-
-void invSubBytes(uint8_t s[16]) {
-    for (int i = 0; i < 16; ++i) s[i] = kInvSbox[s[i]];
-}
-
-void invShiftRows(uint8_t s[16]) {
-    uint8_t t;
-    t = s[13]; s[13] = s[9]; s[9] = s[5]; s[5] = s[1]; s[1] = t;
-    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
-    t = s[3]; s[3] = s[7]; s[7] = s[11]; s[11] = s[15]; s[15] = t;
-}
-
-void invMixColumns(uint8_t s[16]) {
-    for (int c = 0; c < 4; ++c) {
-        uint8_t* p = s + c * 4;
-        uint8_t a = p[0], b = p[1], c1 = p[2], d = p[3];
-        p[0] = static_cast<uint8_t>(gfMul(a, 14) ^ gfMul(b, 11) ^ gfMul(c1, 13) ^ gfMul(d, 9));
-        p[1] = static_cast<uint8_t>(gfMul(a, 9) ^ gfMul(b, 14) ^ gfMul(c1, 11) ^ gfMul(d, 13));
-        p[2] = static_cast<uint8_t>(gfMul(a, 13) ^ gfMul(b, 9) ^ gfMul(c1, 14) ^ gfMul(d, 11));
-        p[3] = static_cast<uint8_t>(gfMul(a, 11) ^ gfMul(b, 13) ^ gfMul(c1, 9) ^ gfMul(d, 14));
-    }
+    aesBlockCrypt(rk, 10, in, out, false);
 }
 
 void aes128DecryptBlock(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]) {
     uint8_t rk[176];
     expandKey(key, rk);
-    uint8_t s[16];
-    std::memcpy(s, in, 16);
-    addRoundKey(s, rk + 160);
-    for (int r = 9; r >= 1; --r) {
-        invShiftRows(s);
-        invSubBytes(s);
-        addRoundKey(s, rk + r * 16);
-        invMixColumns(s);
-    }
-    invShiftRows(s);
-    invSubBytes(s);
-    addRoundKey(s, rk);
-    std::memcpy(out, s, 16);
+    aesBlockCrypt(rk, 10, in, out, true);
+}
+
+void aes256EncryptBlock(const uint8_t key[32], const uint8_t in[16], uint8_t out[16]) {
+    uint8_t rk[240];
+    expandKey256(key, rk);
+    aesBlockCrypt(rk, 14, in, out, false);
+}
+
+void aes256DecryptBlock(const uint8_t key[32], const uint8_t in[16], uint8_t out[16]) {
+    uint8_t rk[240];
+    expandKey256(key, rk);
+    aesBlockCrypt(rk, 14, in, out, true);
 }
 
 bool xtsAes128Crypt(const uint8_t key32[32], const uint8_t tweak[16],
                     const uint8_t* in, uint8_t* out, size_t len, bool encrypt) {
-    if (!key32 || !tweak || !in || !out) return false;
-    if (len == 0) return true;
-    if (len % 16 != 0) return false;
-    uint8_t t[16];
-    aes128EncryptBlock(key32 + 16, tweak, t);
-    for (size_t off = 0; off < len; off += 16) {
-        uint8_t block[16];
-        for (int i = 0; i < 16; ++i) block[i] = static_cast<uint8_t>(in[off + i] ^ t[i]);
-        uint8_t xf[16];
-        if (encrypt) aes128EncryptBlock(key32, block, xf);
-        else aes128DecryptBlock(key32, block, xf);
-        for (int i = 0; i < 16; ++i) out[off + i] = static_cast<uint8_t>(xf[i] ^ t[i]);
-        xtsGfMul(t);
-    }
-    return true;
+    return xtsAesCryptImpl(key32, 16, aes128EncryptBlock, aes128DecryptBlock, tweak, in, out, len, encrypt);
+}
+
+bool xtsAes256Crypt(const uint8_t key64[64], const uint8_t tweak[16],
+                    const uint8_t* in, uint8_t* out, size_t len, bool encrypt) {
+    return xtsAesCryptImpl(key64, 32, aes256EncryptBlock, aes256DecryptBlock, tweak, in, out, len, encrypt);
 }
 
 } // namespace crypto

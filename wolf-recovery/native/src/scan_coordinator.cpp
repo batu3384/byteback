@@ -269,13 +269,14 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
                                ProgressCallback onProgress,
                                std::vector<uint64_t>* badSectorOut,
                                std::shared_ptr<VirtualRaid> raid,
-                               FinishedCallback onFinished) {
+                               FinishedCallback onFinished,
+                               const DiskReader* fvekSource) {
     stopScan();
     isRunning = true;
 
     scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
                              onFileFound, onProgress, badSectorOut, std::move(raid),
-                             std::move(onFinished));
+                             std::move(onFinished), fvekSource);
 }
 
 void ScanCoordinator::stopScan() {
@@ -288,7 +289,8 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 ProgressCallback onProgress,
                                 std::vector<uint64_t>* badSectorOut,
                                 std::shared_ptr<VirtualRaid> raid,
-                                FinishedCallback onFinished) {
+                                FinishedCallback onFinished,
+                                const DiskReader* fvekSource) {
     DiskReader reader;
     if (raid) {
         reader.setRaidBackend(std::move(raid));
@@ -309,6 +311,7 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
             return;
         }
     }
+    if (fvekSource) reader.copyXtsFvekFrom(*fvekSource);
 
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;

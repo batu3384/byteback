@@ -67,6 +67,7 @@ void FinalizeScanSession(BridgeData* bdata, int status) {
     tsfnPost(context->tsfn, callback);
     context->tsfn.Release();
     bdata->scanContext.reset();
+    bdata->endHeavyOp();
 }
 
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
@@ -251,6 +252,12 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     if (bdata->scanContext) {
         bdata->scanContext->coordinator.stopScan();
         bdata->scanContext.reset();
+        bdata->endHeavyOp();
+    }
+
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
     std::string drivePath = info[0].As<Napi::String>().Utf8Value();
@@ -263,6 +270,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     int driveIndex = 0;
     if (drivePath == "raid") {
         if (!bdata->raid) {
+            bdata->endHeavyOp();
             Napi::Error::New(env, "No RAID array assembled").ThrowAsJavaScriptException();
             return env.Undefined();
         }
@@ -357,7 +365,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     };
 
     context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
-                                   &context->badSectors, bdata->raid, onFinished);
+                                   &context->badSectors, bdata->raid, onFinished,
+                                   &bdata->engine.getDiskReader());
 
     return Napi::Number::New(env, static_cast<double>(context->scanId));
     NAPI_CATCH
@@ -389,6 +398,22 @@ Napi::Value SearchFiles(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+namespace {
+
+bool openScanReader(wolf::DiskReader& reader, BridgeData* bdata, const wolf::ScanState& state,
+                    wolf::Engine* engine) {
+    if (bdata->raid) {
+        reader.setRaidBackend(bdata->raid);
+    } else {
+        if (state.driveIndex < 0) return false;
+        if (!reader.openDrive(state.driveIndex)) return false;
+    }
+    if (engine) reader.copyXtsFvekFrom(engine->getDiskReader());
+    return true;
+}
+
+} // namespace
+
 Napi::Value SearchFileContent(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -405,9 +430,7 @@ Napi::Value SearchFileContent(const Napi::CallbackInfo& info) {
     if (state.id <= 0) return Napi::Array::New(env, 0);
 
     wolf::DiskReader reader;
-    if (bdata->raid) {
-        reader.setRaidBackend(bdata->raid);
-    } else if (!reader.openDrive(state.driveIndex)) {
+    if (!openScanReader(reader, bdata, state, engine)) {
         return Napi::Array::New(env, 0);
     }
 
@@ -419,19 +442,6 @@ Napi::Value SearchFileContent(const Napi::CallbackInfo& info) {
     return result;
     NAPI_CATCH
 }
-
-namespace {
-
-bool openScanReader(wolf::DiskReader& reader, BridgeData* bdata, const wolf::ScanState& state) {
-    if (bdata->raid) {
-        reader.setRaidBackend(bdata->raid);
-        return true;
-    }
-    if (state.driveIndex < 0) return false;
-    return reader.openDrive(state.driveIndex);
-}
-
-} // namespace
 
 Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -506,7 +516,8 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     };
 
     context->coordinator.startSearch(bdata->engine.getMetadataStore(), driveIndex, bdata->raid,
-                                     scanId, query, {}, onMatch, onProgress, onFinished);
+                                     scanId, query, {}, onMatch, onProgress, onFinished,
+                                     &bdata->engine.getDiskReader());
     return Napi::Boolean::New(env, true);
     NAPI_CATCH
 }

@@ -16,6 +16,12 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
     if (bdata->imagerContext) {
         bdata->imagerContext->imager.stopImaging();
         bdata->imagerContext.reset();
+        bdata->endHeavyOp();
+    }
+
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
@@ -50,7 +56,7 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
 
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
     auto imagerPtr = &(context->imager);
-    auto onProgress = [context, lastProgress, imagerPtr](uint64_t current, uint64_t total) {
+    auto onProgress = [context, lastProgress, imagerPtr, bdata](uint64_t current, uint64_t total) {
         auto now = std::chrono::steady_clock::now();
         if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 100) {
             return;
@@ -72,7 +78,10 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
             jsCallback.Call({obj});
         };
         tsfnPost(context->tsfn, callback);
-        if (current >= total) context->tsfn.Release();
+        if (current >= total) {
+            context->tsfn.Release();
+            bdata->endHeavyOp();
+        }
     };
 
     forensic::AuditLogger::GetInstance().LogEvent(

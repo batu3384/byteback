@@ -66,13 +66,20 @@ struct BridgeData {
     std::shared_ptr<ScanContext> scanContext;
     std::shared_ptr<ImagerContext> imagerContext;
     std::shared_ptr<ContentSearchContext> contentSearchContext;
-    // Assembled virtual RAID array (Phase 3). Kept alive here so subsequent
-    // scan/imaging calls can read through it; empty until the UI assembles
-    // an array via reconstructRaid().
     std::shared_ptr<wolf::VirtualRaid> raid;
-    // Path of the hash-chained forensic audit log (set by initDatabase).
     std::string auditLogPath;
     forensic::NsrlLookup nsrl;
+    std::atomic<int> heavyOps{0};
+
+    bool tryBeginHeavyOp() {
+        int prev = heavyOps.fetch_add(1);
+        if (prev > 0) {
+            heavyOps.fetch_sub(1);
+            return false;
+        }
+        return true;
+    }
+    void endHeavyOp() { heavyOps.fetch_sub(1); }
 };
 
 // bridge_drives.cpp — drives / partitions / raw reads / SMART
@@ -106,6 +113,7 @@ Napi::Value StopImaging(const Napi::CallbackInfo& info);
 // bridge_wipe.cpp — wipe / RAID / recovery
 Napi::Value StartWipe(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info);
+Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info);
 Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info);
 template<typename Callback>
 void tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {

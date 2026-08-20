@@ -54,6 +54,7 @@ set(SOURCES
     src/fs/vss_scanner.cpp
     src/fs/volume_identity.cpp
     src/fs/bitlocker_fve.cpp
+    src/fs/bitlocker_unlock.cpp
     src/search/content_search.cpp
     src/fs/partition_scanner.cpp
     src/fs/virtual_raid.cpp
@@ -64,6 +65,8 @@ set(SOURCES
     src/imager/ewf_writer.cpp
     src/crypto/md5.cpp
     src/crypto/aes_xts.cpp
+    src/crypto/aes_ccm.cpp
+    src/crypto/sha256.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
     src/math/entropy.cpp
@@ -166,6 +169,8 @@ if(WOLF_BUILD_TESTS)
     src/forensic/nsrl_lookup.cpp
     src/crypto/md5.cpp
     src/crypto/aes_xts.cpp
+    src/crypto/aes_ccm.cpp
+    src/crypto/sha256.cpp
     src/imager/ewf_writer.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp
@@ -184,6 +189,7 @@ if(WOLF_BUILD_TESTS)
     src/fs/vss_scanner.cpp
     src/fs/volume_identity.cpp
     src/fs/bitlocker_fve.cpp
+    src/fs/bitlocker_unlock.cpp
     src/search/content_search.cpp
     src/fs/ntfs_parser.cpp
     src/fs/virtual_raid.cpp
