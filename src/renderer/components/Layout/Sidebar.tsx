@@ -2,13 +2,17 @@ import React from 'react'
 import './Sidebar.css'
 import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock, Briefcase, Shield } from 'lucide-react'
 import { APP_VERSION } from '../../../shared/app-version'
+import { hasValidScanId, isScanDependentPage } from '../../../shared/scan-required'
 
 interface SidebarProps {
   activePage: string
-  onNavigate: (page: any) => void
+  activeScanId: number
+  onNavigate: (page: string) => void
 }
 
-function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
+function Sidebar({ activePage, activeScanId, onNavigate }: SidebarProps): React.ReactElement {
+  const scanReady = hasValidScanId(activeScanId)
+
   const menuItems = [
     { id: 'dashboard', label: 'Ana Ekran', icon: <LayoutDashboard size={20} strokeWidth={1.5} /> },
     { id: 'scan', label: 'Aktif Tarama', icon: <Search size={20} strokeWidth={1.5} /> },
@@ -32,22 +36,31 @@ function Sidebar({ activePage, onNavigate }: SidebarProps): React.ReactElement {
         </div>
         <h1>Byteback</h1>
       </div>
-      <nav className="sidebar-nav">
+      <nav className="sidebar-nav" aria-label="Ana menü">
         <ul>
-          {menuItems.map((item) => (
-            <li key={item.id}>
-              <button
-                className={`nav-btn ${activePage === item.id ? 'active' : ''}`}
-                onClick={() => onNavigate(item.id)}
-              >
-                <span className="nav-icon">{item.icon}</span>
-                <span className="nav-label">{item.label}</span>
-              </button>
-            </li>
-          ))}
+          {menuItems.map((item) => {
+            const needsScan = isScanDependentPage(item.id)
+            const disabled = needsScan && !scanReady
+            const isActive = activePage === item.id
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className={`nav-btn ${isActive ? 'active' : ''} ${disabled ? 'nav-btn-disabled' : ''}`}
+                  onClick={() => onNavigate(item.id)}
+                  disabled={disabled}
+                  aria-current={isActive ? 'page' : undefined}
+                  title={disabled ? 'Önce bir taramayı tamamlayın' : undefined}
+                >
+                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+                  <span className="nav-label">{item.label}</span>
+                </button>
+              </li>
+            )
+          })}
         </ul>
       </nav>
-      
+
       <div className="sidebar-footer">
         <div className="pro-badge">Adli</div>
         <div className="version-info">Sürüm v{APP_VERSION}</div>

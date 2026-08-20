@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
+import InlineAlert from '../InlineAlert'
 
 interface DriveInfo {
   index: number
@@ -24,6 +25,8 @@ function ImagerView(): React.ReactElement {
   const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
   const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
   const [imageMd5, setImageMd5] = useState<string>('')
+  const [formError, setFormError] = useState<string | null>(null)
+  const [ewfConfirmOpen, setEwfConfirmOpen] = useState(false)
   
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -73,21 +76,8 @@ function ImagerView(): React.ReactElement {
     }
   }, [])
 
-  const handleStartImaging = () => {
-    if (selectedDrive === '' || destPath.trim() === '') {
-      alert('Lütfen kaynak sürücü ve hedef dosya yolu belirleyin.')
-      return
-    }
-
-    if (format === 'ewf') {
-      const drive = drives.find(d => d.index === Number(selectedDrive))
-      if (drive && ewfWillRotateSegments(drive.sizeBytes)) {
-        const ok = window.confirm(
-          'Disk 4 GiB üzeri. E01 çok segment yazılır (.E01, .E02, …). Devam?',
-        )
-        if (!ok) return
-      }
-    }
+  const beginImaging = () => {
+    setFormError(null)
     setImaging(true)
     setStatus('İmaj Alınıyor...')
     setProgress({ current: 0, total: 0 })
@@ -100,6 +90,22 @@ function ImagerView(): React.ReactElement {
     if (window.api && window.api.startImaging) {
       window.api.startImaging(Number(selectedDrive), destPath, format)
     }
+  }
+
+  const handleStartImaging = () => {
+    if (selectedDrive === '' || destPath.trim() === '') {
+      setFormError('Lütfen kaynak sürücü ve hedef dosya yolu belirleyin.')
+      return
+    }
+
+    if (format === 'ewf') {
+      const drive = drives.find(d => d.index === Number(selectedDrive))
+      if (drive && ewfWillRotateSegments(drive.sizeBytes)) {
+        setEwfConfirmOpen(true)
+        return
+      }
+    }
+    beginImaging()
   }
   
   const handleStopImaging = () => {
@@ -136,6 +142,18 @@ function ImagerView(): React.ReactElement {
       </div>
 
       <div className="imager-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        {formError && (
+          <InlineAlert variant="error" onDismiss={() => setFormError(null)}>{formError}</InlineAlert>
+        )}
+        {ewfConfirmOpen && (
+          <InlineAlert variant="warning" title="E01 segment uyarısı">
+            Disk 4 GiB üzeri. E01 çok segment yazılır (.E01, .E02, …). Devam etmek istiyor musunuz?
+            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button type="button" className="btn-primary" onClick={() => { setEwfConfirmOpen(false); beginImaging() }}>Devam et</button>
+              <button type="button" className="btn-secondary" onClick={() => setEwfConfirmOpen(false)}>İptal</button>
+            </div>
+          </InlineAlert>
+        )}
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Server size={16} /> Kaynak Sürücü

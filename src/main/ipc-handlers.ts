@@ -209,22 +209,26 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('search-files', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => {
     try {
-      if (useRegex && typeof query === 'string' && query.length > 128) return []
+      if (useRegex && typeof query === 'string' && query.length > 128) {
+        return { rows: [], error: 'Regex sorgusu en fazla 128 karakter olabilir.' }
+      }
       const engine = getEngine()
-      return engine.searchFiles(scanId, query, offset ?? 0, limit ?? 100, !!useRegex, category ?? '')
+      const rows = engine.searchFiles(scanId, query, offset ?? 0, limit ?? 100, !!useRegex, category ?? '')
+      return { rows }
     } catch (err) {
       console.error('[IPC] search-files error:', err)
-      return []
+      return { rows: [], error: err instanceof Error ? err.message : String(err) }
     }
   })
 
   ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number) => {
     try {
       const engine = getEngine()
-      return engine.searchFileContent(scanId, query, offset ?? 0, limit ?? 100)
+      const rows = engine.searchFileContent(scanId, query, offset ?? 0, limit ?? 100)
+      return { rows }
     } catch (err) {
       console.error('[IPC] search-file-content error:', err)
-      return []
+      return { rows: [], error: err instanceof Error ? err.message : String(err) }
     }
   })
 

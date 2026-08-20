@@ -4,6 +4,8 @@ import { FileText, Download, CheckCircle, Clock, ShieldCheck, PieChart } from 'l
 import type { ScanSummary } from '../../../shared/ipc-contract';
 import { APP_VERSION } from '../../../shared/app-version';
 import { htmlEscape } from '../../../shared/html-escape';
+import { canGenerateReport } from '../../../shared/scan-required';
+import InlineAlert from '../InlineAlert';
 
 interface ReportGeneratorProps {
   scanId: number;
@@ -26,6 +28,9 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfDone, setPdfDone] = useState('');
   const [summary, setSummary] = useState<ScanSummary | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const reportAllowed = canGenerateReport(scanId);
 
   useEffect(() => {
     if (scanId > 0 && window.api?.getScanSummary) {
@@ -36,6 +41,11 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }
   }, [scanId]);
 
   const generateReport = async () => {
+    if (!reportAllowed) {
+      setFormError('Adli rapor yalnızca tamamlanmış bir tarama oturumundan üretilebilir. Önce tarama yapın.');
+      return;
+    }
+    setFormError(null);
     setGenerating(true);
     try {
       const now = new Date();
@@ -187,7 +197,7 @@ ${body}
       if (res?.success) {
         setPdfDone(res.path ?? '')
       } else if (res?.error && !res.canceled) {
-        alert('PDF oluşturulamadı: ' + res.error)
+        setFormError('PDF oluşturulamadı: ' + res.error)
       }
     } catch (err) {
       console.error(err)
@@ -209,6 +219,19 @@ ${body}
       </div>
 
       <div className="report-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+        {!reportAllowed && (
+          <InlineAlert variant="warning" title="Tarama gerekli">
+            Resmi adli rapor, SQLite veritabanına kayıtlı tamamlanmış bir tarama oturumu olmadan üretilemez.
+            Ana ekrandan tarama başlatın ve tamamlanmasını bekleyin.
+          </InlineAlert>
+        )}
+
+        {formError && (
+          <InlineAlert variant="error" onDismiss={() => setFormError(null)}>
+            {formError}
+          </InlineAlert>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -250,7 +273,13 @@ ${body}
 
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: '16px' }}>
           {!reportHtml && !generating && (
-            <button className="btn-primary" onClick={generateReport} style={{ padding: '16px 32px', fontSize: '1.1rem', background: 'var(--success-green)', color: '#000' }}>
+            <button
+              className="btn-primary"
+              onClick={generateReport}
+              disabled={!reportAllowed}
+              title={!reportAllowed ? 'Önce taramayı tamamlayın' : undefined}
+              style={{ padding: '16px 32px', fontSize: '1.1rem', background: 'var(--success-green)', color: '#000', opacity: reportAllowed ? 1 : 0.5 }}
+            >
               RESMİ RAPOR OLUŞTUR
             </button>
           )}

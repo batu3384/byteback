@@ -111,7 +111,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     }
     void window.api
       .searchFiles(effectiveScanId, 'catalog truncated', 0, 8)
-      .then((rows) => setHfsTruncated(rows.some((r) => r.source === 'hfs_limit')))
+      .then((res) => setHfsTruncated(res.rows.some((r: { source?: string }) => r.source === 'hfs_limit')))
       .catch(() => setHfsTruncated(false))
   }, [effectiveScanId, dbFiles, filesFound])
 

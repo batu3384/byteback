@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './RaidBuilder.css';
 import { Layers, HardDrive, Cpu, Settings2, Play, CheckCircle } from 'lucide-react';
+import InlineAlert from '../InlineAlert';
 
 interface Disk {
   id: string;
@@ -19,6 +20,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const [isBuilding, setIsBuilding] = useState(false);
   const [assembled, setAssembled] = useState(false);
   const [failedSlots, setFailedSlots] = useState<Set<number>>(new Set());
+  const [raidNotice, setRaidNotice] = useState<{ variant: 'success' | 'error' | 'warning'; message: string } | null>(null);
 
   useEffect(() => {
     if (window.api && window.api.listDrives) {
@@ -79,30 +81,45 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         setAssembled(true);
         setFailedSlots(new Set());
         const capGb = res.capacity ? (res.capacity / (1024 ** 3)).toFixed(2) : '?';
-        alert(`${raidType} dizisi başarıyla oluşturuldu!\n\nKapasite: ${capGb} GB\nDisk sayısı: ${res.numDisks}`);
+        setRaidNotice({
+          variant: 'success',
+          message: `${raidType} dizisi oluşturuldu. Kapasite: ${capGb} GB, disk sayısı: ${res.numDisks}. Hızlı tarama başlatılıyor.`,
+        });
         if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         setAssembled(false);
-        const why = res && res.error ? `\n\nHata: ${res.error}` : '';
-        alert(`${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`);
+        const why = res && res.error ? ` Hata: ${res.error}` : '';
+        setRaidNotice({
+          variant: 'error',
+          message: `${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`,
+        });
       }
     } else {
       setIsBuilding(false);
-      alert('Kritik Hata: IPC modülüne ulaşılamıyor (Native Backend aktif değil). Lütfen Yönetici olarak çalıştırın.');
+      setRaidNotice({
+        variant: 'error',
+        message: 'Native backend kullanılamıyor. Uygulamayı Yönetici olarak çalıştırın.',
+      });
     }
   };
 
   return (
     <div className="raid-builder-container" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '1000px', margin: '0 auto' }}>
       <div className="raid-header glass-panel" style={{ padding: '24px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-        <div style={{ background: 'rgba(183, 0, 255, 0.1)', padding: '16px', borderRadius: '12px' }}>
-          <Layers size={32} color="#b700ff" />
+        <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}>
+          <Layers size={32} color="var(--accent-blue)" />
         </div>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sanal RAID Oluşturucu (Virtual RAID Constructor)</h2>
           <p style={{ color: 'var(--text-muted)' }}>Disk ekle/çıkar düğmeleri veya sürükle-bırak. Sıra stripe/parite yerleşimini belirler.</p>
         </div>
       </div>
+
+      {raidNotice && (
+        <InlineAlert variant={raidNotice.variant} onDismiss={() => setRaidNotice(null)}>
+          {raidNotice.message}
+        </InlineAlert>
+      )}
 
       <div className="raid-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', flex: 1, minHeight: 0 }}>
         

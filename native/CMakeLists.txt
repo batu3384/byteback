@@ -13,13 +13,21 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include_directories(${CMAKE_JS_INC})
 
 # node-addon-api headers
+set(NODE_ADDON_API_DIR "${CMAKE_SOURCE_DIR}/../node_modules/node-addon-api")
 execute_process(
   COMMAND node -p "require('node-addon-api').include"
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/..
-  OUTPUT_VARIABLE NODE_ADDON_API_DIR
+  OUTPUT_VARIABLE NODE_ADDON_API_DIR_RESOLVED
   OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE NODE_ADDON_API_RESULT
+  ERROR_QUIET
 )
-string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
+if(NODE_ADDON_API_RESULT EQUAL 0 AND NODE_ADDON_API_DIR_RESOLVED)
+  string(REPLACE "\"" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR_RESOLVED})
+endif()
+if(NOT EXISTS "${NODE_ADDON_API_DIR}")
+  message(FATAL_ERROR "node-addon-api headers not found. Run npm ci in the repo root before configuring CMake.")
+endif()
 include_directories(${NODE_ADDON_API_DIR})
 
 # Define NAPI_VERSION

@@ -173,3 +173,9 @@ export interface NsrlStats {
   count: number
   path: string
 }
+
+/** search-files IPC response — empty rows with error means native/DB failure, not zero hits. */
+export interface SearchFilesResult {
+  rows: FileRecord[]
+  error?: string
+}

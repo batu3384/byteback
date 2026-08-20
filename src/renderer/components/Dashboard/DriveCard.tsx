@@ -3,6 +3,7 @@ import type { DriveInfo, PartitionInfo, ScanOptions } from '../../../shared/type
 import type { ScanProfile } from '../../../shared/scan-profiles'
 import { SCAN_PROFILES } from '../../../shared/scan-profiles'
 import SsdTrimModal from './SsdTrimModal'
+import InlineAlert from '../InlineAlert'
 import './DriveCard.css'
 import { HardDrive, Usb, Zap, Search, Binary, Activity, AlertTriangle } from 'lucide-react'
 
@@ -27,6 +28,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
   const [isSsd, setIsSsd] = useState(drive.type === 'SSD')
   const [pendingScan, setPendingScan] = useState<ScanProfile | null>(null)
   const [showTrimModal, setShowTrimModal] = useState(false)
+  const [adminNotice, setAdminNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (!window.api?.listPartitions) return
@@ -61,7 +63,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
 
   const requestScan = (scanType: ScanProfile) => {
     if (!isAdmin) {
-      alert('Sektör düzeyinde tarama başlatmak için uygulamayı Yönetici olarak çalıştırmalısınız.')
+      setAdminNotice('Sektör düzeyinde tarama başlatmak için uygulamayı Yönetici olarak çalıştırmalısınız.')
       return
     }
     if (isSsd) {
@@ -97,6 +99,11 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
         onConfirm={confirmTrim}
         onCancel={cancelTrim}
       />
+      {adminNotice && (
+        <div style={{ marginBottom: '8px' }}>
+          <InlineAlert variant="warning" onDismiss={() => setAdminNotice(null)}>{adminNotice}</InlineAlert>
+        </div>
+      )}
       <div className="drive-card glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', transition: 'transform 0.2s ease, border-color 0.2s ease' }}>
         <div className="drive-card-header" style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
           <div className="drive-icon-container" style={{ 

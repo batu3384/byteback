@@ -13,6 +13,8 @@ import ReportGenerator from './components/ReportView/ReportGenerator'
 import KeywordSearch from './components/SearchView/KeywordSearch'
 import TimelineView from './components/TimelineView/TimelineView'
 import CaseView from './components/CaseView/CaseView'
+import ScanRequiredPanel from './components/ScanRequiredPanel'
+import { hasValidScanId, isScanDependentPage } from '../shared/scan-required'
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline' | 'case'
 
@@ -96,6 +98,14 @@ function App(): React.ReactElement {
     }
   }, []);
 
+  const failScan = (message: string) => {
+    setScanStatus(message)
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
   const handleStartScan = (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
     const isResume = !!(scanOptions?.resumeScanId && scanOptions.resumeScanId > 0)
     setSelectedDrive(driveIndex)
@@ -111,9 +121,12 @@ function App(): React.ReactElement {
     
     // Start Engine Scan
     if (window.api && window.api.startScan) {
-      window.api.startScan(driveIndex, scanType, scanOptions).then(id => {
-        if (id > 0) setActiveScanId(id)
-      })
+      window.api.startScan(driveIndex, scanType, scanOptions)
+        .then((id) => {
+          if (id > 0) setActiveScanId(id)
+          else failScan('Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.')
+        })
+        .catch((e: Error) => failScan(`Tarama hatası: ${e.message}`))
     }
 
     // Start Timer
@@ -132,9 +145,12 @@ function App(): React.ReactElement {
     setScanElapsed(0)
     setActivePage('scan')
     if (window.api?.startScan) {
-      window.api.startScan(-1, scanType).then(id => {
-        if (id > 0) setActiveScanId(id)
-      })
+      window.api.startScan(-1, scanType)
+        .then((id) => {
+          if (id > 0) setActiveScanId(id)
+          else failScan('RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.')
+        })
+        .catch((e: Error) => failScan(`RAID tarama hatası: ${e.message}`))
     }
     if (timerRef.current) clearInterval(timerRef.current)
     timerRef.current = setInterval(() => setScanElapsed(prev => prev + 1), 1000)
@@ -155,7 +171,16 @@ function App(): React.ReactElement {
     setActivePage(page)
   }
 
+  const handleNavigate = (page: string) => {
+    if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
+    setActivePage(page as Page)
+  }
+
   const renderPage = () => {
+    if (isScanDependentPage(activePage) && !hasValidScanId(activeScanId)) {
+      return <ScanRequiredPanel onGoDashboard={() => setActivePage('dashboard')} />
+    }
+
     switch (activePage) {
       case 'dashboard': 
         return <Dashboard onStartScan={handleStartScan} onAction={handleAction} />
@@ -200,7 +225,7 @@ function App(): React.ReactElement {
 
   return (
     <div className="app-layout">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <Sidebar activePage={activePage} activeScanId={activeScanId} onNavigate={handleNavigate} />
       <div className="app-main">
         <Header title={activePage} />
         <main className="app-content">

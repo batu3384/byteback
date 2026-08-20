@@ -131,7 +131,7 @@ function ScanView({
     }
     void window.api
       .searchFiles(activeScanId, 'catalog truncated', 0, 8)
-      .then((rows) => setHfsTruncated(rows.some((r) => r.source === 'hfs_limit')))
+      .then((res) => setHfsTruncated(res.rows.some((r: { source?: string }) => r.source === 'hfs_limit')))
       .catch(() => setHfsTruncated(false))
   }, [filesFound, activeScanId])
 
@@ -244,10 +244,15 @@ function ScanView({
                 {filesFound.map((f, i) => {
                   const isSelected = selectedFile && selectedFile.name === f.name && selectedFile.startSector === f.startSector
                   return (
-                    <div key={i} onClick={() => setSelectedFile(f)} style={{
-                      display: 'flex', alignItems: 'center', padding: '12px 16px',
+                    <button
+                      type="button"
+                      key={i}
+                      onClick={() => setSelectedFile(f)}
+                      aria-pressed={!!isSelected}
+                      style={{
+                      display: 'flex', alignItems: 'center', padding: '12px 16px', width: '100%',
                       background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'rgba(255,255,255,0.02)', borderRadius: '6px', cursor: 'pointer',
-                      border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.4)' : 'transparent'}`, transition: 'all 0.2s'
+                      border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.4)' : 'transparent'}`, transition: 'all 0.2s', color: 'inherit', textAlign: 'left'
                     }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'var(--panel-border)' }}
                     onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'transparent' }}
@@ -258,7 +263,7 @@ function ScanView({
                       <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem', flexShrink: 0 }}>
                         {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
                       </span>
-                    </div>
+                    </button>
                   )
                 })}
               </div>

@@ -20,6 +20,7 @@ export type {
   ScanCompleteCallback,
   CaseInfo,
   NsrlStats,
+  SearchFilesResult,
 } from './ipc-contract'
 
 import type {
@@ -42,6 +43,7 @@ import type {
   ScanCompleteCallback,
   CaseInfo,
   NsrlStats,
+  SearchFilesResult,
 } from './ipc-contract'
 
 declare global {
@@ -70,8 +72,8 @@ declare global {
 
       getFileCount: (scanId: number) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
-      searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<FileRecord[]>
-      searchFileContent: (scanId: number, query: string, offset: number, limit: number) => Promise<FileRecord[]>
+      searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<SearchFilesResult>
+      searchFileContent: (scanId: number, query: string, offset: number, limit: number) => Promise<SearchFilesResult>
       startContentSearch: (scanId: number, query: string) => Promise<boolean>
       stopContentSearch: () => void
       onContentSearchProgress: (callback: (data: { current: number; total: number }) => void) => () => void
