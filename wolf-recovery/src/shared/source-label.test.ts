@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource } from './source-label'
+import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from './source-label'
 
 describe('sourceDisplayLabel', () => {
   it('marks APFS container and volume hits as discovery-only', () => {
@@ -32,5 +32,22 @@ describe('isDiscoveryOnlySource', () => {
     expect(canRecoverSource('apfs_extent', true)).toBe(true)
     expect(canRecoverSource('apfs_extent', false)).toBe(false)
     expect(canRecoverSource('ntfs_mft')).toBe(true)
+    expect(canRecoverSource('ntfs_mft_logfile')).toBe(true)
+  })
+
+  it('excludes timeline and logfile hints from recoverable list', () => {
+    expect(isRecoverableListSource('usn_journal')).toBe(false)
+    expect(isRecoverableListSource('ntfs_logfile')).toBe(false)
+    expect(isRecoverableListSource('ntfs_mft')).toBe(true)
+  })
+
+  it('labels logfile-verified MFT', () => {
+    expect(sourceDisplayLabel('ntfs_mft_logfile')).toBe('NTFS MFT (LogFile doğrulandı)')
+  })
+
+  it('hides carve duplicates from default recoverable list', () => {
+    expect(isDuplicateSource('carver_duplicate')).toBe(true)
+    expect(isRecoverableListSource('carver_duplicate')).toBe(false)
+    expect(isRecoverableListSource('carver')).toBe(true)
   })
 })

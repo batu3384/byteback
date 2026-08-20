@@ -8,11 +8,22 @@ const DISCOVERY_ONLY = new Set([
   'vss_bind',
   'vss_snapshot',
   'hfs_limit',
+  'usn_journal',
+  'ntfs_logfile',
+  'ntfs_logfile_restart',
 ])
+
+export function isDuplicateSource(source?: string): boolean {
+  return source === 'carver_duplicate'
+}
 
 export function isDiscoveryOnlySource(source?: string): boolean {
   if (!source) return false
   return DISCOVERY_ONLY.has(source)
+}
+
+export function isRecoverableListSource(source?: string): boolean {
+  return !isDiscoveryOnlySource(source) && !isDuplicateSource(source)
 }
 
 export function canRecoverSource(source?: string, hasRuns?: boolean): boolean {
@@ -35,5 +46,9 @@ export function sourceDisplayLabel(source?: string): string {
   if (source === 'vss_fat') return 'VSS FAT'
   if (source === 'bitlocker_detect') return 'BitLocker (anahtar yok, şifre kırma yok)'
   if (source === 'bitlocker_fve') return 'BitLocker FVE (kayıt decrypt değil)'
+  if (source === 'ntfs_mft_logfile') return 'NTFS MFT (LogFile doğrulandı)'
+  if (source === 'usn_journal') return 'USN zaman çizelgesi'
+  if (source === 'ntfs_logfile') return 'LogFile ipucu (kurtarılamaz)'
+  if (source === 'carver_duplicate') return 'Carve tekrarı (MFT ile çakışıyor)'
   return source ?? ''
 }

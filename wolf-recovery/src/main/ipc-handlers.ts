@@ -61,7 +61,31 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string) => {
+  ipcMain.handle('resolve-volume', (_event, letter: string) => {
+    try {
+      const engine = getEngine()
+      return engine.resolveVolume(letter)
+    } catch (err) {
+      console.error('[IPC] resolve-volume error:', err)
+      return null
+    }
+  })
+
+  ipcMain.handle('list-volume-letters', () => {
+    try {
+      const engine = getEngine()
+      return engine.listVolumeLetters()
+    } catch (err) {
+      console.error('[IPC] list-volume-letters error:', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string, scanOptions?: {
+    partitionIndex?: number
+    partitionStartSector?: number
+    partitionSizeInSectors?: number
+  }) => {
     try {
       const engine = getEngine()
       
@@ -76,7 +100,12 @@ export function registerIpcHandlers(): void {
       }
       
       const drivePath = driveIndex === -1 ? 'raid' : String(driveIndex)
-      console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType)
+      console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType, 'opts:', scanOptions ?? {})
+      const opts = scanOptions && Object.keys(scanOptions).length > 0 ? scanOptions : undefined
+      if (opts) {
+        return (engine.startScan as (a: string, b: string, c: object, d: (data: unknown) => void) => number)(
+          drivePath, scanType, opts, callback)
+      }
       return engine.startScan(drivePath, scanType, callback)
 
     } catch (err) {
@@ -404,6 +433,18 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('set-bitlocker-password', (_event, driveIndex: number, password: string) => {
+    try {
+      if (typeof driveIndex !== 'number' || typeof password !== 'string') {
+        return 'invalid arguments'
+      }
+      return getEngine().setBitLockerPassword(driveIndex, password)
+    } catch (err) {
+      console.error('[IPC] set-bitlocker-password error:', err)
+      return 'native error'
+    }
+  })
+
   ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string, confirmPhrase?: string) => {
     try {
       if (typeof driveIndex !== 'number' || typeof typedSerial !== 'string' || !typedSerial.trim()) {
@@ -517,6 +558,18 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] recover-files-batch error:', err)
       return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: String(err) }
+    }
+  })
+
+  ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {
+    try {
+      const parsed = parseRecoverIds(scanId, fileId)
+      if (!parsed.ok) return { success: false, error: parsed.error }
+      const engine = getEngine()
+      return engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
+    } catch (err) {
+      console.error('[IPC] read-file-preview error:', err)
+      return { success: false, error: String(err) }
     }
   })
 

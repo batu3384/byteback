@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import './ResultsView.css'
-import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List } from 'lucide-react'
-import type { FileRecord } from '../../../shared/ipc-contract'
-import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource } from '../../../shared/source-label'
+import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye } from 'lucide-react'
+import type { FileRecord, FilePreviewResult } from '../../../shared/ipc-contract'
+import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
+import { formatPreviewHex, previewDataUrl } from '../../../shared/preview-utils'
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -15,6 +16,7 @@ const PAGE_SIZE = 500
 
 function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
   const [filter, setFilter] = useState('all')
+  const [showDuplicates, setShowDuplicates] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
   const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree')
@@ -26,8 +28,45 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
   const [hfsTruncated, setHfsTruncated] = useState(false)
   const [recoverReport, setRecoverReport] = useState<string | null>(null)
+  const [preview, setPreview] = useState<FilePreviewResult | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewTargetId, setPreviewTargetId] = useState<number | null>(null)
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
+
+  const qualityHint = (raw?: FileRecord): string => {
+    if (!raw) return '—'
+    if (raw.source === 'carver' || raw.source === 'carver_bgc') {
+      const c = raw.confidence ?? 0
+      if (c >= 85) return 'Muhtemelen tam'
+      if (c >= 60) return 'Şüpheli'
+      return 'Zayıf'
+    }
+    return '—'
+  }
+
+  const loadPreview = async (fileId: number) => {
+    if (effectiveScanId <= 0 || !window.api?.readFilePreview) {
+      setPreview({ success: false, error: 'Önizleme için tamamlanmış tarama gerekli.' })
+      return
+    }
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
+    const effectiveDrive = driveIndex !== null ? driveIndex : -1
+    if (effectiveDrive < 0 && !raidState.active) {
+      setPreview({ success: false, error: 'Önizleme için sürücü veya RAID gerekli.' })
+      return
+    }
+    setPreviewLoading(true)
+    setPreviewTargetId(fileId)
+    try {
+      const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, fileId)
+      setPreview(res)
+    } catch {
+      setPreview({ success: false, error: 'Önizleme okunamadı.' })
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
 
   const loadPage = useCallback(async (scan: number, pageIndex: number) => {
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
@@ -76,7 +115,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       .catch(() => setHfsTruncated(false))
   }, [effectiveScanId, dbFiles, filesFound])
 
-  const sourceFiles: FileRecord[] = effectiveScanId > 0
+  const sourceFiles: FileRecord[] = (effectiveScanId > 0
     ? dbFiles
     : filesFound.map((f, i) => ({
         id: typeof f.id === 'number' ? f.id : i,
@@ -92,7 +131,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         modifiedAt: f.modifiedAt,
         runs: f.runs,
         source: f.source,
-      }))
+      }))).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
 
   const handleRecover = async () => {
     if (effectiveScanId <= 0) {
@@ -145,15 +184,24 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     let successCount = 0
     let failedCount = 0
     let zeroFilledCount = 0
+    let validatedOk = 0
+    let validatedBad = 0
     const errors: string[] = []
 
-    const noteResult = (res: { success?: boolean; zeroFilled?: boolean; error?: string }, id: number) => {
+    const noteValidation = (res: { validationScore?: number }) => {
+      if (typeof res.validationScore !== 'number' || res.validationScore < 0) return
+      if (res.validationScore >= 60) validatedOk++
+      else validatedBad++
+    }
+
+    const noteResult = (res: { success?: boolean; zeroFilled?: boolean; error?: string; validationScore?: number }, id: number) => {
       if (res.success) successCount++
       else {
         failedCount++
         if (res.error) errors.push(`#${id}: ${res.error}`)
       }
       if (res.zeroFilled) zeroFilledCount++
+      noteValidation(res)
     }
 
     if (fileIds.length > 1 && window.api.recoverFilesBatch) {
@@ -169,6 +217,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         zeroFilledCount = (res.results ?? []).filter((r) => r.zeroFilled).length
         for (const r of res.results ?? []) {
           if (!r.success && r.error) errors.push(r.error)
+          noteValidation(r)
         }
       } catch {
         failedCount = fileIds.length
@@ -193,11 +242,27 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
 
     setIsRecovering(false)
     const skipLine = skipped.length ? `\nAtlanan keşif kaydı: ${skipped.length}` : ''
+    const validationLine =
+      validatedOk + validatedBad > 0
+        ? `\nDoğrulama (carve): Tam ${validatedOk}, Bozuk ${validatedBad}`
+        : ''
     const errLine = errors.length ? `\nHatalar:\n${errors.slice(0, 8).join('\n')}` : ''
     setRecoverReport(
-      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${errLine}`,
+      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${validationLine}${errLine}`,
     )
   }
+
+  const handlePreviewSelected = () => {
+    if (selectedFiles.size !== 1) return
+    const id = Array.from(selectedFiles)[0]!
+    void loadPreview(id)
+  }
+
+  const previewRecord =
+    previewTargetId != null
+      ? recordById.get(previewTargetId) ?? sourceFiles.find((f) => f.id === previewTargetId)
+      : undefined
+  const previewImgUrl = preview ? previewDataUrl(preview) : null
 
   const toggleSelection = (id: number) => {
     const newSel = new Set(selectedFiles)
@@ -266,6 +331,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     id: f.id,
     name: f.name,
     rawPath: typeof f.path === 'string' ? f.path : '',
+    rawStatus: f.status ?? 0,
     size: formatSize(f.sizeBytes || 0),
     path: typeof f.path === 'string' && f.path ? f.path : '—',
     status: f.status === 1 ? 'Allocated / in-use' : 'Silinmiş / unallocated',
@@ -273,7 +339,10 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     sourceLabel: sourceDisplayLabel(f.source),
   }))
 
-  const filteredFiles = mappedFiles.filter(f => filter === 'all' || f.type === filter)
+  const filteredFiles = mappedFiles.filter(f => {
+    if (filter === 'deleted') return f.rawStatus === 0
+    return filter === 'all' || f.type === filter
+  })
 
   interface TreeNode {
     name: string
@@ -370,6 +439,15 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           </p>
         </div>
         <div className="results-actions" style={{ display: 'flex', gap: '12px' }}>
+          <button
+            className="btn-secondary"
+            style={{ display: 'flex', gap: '8px', opacity: selectedFiles.size !== 1 ? 0.5 : 1 }}
+            onClick={handlePreviewSelected}
+            disabled={selectedFiles.size !== 1 || previewLoading || effectiveScanId <= 0}
+            title="Tek dosya seçiliyken ilk 64 KB önizleme"
+          >
+            <Eye size={16} /> {previewLoading ? 'Önizleniyor...' : 'Önizle'}
+          </button>
           <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0}>
             <Download size={16} /> Dışa Aktar (CSV)
           </button>
@@ -388,6 +466,45 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       {recoverReport && (
         <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', whiteSpace: 'pre-wrap' }}>
           {recoverReport}
+        </div>
+      )}
+      {(preview || previewLoading) && (
+        <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <strong>Önizleme{previewRecord ? `: ${previewRecord.name}` : ''}</strong>
+            <button className="btn-secondary" style={{ padding: '4px 10px' }} onClick={() => { setPreview(null); setPreviewTargetId(null) }}>
+              Kapat
+            </button>
+          </div>
+          {previewLoading && !preview ? (
+            <p style={{ color: 'var(--text-muted)' }}>Okunuyor...</p>
+          ) : preview?.success ? (
+            <>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '8px' }}>
+                Tür: {preview.kind ?? 'binary'} · {preview.data?.length ?? 0} bayt
+              </p>
+              {previewImgUrl ? (
+                <img
+                  src={previewImgUrl}
+                  alt={previewRecord?.name ?? 'önizleme'}
+                  style={{ maxWidth: '100%', maxHeight: '240px', objectFit: 'contain', borderRadius: '4px' }}
+                />
+              ) : preview.kind === 'text' && preview.data ? (
+                <pre style={{ fontFamily: 'monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
+                  {new TextDecoder('utf-8', { fatal: false }).decode(preview.data.slice(0, 4096))}
+                </pre>
+              ) : preview.kind === 'pdf' ? (
+                <p style={{ color: 'var(--text-muted)' }}>PDF — yapısal önizleme yok; hex dökümü aşağıda.</p>
+              ) : null}
+              {preview.data && preview.data.length > 0 && preview.kind !== 'text' ? (
+                <pre style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '12px', maxHeight: '160px', overflow: 'auto' }}>
+                  {formatPreviewHex(preview.data)}
+                </pre>
+              ) : null}
+            </>
+          ) : (
+            <p style={{ color: 'var(--alert-red)' }}>{preview?.error ?? 'Önizleme alınamadı.'}</p>
+          )}
         </div>
       )}
       {hfsTruncated && (
@@ -416,6 +533,11 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             {viewMode === 'tree' ? 'Liste' : 'Ağaç'}
           </button>
           <button className={`btn-secondary ${filter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('all')}>Tümü</button>
+          <button className={`btn-secondary ${filter === 'deleted' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'deleted' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('deleted')} data-testid="filter-deleted">Yalnız silinmiş</button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px', fontSize: '13px' }}>
+            <input type="checkbox" checked={showDuplicates} onChange={(e) => setShowDuplicates(e.target.checked)} data-testid="show-duplicates" />
+            Tekrarları göster
+          </label>
           <button className={`btn-secondary ${filter === 'img' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'img' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('img')}>Resimler</button>
           <button className={`btn-secondary ${filter === 'doc' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'doc' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('doc')}>Belgeler</button>
           <button className={`btn-secondary ${filter === 'video' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'video' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('video')}>Videolar</button>
@@ -441,18 +563,22 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Boyut</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Konum</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kaynak</th>
+                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kalite</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Durum</th>
               </tr>
             </thead>
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     Bu kategoride dosya bulunamadı.
                   </td>
                 </tr>
               ) : (
-                filteredFiles.map((f) => (
+                filteredFiles.map((f) => {
+                  const raw = recordById.get(f.id) ?? sourceFiles.find((x) => x.id === f.id)
+                  const kalite = qualityHint(raw)
+                  return (
                   <tr key={f.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent' }}>
                     <td style={{ padding: '12px' }}>
                       <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} />
@@ -464,6 +590,9 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.size}</td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.path}</td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
+                    <td style={{ padding: '12px', fontSize: '0.8rem', color: kalite === 'Zayıf' ? 'var(--alert-red)' : kalite === 'Şüpheli' ? 'var(--warning-yellow)' : 'var(--text-muted)' }}>
+                      {kalite}
+                    </td>
                     <td style={{ padding: '12px' }}>
                       <span style={{ 
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
@@ -475,7 +604,8 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                       </span>
                     </td>
                   </tr>
-                ))
+                  )
+                })
               )}
             </tbody>
           </table>

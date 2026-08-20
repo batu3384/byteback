@@ -55,6 +55,7 @@ function App(): React.ReactElement {
         if (scanId > 0) setActiveScanId(scanId)
         if (status === 1) setScanStatus('Tarama Tamamlandı')
         else if (status === 2) setScanStatus('Tarama İptal Edildi')
+        else if (status === 4) setScanStatus('Tarama Duraklatıldı — devam edilebilir')
         else setScanStatus('Tarama Başarısız')
         if (timerRef.current) clearInterval(timerRef.current)
         setScanProgress(prev => ({ ...prev, current: prev.total > 0 ? prev.total : prev.current }))
@@ -95,20 +96,22 @@ function App(): React.ReactElement {
     }
   }, []);
 
-  const handleStartScan = (driveIndex: number, scanType: string) => {
+  const handleStartScan = (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
+    const isResume = !!(scanOptions?.resumeScanId && scanOptions.resumeScanId > 0)
     setSelectedDrive(driveIndex)
     setScanConfig({ driveIndex, scanType })
-    
-    // Reset Global State
-    setFilesFound([])
-    setScanProgress({ current: 0, total: 100, badSectors: [] })
-    setScanStatus('Tarama Sürüyor...')
-    setScanElapsed(0)
+
+    if (!isResume) {
+      setFilesFound([])
+      setScanProgress({ current: 0, total: 100, badSectors: [] })
+      setScanElapsed(0)
+    }
+    setScanStatus(isResume ? 'Tarama Devam Ediyor...' : 'Tarama Sürüyor...')
     setActivePage('scan')
     
     // Start Engine Scan
     if (window.api && window.api.startScan) {
-      window.api.startScan(driveIndex, scanType).then(id => {
+      window.api.startScan(driveIndex, scanType, scanOptions).then(id => {
         if (id > 0) setActiveScanId(id)
       })
     }

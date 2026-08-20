@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
 import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
+import { scanProfileLabel } from '../../../shared/scan-profiles'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -170,7 +171,7 @@ function ScanView({
               Sürücü {driveIndex === -1 ? 'RAID' : driveIndex} taranıyor
             </h2>
             <p style={{ color: 'var(--text-muted)' }}>
-              {scanType === 'quick' ? 'Dosya sistemi ($MFT yürüyüşü + FAT/ext4/HFS/APFS + bağlı VSS)' : 'Derin (dosya sistemi + CPU Aho-Corasick imza; GPU yok)'} • {status}
+              {scanProfileLabel(scanType)} • {status}
             </p>
           </div>
         </div>
@@ -198,7 +199,7 @@ function ScanView({
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        VSS: volume serial + boyut ile bağlanır; kurtarma shadow copy aygıtından okur. APFS: nx_fs_oid + ilk 256 blok + omap yaprak paddr (katalog adı keşif, extent kurtarılabilir). BitLocker: FVE etiket; FVEK varsa AES-128-XTS okuma çözülür, şifre kırma yok. Derin imza: CPU Aho-Corasick, GPU PFAC yok. E01 çok segment. PhysicalDrive imhası Yok Edici’de.
+        VSS: volume serial + boyut ile bağlanır; kurtarma shadow copy aygıtından okur. APFS: nx_fs_oid + ilk 256 blok + omap yaprak paddr (katalog adı keşif, extent kurtarılabilir). BitLocker: FVE etiket; FVEK veya parola ile AES-XTS çözülür; TPM/startup-key yok. Derin imza: CPU Aho-Corasick, GPU PFAC yok. E01 çok segment. PhysicalDrive imhası Yok Edici’de.
       </div>
       {filesFound.length >= 5000 && (
         <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
