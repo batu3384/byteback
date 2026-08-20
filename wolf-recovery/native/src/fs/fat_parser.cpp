@@ -461,17 +461,8 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
     std::vector<uint32_t> dirClusters = { bpb->rootDirectoryCluster };
     std::vector<uint8_t> clusterBuf(bytesPerCluster);
 
-    // ---- exFAT entry-set state machine ----
-    // An exFAT directory is a flat sequence of 32-byte entries. A file is a
-    // "set": one File entry (type code 0x05), followed by a Stream Extension
-    // entry (0x45) carrying the cluster/length, followed by one or more File
-    // Name entries (0x41) each holding up to 15 UTF-16LE characters. The old
-    // parser compared masked type codes against the wrong constants (0x0C and
-    // 0x01), so stream/name entries never matched and no file was ever
-    // reported. Bit 0x80 = "in use"; clear means deleted.
-    //
-    // A pending set accumulates until the next File entry (or scan end), so
-    // sets that span a cluster boundary survive the FAT chain walk.
+    // exFAT entry-set state: match members by SetChecksum (offset 2) so unrelated
+    // deleted/allocated entries between fragments do not break reassembly.
     struct ExfatPending {
         bool active = false;
         bool isDir = false;
@@ -480,11 +471,12 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
         uint64_t modified = 0;
         uint32_t firstCluster = 0;
         uint64_t dataLength = 0;
-        uint8_t nameLength = 0;       // in UTF-16 code units
-        std::vector<uint16_t> name;   // accumulated name units
+        uint8_t nameLength = 0;
+        uint16_t setChecksum = 0;
+        bool haveStream = false;
+        std::vector<uint16_t> name;
     } pending;
 
-    // DOS date/time conversion lives in fs/fat_chain.cpp (unit-tested).
     auto dosTimestampToUnix = [](uint16_t date, uint16_t time) -> int64_t {
         return fat::dosTimestampToUnix(date, time);
     };
@@ -537,9 +529,11 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
         pending = ExfatPending{};
     };
 
-    // Track the current directory's display path for nested results (best
-    // effort — exFAT does not store parent ids, so paths are reconstructed
-    // per recursion level by the caller-side list order).
+    auto setChecksumMatches = [](const uint8_t* e, uint16_t expected) {
+        uint16_t chk = static_cast<uint16_t>(e[2]) | (static_cast<uint16_t>(e[3]) << 8);
+        return chk == expected;
+    };
+
     std::string currentPath = "/";
 
     while (!dirClusters.empty()) {
@@ -571,40 +565,42 @@ void FATParser::parseExFAT(wolf::DiskReader& reader, uint64_t partitionOffset, F
                 }
 
                 if (typeCode == 0x05) {
-                    // File directory entry: starts a new set. Emit whatever
-                    // was pending first.
+                    uint16_t newChk = static_cast<uint16_t>(e[2]) | (static_cast<uint16_t>(e[3]) << 8);
+                    if (pending.active && (!pending.haveStream || pending.name.empty()) &&
+                        newChk != pending.setChecksum) {
+                        continue;
+                    }
                     emitPending(currentPath);
                     pending.active = true;
                     pending.inUse = inUse;
-                    // +0x04 FileAttributes (2 bytes LE); 0x10 = directory.
+                    pending.setChecksum = newChk;
+                    pending.haveStream = false;
+                    pending.name.clear();
                     uint16_t attr = static_cast<uint16_t>(e[4]) | (static_cast<uint16_t>(e[5]) << 8);
                     pending.isDir = (attr & 0x10) != 0;
-                    // +0x08 Created / +0x0C LastModified — 4 bytes each:
-                    // 16-bit DOS date then 16-bit DOS time (LE).
                     pending.created = dosTimestampToUnix(
                         static_cast<uint16_t>(e[8]) | (static_cast<uint16_t>(e[9]) << 8),
                         static_cast<uint16_t>(e[10]) | (static_cast<uint16_t>(e[11]) << 8));
                     pending.modified = dosTimestampToUnix(
                         static_cast<uint16_t>(e[12]) | (static_cast<uint16_t>(e[13]) << 8),
                         static_cast<uint16_t>(e[14]) | (static_cast<uint16_t>(e[15]) << 8));
-                } else if (typeCode == 0x45 && pending.active) {
-                    // Stream extension: +0x03 FileNameLength, +0x14 FirstCluster
-                    // (u32), +0x18 DataLength (u64).
-                    pending.nameLength = e[3];
+                } else if (typeCode == 0x45 && pending.active &&
+                           setChecksumMatches(e, pending.setChecksum)) {
+                    pending.nameLength = e[6];
                     pending.firstCluster = static_cast<uint32_t>(e[20]) |
                                            (static_cast<uint32_t>(e[21]) << 8) |
                                            (static_cast<uint32_t>(e[22]) << 16) |
                                            (static_cast<uint32_t>(e[23]) << 24);
                     uint64_t len = 0;
-                    for (int i = 7; i >= 0; --i) len = (len << 8) | e[24 + i];
+                    for (int i = 7; i >= 0; --i) len = (len << 8) | e[32 + i];
                     pending.dataLength = len;
-                } else if (typeCode == 0x41 && pending.active) {
-                    // File name: +0x02..0x1F = 15 UTF-16LE code units.
+                    pending.haveStream = true;
+                } else if (typeCode == 0x41 && pending.active &&
+                           setChecksumMatches(e, pending.setChecksum)) {
                     for (int i = 0; i < 15; ++i) {
-                        if (pending.nameLength > 0 &&
-                            pending.name.size() >= pending.nameLength) break;
-                        uint16_t ch = static_cast<uint16_t>(e[2 + i * 2]) |
-                                      (static_cast<uint16_t>(e[3 + i * 2]) << 8);
+                        if (pending.nameLength > 0 && pending.name.size() >= pending.nameLength) break;
+                        uint16_t ch = static_cast<uint16_t>(e[4 + i * 2]) |
+                                      (static_cast<uint16_t>(e[5 + i * 2]) << 8);
                         if (ch == 0) break;
                         pending.name.push_back(ch);
                     }
