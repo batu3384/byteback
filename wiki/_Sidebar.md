@@ -1,25 +1,25 @@
-**[Home](Home)**
+**[Home](Home.md)**
 
 ---
 
 **Overview**
 
-- [Home](Home)
+- [Home](Home.md)
 
 **Setup**
 
-- [Getting Started](Getting-Started)
+- [Getting Started](Getting-Started.md)
 
 **Technical**
 
-- [Architecture](Architecture)
-- [Security](Security)
+- [Architecture](Architecture.md)
+- [Security](Security.md)
 
 **Planning**
 
-- [Roadmap](Roadmap)
+- [Roadmap](Roadmap.md)
 
 **Help**
 
-- [Troubleshooting](Troubleshooting)
-- [FAQ](FAQ)
+- [Troubleshooting](Troubleshooting.md)
+- [FAQ](FAQ.md)

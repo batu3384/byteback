@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 
 contextBridge.exposeInMainWorld('api', {
   getVersion: () => ipcRenderer.invoke('get-version'),
+  getDbStatus: () => ipcRenderer.invoke('get-db-status') as Promise<{ ready: boolean; error?: string }>,
   isAdmin: () => ipcRenderer.invoke('is-admin'),
   listDrives: () => ipcRenderer.invoke('list-drives'),
   listPartitions: (driveIndex: number) => ipcRenderer.invoke('list-partitions', driveIndex),

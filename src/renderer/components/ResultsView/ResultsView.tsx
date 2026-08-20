@@ -376,38 +376,42 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       const isOpen = expandedDirs.has(dir.path)
       const childCount = dir.files.length + dir.dirs.size
       out.push(
-        <div
+        <button
+          type="button"
           key={'d:' + dir.path}
+          aria-expanded={isOpen}
           onClick={() => {
             const next = new Set(expandedDirs)
             if (next.has(dir.path)) next.delete(dir.path)
             else next.add(dir.path)
             setExpandedDirs(next)
           }}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', cursor: 'pointer', marginLeft: depth * 16, borderRadius: '4px' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', cursor: 'pointer', marginLeft: depth * 16, borderRadius: '4px', width: 'calc(100% - ' + (depth * 16) + 'px)', background: 'transparent', border: 'none', color: 'inherit', textAlign: 'left' }}
           onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           {isOpen ? <FolderOpen size={16} color="var(--accent-blue)" /> : <Folder size={16} color="var(--accent-blue)" />}
           <span style={{ fontWeight: 500 }}>{dir.name}</span>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{childCount} öğe</span>
-        </div>
+        </button>
       )
       if (isOpen) out.push(...renderTreeNode(dir, depth + 1))
     }
     for (const f of node.files) {
       out.push(
-        <div
+        <button
+          type="button"
           key={'f:' + f.id}
+          aria-pressed={selectedFiles.has(f.id)}
           onClick={() => toggleSelection(f.id)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', marginLeft: (depth + 1) * 16, cursor: 'pointer', borderRadius: '4px', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', marginLeft: (depth + 1) * 16, cursor: 'pointer', borderRadius: '4px', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', border: 'none', color: 'inherit', textAlign: 'left', width: 'calc(100% - ' + ((depth + 1) * 16) + 'px)' }}
         >
-          <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} style={{ width: 14, height: 14 }} />
+          <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} onClick={(e) => e.stopPropagation()} style={{ width: 14, height: 14 }} aria-hidden="true" tabIndex={-1} />
           {getIconForType(f.type)}
           <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
           {f.sourceLabel ? <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', flexShrink: 0 }}>{f.sourceLabel}</span> : null}
           <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>{f.size}</span>
-        </div>
+        </button>
       )
     }
     return out
