@@ -6,7 +6,7 @@ const root = path.join(__dirname, '..')
 const mainJs = path.join(root, 'out', 'main', 'main.js')
 
 test.describe('Recovery flow UI', () => {
-  test('results view exposes recovery controls', async () => {
+  test('results page blocked until scan completes', async () => {
     test.skip(!existsSync(mainJs), 'out/main/main.js missing — npm run build first')
 
     const app = await electron.launch({ args: [mainJs], cwd: root })
@@ -14,13 +14,11 @@ test.describe('Recovery flow UI', () => {
       const win = await app.firstWindow()
       await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
 
-      await win.getByRole('button', { name: /Sonuçlar|Results/i }).click().catch(() => {
-        return win.locator('nav').getByText(/Sonuç/i).first().click()
-      })
-
-      await expect(win.getByTestId('show-duplicates')).toBeVisible({ timeout: 10_000 })
-      await expect(win.getByTestId('filter-deleted')).toBeVisible()
-      await expect(win.getByRole('button', { name: /Seçilenleri Kurtar/i })).toBeVisible()
+      const resultsBtn = win.getByRole('button', { name: /Kurtarma Sonuçları/i })
+      await expect(resultsBtn).toBeDisabled()
+      await resultsBtn.click({ force: true })
+      await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')
+      await expect(win.getByTestId('show-duplicates')).not.toBeVisible()
     } finally {
       await app.close()
     }
