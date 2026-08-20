@@ -34,4 +34,6 @@ TEST(PathUtil, DestDirRejectsDotDot) {
     EXPECT_FALSE(destDirIsSafe("C:\\out\\..\\Windows"));
     EXPECT_FALSE(destDirIsSafe("../evil"));
     EXPECT_TRUE(destDirIsSafe("C:\\cases\\wolf"));
+    EXPECT_TRUE(destDirIsSafe("D:\\case..lab\\out"));
+    EXPECT_FALSE(destDirIsSafe("C:\\Windows\\Temp"));
 }

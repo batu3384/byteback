@@ -1,5 +1,7 @@
 #include "recovery/path_util.h"
 #include <filesystem>
+#include <cctype>
+#include <string>
 
 namespace wolf {
 
@@ -33,7 +35,23 @@ std::string uniqueDestPath(const std::string& destDir, const std::string& name) 
 
 bool destDirIsSafe(const std::string& destDir) {
     if (destDir.empty()) return false;
-    return destDir.find("..") == std::string::npos;
+    try {
+        std::filesystem::path p(destDir);
+        if (!p.is_absolute()) return false;
+        for (const auto& part : p) {
+            if (part == "..") return false;
+        }
+        std::string norm = p.lexically_normal().string();
+        std::string lower;
+        lower.reserve(norm.size());
+        for (unsigned char c : norm) lower += static_cast<char>(std::tolower(c));
+        if (lower.rfind("c:\\windows", 0) == 0) return false;
+        if (lower.rfind("c:\\program files", 0) == 0) return false;
+        if (lower.rfind("c:\\program files (x86)", 0) == 0) return false;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 } // namespace wolf

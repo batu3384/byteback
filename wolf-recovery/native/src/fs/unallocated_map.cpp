@@ -380,10 +380,33 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
             return buildNtfsUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
         case VolumeFsKind::Fat:
             return buildFatUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
-        default:
+        case VolumeFsKind::ExFat:
+        case VolumeFsKind::Refs:
+        case VolumeFsKind::Apfs:
+        case VolumeFsKind::Hfs:
+        case VolumeFsKind::Ext4:
+        case VolumeFsKind::Unknown:
             return {};
     }
+    return {};
 }
+
+namespace {
+
+bool unallocatedMapUnsupported(VolumeFsKind kind) {
+    switch (kind) {
+        case VolumeFsKind::ExFat:
+        case VolumeFsKind::Refs:
+        case VolumeFsKind::Apfs:
+        case VolumeFsKind::Hfs:
+        case VolumeFsKind::Ext4:
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
 
 std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
                                                    int64_t partitionStartSector,
@@ -413,13 +436,20 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
         }
     }
 
+    bool sawUnsupported = false;
     for (const auto& part : parts) {
         if (part.sizeInSectors == 0) continue;
         uint64_t offsetBytes = part.startSector * sectorSize;
         uint64_t sizeBytes = part.sizeInSectors * sectorSize;
         VolumeFsKind kind = probeVolumeAt(reader, offsetBytes, sectorSize);
+        if (unallocatedMapUnsupported(kind)) sawUnsupported = true;
         auto u = buildUnallocatedRanges(reader, kind, offsetBytes, sizeBytes);
         out.insert(out.end(), u.begin(), u.end());
+    }
+    if (out.empty() && !sawUnsupported && !parts.empty()) {
+        for (const auto& part : parts) {
+            if (part.sizeInSectors > 0) pushRange(out, part.startSector, part.sizeInSectors);
+        }
     }
     mergeSectorRangesInPlace(out);
     return out;

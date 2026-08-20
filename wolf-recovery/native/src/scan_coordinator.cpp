@@ -267,6 +267,10 @@ void runCarveScan(DiskReader& reader,
         carveRanges = collectUnallocatedForScan(reader, pStart, pSize);
     }
     if (carveRanges.empty()) {
+        if (unallocatedOnly) {
+            // ponytail: no FS unallocated map (exFAT/ReFS/APFS) — skip carve, not full volume.
+            return;
+        }
         carveRanges.push_back({boundFirst, boundLast > boundFirst ? boundLast - boundFirst : 0});
     }
 
@@ -329,26 +333,30 @@ void runDeepScan(DiskReader& reader,
                  std::atomic<bool>* isRunning,
                  std::vector<uint64_t>* badSectorOut,
                  ScanBounds bounds,
-                 uint64_t resumeAt) {
+                 ScanTarget target,
+                 ScanCheckpointCallback onCheckpoint) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
-    if (resumeAt < totalSectors / 2) {
+    if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
             onProgress(current / 2, denom);
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
+        if (onCheckpoint) onCheckpoint(true, 0);
     }
 
-    uint64_t carveResume = (resumeAt > totalSectors / 2) ? (resumeAt - totalSectors / 2) : 0;
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
-        onProgress(denom / 2 + current / 2, denom);
+        uint64_t metaWeight = totalSectors / 2;
+        onProgress(metaWeight + current, metaWeight + denom);
+        if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, true, carveResume);
+    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, true,
+                 target.carveResumeSector);
     onProgress(totalSectors, totalSectors);
 }
 
@@ -358,26 +366,30 @@ void runFullCarveScan(DiskReader& reader,
                       std::atomic<bool>* isRunning,
                       std::vector<uint64_t>* badSectorOut,
                       ScanBounds bounds,
-                      uint64_t resumeAt) {
+                      ScanTarget target,
+                      ScanCheckpointCallback onCheckpoint) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
-    if (resumeAt < totalSectors / 2) {
+    if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
             onProgress(current / 2, denom);
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
+        if (onCheckpoint) onCheckpoint(true, 0);
     }
 
-    uint64_t carveResume = (resumeAt > totalSectors / 2) ? (resumeAt - totalSectors / 2) : 0;
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
-        onProgress(denom / 2 + current / 2, denom);
+        uint64_t metaWeight = totalSectors / 2;
+        onProgress(metaWeight + current, metaWeight + denom);
+        if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false, carveResume);
+    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
+                 target.carveResumeSector);
     onProgress(totalSectors, totalSectors);
 }
 
@@ -409,13 +421,15 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
                                std::shared_ptr<VirtualRaid> raid,
                                FinishedCallback onFinished,
                                const DiskReader* fvekSource,
-                               ScanTarget target) {
+                               ScanTarget target,
+                               ScanCheckpointCallback onCheckpoint) {
     stopScan();
     isRunning = true;
 
     scanThread = std::thread(&ScanCoordinator::scanWorker, this, drivePath, scanType,
                              onFileFound, onProgress, badSectorOut, std::move(raid),
-                             std::move(onFinished), fvekSource, std::move(target));
+                             std::move(onFinished), fvekSource, std::move(target),
+                             std::move(onCheckpoint));
 }
 
 void ScanCoordinator::stopScan() {
@@ -430,7 +444,8 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 std::shared_ptr<VirtualRaid> raid,
                                 FinishedCallback onFinished,
                                 const DiskReader* fvekSource,
-                                ScanTarget target) {
+                                ScanTarget target,
+                                ScanCheckpointCallback onCheckpoint) {
     DiskReader reader;
     if (raid) {
         reader.setRaidBackend(std::move(raid));
@@ -461,9 +476,13 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
     if (scanType == "quick") {
         runQuickScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, false, bounds);
     } else if (scanType == "deep") {
-        runDeepScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target.resumeAtSector);
+        runDeepScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
     } else if (scanType == "full_carve") {
-        runFullCarveScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target.resumeAtSector);
+        runFullCarveScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
+    } else {
+        if (onFinished) onFinished(3);
+        isRunning = false;
+        return;
     }
 
     syncBadSectors(reader, badSectorOut);

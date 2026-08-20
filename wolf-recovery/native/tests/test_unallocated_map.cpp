@@ -78,6 +78,23 @@ TEST(UnallocatedMap, CarveUnallocatedOnlySkipsAllocatedPng) {
     EXPECT_TRUE(carvedFree);
 }
 
+TEST(UnallocatedMap, UnknownFsUnallocatedOnlySkipsCarve) {
+    std::vector<uint8_t> disk(512 * 64, 0);
+    const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    std::memcpy(disk.data() + 10 * 512, pngSig, sizeof(pngSig));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::atomic<bool> running{true};
+    size_t carved = 0;
+    runCarveScan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+
+    EXPECT_EQ(carved, 0u);
+}
+
 TEST(UnallocatedMap, FullCarveFindsPngInAllocatedCluster) {
     auto fatVol = wolf::testfix::buildFat16Volume();
     const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
