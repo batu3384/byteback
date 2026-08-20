@@ -25,6 +25,9 @@ Thumbs.db
 playwright-report/
 test-results/
 
+# Stale nested folder after flatten (delete locally if present)
+byteback/
+
 # Logs & IDE / agent session state
 *.log
 debug_electron.log
