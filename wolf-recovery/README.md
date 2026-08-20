@@ -21,6 +21,10 @@ yeniden kurulum, SSD/TRIM farkındalığı).
   adlar, exFAT entry-set durum makinesi, DOS zaman damgaları.
 - **Ext2/3/4**: extent tree (derinlik destekli), directory entry'lerden
   gerçek dosya adları, silinmiş inode/dirent kanıtı.
+- **ReFS**: boot/SUPB tanıma, ministore metadata walk, integrity-stream
+  CRC64-ECMA doğrulama (SUPB self-check + resident dosya trailer).
+- **E01 okuma**: yerel `.E01` (çok segment) + HTTP Range ham imaj; `attachEwfImage` /
+  `attachHttpRawImage` / `attachRawFile` DiskReader API.
 - **HFS+ / APFS**: HFS+ katalog B-tree (iptal edilene kadar). APFS NXSB
   (`nx_block_size`, `nx_fs_oid[100]`), APSB volume, btree yaprak drec
   (`source=apfs_file`, keşif) ve file extent (`apfs_extent`, run ile kurtarma).
@@ -90,6 +94,15 @@ npm run dist           # NSIS x64 kurulum paketi (release/)
 > öncesinde `cmake -S native -B native/build -DWOLF_BUILD_TESTS=ON` ile
 > yeniden yapılandırın. Test sayısı `ctest -C Release` çıktısına bağlıdır;
 > `Ewf.OptionalEwfinfoCrossCheck` `WOLF_EWFINFO` yoksa skip olur.
+
+## Benchmark (geliştirici)
+
+| Senaryo | Ortam | Not |
+|---------|-------|-----|
+| 64 MiB memory volume, deep scan | `WOLF_RUN_BENCH=1 ctest -R BenchScan` | Programatik disk; gerçek SSD/HDD değil |
+| 500 GB sparse deep scan | Planlanıyor | CI süresi için henüz otomatik değil |
+
+Sonuçlar makineye bağlıdır; tablo dürüst referans içindir, pazarlama iddiası değil.
 
 ## Yol Haritası Durumu
 1. **Faz 0–6 (motor)** — güvenilirlik, NTFS derinliği, VSS, RAID/batch,
