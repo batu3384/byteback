@@ -10,6 +10,8 @@
 namespace wolf {
 
 class VirtualRaid;
+class EwfReader;
+class ByteSource;
 
 struct DriveInfo {
     int index;
@@ -76,6 +78,13 @@ public:
     void detachMemoryVolume();
     bool hasMemoryVolume() const;
 
+    // EWF (.E01) or raw image over http(s) Range (ponytail: multi-segment EWF local only).
+    bool attachEwfImage(const std::string& pathOrUrl, std::string* errOut = nullptr);
+    bool attachRawFile(const std::string& path, std::string* errOut = nullptr);
+    bool attachHttpRawImage(const std::string& url, std::string* errOut = nullptr);
+    void detachImageBackend();
+    bool hasImageBackend() const;
+
     // AES-XTS FVEK: 32 bytes (AES-128-XTS) or 64 bytes (AES-256-XTS).
     // Decrypts each sector after read. Not a password cracker — caller supplies FVEK.
     bool setXtsFvek(const uint8_t* key, size_t keyBytes);
@@ -102,6 +111,9 @@ private:
     std::shared_ptr<VirtualRaid> raidBackend_;
     std::vector<uint8_t> memoryImage_;
     bool memoryMode_ = false;
+    std::unique_ptr<EwfReader> ewfBackend_;
+    std::unique_ptr<ByteSource> rawBackend_;
+    bool rawBackendIsHttp_ = false;
     uint8_t xtsKey_[64]{};
     uint8_t xtsKeyLen_ = 0; // 0=off, 32=AES-128-XTS, 64=AES-256-XTS
 

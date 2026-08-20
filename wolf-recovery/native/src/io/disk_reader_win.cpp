@@ -1,6 +1,8 @@
 #include "wolf_io.h"
 #include "fs/virtual_raid.h"
 #include "crypto/wolf_aes.h"
+#include "imager/ewf_reader.h"
+#include "io/byte_source.h"
 #include <cstring>
 #include <algorithm>
 
@@ -228,6 +230,9 @@ void DiskReader::closeDriveUnlocked() {
     raidBackend_.reset();
     memoryImage_.clear();
     memoryMode_ = false;
+    ewfBackend_.reset();
+    rawBackend_.reset();
+    rawBackendIsHttp_ = false;
 }
 
 void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
@@ -269,6 +274,71 @@ void DiskReader::detachMemoryVolume() {
 bool DiskReader::hasMemoryVolume() const {
     std::lock_guard<std::mutex> lock(ioMutex_);
     return memoryMode_;
+}
+
+bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
+    auto reader = std::make_unique<EwfReader>();
+    std::string err;
+    if (!reader->open(pathOrUrl, err)) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    ewfBackend_ = std::move(reader);
+    sectorSize_ = ewfBackend_->bytesPerSector();
+    diskSize_ = ewfBackend_->imageBytes();
+    currentDriveIndex_ = -1;
+    return true;
+}
+
+bool DiskReader::attachRawFile(const std::string& path, std::string* errOut) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
+    std::string err;
+    auto src = openFileByteSource(path, err);
+    if (!src) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    rawBackend_ = std::move(src);
+    rawBackendIsHttp_ = false;
+    sectorSize_ = 512;
+    diskSize_ = rawBackend_->size();
+    currentDriveIndex_ = -1;
+    return true;
+}
+
+bool DiskReader::attachHttpRawImage(const std::string& url, std::string* errOut) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    closeDriveUnlocked();
+    std::string err;
+    auto src = openHttpByteSource(url, err);
+    if (!src) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    rawBackend_ = std::move(src);
+    rawBackendIsHttp_ = true;
+    sectorSize_ = 512;
+    diskSize_ = rawBackend_->size();
+    currentDriveIndex_ = -1;
+    return true;
+}
+
+void DiskReader::detachImageBackend() {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    ewfBackend_.reset();
+    rawBackend_.reset();
+    rawBackendIsHttp_ = false;
+    if (!memoryMode_ && handle_ == INVALID_HANDLE_VALUE && !raidBackend_) {
+        diskSize_ = 0;
+    }
+}
+
+bool DiskReader::hasImageBackend() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return static_cast<bool>(ewfBackend_) || static_cast<bool>(rawBackend_);
 }
 
 bool DiskReader::setXtsFvek(const uint8_t* key, size_t keyBytes) {
@@ -388,6 +458,44 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         return result;
     }
 
+    if (ewfBackend_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        std::string err;
+        if (!ewfBackend_->read(offsetBytes, buffer, sizeBytes, err)) {
+            result.error = err.empty() ? "ewf read failed" : err;
+            noteBadRead(offsetBytes, sizeBytes);
+            return result;
+        }
+        result.success = true;
+        result.bytesRead = sizeBytes;
+        maybeDecryptXts(offsetBytes, sizeBytes, buffer);
+        return result;
+    }
+
+    if (rawBackend_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        if (offsetBytes + sizeBytes > rawBackend_->size()) {
+            result.error = "read past end of image";
+            noteBadRead(offsetBytes, sizeBytes);
+            return result;
+        }
+        if (!rawBackend_->read(offsetBytes, buffer, sizeBytes)) {
+            result.error = rawBackend_->lastError();
+            noteBadRead(offsetBytes, sizeBytes);
+            return result;
+        }
+        result.success = true;
+        result.bytesRead = sizeBytes;
+        maybeDecryptXts(offsetBytes, sizeBytes, buffer);
+        return result;
+    }
+
     if (raidBackend_) {
         if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
             result.error = "Read offset and size must be sector-aligned";
@@ -426,7 +534,6 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         return result;
     }
 
-    // Validate alignment
     if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
         result.error = "Read offset and size must be sector-aligned";
         return result;
@@ -509,7 +616,8 @@ bool DiskReader::openedWithWriteShare() const {
 }
 bool DiskReader::isOpen() const {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    return handle_ != INVALID_HANDLE_VALUE || memoryMode_ || static_cast<bool>(raidBackend_);
+    return handle_ != INVALID_HANDLE_VALUE || memoryMode_ || static_cast<bool>(raidBackend_) ||
+           static_cast<bool>(ewfBackend_) || static_cast<bool>(rawBackend_);
 }
 
 } // namespace wolf
