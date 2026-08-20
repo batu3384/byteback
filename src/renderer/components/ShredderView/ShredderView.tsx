@@ -16,21 +16,43 @@ const ShredderView: React.FC = () => {
     void window.api.listDrives().then((list) => {
       setDrives(list)
       setSsdWarning(list.some((d: { type?: string }) => d.type === 'SSD'))
-    }).catch(() => undefined)
+    }).catch((e: unknown) => {
+      console.error('listDrives failed', e)
+    })
   }, [])
 
   const handleFreeSpaceWipe = async () => {
     if (!window.api?.pickAndWipeFreeSpace) return
+    setWipeError(null)
     setStatus('shredding')
-    const ok = await window.api.pickAndWipeFreeSpace()
-    setStatus(ok ? 'done' : 'failed')
+    try {
+      const res = await window.api.pickAndWipeFreeSpace()
+      if (res.ok) setStatus('done')
+      else {
+        setWipeError(res.error ?? 'Boş alan imhası başarısız')
+        setStatus('failed')
+      }
+    } catch (e: unknown) {
+      setWipeError(e instanceof Error ? e.message : 'Boş alan imhası hatası')
+      setStatus('failed')
+    }
   }
 
   const handleFileWipe = async () => {
     if (!window.api?.pickAndWipeFile) return
+    setWipeError(null)
     setStatus('shredding')
-    const ok = await window.api.pickAndWipeFile()
-    setStatus(ok ? 'done' : 'failed')
+    try {
+      const res = await window.api.pickAndWipeFile()
+      if (res.ok) setStatus('done')
+      else {
+        setWipeError(res.error ?? 'Dosya imhası başarısız')
+        setStatus('failed')
+      }
+    } catch (e: unknown) {
+      setWipeError(e instanceof Error ? e.message : 'Dosya imhası hatası')
+      setStatus('failed')
+    }
   }
 
   const handlePhysicalWipe = async () => {
@@ -160,8 +182,10 @@ const ShredderView: React.FC = () => {
           {status === 'failed' && (
             <div className="glass-panel" role="alert" style={{ padding: '24px', textAlign: 'center' }}>
               <h3 style={{ marginBottom: '8px' }}>İmha yapılmadı</h3>
-              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>İptal, seri uyuşmazlığı veya yazma hatası.</p>
-              <button className="btn-secondary" onClick={() => setStatus('idle')}>Geri</button>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
+                {wipeError ?? 'İptal, seri uyuşmazlığı veya yazma hatası.'}
+              </p>
+              <button className="btn-secondary" onClick={() => { setStatus('idle'); setWipeError(null) }}>Geri</button>
             </div>
           )}
         </div>

@@ -109,7 +109,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
           setVolumeLetters(letters)
           if (!letters.includes(volumeLetter)) setVolumeLetter(letters[0])
         }
-      }).catch(() => {})
+      }).catch((e: unknown) => console.warn('[Dashboard] listVolumeLetters failed', e))
     }
   }, [])
 

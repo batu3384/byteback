@@ -299,11 +299,13 @@ export function registerIpcHandlers(): void {
       const picked = focused
         ? await dialog.showOpenDialog(focused, openOpts)
         : await dialog.showOpenDialog(openOpts)
-      if (picked.canceled || picked.filePaths.length === 0) return false
+      if (picked.canceled || picked.filePaths.length === 0) {
+        return { ok: false, error: 'Dosya seçilmedi' }
+      }
 
       const target = picked.filePaths[0]
       const win = focused ?? BrowserWindow.getAllWindows()[0]
-      if (!win) return false
+      if (!win) return { ok: false, error: 'Onay penceresi açılamadı' }
       const confirm = await dialog.showMessageBox(win, {
         type: 'warning',
         buttons: ['İptal', 'Dosyayı imha et'],
@@ -313,11 +315,13 @@ export function registerIpcHandlers(): void {
         message: 'Seçilen dosya geri alınamaz biçimde üzerine yazılacak.',
         detail: target,
       })
-      if (confirm.response !== 1) return false
-      return await getEngine().startWipe(target)
+      if (confirm.response !== 1) return { ok: false, error: 'İşlem iptal edildi' }
+      const ok = await getEngine().startWipe(target)
+      return { ok: !!ok, error: ok ? undefined : 'Dosya imhası başarısız (başka disk işlemi sürüyor olabilir)' }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[IPC] pick-and-wipe-file error:', err)
-      return false
+      return { ok: false, error: msg }
     }
   })
 
@@ -331,11 +335,13 @@ export function registerIpcHandlers(): void {
       const picked = focused
         ? await dialog.showOpenDialog(focused, openOpts)
         : await dialog.showOpenDialog(openOpts)
-      if (picked.canceled || picked.filePaths.length === 0) return false
+      if (picked.canceled || picked.filePaths.length === 0) {
+        return { ok: false, error: 'Klasör seçilmedi' }
+      }
 
       const target = picked.filePaths[0]
       const win = focused ?? BrowserWindow.getAllWindows()[0]
-      if (!win) return false
+      if (!win) return { ok: false, error: 'Onay penceresi açılamadı' }
       const confirm = await dialog.showMessageBox(win, {
         type: 'warning',
         buttons: ['İptal', 'Boş alanı imha et'],
@@ -345,11 +351,13 @@ export function registerIpcHandlers(): void {
         message: 'Seçilen birimin boş kümeleri geçici dosyayla doldurulup DoD 3 geçiş yazılır. Tahsisli dosyalar ve file slack dokunulmaz. Fiziksel disk yolu kabul edilmez.',
         detail: target,
       })
-      if (confirm.response !== 1) return false
-      return await getEngine().startWipe(target)
+      if (confirm.response !== 1) return { ok: false, error: 'İşlem iptal edildi' }
+      const ok = await getEngine().startWipe(target)
+      return { ok: !!ok, error: ok ? undefined : 'Boş alan imhası başarısız (başka disk işlemi sürüyor olabilir)' }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[IPC] pick-and-wipe-freespace error:', err)
-      return false
+      return { ok: false, error: msg }
     }
   })
 

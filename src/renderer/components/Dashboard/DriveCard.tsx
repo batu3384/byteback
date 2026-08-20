@@ -32,7 +32,11 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
 
   useEffect(() => {
     if (!window.api?.listPartitions) return
-    window.api.listPartitions(drive.index).then(setPartitions).catch(() => setPartitions([]))
+    window.api.listPartitions(drive.index).then(setPartitions).catch((e: unknown) => {
+      console.warn('[DriveCard] listPartitions failed', e)
+      setPartitions([])
+      setAdminNotice('Bölüm tablosu okunamadı. Yönetici izni veya başka disk işlemi kontrol edin.')
+    })
   }, [drive.index])
 
   useEffect(() => {
@@ -43,7 +47,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
     if (!window.api?.getSmartStatus) return
     window.api.getSmartStatus(drive.index).then((s) => {
       if (s.isValid && s.isSsd) setIsSsd(true)
-    }).catch(() => {})
+    }).catch((e: unknown) => console.warn('[DriveCard] getSmartStatus failed', e))
   }, [drive.index, drive.type])
 
   const scanOptions = (): ScanOptions | undefined => {

@@ -30,13 +30,22 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
   const reportAllowed = canGenerateReport(scanId);
 
   useEffect(() => {
     if (scanId > 0 && window.api?.getScanSummary) {
-      window.api.getScanSummary(scanId).then(setSummary).catch(() => setSummary(null));
+      setSummaryError(null)
+      window.api.getScanSummary(scanId)
+        .then(setSummary)
+        .catch((e: unknown) => {
+          setSummary(null)
+          setSummaryError(e instanceof Error ? e.message : 'Tarama özeti okunamadı')
+        });
     } else {
       setSummary(null);
+      setSummaryError(null)
     }
   }, [scanId]);
 
@@ -230,6 +239,12 @@ ${body}
         {formError && (
           <InlineAlert variant="error" onDismiss={() => setFormError(null)}>
             {formError}
+          </InlineAlert>
+        )}
+
+        {summaryError && (
+          <InlineAlert variant="warning" onDismiss={() => setSummaryError(null)}>
+            Tarama özeti yüklenemedi: {summaryError}
           </InlineAlert>
         )}
 
