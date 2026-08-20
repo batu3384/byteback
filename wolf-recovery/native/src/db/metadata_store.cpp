@@ -343,6 +343,21 @@ bool MetadataStore::updateScanProgress(int64_t scanId, uint64_t scannedSectors) 
     return rc == SQLITE_DONE;
 }
 
+bool MetadataStore::setScanRunning(int64_t scanId) {
+    const char* sql = "UPDATE scans SET status = 0, updated_at = ? WHERE id = ?";
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, now);
+    sqlite3_bind_int64(stmt, 2, scanId);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
 bool MetadataStore::completeScan(int64_t scanId, int status) {
     const char* sql = "UPDATE scans SET status = ?, updated_at = ? WHERE id = ?";
     int64_t now = static_cast<int64_t>(std::time(nullptr));

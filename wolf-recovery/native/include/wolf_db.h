@@ -25,6 +25,7 @@ struct FileRecord {
     std::vector<DataRun> runs;
     std::vector<uint8_t> residentData; // NTFS resident $DATA bytes (no runs)
     bool compressed = false; // NTFS: $DATA has a compression unit (LZNT1)
+    uint64_t integrityChecksum = 0; // ReFS integrity stream CRC64-ECMA; 0 = not checked
     int status;            // 0=deleted/unallocated, 1=in-use/allocated, 2=encrypted/other
     int confidence;        // 0-100
     std::string category;  // "Image", "Document", "Video", etc.
@@ -51,7 +52,7 @@ struct ScanState {
     std::string scanType;   // "quick", "deep", "fragment"
     uint64_t totalSectors;
     uint64_t scannedSectors;
-    int status;             // 0=Running, 1=Paused, 2=Complete, 3=Failed
+    int status;             // 0=Running, 1=Complete, 2=Stopped, 3=Failed, 4=Paused(resumable)
     int64_t startedAt;
     int64_t updatedAt;
     int64_t recoveredFiles = 0; // successful recoveries recorded for this scan
@@ -86,6 +87,7 @@ public:
     int64_t createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors);
     bool setScanTotalSectors(int64_t scanId, uint64_t totalSectors);
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
+    bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);
     ScanState getScanState(int64_t scanId);
 
