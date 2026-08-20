@@ -52,15 +52,15 @@ gantt
     section Done
     Phases 0-6 engine           :done, p06, 2026-08-01, 2026-08-18
     Recovery mastery 0-6        :done, rm, 2026-08-16, 2026-08-20
-    Rebrand + repo flatten      :done, rb, 2026-08-20, 1d
+    Rebrand and repo flatten    :done, rb, 2026-08-20, 2026-08-21
     section Now
-    CI + Wiki on GitHub         :active, ci, 2026-08-20, 2026-09-01
+    CI and Wiki on GitHub       :active, ci, 2026-08-20, 2026-09-01
     diskReader hardening        :active, dr, 2026-08-21, 2026-09-15
     section Next
-    VSS scan path               :next, vss, 2026-09-01, 2026-10-15
-    APFS depth                  :next, apfs, 2026-09-15, 2026-11-01
+    VSS scan path               :vss, 2026-09-01, 2026-10-15
+    APFS depth                  :apfs, 2026-09-15, 2026-11-01
     section Later
-    GPU PFAC (deferred)         :later, gpu, 2026-12-01, 2026-12-31
+    GPU PFAC deferred           :gpu, 2026-12-01, 2026-12-31
 ```
 
 ## Where to track work
