@@ -20,6 +20,13 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
     };
   }, []);
 
+  const handleFreeSpaceWipe = async () => {
+    if (!window.api?.pickAndWipeFreeSpace) return
+    setStatus('shredding')
+    const ok = await window.api.pickAndWipeFreeSpace()
+    setStatus(ok ? 'done' : 'idle')
+  }
+
   const handleFileWipe = async () => {
     if (!window.api?.pickAndWipeFile) return
     setStatus('shredding')
@@ -36,7 +43,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
         </div>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px', color: 'var(--alert-red)' }}>Veri Yok Edici (Data Shredder)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Çok geçişli dosya imhası (tek dosya yolu ile). Disk geneli boş alan imhası şu an devre dışı.</p>
+          <p style={{ color: 'var(--text-muted)' }}>DoD 5220.22-M dosya imhası. Boş alan: seçilen klasörün biriminde filler dosya. PhysicalDrive yasak.</p>
         </div>
       </div>
 
@@ -47,12 +54,9 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
           <div>
             <h4 style={{ color: 'var(--warning-yellow)', marginBottom: '8px', fontSize: '1.1rem' }}>Önemli Güvenlik Uyarısı</h4>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
-              <strong>Disk genelinde boş alan imhası geçici olarak devre dışıdır.</strong> Denetimde
-              (CA-001) imha zincirinin arayüz sözüyle çeliştiği saptandı: yerel imha motoru tek dosyaları
-              güvenle ezebiliyor, ancak bir <em>diskin boş alanını</em> güvenle ezecek dosya sistemi
-              farkındaki uygulama henüz yok. Yanlış hedefe yazmayı önlemek için motor artık fiziksel
-              sürücü yollarını reddediyor ve bu ekran o uygulama hazırlanana kadar kilitli. Tek dosya
-              imhası (dosya yolu ile) yerel motorda çalışır durumdadır.
+              <strong>PhysicalDrive imhası kapalı (CA-001).</strong> Boş alan imhası, seçtiğin klasörün bulunduğu
+              birimde geçici bir filler dosya oluşturur, DoD 3 geçiş yazar ve siler. Tahsisli dosyalar ve file
+              slack dokunulmaz. Kanıt diskini silmek adli olarak tehlikelidir.
             </p>
           </div>
         </div>
@@ -89,11 +93,10 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
             <>
             <button
               className="btn-danger shred-btn"
-              disabled
-              title="Boş alan imhası, dosya sistemi farkındaki uygulama hazırlanana kadar devre dışıdır (CA-001)."
-              style={{ padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: '16px', opacity: 0.5, cursor: 'not-allowed' }}
+              onClick={() => void handleFreeSpaceWipe()}
+              style={{ padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: '16px' }}
             >
-              <ShieldAlert size={20} /> BOŞ ALAN İMHASI DEVRE DIŞI
+              <ShieldAlert size={20} /> BOŞ ALAN İMHASI (KLASÖR SEÇ)
             </button>
             <button
               type="button"
@@ -123,7 +126,7 @@ const ShredderView: React.FC<ShredderViewProps> = ({ drives: initialDrives }) =>
             <div className="shred-success glass-panel" style={{ padding: '24px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.2)', textAlign: 'center' }}>
               <CheckCircle size={48} color="var(--success-green)" style={{ margin: '0 auto 16px' }} />
               <h3 style={{ color: 'var(--success-green)', marginBottom: '8px', fontSize: '1.2rem' }}>Dosya İmhası Tamamlandı</h3>
-              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>Seçilen dosya üzerine yazıldı. Disk boş alan imhası hâlâ kapalı.</p>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>Seçilen hedef üzerine yazıldı. PhysicalDrive hâlâ reddedilir.</p>
               <button className="btn-secondary" onClick={() => setStatus('idle')}>Başka Bir Sürücü Temizle</button>
             </div>
           )}

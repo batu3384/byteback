@@ -13,6 +13,8 @@ export type {
   FileFoundCallback,
 } from '../shared/ipc-contract'
 
+import { existsSync } from 'fs'
+import { nativeAddonCandidates } from './native-addon-path'
 import type {
   DriveInfo,
   FileRecord,
@@ -46,6 +48,7 @@ interface WolfEngine {
     success: boolean
     bytesRead: number
     error: string
+    paddedZeros?: boolean
     data?: Buffer
   }
   getSmartStatus(driveIndex: number): SmartStatus
@@ -60,18 +63,19 @@ interface WolfEngine {
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
-  getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number }
+  failRaidDisk(diskIndex: number): boolean
+  getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }
   recoverFile(
     driveIndex: number,
-    fileRecord: FileRecord,
+    fileId: number,
     destDir: string,
-    scanId?: number,
+    scanId: number,
   ): Promise<RecoverResult>
   recoverFilesBatch(
     driveIndex: number,
-    fileRecords: FileRecord[],
+    fileIds: number[],
     destDir: string,
-    scanId?: number,
+    scanId: number,
   ): Promise<{ succeeded: number; failed: number; results: RecoverResult[] }>
   getCaseInfo(): {
     caseNumber: string
@@ -110,11 +114,9 @@ export function getEngine(): WolfEngine {
   if (loadError) throw loadError
 
   try {
-    // Static literal path — electron-vite bundles main into out/main/, so the
-    // relative reference resolves to <repo>/native/build/Release/wolf_engine.node.
-    // Using a literal (not a variable) keeps the loader bound to this single
-    // known artifact and cannot be influenced by runtime input.
-    engine = require('../../native/build/Release/wolf_engine.node') as WolfEngine
+    const candidates = nativeAddonCandidates(__dirname, process.resourcesPath)
+    const addonPath = candidates.find((p) => existsSync(p)) ?? candidates[0]
+    engine = require(addonPath) as WolfEngine
     if (!engine || typeof engine.getVersion !== 'function') {
       throw new Error('Native addon loaded but did not expose the expected WolfEngine API')
     }

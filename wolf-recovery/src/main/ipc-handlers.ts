@@ -1,9 +1,13 @@
 import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { getEngine } from './native-bridge'
+import { hexDataOrNull } from '../shared/hex-read'
+import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
+import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 
 export function registerIpcHandlers(): void {
-  const allowedImageDest = new Set<string>()
+  const allowlistPath = join(app.getPath('userData'), 'allowed-image-dest.json')
+  const allowedImageDest = loadAllowedImageDest(allowlistPath)
 
   // Initialize SQLite database on startup
   try {
@@ -162,9 +166,8 @@ export function registerIpcHandlers(): void {
     try {
       const engine = getEngine()
       const res = engine.readSectors(driveIndex, offset, size)
-      if (res.success && res.data) {
-        return Array.from(res.data)
-      }
+      const bytes = hexDataOrNull(res)
+      if (bytes) return bytes
       console.warn('[IPC] read-hex-data failed:', res.error)
     } catch (err) {
       console.error('[IPC] read-hex-data error:', err)
@@ -339,6 +342,38 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('pick-and-wipe-freespace', async () => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const openOpts: Electron.OpenDialogOptions = {
+        title: 'Boş alanı doldurulacak klasör (hedef birim)',
+        properties: ['openDirectory'],
+      }
+      const picked = focused
+        ? await dialog.showOpenDialog(focused, openOpts)
+        : await dialog.showOpenDialog(openOpts)
+      if (picked.canceled || picked.filePaths.length === 0) return false
+
+      const target = picked.filePaths[0]
+      const win = focused ?? BrowserWindow.getAllWindows()[0]
+      if (!win) return false
+      const confirm = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['İptal', 'Boş alanı imha et'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Boş alan imhası',
+        message: 'Seçilen birimin boş kümeleri geçici dosyayla doldurulup DoD 3 geçiş yazılır. Tahsisli dosyalar ve file slack dokunulmaz. Fiziksel disk yolu kabul edilmez.',
+        detail: target,
+      })
+      if (confirm.response !== 1) return false
+      return await getEngine().startWipe(target)
+    } catch (err) {
+      console.error('[IPC] pick-and-wipe-freespace error:', err)
+      return false
+    }
+  })
+
   ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
     try {
       const engine = getEngine()
@@ -346,6 +381,15 @@ export function registerIpcHandlers(): void {
       return engine.reconstructRaid(driveIndices ?? [], raidLevel ?? 0)
     } catch (err) {
       console.error('[IPC] reconstruct-raid error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('fail-raid-disk', (_event, diskIndex: number) => {
+    try {
+      return getEngine().failRaidDisk(diskIndex)
+    } catch (err) {
+      console.error('[IPC] fail-raid-disk error:', err)
       return false
     }
   })
@@ -384,6 +428,7 @@ export function registerIpcHandlers(): void {
         : await dialog.showSaveDialog(opts)
       if (target.canceled || !target.filePath) return null
       allowedImageDest.add(target.filePath)
+      saveAllowedImageDest(allowlistPath, allowedImageDest)
       return target.filePath
     } catch (err) {
       console.error('[IPC] pick-save-image error:', err)
@@ -391,24 +436,27 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileRecord: any, destDir: string, scanId?: number) => {
+  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number) => {
     try {
+      const parsed = parseRecoverIds(scanId, fileId)
+      if (!parsed.ok) return { success: false, error: parsed.error }
       const engine = getEngine()
-      console.log('[IPC] recover-file drive:', driveIndex, 'file:', fileRecord.name, 'dest:', destDir)
-      return await engine.recoverFile(driveIndex, fileRecord, destDir, scanId)
+      return await engine.recoverFile(driveIndex, parsed.fileId, destDir, parsed.scanId)
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
       return { success: false, error: String(err) }
     }
   })
 
-  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileRecords: any[], destDir: string, scanId?: number) => {
+  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number) => {
     try {
+      const parsed = parseRecoverIdList(scanId, fileIds)
+      if (!parsed.ok) return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: parsed.error }
       const engine = getEngine()
-      return await engine.recoverFilesBatch(driveIndex, fileRecords, destDir, scanId)
+      return await engine.recoverFilesBatch(driveIndex, parsed.fileIds, destDir, parsed.scanId)
     } catch (err) {
       console.error('[IPC] recover-files-batch error:', err)
-      return { succeeded: 0, failed: fileRecords?.length ?? 0, results: [], error: String(err) }
+      return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: String(err) }
     }
   })
 

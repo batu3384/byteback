@@ -77,21 +77,23 @@ declare global {
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
       pickAndWipeFile: () => Promise<boolean>
+      pickAndWipeFreeSpace: () => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
-      getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number }>
+      failRaidDisk: (diskIndex: number) => Promise<boolean>
+      getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }>
 
       recoverFile: (
         driveIndex: number,
-        fileRecord: FileRecord,
+        fileId: number,
         destDir: string,
-        scanId?: number,
+        scanId: number,
       ) => Promise<RecoverResult>
 
       recoverFilesBatch: (
         driveIndex: number,
-        fileRecords: FileRecord[],
+        fileIds: number[],
         destDir: string,
-        scanId?: number,
+        scanId: number,
       ) => Promise<BatchRecoverResult>
 
       pickDirectory: () => Promise<string | null>

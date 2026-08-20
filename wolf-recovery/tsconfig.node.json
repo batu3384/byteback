@@ -11,5 +11,5 @@
     "types": ["node"]
   },
   "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
-  "exclude": ["electron.vite.config.ts"]
+  "exclude": ["electron.vite.config.ts", "src/**/*.test.ts", "src/**/*.spec.ts"]
 }

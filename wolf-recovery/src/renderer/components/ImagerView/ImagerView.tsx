@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
-import { ewfNeedsSegmentWarning } from '../../../shared/ewf-limits'
+import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
 
 interface DriveInfo {
   index: number
@@ -37,7 +37,7 @@ function ImagerView(): React.ReactElement {
     if (window.api && window.api.onImagingProgress) {
       cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string }) => {
         if (data.total === 0) {
-          setStatus('İmaj alma başarısız (açma/yazma hatası veya E01 4 GiB tavan)')
+          setStatus('İmaj alma başarısız (açma/yazma hatası)')
           setImaging(false)
           if (timerRef.current) clearInterval(timerRef.current)
           return
@@ -81,9 +81,11 @@ function ImagerView(): React.ReactElement {
 
     if (format === 'ewf') {
       const drive = drives.find(d => d.index === Number(selectedDrive))
-      if (drive && ewfNeedsSegmentWarning(drive.sizeBytes)) {
-        alert('Bu disk 4 GiB üzeri. Tek segment E01 reddedilir (uint32 tablo). RAW seçin.')
-        return
+      if (drive && ewfWillRotateSegments(drive.sizeBytes)) {
+        const ok = window.confirm(
+          'Disk 4 GiB üzeri. E01 çok segment yazılır (.E01, .E02, …). Devam?',
+        )
+        if (!ok) return
       }
     }
     setImaging(true)
@@ -119,7 +121,7 @@ function ImagerView(): React.ReactElement {
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
   const selectedDriveInfo = selectedDrive === '' ? undefined : drives.find(d => d.index === Number(selectedDrive))
   const showEwfSegmentWarning =
-    format === 'ewf' && !!selectedDriveInfo && ewfNeedsSegmentWarning(selectedDriveInfo.sizeBytes)
+    format === 'ewf' && !!selectedDriveInfo && ewfWillRotateSegments(selectedDriveInfo.sizeBytes)
 
   return (
     <div className="imager-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
@@ -129,7 +131,7 @@ function ImagerView(): React.ReactElement {
         </div>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Disk İmaj Alma (RAW / E01)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Sektör-sektör kopya. E01 tek segment, sıkıştırmasız; 4 GiB üstü tablo tavanı vardır.</p>
+          <p style={{ color: 'var(--text-muted)' }}>Sektör-sektör kopya. E01 çok segment; segment başına uint32 tablo, .E02 rotasyonu.</p>
         </div>
       </div>
 
@@ -168,7 +170,7 @@ function ImagerView(): React.ReactElement {
           </select>
           {showEwfSegmentWarning && (
             <p role="status" style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
-              Seçilen disk 4 GiB üzeri. Tek segment E01 tablo alanı uint32; çıktı kesik veya bozuk olabilir. RAW önerilir.
+              Seçilen disk 4 GiB üzeri. Motor .E01/.E02/… segmentleri yazar (EnCase EWF1).
             </p>
           )}
         </div>
