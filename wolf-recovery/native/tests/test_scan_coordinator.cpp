@@ -31,6 +31,53 @@ TEST(ScanCoordinator, QuickScanFindsFatOnMbrPartition) {
     EXPECT_TRUE(found);
 }
 
+TEST(ScanCoordinator, QuickScanPartitionScopeFindsFat) {
+    auto fatVol = wolf::testfix::buildFat16Volume();
+    constexpr uint32_t partStart = 2048;
+    auto disk = wolf::testfix::buildMbrDiskWithFatPartition(fatVol, partStart);
+    uint32_t partSectors = static_cast<uint32_t>(fatVol.size() / 512);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    ScanBounds bounds;
+    bounds.startSector = partStart;
+    bounds.sizeInSectors = partSectors;
+
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, false, bounds);
+
+    bool found = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(ScanCoordinator, QuickScanWrongPartitionMissesFat) {
+    auto fatVol = wolf::testfix::buildFat16Volume();
+    auto disk = wolf::testfix::buildMbrDiskWithFatPartition(fatVol, 2048);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    ScanBounds bounds;
+    bounds.startSector = 0;
+    bounds.sizeInSectors = 2048;
+
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, false, bounds);
+
+    for (const auto& n : names) {
+        EXPECT_EQ(n.find("TEST"), std::string::npos);
+    }
+}
+
 TEST(ScanCoordinator, BitLockerDetectsFveHeader) {
     std::vector<uint8_t> disk(512 * 8, 0);
     std::memcpy(disk.data() + 3, "-FVE-FS-", 8);
@@ -131,4 +178,27 @@ TEST(ScanCoordinator, DeepScanCarvesPng) {
         if (s == "carver" || s == "carver_bgc") carved = true;
     }
     EXPECT_TRUE(carved);
+}
+
+TEST(ScanCoordinator, CarveScanResumesFromCheckpoint) {
+    constexpr uint64_t kSectors = 200;
+    std::vector<uint8_t> disk(kSectors * 512, 0);
+    auto png = wolf::testfix::buildPngCarveDisk();
+    const uint64_t pngSector = 120;
+    std::memcpy(disk.data() + pngSector * 512, png.data() + 4096, 4096);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    auto countCarved = [&](uint64_t resumeAt) {
+        size_t hits = 0;
+        std::atomic<bool> running{true};
+        runCarveScan(reader, [&](const FileRecord& fr) {
+            if (fr.source == "carver" || fr.source == "carver_bgc") ++hits;
+        }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, false, resumeAt);
+        return hits;
+    };
+
+    EXPECT_GE(countCarved(110), 1u) << "PNG after resume checkpoint should be found";
+    EXPECT_EQ(countCarved(kSectors - 1), 0u) << "resume past PNG should find nothing";
 }

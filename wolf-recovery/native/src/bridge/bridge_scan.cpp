@@ -2,6 +2,7 @@
 // timeline and the audit-log reader. See bridge_common.h for the context.
 #include "bridge_common.h"
 #include "search/content_search.h"
+#include "fs/partition_scanner.h"
 #include <atomic>
 
 namespace {
@@ -52,7 +53,12 @@ void FinalizeScanSession(BridgeData* bdata, int status) {
 
     bdata->engine.getMetadataStore().updateScanProgress(
         context->scanId, bdata->engine.getMetadataStore().getScanState(context->scanId).scannedSectors);
-    bdata->engine.getMetadataStore().completeScan(context->scanId, status);
+    auto st = bdata->engine.getMetadataStore().getScanState(context->scanId);
+    int dbStatus = status;
+    if (status == 2 && st.totalSectors > 0 && st.scannedSectors > 0 && st.scannedSectors < st.totalSectors) {
+        dbStatus = 4; // paused / resumable checkpoint
+    }
+    bdata->engine.getMetadataStore().completeScan(context->scanId, dbStatus);
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "SCAN_END | scanId=" + std::to_string(context->scanId) + " | status=" + std::to_string(status));
@@ -241,8 +247,8 @@ Napi::Value StopScan(const Napi::CallbackInfo& info) {
 Napi::Value StartScan(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
-    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsFunction()) {
-        Napi::TypeError::New(env, "Expected drivePath, scanType, callback").ThrowAsJavaScriptException();
+    if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected drivePath, scanType, [options], callback").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -262,7 +268,59 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
     std::string drivePath = info[0].As<Napi::String>().Utf8Value();
     std::string scanType = info[1].As<Napi::String>().Utf8Value();
-    Napi::Function cb = info[2].As<Napi::Function>();
+    Napi::Function cb;
+    wolf::ScanTarget target;
+    int64_t resumeScanId = -1;
+
+    if (info.Length() >= 4 && info[2].IsObject() && info[3].IsFunction()) {
+        Napi::Object opts = info[2].As<Napi::Object>();
+        cb = info[3].As<Napi::Function>();
+        if (opts.Has("partitionStartSector") && opts.Get("partitionStartSector").IsNumber()) {
+            target.partitionStartSector =
+                static_cast<int64_t>(opts.Get("partitionStartSector").As<Napi::Number>().Int64Value());
+        }
+        if (opts.Has("partitionSizeInSectors") && opts.Get("partitionSizeInSectors").IsNumber()) {
+            target.partitionSizeSectors =
+                static_cast<uint64_t>(opts.Get("partitionSizeInSectors").As<Napi::Number>().Int64Value());
+        }
+        if (opts.Has("partitionIndex") && opts.Get("partitionIndex").IsNumber()) {
+            int pidx = opts.Get("partitionIndex").As<Napi::Number>().Int32Value();
+            int driveIndex = 0;
+            if (drivePath != "raid") {
+                try { driveIndex = std::stoi(drivePath); } catch (...) { driveIndex = -1; }
+            }
+            if (pidx >= 0 && driveIndex >= 0) {
+                wolf::DiskReader& reader = bdata->engine.getDiskReader();
+                if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
+                    reader.openDrive(driveIndex);
+                }
+                wolf::PartitionScanner scanner(&reader);
+                std::vector<wolf::PartitionInfo> parts = scanner.parseMBR();
+                std::vector<wolf::PartitionInfo> gpt = scanner.parseGPT();
+                if (!gpt.empty()) parts = std::move(gpt);
+                if (static_cast<size_t>(pidx) < parts.size()) {
+                    target.partitionStartSector = static_cast<int64_t>(parts[pidx].startSector);
+                    target.partitionSizeSectors = parts[pidx].sizeInSectors;
+                }
+            }
+        }
+        if (opts.Has("resumeScanId") && opts.Get("resumeScanId").IsNumber()) {
+            resumeScanId = opts.Get("resumeScanId").As<Napi::Number>().Int64Value();
+            auto st = bdata->engine.getMetadataStore().getScanState(resumeScanId);
+            if (st.id <= 0 || st.status != 4) {
+                bdata->endHeavyOp();
+                Napi::Error::New(env, "Scan is not resumable (status must be paused)").ThrowAsJavaScriptException();
+                return env.Undefined();
+            }
+            target.resumeAtSector = st.scannedSectors;
+        }
+    } else if (info[2].IsFunction()) {
+        cb = info[2].As<Napi::Function>();
+    } else {
+        bdata->endHeavyOp();
+        Napi::TypeError::New(env, "Expected callback function").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     auto context = std::make_shared<ScanContext>();
     bdata->scanContext = context;
@@ -278,11 +336,26 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     } else {
         try { driveIndex = std::stoi(drivePath); } catch(...) {}
     }
-    context->scanId = bdata->engine.getMetadataStore().createScan(driveIndex, scanType, 0);
+    if (resumeScanId > 0) {
+        context->scanId = resumeScanId;
+        if (!bdata->engine.getMetadataStore().setScanRunning(resumeScanId)) {
+            bdata->endHeavyOp();
+            Napi::Error::New(env, "Failed to mark scan running").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+    } else {
+        context->scanId = bdata->engine.getMetadataStore().createScan(driveIndex, scanType, 0);
+    }
+    context->dedupIndex.clear();
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "SCAN_START | drive=" + drivePath + " | type=" + scanType + " | scanId=" + std::to_string(context->scanId) +
-        (bdata->raid ? " | raid=1" : ""));
+        (bdata->raid ? " | raid=1" : "") +
+        (target.resumeAtSector > 0 ? " | resumeAt=" + std::to_string(target.resumeAtSector) : "") +
+        (target.partitionStartSector >= 0
+             ? " | partStart=" + std::to_string(target.partitionStartSector) +
+                   " | partSectors=" + std::to_string(target.partitionSizeSectors)
+             : ""));
 
     context->tsfn = Napi::ThreadSafeFunction::New(
         env, cb, "ScanCallback", 0, 1,
@@ -297,7 +370,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             wolf::TimelineEvent ev;
             ev.scanId = context->scanId;
             ev.timestamp = fr.createdAt;
-            ev.mftRef = 0;
+            ev.mftRef = fr.parentId > 0 ? static_cast<uint64_t>(fr.parentId) : 0;
             ev.source = "usn_journal";
             ev.fileName = fr.name;
             uint32_t reason = static_cast<uint32_t>(fr.status);
@@ -312,20 +385,27 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             engine->getMetadataStore().insertTimelineEvent(context->scanId, ev);
             return; // not surfaced as a file result
         }
+        if (fr.source == "ntfs_logfile" || fr.source == "ntfs_logfile_restart") {
+            return; // timeline/discovery hints only
+        }
+
+        wolf::FileRecord out = fr;
+        context->dedupIndex.observe(out);
+        context->dedupIndex.markDuplicate(out);
 
         {
             std::lock_guard<std::mutex> lock(context->bufferMutex);
-            context->fileBuffer.push_back(fr);
+            context->fileBuffer.push_back(out);
             if (context->fileBuffer.size() >= 500) {
                 engine->getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer);
                 context->fileBuffer.clear();
             }
         }
 
-        auto callback = [fr](Napi::Env env, Napi::Function jsCallback) {
-            Napi::Object obj = FileRecordToJs(env, fr);
+        auto callback = [out](Napi::Env env, Napi::Function jsCallback) {
+            Napi::Object obj = FileRecordToJs(env, out);
             obj.Set("type", Napi::String::New(env, "file"));
-            obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
+            obj.Set("size", Napi::Number::New(env, static_cast<double>(out.sizeBytes)));
             jsCallback.Call({obj});
         };
         tsfnPost(context->tsfn, callback);
@@ -366,7 +446,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
     context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
                                    &context->badSectors, bdata->raid, onFinished,
-                                   &bdata->engine.getDiskReader());
+                                   &bdata->engine.getDiskReader(), target);
 
     return Napi::Number::New(env, static_cast<double>(context->scanId));
     NAPI_CATCH

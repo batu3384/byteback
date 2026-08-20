@@ -13,6 +13,10 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
         return VolumeFsKind::Unknown;
     }
 
+    if (boot.size() >= 40 && std::memcmp(boot.data() + 3, "ReFS\x00\x00\x00\x00", 8) == 0 &&
+        std::memcmp(boot.data() + 16, "FSRS", 4) == 0) {
+        return VolumeFsKind::Refs;
+    }
     if (boot.size() >= 16 && std::memcmp(boot.data() + 3, "NTFS    ", 8) == 0 &&
         boot[510] == 0x55 && boot[511] == 0xAA) {
         return VolumeFsKind::Ntfs;
