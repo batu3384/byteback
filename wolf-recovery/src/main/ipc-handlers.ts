@@ -383,11 +383,38 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string) => {
+  ipcMain.handle('set-bitlocker-fvek', (_event, hex: string) => {
+    try {
+      return getEngine().setBitLockerFvek(typeof hex === 'string' ? hex : '')
+    } catch (err) {
+      console.error('[IPC] set-bitlocker-fvek error:', err)
+      return false
+    }
+  })
+
+  ipcMain.handle('set-bitlocker-recovery-password', (_event, driveIndex: number, password: string) => {
+    try {
+      if (typeof driveIndex !== 'number' || typeof password !== 'string') {
+        return 'invalid arguments'
+      }
+      return getEngine().setBitLockerRecoveryPassword(driveIndex, password)
+    } catch (err) {
+      console.error('[IPC] set-bitlocker-recovery-password error:', err)
+      return 'native error'
+    }
+  })
+
+  ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string, confirmPhrase?: string) => {
     try {
       if (typeof driveIndex !== 'number' || typeof typedSerial !== 'string' || !typedSerial.trim()) {
         return false
       }
+      if (confirmPhrase !== 'IMHA') {
+        return false
+      }
+      const engine = getEngine()
+      const drives = engine.listDrives()
+      const target = drives.find((d) => d.index === driveIndex)
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
       if (!win) return false
       const confirm = await dialog.showMessageBox(win, {
@@ -396,8 +423,8 @@ export function registerIpcHandlers(): void {
         defaultId: 0,
         cancelId: 0,
         title: 'PhysicalDrive imhası',
-        message: `PhysicalDrive${driveIndex} baştan sona DoD 3 geçiş yazılacak. Geri alınamaz. SSD’de NIST 800-88 sanitization değildir.`,
-        detail: 'Native katman yazdığınız seriyi liste serisiyle karşılaştırmadan yazmaz.',
+        message: `PhysicalDrive${driveIndex} baştan sona DoD 3 geçiş yazılacak. Geri alınamaz.`,
+        detail: `${target?.model ?? 'disk'} | seri ${target?.serial ?? '?'} | ${target?.type ?? 'Unknown'}. SSD’de NIST 800-88 sanitization değildir. Native katman yazdığınız seriyi liste serisiyle karşılaştırmadan yazmaz.`,
       })
       if (confirm.response !== 1) return false
       return await getEngine().startPhysicalWipe(driveIndex, typedSerial)
