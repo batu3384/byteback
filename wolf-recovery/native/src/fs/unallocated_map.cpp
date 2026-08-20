@@ -365,6 +365,131 @@ std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volO
     return out;
 }
 
+#pragma pack(push, 1)
+struct Ext4_SuperBlock {
+    uint32_t s_inodes_count;
+    uint32_t s_blocks_count_lo;
+    uint32_t s_r_blocks_count_lo;
+    uint32_t s_free_blocks_count_lo;
+    uint32_t s_free_inodes_count;
+    uint32_t s_first_data_block;
+    uint32_t s_log_block_size;
+    uint32_t s_log_cluster_size;
+    uint32_t s_blocks_per_group;
+    uint32_t s_clusters_per_group;
+    uint32_t s_inodes_per_group;
+    uint32_t s_mtime;
+    uint32_t s_wtime;
+    uint16_t s_mnt_count;
+    uint16_t s_max_mnt_count;
+    uint16_t s_magic;
+    uint16_t s_state;
+    uint16_t s_errors;
+    uint16_t s_minor_rev_level;
+    uint32_t s_lastcheck;
+    uint32_t s_checkinterval;
+    uint32_t s_creator_os;
+    uint32_t s_rev_level;
+    uint16_t s_def_resuid;
+    uint16_t s_def_resgid;
+    uint32_t s_first_ino;
+    uint16_t s_inode_size;
+    uint16_t s_block_group_nr;
+    uint32_t s_feature_compat;
+    uint32_t s_feature_incompat;
+    uint32_t s_feature_ro_compat;
+};
+struct Ext4_GroupDesc {
+    uint32_t bg_block_bitmap_lo;
+    uint32_t bg_inode_bitmap_lo;
+    uint32_t bg_inode_table_lo;
+    uint16_t bg_free_blocks_count_lo;
+    uint16_t bg_free_inodes_count_lo;
+    uint16_t bg_used_dirs_count_lo;
+    uint16_t bg_flags;
+};
+#pragma pack(pop)
+
+std::vector<SectorRange> buildExt4Unallocated(DiskReader& reader, uint64_t volOffsetBytes,
+                                                uint64_t /*volSizeBytes*/) {
+    std::vector<SectorRange> out;
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+
+    std::vector<uint8_t> boot(sectorSize);
+    if (!reader.readSectors(volOffsetBytes, sectorSize, boot.data()).success) return out;
+
+    const uint64_t sbOff = volOffsetBytes + 1024;
+    std::vector<uint8_t> sbBuf(sectorSize);
+    if (!reader.readSectors(sbOff, sectorSize, sbBuf.data()).success) {
+        return out;
+    }
+    const auto* sb = reinterpret_cast<const Ext4_SuperBlock*>(sbBuf.data());
+    if (sb->s_magic != 0xEF53) return out;
+
+    const uint32_t blockSize = 1024u << sb->s_log_block_size;
+    if (blockSize == 0 || (blockSize % sectorSize) != 0) return out;
+    const uint32_t sectorsPerBlock = blockSize / sectorSize;
+
+    uint64_t blocksCount = sb->s_blocks_count_lo;
+    if (blocksCount == 0) return out;
+    const uint32_t blocksPerGroup = sb->s_blocks_per_group ? sb->s_blocks_per_group : 8192;
+    const uint32_t numGroups =
+        static_cast<uint32_t>((blocksCount + blocksPerGroup - 1) / blocksPerGroup);
+    const uint32_t descSize = 32u;
+    const uint64_t gdtBlock = (blockSize == 1024u) ? 2u
+        : (sb->s_first_data_block ? sb->s_first_data_block : 1u);
+    const uint64_t gdtOff = volOffsetBytes + gdtBlock * blockSize;
+
+    for (uint32_t g = 0; g < numGroups; ++g) {
+        std::vector<uint8_t> gdBuf(sectorSize);
+        const uint64_t gdOff = gdtOff + static_cast<uint64_t>(g) * descSize;
+        if (gdOff % sectorSize != 0 ||
+            !reader.readSectors(gdOff - (gdOff % sectorSize), sectorSize, gdBuf.data()).success) {
+            continue;
+        }
+        const auto* gd = reinterpret_cast<const Ext4_GroupDesc*>(gdBuf.data() + (gdOff % sectorSize));
+        if (gd->bg_block_bitmap_lo == 0) continue;
+
+        const uint32_t groupBlockStart = g * blocksPerGroup;
+        const uint32_t blocksInGroup =
+            static_cast<uint32_t>(std::min<uint64_t>(blocksPerGroup, blocksCount - groupBlockStart));
+        const uint64_t bitmapOff = volOffsetBytes + static_cast<uint64_t>(gd->bg_block_bitmap_lo) * blockSize;
+        const uint32_t bitmapBytes = (blocksInGroup + 7) / 8;
+        const uint32_t readBytes =
+            static_cast<uint32_t>(((std::max<uint32_t>(bitmapBytes, blockSize) + sectorSize - 1) / sectorSize) *
+                                  sectorSize);
+        std::vector<uint8_t> bitmap(readBytes);
+        const uint64_t bitmapReadOff = bitmapOff - (bitmapOff % sectorSize);
+        if (!reader.readSectors(bitmapReadOff, readBytes, bitmap.data()).success) continue;
+        const size_t bitmapSkip = static_cast<size_t>(bitmapOff % sectorSize);
+
+        uint64_t runStartBlock = UINT64_MAX;
+        uint64_t runLen = 0;
+        for (uint32_t b = 0; b < blocksInGroup; ++b) {
+            const size_t byteIdx = bitmapSkip + b / 8;
+            const uint8_t mask = static_cast<uint8_t>(1u << (b % 8));
+            const bool allocated = byteIdx < bitmap.size() && (bitmap[byteIdx] & mask);
+            if (!allocated) {
+                if (runLen == 0) runStartBlock = groupBlockStart + b;
+                runLen++;
+            } else if (runLen > 0) {
+                const uint64_t absBlock = runStartBlock;
+                pushRange(out, (volOffsetBytes / sectorSize) + absBlock * sectorsPerBlock,
+                          runLen * sectorsPerBlock);
+                runLen = 0;
+                runStartBlock = UINT64_MAX;
+            }
+        }
+        if (runLen > 0) {
+            pushRange(out, (volOffsetBytes / sectorSize) + runStartBlock * sectorsPerBlock,
+                      runLen * sectorsPerBlock);
+        }
+    }
+    mergeSectorRangesInPlace(out);
+    return out;
+}
+
 std::vector<SectorRange> buildFatUnallocated(DiskReader& reader, uint64_t volOffsetBytes,
                                              uint64_t /*volSizeBytes*/) {
     std::vector<SectorRange> out;
@@ -462,10 +587,11 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
             return buildFatUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
         case VolumeFsKind::ExFat:
             return buildExFatUnallocated(reader, volumeOffsetBytes, volumeSizeBytes);
+        case VolumeFsKind::Ext4:
+            return buildExt4Unallocated(reader, volumeOffsetBytes, volumeSizeBytes);
         case VolumeFsKind::Refs:
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:
-        case VolumeFsKind::Ext4:
         case VolumeFsKind::Unknown:
             return {};
     }
@@ -479,7 +605,6 @@ bool unallocatedMapUnsupported(VolumeFsKind kind) {
         case VolumeFsKind::Refs:
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:
-        case VolumeFsKind::Ext4:
             return true;
         default:
             return false;
@@ -522,7 +647,7 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
         uint64_t offsetBytes = part.startSector * sectorSize;
         uint64_t sizeBytes = part.sizeInSectors * sectorSize;
         VolumeFsKind kind = probeVolumeAt(reader, offsetBytes, sectorSize);
-        if (unallocatedMapUnsupported(kind)) sawUnsupported = true;
+        if (unallocatedMapUnsupported(kind) || kind == VolumeFsKind::Unknown) sawUnsupported = true;
         auto u = buildUnallocatedRanges(reader, kind, offsetBytes, sizeBytes);
         out.insert(out.end(), u.begin(), u.end());
     }
@@ -533,6 +658,12 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
     }
     mergeSectorRangesInPlace(out);
     return out;
+}
+
+uint64_t totalSectorCount(const std::vector<SectorRange>& ranges) {
+    uint64_t total = 0;
+    for (const auto& r : ranges) total += r.count;
+    return total;
 }
 
 } // namespace wolf

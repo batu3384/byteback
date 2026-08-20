@@ -147,6 +147,7 @@ if(WOLF_BUILD_TESTS)
     tests/test_raid6_math.cpp
     tests/test_ewf.cpp
     tests/test_ewf_reader.cpp
+    tests/test_http_url.cpp
     tests/test_content_classifier.cpp
     tests/test_audit_sha256.cpp
     tests/test_fat_chain.cpp
@@ -169,6 +170,7 @@ if(WOLF_BUILD_TESTS)
     tests/test_refs_parser.cpp
     tests/test_refs_integrity.cpp
     tests/test_scan_coordinator.cpp
+    tests/test_unallocated_map.cpp
     tests/test_ntfs_path_rebuild.cpp
     tests/test_volume_mapper.cpp
     tests/test_nsrl.cpp

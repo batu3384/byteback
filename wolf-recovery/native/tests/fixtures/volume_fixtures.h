@@ -208,6 +208,26 @@ inline std::vector<uint8_t> buildExt4Volume() {
     return img;
 }
 
+// ext4 with block bitmap: blocks 0-7 allocated, block 8+ free (for unallocated carve tests).
+inline std::vector<uint8_t> buildExt4CarveVolume() {
+    auto img = buildExt4Volume();
+    constexpr uint32_t bs = 1024;
+
+    TestExt4Sb sb{};
+    std::memcpy(&sb, img.data() + bs, sizeof(sb));
+    sb.s_blocks_per_group = 64;
+    std::memcpy(img.data() + bs, &sb, sizeof(sb));
+
+    TestExt4Gd gd{};
+    gd.bg_block_bitmap_lo = 4;
+    gd.bg_inode_bitmap_lo = 3;
+    std::memcpy(img.data() + 2 * bs, &gd, sizeof(gd));
+
+    const size_t bmp = 4 * bs;
+    img[bmp] = 0xFF; // blocks 0-7 allocated; blocks 8+ clear in following bytes
+    return img;
+}
+
 inline void writeLe64(std::vector<uint8_t>& img, size_t off, uint64_t v) {
     for (int i = 0; i < 8; ++i) img[off + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
 }
@@ -272,6 +292,82 @@ inline std::vector<uint8_t> buildNtfsDeletedResidentVolume() {
     std::memcpy(img.data() + attr + 24, "hello", 5);
     attr += 29;
     writeLe32(img, attr + 0, 0xFFFFFFFF);
+    return img;
+}
+
+// NTFS: deleted MFT record with non-resident $DATA at cluster 5.
+inline std::vector<uint8_t> buildNtfsDeletedNonResidentVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t spc = 8;
+    const uint32_t dataCluster = 5;
+    const uint32_t dataSector = dataCluster * spc;
+    const char* payload = "hello nonres";
+    const uint32_t payloadLen = 12;
+
+    std::vector<uint8_t> img(ss * 128, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, ss);
+    img[0x0D] = static_cast<uint8_t>(spc);
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, static_cast<uint64_t>(spc) * ss);
+    writeLe64(img, attr + 0x30, 1024);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x00);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "doc.txt";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, payloadLen);
+    writeLe64(img, attr + 56, payloadLen);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe64(img, attr + 16, 0);
+    writeLe64(img, attr + 24, 0);
+    writeLe16(img, attr + 32, 0x40);
+    writeLe64(img, attr + 40, static_cast<uint64_t>(spc) * ss);
+    writeLe64(img, attr + 48, payloadLen);
+    writeLe64(img, attr + 56, payloadLen);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = static_cast<uint8_t>(dataCluster);
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    std::memcpy(img.data() + static_cast<size_t>(dataSector) * ss, payload, payloadLen);
     return img;
 }
 

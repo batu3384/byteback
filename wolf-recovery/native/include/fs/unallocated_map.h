@@ -20,6 +20,8 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
                                                 uint64_t volumeOffsetBytes,
                                                 uint64_t volumeSizeBytes);
 
+uint64_t totalSectorCount(const std::vector<SectorRange>& ranges);
+
 // Collect unallocated ranges for all partitions, or one partition when
 // partitionStartSector >= 0 and partitionSizeSectors > 0.
 std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,

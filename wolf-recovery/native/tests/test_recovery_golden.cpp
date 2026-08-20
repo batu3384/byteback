@@ -158,3 +158,20 @@ TEST_F(GoldenRecoveryTest, NtfsDeletedResidentFindAndRecover) {
     std::string content((std::istreambuf_iterator<char>(in)), {});
     EXPECT_EQ(content, "hello");
 }
+
+TEST_F(GoldenRecoveryTest, NtfsDeletedNonResidentFindAndRecover) {
+    auto disk = testfix::buildNtfsDeletedNonResidentVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    auto stats = runGoldenPipeline(reader, store_, dest_, "quick", [](const FileRecord& fr) {
+        return fr.name == "doc.txt" && fr.status == 0;
+    });
+    EXPECT_GE(stats.found, 1u);
+    EXPECT_EQ(stats.found, stats.recovered);
+
+    std::ifstream in(dest_ + "/doc.txt", std::ios::binary);
+    ASSERT_TRUE(in.good());
+    std::string content((std::istreambuf_iterator<char>(in)), {});
+    EXPECT_EQ(content, "hello nonres");
+}
