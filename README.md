@@ -77,6 +77,7 @@ byteback/                  # repository root
 ```bash
 git clone https://github.com/batu3384/byteback.git
 cd byteback
+powershell -ExecutionPolicy Bypass -File scripts/setup-git-identity.ps1
 npm install
 npm run dev
 ```
