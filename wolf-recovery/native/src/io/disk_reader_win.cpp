@@ -271,50 +271,64 @@ bool DiskReader::hasMemoryVolume() const {
     return memoryMode_;
 }
 
-bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) {
+bool DiskReader::setXtsFvek(const uint8_t* key, size_t keyBytes) {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    if (!key32 || n != 32) {
-        xtsEnabled_ = false;
+    if (!key || (keyBytes != 32 && keyBytes != 64)) {
+        xtsKeyLen_ = 0;
         return false;
     }
-    std::memcpy(xtsKey_, key32, 32);
-    xtsEnabled_ = true;
+    std::memcpy(xtsKey_, key, keyBytes);
+    xtsKeyLen_ = static_cast<uint8_t>(keyBytes);
     return true;
+}
+
+bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) {
+    return setXtsFvek(key32, n);
 }
 
 void DiskReader::clearXtsFvek() {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    xtsEnabled_ = false;
+    xtsKeyLen_ = 0;
     std::memset(xtsKey_, 0, sizeof(xtsKey_));
 }
 
 bool DiskReader::hasXtsFvek() const {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    return xtsEnabled_;
+    return xtsKeyLen_ == 32 || xtsKeyLen_ == 64;
+}
+
+size_t DiskReader::xtsFvekBytes() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return xtsKeyLen_;
 }
 
 void DiskReader::copyXtsFvekFrom(const DiskReader& src) {
     if (this == &src) return;
-    uint8_t key[32];
-    bool en = false;
+    uint8_t key[64];
+    uint8_t len = 0;
     {
         std::lock_guard<std::mutex> lock(src.ioMutex_);
-        en = src.xtsEnabled_;
-        std::memcpy(key, src.xtsKey_, 32);
+        len = src.xtsKeyLen_;
+        if (len == 32 || len == 64) std::memcpy(key, src.xtsKey_, len);
     }
-    if (en) setXtsFvek128(key, 32);
+    if (len == 32 || len == 64) setXtsFvek(key, len);
     else clearXtsFvek();
 }
 
 void DiskReader::maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
-    if (!xtsEnabled_ || !buffer || sizeBytes == 0) return;
+    if (xtsKeyLen_ != 32 && xtsKeyLen_ != 64) return;
+    if (!buffer || sizeBytes == 0) return;
     uint32_t ss = sectorSize_ ? sectorSize_ : 512;
     if (ss == 0 || ss % 16 != 0) return;
     for (uint32_t o = 0; o + ss <= sizeBytes; o += ss) {
         uint64_t sec = (offsetBytes + o) / ss;
         uint8_t tweak[16] = {};
         for (int i = 0; i < 8; ++i) tweak[i] = static_cast<uint8_t>(sec >> (8 * i));
-        crypto::xtsAes128Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+        if (xtsKeyLen_ == 32) {
+            crypto::xtsAes128Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+        } else {
+            crypto::xtsAes256Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+        }
     }
 }
 

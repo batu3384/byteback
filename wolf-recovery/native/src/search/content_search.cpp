@@ -260,12 +260,13 @@ void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,
                                            const ContentSearchOptions& opts,
                                            ContentMatchCallback onMatch,
                                            ContentProgressCallback onProgress,
-                                           ContentFinishedCallback onFinished) {
+                                           ContentFinishedCallback onFinished,
+                                           const DiskReader* fvekSource) {
     stopSearch();
     running_ = true;
     worker_ = std::thread([this, &store, driveIndex, raid = std::move(raid), scanId, query, opts,
                           onMatch = std::move(onMatch), onProgress = std::move(onProgress),
-                          onFinished = std::move(onFinished)]() mutable {
+                          onFinished = std::move(onFinished), fvekSource]() mutable {
         DiskReader reader;
         if (raid) {
             reader.setRaidBackend(std::move(raid));
@@ -274,6 +275,7 @@ void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,
             running_ = false;
             return;
         }
+        if (fvekSource) reader.copyXtsFvekFrom(*fvekSource);
         runContentSearch(store, reader, scanId, query, opts, onMatch, onProgress, &running_);
         if (onFinished) onFinished(running_.load() ? 1 : 2);
         running_ = false;

@@ -127,10 +127,40 @@ bool tryApsbAt(DiskReader& reader, uint64_t off, uint32_t blockSize, uint32_t se
     return true;
 }
 
+void walkOmapBtree(DiskReader& reader, uint64_t partitionOffsetBytes, uint64_t blockSize,
+                   uint64_t blockCount, uint64_t blockNum, std::vector<uint64_t>& paddrs,
+                   std::unordered_set<uint64_t>& visited) {
+    if (blockNum == 0 || blockNum >= blockCount || visited.count(blockNum)) return;
+    visited.insert(blockNum);
+    std::vector<uint8_t> blk;
+    if (!readBlock(reader, partitionOffsetBytes + blockNum * blockSize,
+                   static_cast<uint32_t>(blockSize), blk)) {
+        return;
+    }
+    if (blk.size() < 80) return;
+    uint32_t otype = readLe32(blk.data() + 24) & 0xFFFFu;
+    if (otype != kObjBtreeNode) return;
+    uint16_t level = static_cast<uint16_t>(blk[34] | (blk[35] << 8));
+    uint32_t nkeys = readLe32(blk.data() + 36);
+    if (nkeys == 0 || nkeys > 4096) return;
+    for (uint32_t i = 0; i < nkeys; ++i) {
+        uint32_t off = 56 + i * 24;
+        if (off + 24 > blockSize) break;
+        uint64_t val = readLe64(blk.data() + off + 16);
+        if (val == 0 || val >= blockCount) continue;
+        if (level == 0) {
+            paddrs.push_back(val);
+        } else {
+            walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, val, paddrs, visited);
+        }
+    }
+}
+
 } // namespace
 
 void collectOmapLeafPaddrs(const uint8_t* block, uint32_t blockSize, uint64_t blockCount,
                            std::vector<uint64_t>& paddrs) {
+    (void)blockCount;
     if (!block || blockSize < 80) return;
     uint32_t otype = readLe32(block + 24) & 0xFFFFu;
     if (otype != kObjBtreeNode) return;
@@ -142,7 +172,7 @@ void collectOmapLeafPaddrs(const uint8_t* block, uint32_t blockSize, uint64_t bl
         uint32_t off = 56 + i * 24;
         if (off + 24 > blockSize) break;
         uint64_t paddr = readLe64(block + off + 16);
-        if (paddr > 0 && paddr < blockCount) paddrs.push_back(paddr);
+        if (paddr > 0) paddrs.push_back(paddr);
     }
 }
 
@@ -230,7 +260,8 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
             std::vector<uint8_t> treeBlk;
             if (readBlock(reader, partitionOffsetBytes + treeOid * blockSize, static_cast<uint32_t>(blockSize), treeBlk)) {
                 std::vector<uint64_t> paddrs;
-                collectOmapLeafPaddrs(treeBlk.data(), static_cast<uint32_t>(blockSize), blockCount, paddrs);
+                std::unordered_set<uint64_t> visitedOmap;
+                walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, treeOid, paddrs, visitedOmap);
                 for (uint64_t paddr : paddrs) {
                     if (isRunning && !(*isRunning)) break;
                     if (paddr < probe) continue;

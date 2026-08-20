@@ -55,7 +55,8 @@ public:
                    ProgressCallback onProgress,
                    std::vector<uint64_t>* badSectorOut = nullptr,
                    std::shared_ptr<VirtualRaid> raid = nullptr,
-                   FinishedCallback onFinished = nullptr);
+                   FinishedCallback onFinished = nullptr,
+                   const DiskReader* fvekSource = nullptr);
     
     void requestStop();
     void stopScan();
@@ -69,7 +70,8 @@ private:
                     ProgressCallback onProgress,
                     std::vector<uint64_t>* badSectorOut,
                     std::shared_ptr<VirtualRaid> raid,
-                    FinishedCallback onFinished);
+                    FinishedCallback onFinished,
+                    const DiskReader* fvekSource);
 };
 
 } // namespace wolf

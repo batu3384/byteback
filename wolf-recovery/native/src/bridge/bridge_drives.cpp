@@ -99,6 +99,7 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     wolf::DiskReader diskReader;
     if (bdata->raid) {
         diskReader.setRaidBackend(bdata->raid);
+        diskReader.copyXtsFvekFrom(engine->getDiskReader());
     } else if (!diskReader.openDrive(driveIndex)) {
         Napi::Object fail = Napi::Object::New(env);
         fail.Set("success", Napi::Boolean::New(env, false));
@@ -106,6 +107,8 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         fail.Set("paddedZeros", Napi::Boolean::New(env, false));
         fail.Set("error", Napi::String::New(env, "Could not open drive"));
         return fail;
+    } else {
+        diskReader.copyXtsFvekFrom(engine->getDiskReader());
     }
 
     uint8_t* buffer = static_cast<uint8_t*>(_aligned_malloc(size, 4096));

@@ -2,6 +2,7 @@
 // and file recovery. See bridge_common.h for the shared context.
 #include "bridge_common.h"
 #include "fs/vss_scanner.h"
+#include "fs/bitlocker_unlock.h"
 #include <filesystem>
 
 class WipeWorker : public Napi::AsyncWorker {
@@ -70,17 +71,18 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
-static bool parseFvekHex(const std::string& hex, uint8_t out[32]) {
-    if (hex.size() != 64) return false;
+static bool parseFvekHex(const std::string& hex, std::vector<uint8_t>& out) {
+    if (hex.size() != 64 && hex.size() != 128) return false;
+    out.resize(hex.size() / 2);
     auto nibble = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;
         if (c >= 'A' && c <= 'F') return c - 'A' + 10;
         return -1;
     };
-    for (int i = 0; i < 32; ++i) {
-        int hi = nibble(hex[static_cast<size_t>(i) * 2]);
-        int lo = nibble(hex[static_cast<size_t>(i) * 2 + 1]);
+    for (size_t i = 0; i < out.size(); ++i) {
+        int hi = nibble(hex[i * 2]);
+        int lo = nibble(hex[i * 2 + 1]);
         if (hi < 0 || lo < 0) return false;
         out[i] = static_cast<uint8_t>((hi << 4) | lo);
     }
@@ -100,19 +102,47 @@ Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info) {
         reader.clearXtsFvek();
         return Napi::Boolean::New(env, true);
     }
-    uint8_t key[32];
+    std::vector<uint8_t> key;
     if (!parseFvekHex(hex, key)) return Napi::Boolean::New(env, false);
-    bool ok = reader.setXtsFvek128(key, 32);
+    bool ok = reader.setXtsFvek(key.data(), key.size());
     if (ok) forensic::AuditLogger::GetInstance().LogEvent("BITLOCKER_FVEK_SET");
     return Napi::Boolean::New(env, ok);
     NAPI_CATCH
 }
 
+Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, recoveryPassword").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    std::string password = info[1].As<Napi::String>().Utf8Value();
+    wolf::DiskReader& reader = bdata->engine.getDiskReader();
+    if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
+        if (!reader.openDrive(driveIndex)) {
+            return Napi::String::New(env, "drive open failed");
+        }
+    }
+    auto unlocked = wolf::unlockBitLockerWithRecoveryPassword(reader, password, 0);
+    if (!unlocked.success) {
+        return Napi::String::New(env, unlocked.error);
+    }
+    if (!reader.setXtsFvek(unlocked.fvek.data(), unlocked.fvek.size())) {
+        return Napi::String::New(env, "FVEK apply failed");
+    }
+    forensic::AuditLogger::GetInstance().LogEvent("BITLOCKER_RECOVERY_UNLOCK");
+    return Napi::String::New(env, "");
+    NAPI_CATCH
+}
+
 class PhysicalWipeWorker : public Napi::AsyncWorker {
 public:
-    PhysicalWipeWorker(Napi::Env& env, int index, std::string typed, std::string actual,
+    PhysicalWipeWorker(Napi::Env& env, BridgeData* bdata, int index, std::string typed, std::string actual,
                        uint64_t sizeBytes, Napi::Promise::Deferred deferred)
-        : Napi::AsyncWorker(env), index_(index), typed_(std::move(typed)), actual_(std::move(actual)),
+        : Napi::AsyncWorker(env), bdata_(bdata), index_(index), typed_(std::move(typed)), actual_(std::move(actual)),
           sizeBytes_(sizeBytes), deferred_(deferred), success_(false) {}
 
     void Execute() override {
@@ -120,13 +150,16 @@ public:
         success_ = shredder.shred_physical_drive(index_, typed_, actual_, sizeBytes_);
     }
     void OnOK() override {
+        if (bdata_) bdata_->endHeavyOp();
         deferred_.Resolve(Napi::Boolean::New(Env(), success_));
     }
     void OnError(const Napi::Error& e) override {
+        if (bdata_) bdata_->endHeavyOp();
         deferred_.Reject(Napi::Boolean::New(Env(), false));
         (void)e;
     }
 private:
+    BridgeData* bdata_;
     int index_;
     std::string typed_;
     std::string actual_;
@@ -144,6 +177,7 @@ Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
     }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return Napi::Boolean::New(env, false);
+    if (!bdata->tryBeginHeavyOp()) return Napi::Boolean::New(env, false);
     int index = info[0].As<Napi::Number>().Int32Value();
     std::string typed = info[1].As<Napi::String>().Utf8Value();
     auto drives = bdata->engine.getDiskReader().enumerateDrives();
@@ -156,11 +190,14 @@ Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
             break;
         }
     }
-    if (actual.empty() || sizeBytes < 512) return Napi::Boolean::New(env, false);
+    if (actual.empty() || sizeBytes < 512) {
+        bdata->endHeavyOp();
+        return Napi::Boolean::New(env, false);
+    }
     forensic::AuditLogger::GetInstance().LogEvent(
         "PHYSICAL_WIPE_START | drive=" + std::to_string(index));
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
-    (new PhysicalWipeWorker(env, index, typed, actual, sizeBytes, deferred))->Queue();
+    (new PhysicalWipeWorker(env, bdata, index, typed, actual, sizeBytes, deferred))->Queue();
     return deferred.Promise();
     NAPI_CATCH
 }
