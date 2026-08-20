@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17, GTest, SQLite metadata store, Electron/React dashboard.
 
-**Spec:** `docs/superpowers/specs/2026-08-19-wolf-professional-roadmap-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-19-byteback-professional-roadmap-design.md`
 
 ## Global Constraints
 
@@ -21,9 +21,9 @@
 ### Task 1: MPEG-TS structural validator
 
 **Files:**
-- Modify: `wolf-recovery/native/include/carver/file_validators.h`
-- Modify: `wolf-recovery/native/src/carver/signature_engine.cpp` (`dispatchValidator`)
-- Modify: `wolf-recovery/native/tests/test_validators.cpp`
+- Modify: `byteback/native/include/carver/file_validators.h`
+- Modify: `byteback/native/src/carver/signature_engine.cpp` (`dispatchValidator`)
+- Modify: `byteback/native/tests/test_validators.cpp`
 
 **Interfaces:**
 - Produces: `int validateMpegTs(const uint8_t* data, size_t size)` — 0 reject, ≥90 accept
@@ -35,8 +35,8 @@
 ### Task 2: E2E scan → recover test
 
 **Files:**
-- Create: `wolf-recovery/native/tests/test_e2e_scan_recover.cpp`
-- Modify: `wolf-recovery/native/CMakeLists.txt`
+- Create: `byteback/native/tests/test_e2e_scan_recover.cpp`
+- Modify: `byteback/native/CMakeLists.txt`
 
 - [x] FAT16 MBR fixture quick scan inserts into temp MetadataStore
 - [x] Recover `TEST.TXT`, assert payload `Hello FAT16` and MD5 present
@@ -44,16 +44,16 @@
 ### Task 3: Dashboard active session fix
 
 **Files:**
-- Modify: `wolf-recovery/src/renderer/components/Dashboard/Dashboard.tsx`
+- Modify: `byteback/src/renderer/components/Dashboard/Dashboard.tsx`
 
 - [x] Resume banner + stats only when `getScanState().status === 0`
 
 ### Task 4: VSS creation time
 
 **Files:**
-- Modify: `wolf-recovery/native/include/fs/vss_scanner.h`
-- Modify: `wolf-recovery/native/src/fs/vss_scanner.cpp`
-- Modify: `wolf-recovery/native/src/scan_coordinator.cpp`
+- Modify: `byteback/native/include/fs/vss_scanner.h`
+- Modify: `byteback/native/src/fs/vss_scanner.cpp`
+- Modify: `byteback/native/src/scan_coordinator.cpp`
 
 - [x] Add `createdAt` field; populate via `GetFileTime` on shadow copy handle
 - [x] Emit `fr.createdAt = snap.createdAt` for VSS records

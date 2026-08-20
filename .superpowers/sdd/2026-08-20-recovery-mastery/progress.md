@@ -1,4 +1,4 @@
-# SDD ledger — plan: wolf-recovery/docs/superpowers/plans/2026-08-20-recovery-mastery.md
+# SDD ledger — plan: docs/superpowers/plans/2026-08-20-recovery-mastery.md
 
 **BASE:** 3bd79733a03fa616a1dff17936635ad9f96819fa
 **Branch:** feat/recovery-mastery
@@ -39,7 +39,7 @@
 - Task 5.1: complete (test_recovery_golden.cpp — programmatic FAT/PNG golden; generate-fixtures.ps1; ntfs_deleted README stub)
 - Task 5.2: complete (e2e/recovery-flow.spec.ts — results UI smoke; build required for Playwright)
 - Task 5.3: complete (scan resume native+UI; CarveScanResumesFromCheckpoint test)
-- Task 5.4: complete (bench_scan.cpp WOLF_RUN_BENCH gate; README benchmark table)
+- Task 5.4: complete (bench_scan.cpp BYTEBACK_RUN_BENCH gate; README benchmark table)
 - **Tests:** 242/242 native (3 skipped: Ewf, VolumeMapper, BenchScan), typecheck + vitest green
 - Task 6.2: complete (refs_integrity CRC32C/CRC64-ECMA, SUPB self-check, entry integrity trailer, recover validation)
 - Task 6.1: deferred (GPU PFAC — plan constraint: CPU only)

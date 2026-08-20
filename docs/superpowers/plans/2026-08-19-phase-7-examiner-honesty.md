@@ -19,8 +19,8 @@
 
 ## Files
 
-- Modify: `wolf-recovery/src/preload/index.ts`, `src/shared/types.ts`, `src/shared/ipc-contract.ts`, `src/main/ipc-handlers.ts`
-- Create: `wolf-recovery/src/renderer/components/CaseView/CaseView.tsx` (+ css)
+- Modify: `byteback/src/preload/index.ts`, `src/shared/types.ts`, `src/shared/ipc-contract.ts`, `src/main/ipc-handlers.ts`
+- Create: `byteback/src/renderer/components/CaseView/CaseView.tsx` (+ css)
 - Modify: `App.tsx`, `Sidebar.tsx`, `ReportGenerator.tsx`, `SmartView.tsx`
 - Modify: `hfs_catalog.cpp` / `hfs_catalog.h`, `scan_coordinator.cpp` (warning hook)
 - Modify: `package.json`, `README.md`, `ewf_writer.h`
@@ -32,10 +32,10 @@
 ### Task 1: Preload + IPC dialog for case/NSRL
 
 **Files:**
-- Modify: `wolf-recovery/src/preload/index.ts`
-- Modify: `wolf-recovery/src/shared/types.ts`
-- Modify: `wolf-recovery/src/shared/ipc-contract.ts`
-- Modify: `wolf-recovery/src/main/ipc-handlers.ts`
+- Modify: `byteback/src/preload/index.ts`
+- Modify: `byteback/src/shared/types.ts`
+- Modify: `byteback/src/shared/ipc-contract.ts`
+- Modify: `byteback/src/main/ipc-handlers.ts`
 
 **Interfaces:**
 - Consumes: existing `get-case-info`, `set-case-info`, `load-nsrl`, `lookup-nsrl`, `get-nsrl-stats`
@@ -76,7 +76,7 @@ Use `dialog.showOpenDialog` filters `txt,csv`. Then `engine.loadNsrl(filePaths[0
 
 - [ ] **Step 4: Typecheck**
 
-Run: `cd wolf-recovery && npm run typecheck`  
+Run: `cd byteback && npm run typecheck`  
 Expected: PASS
 
 - [ ] **Step 5: Commit** (only if the user asked to commit this task)
@@ -86,8 +86,8 @@ Expected: PASS
 ### Task 2: CaseView UI + report fields
 
 **Files:**
-- Create: `wolf-recovery/src/renderer/components/CaseView/CaseView.tsx`
-- Create: `wolf-recovery/src/renderer/components/CaseView/CaseView.css`
+- Create: `byteback/src/renderer/components/CaseView/CaseView.tsx`
+- Create: `byteback/src/renderer/components/CaseView/CaseView.css`
 - Modify: `App.tsx`, `Sidebar.tsx` (`id: 'case'`, label `Dava`)
 - Modify: `ReportGenerator.tsx` — load `getCaseInfo`, put case number/investigator in HTML header
 
@@ -115,10 +115,10 @@ Expected: PASS
 ### Task 3: HFS 25k warning (not silent)
 
 **Files:**
-- Modify: `wolf-recovery/native/include/fs/hfs_catalog.h`
-- Modify: `wolf-recovery/native/src/fs/hfs_catalog.cpp`
-- Modify: `wolf-recovery/native/src/scan_coordinator.cpp` (or FileRecord marker)
-- Modify: `wolf-recovery/native/tests/test_apple_fs.cpp`
+- Modify: `byteback/native/include/fs/hfs_catalog.h`
+- Modify: `byteback/native/src/fs/hfs_catalog.cpp`
+- Modify: `byteback/native/src/scan_coordinator.cpp` (or FileRecord marker)
+- Modify: `byteback/native/tests/test_apple_fs.cpp`
 
 **Interfaces:**
 - Consumes: `CatalogCtx::kMaxFiles`
@@ -148,7 +148,7 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 ### Task 4: SMART KALİBRASYONSUZ copy
 
 **Files:**
-- Modify: `wolf-recovery/src/renderer/components/SmartView/SmartView.tsx`
+- Modify: `byteback/src/renderer/components/SmartView/SmartView.tsx`
 
 - [ ] **Step 1:** Under ATA (non-NVMe) score, add paragraph: `ATA sağlık skoru KALİBRASYONSUZ heuristic (η=500, β=1.5). Ömür tahmini değil.` NVMe block unchanged.
 
@@ -159,8 +159,8 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 ### Task 5: Docs + test script + sidebar honesty
 
 **Files:**
-- Modify: `wolf-recovery/README.md` (test count 145, Faz 0–6, NSRL: "UI Phase 7" or after Task 1–2 "kullanıcı dosyası")
-- Modify: `wolf-recovery/package.json` `test:native` add `-C Release`
+- Modify: `byteback/README.md` (test count 145, Faz 0–6, NSRL: "UI Phase 7" or after Task 1–2 "kullanıcı dosyası")
+- Modify: `byteback/package.json` `test:native` add `-C Release`
 - Modify: `Sidebar.tsx` label `İmaj (RAW / E01)`; version from a constant matching `0.1.0`; replace emoji with `resources/icon.svg` or lucide `Shield`
 - Modify: `ewf_writer.h` CA-004 comment: optional `ewfinfo` / skip
 - Modify: `ImagerView.css`, `HexEditor.css`, `ShredderView.css`, `RaidBuilder.css`, `KeywordSearch.css` — `outline: none` → `:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }`

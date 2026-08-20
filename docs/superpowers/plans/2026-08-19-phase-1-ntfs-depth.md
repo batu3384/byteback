@@ -4,7 +4,7 @@
 
 **Goal:** Professional NTFS forensic depth: scored deleted MFT records, structural $LogFile RCRD hints, USN counts in scan summary/report.
 
-**Spec:** `docs/superpowers/specs/2026-08-19-wolf-professional-roadmap-design.md` (Phase 1)
+**Spec:** `docs/superpowers/specs/2026-08-19-byteback-professional-roadmap-design.md` (Phase 1)
 
 ## Delivered
 
