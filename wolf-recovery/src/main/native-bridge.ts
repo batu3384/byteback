@@ -19,12 +19,14 @@ import type {
   DriveInfo,
   FileRecord,
   PartitionInfo,
+  ResolvedVolume,
   ScanState,
   TimelineResult,
   ScanSummary,
   SmartStatus,
   RaidAssemblyResult,
   RecoverResult,
+  FilePreviewResult,
 } from '../shared/ipc-contract'
 
 interface WolfEngine {
@@ -32,6 +34,8 @@ interface WolfEngine {
   isAdministrator(): boolean
   listDrives(): DriveInfo[]
   listPartitions(driveIndex: number): PartitionInfo[]
+  resolveVolume(letter: string): ResolvedVolume | null
+  listVolumeLetters(): string[]
   initDatabase(path: string): boolean
   getFileCount(scanId: number): number
   getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
@@ -52,7 +56,12 @@ interface WolfEngine {
     data?: Buffer
   }
   getSmartStatus(driveIndex: number): SmartStatus
-  startScan(drivePath: string, scanType: string, callback: (data: any) => void): boolean
+  startScan(
+    drivePath: string,
+    scanType: string,
+    callbackOrOptions: ((data: unknown) => void) | Record<string, unknown>,
+    callback?: (data: unknown) => void,
+  ): number
   stopScan(): void
   startImaging(
     driveIndex: number,
@@ -64,6 +73,7 @@ interface WolfEngine {
   startWipe(targetPath: string): Promise<boolean>
   setBitLockerFvek(hex: string): boolean
   setBitLockerRecoveryPassword(driveIndex: number, password: string): string
+  setBitLockerPassword(driveIndex: number, password: string): string
   startPhysicalWipe(driveIndex: number, typedSerial: string): Promise<boolean>
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
   failRaidDisk(diskIndex: number): boolean
@@ -80,6 +90,7 @@ interface WolfEngine {
     destDir: string,
     scanId: number,
   ): Promise<{ succeeded: number; failed: number; results: RecoverResult[] }>
+  readFilePreview(driveIndex: number, scanId: number, fileId: number): FilePreviewResult
   getCaseInfo(): {
     caseNumber: string
     investigator: string

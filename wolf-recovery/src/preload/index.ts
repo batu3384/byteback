@@ -5,8 +5,11 @@ contextBridge.exposeInMainWorld('api', {
   isAdmin: () => ipcRenderer.invoke('is-admin'),
   listDrives: () => ipcRenderer.invoke('list-drives'),
   listPartitions: (driveIndex: number) => ipcRenderer.invoke('list-partitions', driveIndex),
+  resolveVolume: (letter: string) => ipcRenderer.invoke('resolve-volume', letter),
+  listVolumeLetters: () => ipcRenderer.invoke('list-volume-letters'),
   
-  startScan: (driveIndex: number, scanType: string) => ipcRenderer.invoke('start-scan', driveIndex, scanType),
+  startScan: (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) =>
+    ipcRenderer.invoke('start-scan', driveIndex, scanType, scanOptions),
   stopScan: () => ipcRenderer.send('stop-scan'),
   
   onScanProgress: (callback: (data: { current: number, total: number, badSectors?: number[] }) => void) => {
@@ -76,6 +79,8 @@ contextBridge.exposeInMainWorld('api', {
   setBitLockerFvek: (hex: string) => ipcRenderer.invoke('set-bitlocker-fvek', hex),
   setBitLockerRecoveryPassword: (driveIndex: number, password: string) =>
     ipcRenderer.invoke('set-bitlocker-recovery-password', driveIndex, password),
+  setBitLockerPassword: (driveIndex: number, password: string) =>
+    ipcRenderer.invoke('set-bitlocker-password', driveIndex, password),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),
@@ -84,6 +89,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('recover-file', driveIndex, fileId, destDir, scanId),
   recoverFilesBatch: (driveIndex: number, fileIds: number[], destDir: string, scanId: number) =>
     ipcRenderer.invoke('recover-files-batch', driveIndex, fileIds, destDir, scanId),
+  readFilePreview: (driveIndex: number, scanId: number, fileId: number) =>
+    ipcRenderer.invoke('read-file-preview', driveIndex, scanId, fileId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),
   pickSaveImage: (format: 'raw' | 'ewf') => ipcRenderer.invoke('pick-save-image', format),
   getCaseInfo: () => ipcRenderer.invoke('get-case-info'),

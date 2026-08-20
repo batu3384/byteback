@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react'
 import DriveCard from './DriveCard'
-import type { DriveInfo } from '../../../shared/types'
+import SsdTrimModal from './SsdTrimModal'
+import type { DriveInfo, ResolvedVolume } from '../../../shared/types'
+import { SCAN_PROFILES } from '../../../shared/scan-profiles'
+import type { ScanProfile } from '../../../shared/scan-profiles'
 import './Dashboard.css'
-import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play } from 'lucide-react'
+import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search } from 'lucide-react'
 
 interface DashboardProps {
-  onStartScan?: (driveIndex: number, scanType: string) => void
+  onStartScan?: (driveIndex: number, scanType: string, scanOptions?: import('../../../shared/ipc-contract').ScanOptions) => void
   onAction?: (page: any, data?: any) => void
 }
 
@@ -15,6 +18,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [activeSession, setActiveSession] = useState<any>(null)
+  const [pausedSession, setPausedSession] = useState<any>(null)
   const [latestScan, setLatestScan] = useState<any>(null)
   const [fvekHex, setFvekHex] = useState('')
   const [fvekStatus, setFvekStatus] = useState<string | null>(null)
@@ -22,6 +26,16 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   const [recoveryPassword, setRecoveryPassword] = useState('')
   const [recoveryDrive, setRecoveryDrive] = useState(0)
   const [recoveryStatus, setRecoveryStatus] = useState<string | null>(null)
+  const [userPassword, setUserPassword] = useState('')
+  const [userPasswordStatus, setUserPasswordStatus] = useState<string | null>(null)
+  const [volumeLetters, setVolumeLetters] = useState<string[]>([])
+  const [volumeLetter, setVolumeLetter] = useState('C:')
+  const [volumeResolveStatus, setVolumeResolveStatus] = useState<string | null>(null)
+  const [volumeTrimOpen, setVolumeTrimOpen] = useState(false)
+  const [pendingVolumeScan, setPendingVolumeScan] = useState<{
+    resolved: ResolvedVolume
+    scanType: ScanProfile
+  } | null>(null)
 
   const fetchDrives = async () => {
     setLoading(true)
@@ -58,8 +72,16 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
           const state = await window.api.getScanState(latestId)
           if (state) {
             setLatestScan(state)
-            if (state.status === 0) setActiveSession(state)
-            else setActiveSession(null)
+            if (state.status === 0) {
+              setActiveSession(state)
+              setPausedSession(null)
+            } else if (state.status === 4) {
+              setPausedSession(state)
+              setActiveSession(null)
+            } else {
+              setActiveSession(null)
+              setPausedSession(null)
+            }
           }
         }
       } catch (err) {
@@ -71,10 +93,47 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
   useEffect(() => {
     fetchDrives()
     checkActiveSession()
+    if (window.api?.listVolumeLetters) {
+      window.api.listVolumeLetters().then((letters) => {
+        if (letters?.length) {
+          setVolumeLetters(letters)
+          if (!letters.includes(volumeLetter)) setVolumeLetter(letters[0])
+        }
+      }).catch(() => {})
+    }
   }, [])
+
+  const driveIsSsd = (driveIndex: number): boolean => {
+    const d = drives.find((x) => x.index === driveIndex)
+    return d?.type === 'SSD'
+  }
+
+  const startVolumeScan = (resolved: ResolvedVolume, scanType: ScanProfile) => {
+    if (!onStartScan) return
+    setVolumeResolveStatus(
+      `PhysicalDrive${resolved.driveIndex} @ sektör ${resolved.startSector} (${resolved.fsType})`
+    )
+    onStartScan(resolved.driveIndex, scanType, {
+      partitionStartSector: resolved.startSector,
+      partitionSizeInSectors: resolved.sizeSectors,
+    })
+  }
 
   return (
     <div className="dashboard" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
+      <SsdTrimModal
+        open={volumeTrimOpen}
+        scanType={pendingVolumeScan?.scanType ?? 'deep'}
+        onConfirm={() => {
+          setVolumeTrimOpen(false)
+          if (pendingVolumeScan) startVolumeScan(pendingVolumeScan.resolved, pendingVolumeScan.scanType)
+          setPendingVolumeScan(null)
+        }}
+        onCancel={() => {
+          setVolumeTrimOpen(false)
+          setPendingVolumeScan(null)
+        }}
+      />
       {isAdmin === false && (
         <div className="admin-banner glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px 24px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239, 68, 68, 0.05)' }}>
           <ShieldAlert size={24} color="var(--alert-red)" />
@@ -85,7 +144,16 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
       )}
 
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        Kanıt diski: motor GENERIC_READ. BitLocker: 64/128 hex FVEK veya kurtarma parolası (0x0800 clear-key; TPM/startup-key yok) tarama/kurtarma/hex okumasını AES-XTS çözer. İmaj ham ciphertext yazar. PhysicalDrive imhası Yok Edici’de seri + IMHA + onay ile.
+        Kanıt diski: motor GENERIC_READ. BitLocker: FVEK hex, kullanıcı parolası (0x2000) veya kurtarma parolası (0x0800); TPM/startup-key desteklenmez. İmaj ham ciphertext yazar. PhysicalDrive imhası Yok Edici’de seri + IMHA + onay ile.
+      </div>
+
+      <div className="glass-panel" data-testid="scan-profile-legend" style={{ padding: '16px 24px' }}>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '10px' }}>Tarama profilleri</div>
+        <ul style={{ margin: 0, paddingLeft: '20px', color: 'var(--text-muted)', fontSize: '0.85rem', lineHeight: 1.6 }}>
+          {(Object.keys(SCAN_PROFILES) as ScanProfile[]).map((key) => (
+            <li key={key}><strong>{SCAN_PROFILES[key].label}:</strong> {SCAN_PROFILES[key].detail}</li>
+          ))}
+        </ul>
       </div>
 
       <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -124,9 +192,9 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         </div>
         {fvekStatus && <span id="fvek-status" style={{ fontSize: '0.85rem' }}>{fvekStatus}</span>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
-          <label htmlFor="recovery-drive" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kurtarma parolası (BitLocker birimi)</label>
+          <label htmlFor="bitlocker-drive" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>BitLocker birimi</label>
           <select
-            id="recovery-drive"
+            id="bitlocker-drive"
             aria-label="BitLocker sürücüsü"
             value={recoveryDrive}
             onChange={(e) => setRecoveryDrive(Number(e.target.value))}
@@ -136,6 +204,38 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
               <option key={d.index} value={d.index}>{d.index}: {d.model || 'disk'}</option>
             ))}
           </select>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+          <label htmlFor="user-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kullanıcı parolası (0x2000)</label>
+          <input
+            id="user-password"
+            aria-label="BitLocker kullanıcı parolası"
+            aria-describedby="user-password-status"
+            type="password"
+            autoComplete="off"
+            value={userPassword}
+            onChange={(e) => { setUserPassword(e.target.value); setUserPasswordStatus(null) }}
+            placeholder="Windows oturum parolası"
+            style={{ flex: 1, minWidth: '200px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={async () => {
+              if (!window.api?.setBitLockerPassword) {
+                setUserPasswordStatus('API yok')
+                return
+              }
+              const err = await window.api.setBitLockerPassword(recoveryDrive, userPassword)
+              setUserPasswordStatus(err ? err : 'FVEK motor okumasına uygulandı')
+            }}
+          >
+            Paroladan aç
+          </button>
+        </div>
+        {userPasswordStatus && <span id="user-password-status" style={{ fontSize: '0.85rem' }}>{userPasswordStatus}</span>}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
+          <label htmlFor="recovery-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kurtarma parolası (0x0800)</label>
           <input
             id="recovery-password"
             aria-label="BitLocker kurtarma parolası"
@@ -159,11 +259,80 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
               setRecoveryStatus(err ? err : 'FVEK motor okumasına uygulandı')
             }}
           >
-            Paroladan aç
+            Kurtarmadan aç
           </button>
         </div>
         {recoveryStatus && <span id="recovery-status" style={{ fontSize: '0.85rem' }}>{recoveryStatus}</span>}
       </div>
+
+      <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>Mantıksal sürücüden tara</div>
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+          Harf (ör. D:) → PhysicalDrive + bölüm ofseti. Yalnızca o birimi tarar.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+          <select
+            aria-label="Mantıksal sürücü harfi"
+            value={volumeLetter}
+            onChange={(e) => { setVolumeLetter(e.target.value); setVolumeResolveStatus(null) }}
+            style={{ padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+          >
+            {(volumeLetters.length ? volumeLetters : ['C:', 'D:']).map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!isAdmin}
+            onClick={async () => {
+              if (!isAdmin) {
+                alert('Yönetici izni gerekli.')
+                return
+              }
+              if (!window.api?.resolveVolume || !onStartScan) {
+                setVolumeResolveStatus('API yok')
+                return
+              }
+              const resolved = await window.api.resolveVolume(volumeLetter) as ResolvedVolume | null
+              if (!resolved) {
+                setVolumeResolveStatus(`${volumeLetter} çözülemedi (erişim veya harf hatalı)`)
+                return
+              }
+              if (driveIsSsd(resolved.driveIndex)) {
+                setPendingVolumeScan({ resolved, scanType: 'deep' })
+                setVolumeTrimOpen(true)
+                return
+              }
+              startVolumeScan(resolved, 'deep')
+            }}
+          >
+            <Search size={16} /> {volumeLetter} derin tara
+          </button>
+        </div>
+        {volumeResolveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{volumeResolveStatus}</span>}
+      </div>
+
+      {pausedSession && (
+        <div className="resume-banner glass-panel" data-testid="paused-scan-banner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)', background: 'rgba(245, 158, 11, 0.05)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <Activity size={24} color="var(--warning-yellow)" />
+            <div>
+              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Yarım Kalan Tarama</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · {pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör
+              </p>
+            </div>
+          </div>
+          <button
+            className="btn-primary"
+            data-testid="resume-scan-btn"
+            onClick={() => onStartScan && onStartScan(pausedSession.driveIndex, pausedSession.scanType, { resumeScanId: pausedSession.id })}
+          >
+            <Play size={16} fill="currentColor" /> Devam et
+          </button>
+        </div>
+      )}
 
       {activeSession && (
         <div className="resume-banner glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', background: 'rgba(59, 130, 246, 0.05)' }}>

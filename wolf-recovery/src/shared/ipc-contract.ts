@@ -70,6 +70,15 @@ export interface RecoverResult {
   md5Hash?: string
   error?: string
   zeroFilled?: boolean
+  validationScore?: number
+  validationError?: string
+}
+
+export interface FilePreviewResult {
+  success: boolean
+  error?: string
+  kind?: 'image' | 'text' | 'pdf' | 'binary' | string
+  data?: Uint8Array | null
 }
 
 export interface ScanSummary {
@@ -130,6 +139,22 @@ export interface PartitionInfo {
   sizeInSectors: number
   label: string
   isActive: boolean
+}
+
+/** Optional partition scope for startScan (whole disk when omitted). */
+export interface ScanOptions {
+  partitionIndex?: number
+  partitionStartSector?: number
+  partitionSizeInSectors?: number
+  resumeScanId?: number
+}
+
+/** Logical drive letter resolved to PhysicalDrive + partition extent. */
+export interface ResolvedVolume {
+  driveIndex: number
+  startSector: number
+  sizeSectors: number
+  fsType: string
 }
 
 export interface CaseInfo {

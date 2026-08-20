@@ -7,9 +7,12 @@ export type {
   ScanState,
   ScanSummary,
   RecoverResult,
+  FilePreviewResult,
   RaidAssemblyResult,
   BatchRecoverResult,
   PartitionInfo,
+  ScanOptions,
+  ResolvedVolume,
   TimelineEvent,
   TimelineResult,
   ProgressCallback,
@@ -26,9 +29,12 @@ import type {
   ScanState,
   ScanSummary,
   RecoverResult,
+  FilePreviewResult,
   RaidAssemblyResult,
   BatchRecoverResult,
   PartitionInfo,
+  ScanOptions,
+  ResolvedVolume,
   TimelineEvent,
   TimelineResult,
   ProgressCallback,
@@ -45,8 +51,10 @@ declare global {
       isAdmin: () => Promise<boolean>
       listDrives: () => Promise<DriveInfo[]>
       listPartitions: (driveIndex: number) => Promise<PartitionInfo[]>
+      resolveVolume: (letter: string) => Promise<ResolvedVolume | null>
+      listVolumeLetters: () => Promise<string[]>
 
-      startScan: (driveIndex: number, scanType: string) => Promise<number>
+      startScan: (driveIndex: number, scanType: string, scanOptions?: ScanOptions) => Promise<number>
       stopScan: () => void
       onScanProgress: (callback: ProgressCallback) => () => void
       onScanFileFound: (callback: FileFoundCallback) => () => void
@@ -81,6 +89,7 @@ declare global {
       wipePhysicalDrive: (driveIndex: number, typedSerial: string, confirmPhrase: string) => Promise<boolean>
       setBitLockerFvek: (hex: string) => Promise<boolean>
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>
+      setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }>
@@ -98,6 +107,12 @@ declare global {
         destDir: string,
         scanId: number,
       ) => Promise<BatchRecoverResult>
+
+      readFilePreview: (
+        driveIndex: number,
+        scanId: number,
+        fileId: number,
+      ) => Promise<FilePreviewResult>
 
       pickDirectory: () => Promise<string | null>
       pickSaveImage: (format: 'raw' | 'ewf') => Promise<string | null>
