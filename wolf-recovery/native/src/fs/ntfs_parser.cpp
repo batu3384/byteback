@@ -273,11 +273,13 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     uint64_t size;
                     std::vector<FileRecord::DataRun> runs;
                     uint64_t startSector;
+                    std::vector<uint8_t> residentData;
                 };
                 std::vector<AdsEntry> adsEntries;
 
                 // Parse Attributes
                 bool mainStreamResident = false;
+                std::vector<uint8_t> residentBytes;
                 uint32_t attrOffset = header->firstAttributeOffset;
                 bool nameFound = false;
 
@@ -353,12 +355,19 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                         if (attr->nonResidentFlag == 0) {
                             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
                                 NTFS_ResidentAttributeHeader* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(recBase + attrOffset + sizeof(NTFS_AttributeHeader));
+                                std::vector<uint8_t> inlineBytes;
+                                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                                const size_t valLen = resAttr->valueLength;
+                                if (valLen > 0 && valOff + valLen <= recordSize) {
+                                    inlineBytes.assign(recBase + valOff, recBase + valOff + valLen);
+                                }
                                 if (isAds) {
-                                    adsEntries.push_back({adsName, resAttr->valueLength, {}, 0});
+                                    adsEntries.push_back({adsName, resAttr->valueLength, {}, 0, std::move(inlineBytes)});
                                 } else {
                                     fileSize = resAttr->valueLength;
                                     dataRuns.clear();
                                     mainStreamResident = resAttr->valueLength > 0;
+                                    residentBytes = std::move(inlineBytes);
                                 }
                             }
                         } else {
@@ -416,7 +425,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
                                 if (nonResAttr->compressionUnit != 0) dataCompressed = true;
                                 if (isAds) {
-                                    adsEntries.push_back({adsName, nonResAttr->realSize, localRuns, localStart});
+                                    adsEntries.push_back({adsName, nonResAttr->realSize, localRuns, localStart, {}});
                                 } else {
                                     fileSize = nonResAttr->realSize;
                                     dataRuns = std::move(localRuns);
@@ -454,6 +463,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 fr.category = isDirectory ? "Folder" : categoryForName(filename);
                 fr.source = "ntfs_mft";
                 fr.compressed = dataCompressed;
+                fr.residentData = std::move(residentBytes);
                 fr.createdAt = createdAt;
                 fr.modifiedAt = modifiedAt;
                 
@@ -475,6 +485,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     adsFr.extension = ads.streamName;
                     adsFr.sizeBytes = ads.size;
                     adsFr.runs = ads.runs;
+                    adsFr.residentData = ads.residentData;
                     adsFr.startSector = ads.runs.empty()
                         ? (sector + (i / sectorSize))
                         : ads.startSector;

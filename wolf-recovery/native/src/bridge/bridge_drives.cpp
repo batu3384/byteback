@@ -96,9 +96,16 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
-    auto& diskReader = engine->getDiskReader();
-    if (!diskReader.isOpen() || diskReader.getDriveIndex() != driveIndex) {
-        diskReader.openDrive(driveIndex);
+    wolf::DiskReader diskReader;
+    if (bdata->raid) {
+        diskReader.setRaidBackend(bdata->raid);
+    } else if (!diskReader.openDrive(driveIndex)) {
+        Napi::Object fail = Napi::Object::New(env);
+        fail.Set("success", Napi::Boolean::New(env, false));
+        fail.Set("bytesRead", Napi::Number::New(env, 0));
+        fail.Set("paddedZeros", Napi::Boolean::New(env, false));
+        fail.Set("error", Napi::String::New(env, "Could not open drive"));
+        return fail;
     }
 
     uint8_t* buffer = static_cast<uint8_t*>(_aligned_malloc(size, 4096));
@@ -107,11 +114,12 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     auto result = diskReader.readSectors(static_cast<uint64_t>(offset), size, buffer);
 
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set("success", Napi::Boolean::New(env, result.success));
+    obj.Set("success", Napi::Boolean::New(env, result.success && !result.paddedZeros));
     obj.Set("bytesRead", Napi::Number::New(env, static_cast<double>(result.bytesRead)));
-    obj.Set("error", Napi::String::New(env, result.error));
+    obj.Set("paddedZeros", Napi::Boolean::New(env, result.paddedZeros));
+    obj.Set("error", Napi::String::New(env, result.paddedZeros ? "short or padded read" : result.error));
 
-    if (result.success && result.bytesRead > 0) {
+    if (result.success && !result.paddedZeros && result.bytesRead > 0) {
         Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(
             env, buffer, result.bytesRead,
             [](Napi::Env, uint8_t* data) { _aligned_free(data); }

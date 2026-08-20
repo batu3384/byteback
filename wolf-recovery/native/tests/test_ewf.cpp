@@ -288,8 +288,45 @@ TEST(Ewf, OptionalEwfinfoCrossCheck) {
         << "ewfinfo output did not contain MD5 " << expectMd5 << "\n---\n" << output;
 }
 
-TEST(Ewf, OpenRejectsOver4GiB) {
+TEST(Ewf, OpenAcceptsOver4GiBGeometry) {
     EwfWriter w;
     const uint64_t sectors = (0x100000000ull / 512ull) + 1ull;
-    EXPECT_FALSE(w.open("too_big.E01", sectors, 512));
+    ASSERT_TRUE(w.open("too_big.E01", sectors, 512));
+    ASSERT_TRUE(w.finish());
+    ::remove("too_big.E01");
+}
+
+TEST(Ewf, RotatesToSecondSegment) {
+    const char* p1 = "rotate_ewf.E01";
+    const char* p2 = "rotate_ewf.E02";
+    ::remove(p1);
+    ::remove(p2);
+
+    EwfOptions opts;
+    opts.sectorsPerChunk = 1;
+    EwfWriter w;
+    w.setMaxSectorsSectionBytes(8 * 512);
+    const uint64_t kSectors = 16;
+    ASSERT_TRUE(w.open(p1, kSectors, 512, opts));
+
+    std::vector<uint8_t> img(kSectors * 512);
+    for (size_t i = 0; i < img.size(); ++i) img[i] = static_cast<uint8_t>(i & 0xFF);
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.bytesWritten(), img.size());
+    EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size()));
+    EXPECT_EQ(w.segmentCount(), 2);
+
+    auto a = readAll(p1);
+    auto b = readAll(p2);
+    ::remove(p1);
+    ::remove(p2);
+    ASSERT_GT(a.size(), 76u);
+    ASSERT_GT(b.size(), 76u);
+    EXPECT_EQ(rdU32(a.data() + 0x10) & 0xFFFF, 1u);
+    EXPECT_EQ(rdU32(a.data() + 0x12) & 0xFFFF, 2u);
+    EXPECT_EQ(rdU32(b.data() + 0x10) & 0xFFFF, 2u);
+    EXPECT_EQ(rdU32(b.data() + 0x12) & 0xFFFF, 2u);
+    static const uint8_t SIG[8] = {'E', 'V', 'F', 0x09, 0x0D, 0x0A, 0xFF, 0x00};
+    EXPECT_EQ(std::memcmp(b.data(), SIG, 8), 0);
 }

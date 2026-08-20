@@ -28,6 +28,7 @@ public:
     void startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
                       ImageFormat format = ImageFormat::Raw,
                       const EwfOptions& ewfOpts = EwfOptions());
+    void requestStop();
     void stopImaging();
 
     // MD5 hex of the imaged data; valid after imaging completes (EWF only,

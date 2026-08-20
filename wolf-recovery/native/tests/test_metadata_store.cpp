@@ -154,6 +154,21 @@ TEST_F(MetadataStoreTest, InsertFilesBatchFailsWhenClosed) {
     EXPECT_FALSE(store_.insertFilesBatch(1, {r}));
 }
 
+TEST_F(MetadataStoreTest, ResidentBlobRoundTrip) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "tiny.txt";
+    r.sizeBytes = 4;
+    r.source = "ntfs_mft";
+    r.residentData = {'a', 'b', 'c', 'd'};
+    int64_t id = store_.insertFile(scanId, r);
+    ASSERT_GT(id, 0);
+    auto loaded = store_.getFileById(id, scanId);
+    ASSERT_EQ(loaded.residentData.size(), 4u);
+    EXPECT_EQ(loaded.residentData[0], 'a');
+    EXPECT_EQ(loaded.residentData[3], 'd');
+}
+
 TEST_F(MetadataStoreTest, GetFileByIdHonorsScanId) {
     int64_t scanId = store_.createScan(0, "quick", 10);
     FileRecord r;

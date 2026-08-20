@@ -93,3 +93,19 @@ TEST(NtfsParser, CarvesMftFileRecord) {
     }
     EXPECT_TRUE(found);
 }
+
+TEST(NtfsParser, ExtractsResidentDataBytes) {
+    auto img = buildNtfsMftCarveDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::vector<uint8_t> payload;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "doc.txt") payload = fr.residentData;
+    }, &running));
+
+    ASSERT_EQ(payload.size(), 5u);
+    EXPECT_EQ(std::string(payload.begin(), payload.end()), "hello");
+}

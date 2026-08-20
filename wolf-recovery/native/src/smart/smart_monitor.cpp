@@ -2,7 +2,6 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <iostream>
-#include <cmath>
 #include <cstring>
 
 #pragma pack(push, 1)
@@ -271,29 +270,8 @@ SmartStatus SmartMonitor::getSmartStatus(int driveIndex) {
         return status;
     }
 
-    // ATA: Weibull failure model over defect counts, as before.
-    // P(t) = 1 - exp(-(t/eta)^beta) with defects as the stress proxy.
-    double criticalErrors = status.reallocatedSectors + (status.pendingSectors * 1.5);
-    // CA-003: UNCALIBRATED empirical model. eta (characteristic "life" in
-    // defect count) and beta (shape, >1 = wear-out) are engineering defaults,
-    // NOT fitted to any field data. Treat the resulting score as a heuristic
-    // triage threshold — do not present it as a reliability prediction until
-    // calibrated against field failure data (e.g. Backblaze-style datasets)
-    // or the user's own scan history.
-    constexpr double kWeibullEta = 500.0;
-    constexpr double kWeibullBeta = 1.5;
-    double eta = kWeibullEta;
-    double beta = kWeibullBeta;
-    double failureProbability = 1.0 - std::exp(-std::pow(criticalErrors / eta, beta));
-    double healthPercentage = (1.0 - failureProbability) * 100.0;
-
-    if (healthPercentage > 90.0) {
-        status.healthScore = "Good";
-    } else if (healthPercentage > 50.0) {
-        status.healthScore = "Warning";
-    } else {
-        status.healthScore = "Bad";
-    }
+    // ATA ACS / Backblaze: SMART 0x05 realloc + 0xC5 pending. No Weibull.
+    status.healthScore = ataHealthFromDefects(status.reallocatedSectors, status.pendingSectors);
     return status;
 }
 

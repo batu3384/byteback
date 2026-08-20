@@ -64,7 +64,7 @@ void FinalizeScanSession(BridgeData* bdata, int status) {
         obj.Set("status", Napi::Number::New(env, status));
         jsCallback.Call({obj});
     };
-    context->tsfn.BlockingCall(callback);
+    tsfnPost(context->tsfn, callback);
     context->tsfn.Release();
     bdata->scanContext.reset();
 }
@@ -231,7 +231,7 @@ Napi::Value StopScan(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
 
     if (bdata && bdata->scanContext) {
-        bdata->scanContext->coordinator.stopScan();
+        bdata->scanContext->coordinator.requestStop();
     }
     return env.Undefined();
     NAPI_CATCH
@@ -320,7 +320,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("size", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
     };
 
     auto totalSectorsSet = std::make_shared<std::atomic<bool>>(false);
@@ -349,7 +349,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             obj.Set("badSectors", badArr);
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
     };
 
     auto onFinished = [bdata](int status) {
@@ -472,7 +472,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
             obj.Set("type", Napi::String::New(env, "match"));
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
     };
 
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
@@ -491,7 +491,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
     };
 
     auto onFinished = [context](int status) {
@@ -501,7 +501,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
             obj.Set("status", Napi::Number::New(env, status));
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
         context->tsfn.Release();
     };
 
@@ -516,8 +516,7 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (bdata && bdata->contentSearchContext) {
-        bdata->contentSearchContext->coordinator.stopSearch();
-        bdata->contentSearchContext.reset();
+        bdata->contentSearchContext->coordinator.requestStop();
     }
     return env.Undefined();
     NAPI_CATCH

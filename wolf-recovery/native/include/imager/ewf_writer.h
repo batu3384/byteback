@@ -3,27 +3,10 @@
 // EWF (Expert Witness Format, .E01) writer — the de facto legal-standard
 // forensic image format readable by EnCase, FTK, X-Ways, Autopsy (libewf).
 //
-// This writer emits a single-segment EWF1 stream with uncompressed chunks:
-// the container structure (sections, table, MD5 digest) is fully spec-
-// compliant, and uncompressed chunks are legal EWF — every major reader
-// accepts them. zlib-compressed chunks are a drop-in extension once a zlib
-// dependency is vendored (the table entry format is identical; a compressed
-// chunk simply stores the deflate stream + adler32 instead of raw bytes).
-//
-// Stream layout produced:
-//   [file header 76B]
-//   [header section]   case/tool metadata (ASCII, NUL-terminated)
-//   [disk section]     volume geometry (chunk count, sector sizes)
-//   [sectors section]  all chunk data, back to back
-//   [table section]    uint32 offset per chunk + base offset
-//   [table2 section]   backup copy of the table
-//   [digest section]   MD5 of the chunk data (16 raw bytes)
-//   [done section]
-//
-// ponytail: single segment only — the sectors-section table entries are
-// uint32, so images above ~4 GiB of chunk data would need either segmented
-// output or multiple sectors sections. Upgrade path: rotate to .E02 when the
-// sectors section approaches 4 GiB and set total_segments accordingly.
+// Uncompressed EWF1. Table offsets are uint32, so each segment's sectors
+// section stays under 4 GiB; the writer rotates .E01 → .E02 → … and patches
+// total_segments in every file header on finish. zlib chunks remain a
+// drop-in (same table format).
 //
 // CA-004 verification status: container round-trips in test_ewf.cpp. Optional
 // independent check: set WOLF_EWFINFO to an ewfinfo binary (CI skips if absent).
@@ -72,9 +55,17 @@ public:
     // MD5 over the image data (hex). Populated by finish(); empty before.
     std::string md5Hex() const { return finishedMd5Hex_; }
     uint64_t bytesWritten() const { return bytesWritten_; }
+    // Test hook: rotate before the uint32 table ceiling. Default 0xFFFF0000.
+    void setMaxSectorsSectionBytes(uint64_t n) { maxSectorsSectionBytes_ = n; }
+    int segmentCount() const { return static_cast<int>(segmentPaths_.size()); }
 
 private:
     void writeSectionHeader(const char type[16], uint64_t size);
+    bool startSegment(int number, bool first);
+    bool closeSegment(bool last);
+    bool rotateSegment();
+    std::string segmentPathFor(int number) const;
+    void patchSegmentFileHeader(const std::string& path, uint16_t number, uint16_t total);
 
     // Read/write stream: the writer must be able to read the file header
     // back to compute its checksum (MD5 over the first 0x44 bytes) and to
@@ -90,6 +81,10 @@ private:
     crypto::Md5 imageMd5_;
     uint64_t sectorsDataStart_ = 0;   // file offset where chunk data begins
     uint64_t currentChunkBytes_ = 0;  // bytes written into the current sectors section
+    uint64_t maxSectorsSectionBytes_ = 0xFFFF0000ull;
+    std::string destPath_;
+    int segmentNumber_ = 1;
+    std::vector<std::string> segmentPaths_;
 };
 
 } // namespace wolf

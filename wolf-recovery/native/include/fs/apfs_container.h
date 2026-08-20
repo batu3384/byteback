@@ -7,8 +7,8 @@
 
 namespace wolf {
 
-// Walk an APFS container (NXSB) and enumerate embedded volume superblocks (APSB).
-// ponytail: linear block scan for APSB magic; upgrade path: omap/volume tree walk.
+// Walk an APFS container: NXSB (block size + nx_fs_oid[100]), APSB volumes,
+// and btree-leaf dir records (source=apfs_file). Full block count, cancellable.
 bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                        uint64_t partitionSizeBytes,
                        FileSystemParser::FileRecordCallback callback,

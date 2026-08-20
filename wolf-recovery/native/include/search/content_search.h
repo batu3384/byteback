@@ -15,8 +15,7 @@ namespace wolf {
 class VirtualRaid;
 
 struct ContentSearchOptions {
-    uint64_t maxBytesPerFile = 256 * 1024;
-    uint64_t maxFileSize = 16 * 1024 * 1024;
+    uint64_t chunkBytes = 256 * 1024;
 };
 
 using ContentMatchCallback = std::function<void(const FileRecord&)>;
@@ -50,6 +49,7 @@ public:
                      ContentMatchCallback onMatch,
                      ContentProgressCallback onProgress,
                      ContentFinishedCallback onFinished);
+    void requestStop();
     void stopSearch();
 
 private:

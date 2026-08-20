@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <mutex>
 #include <atomic>
+#include <utility>
 
 #define NAPI_TRY \
     try {
@@ -104,7 +105,13 @@ Napi::Value StopImaging(const Napi::CallbackInfo& info);
 
 // bridge_wipe.cpp — wipe / RAID / recovery
 Napi::Value StartWipe(const Napi::CallbackInfo& info);
+template<typename Callback>
+void tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
+    (void)tsfn.NonBlockingCall(std::forward<Callback>(cb));
+}
+
 Napi::Value ReconstructRaid(const Napi::CallbackInfo& info);
+Napi::Value FailRaidDisk(const Napi::CallbackInfo& info);
 Napi::Value GetRaidState(const Napi::CallbackInfo& info);
 Napi::Value RecoverFile(const Napi::CallbackInfo& info);
 Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info);

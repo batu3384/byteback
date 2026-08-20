@@ -71,7 +71,8 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
             }
             jsCallback.Call({obj});
         };
-        context->tsfn.BlockingCall(callback);
+        tsfnPost(context->tsfn, callback);
+        if (current >= total) context->tsfn.Release();
     };
 
     forensic::AuditLogger::GetInstance().LogEvent(
@@ -90,9 +91,7 @@ Napi::Value StopImaging(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
 
     if (bdata && bdata->imagerContext) {
-        bdata->imagerContext->imager.stopImaging();
-        bdata->imagerContext->tsfn.Release();
-        bdata->imagerContext.reset();
+        bdata->imagerContext->imager.requestStop();
     }
     return env.Undefined();
     NAPI_CATCH

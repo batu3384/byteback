@@ -2,27 +2,31 @@
 
 #include <cstddef>
 #include <string>
-#include <unordered_set>
 
 namespace forensic {
 
-// ponytail: in-memory MD5 set only — full NSRL (~100M+ rows) needs an on-disk
-// bloom/SQLite index; upgrade path: mmap sorted hash file + binary search.
+// On-disk SQLite MD5 set (NIST NSRL RDS scale). Text/CSV import builds
+// `<path>.wolf-nsrl.sqlite` next to the source file.
 class NsrlLookup {
 public:
-    // Load MD5 hashes from a text file (32-char lowercase hex per line; # comments).
-    // Returns false on I/O error; partial loads are kept.
+    NsrlLookup() = default;
+    ~NsrlLookup();
+    NsrlLookup(const NsrlLookup&) = delete;
+    NsrlLookup& operator=(const NsrlLookup&) = delete;
+
     bool loadFromFile(const std::string& path);
 
     void clear();
     bool contains(const std::string& md5Hex) const;
-    size_t size() const { return hashes_.size(); }
+    size_t size() const;
     const std::string& lastPath() const { return lastPath_; }
 
 private:
     static bool normalizeMd5(std::string& hex);
+    void closeDb();
+    bool ensureDb(const std::string& sqlitePath);
 
-    std::unordered_set<std::string> hashes_;
+    void* db_ = nullptr; // sqlite3*
     std::string lastPath_;
 };
 

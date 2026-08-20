@@ -77,3 +77,27 @@ TEST_F(E2EScanRecoverTest, FatQuickScanPersistAndRecover) {
     std::string content((std::istreambuf_iterator<char>(in)), {});
     EXPECT_EQ(content, "Hello FAT16");
 }
+
+TEST_F(E2EScanRecoverTest, ResidentRecordRoundTripFromStore) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord rec;
+    rec.name = "tiny.txt";
+    rec.sizeBytes = 5;
+    rec.source = "ntfs_mft";
+    rec.residentData = {'h', 'e', 'l', 'l', 'o'};
+    int64_t id = store_.insertFile(scanId, rec);
+    ASSERT_GT(id, 0);
+
+    FileRecord loaded;
+    std::string err;
+    ASSERT_TRUE(loadRecoverRecord(store_, scanId, id, loaded, err)) << err;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::vector<uint8_t>(512, 0));
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, loaded, destDir_);
+    EXPECT_TRUE(result.success) << result.error;
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(in)), {});
+    EXPECT_EQ(content, "hello");
+}

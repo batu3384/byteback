@@ -5,6 +5,7 @@
 #include <random>
 #include <vector>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 
 namespace security {
@@ -99,6 +100,40 @@ bool DataShredder::shred_file(const std::string& file_path) {
 
     std::error_code ec;
     return std::filesystem::remove(file_path, ec);
+}
+
+bool DataShredder::shred_free_space(const std::string& dirPath, uint64_t maxFillBytes) {
+    if (dirPath.empty()) return false;
+    if (dirPath.rfind("\\\\.\\", 0) == 0 || dirPath.rfind("\\\\?\\", 0) == 0) return false;
+    if (dirPath.find("PhysicalDrive") != std::string::npos) return false;
+
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dirPath, ec)) return false;
+
+    const auto filler = (std::filesystem::path(dirPath) / ".wolf_freespace_wipe.tmp").string();
+    {
+        std::ofstream out(filler, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        const size_t bufSize = 65536;
+        std::vector<uint8_t> buf(bufSize, 0);
+        uint64_t written = 0;
+        while (maxFillBytes == 0 || written < maxFillBytes) {
+            size_t take = bufSize;
+            if (maxFillBytes > 0 && written + take > maxFillBytes) {
+                take = static_cast<size_t>(maxFillBytes - written);
+            }
+            out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(take));
+            if (!out) break;
+            written += take;
+            if (take < bufSize) break;
+        }
+        out.close();
+        if (written == 0) {
+            std::filesystem::remove(filler, ec);
+            return false;
+        }
+    }
+    return shred_file(filler);
 }
 
 } // namespace security

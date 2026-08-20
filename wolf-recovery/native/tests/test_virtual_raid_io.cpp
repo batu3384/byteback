@@ -26,3 +26,14 @@ TEST(VirtualRaidIo, CapacityIsSumForRaid0) {
     auto raid = VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536);
     EXPECT_EQ(raid.capacity(), d0.size() + d1.size());
 }
+
+TEST(VirtualRaidIo, Raid0FailedDiskZerosInsteadOfThrow) {
+    auto [d0, d1] = wolf::testfix::buildRaid0MemberDisks();
+    constexpr size_t kBlock = 64 * 1024;
+    auto raid = VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, kBlock);
+    raid.fail_disk(0);
+    EXPECT_FALSE(raid.is_disk_active(0));
+    auto chunk = raid.read(0, 16);
+    ASSERT_EQ(chunk.size(), 16u);
+    for (uint8_t b : chunk) EXPECT_EQ(b, 0);
+}

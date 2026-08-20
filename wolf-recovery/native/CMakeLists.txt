@@ -52,6 +52,8 @@ set(SOURCES
     src/fs/hfs_catalog.cpp
     src/fs/ntfs_logfile.cpp
     src/fs/vss_scanner.cpp
+    src/fs/volume_identity.cpp
+    src/fs/bitlocker_fve.cpp
     src/search/content_search.cpp
     src/fs/partition_scanner.cpp
     src/fs/virtual_raid.cpp
@@ -61,6 +63,7 @@ set(SOURCES
     src/imager/disk_imager.cpp
     src/imager/ewf_writer.cpp
     src/crypto/md5.cpp
+    src/crypto/aes_xts.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
     src/math/entropy.cpp
@@ -146,6 +149,9 @@ if(WOLF_BUILD_TESTS)
     tests/test_virtual_raid_io.cpp
     tests/test_signature_carve.cpp
     tests/test_e2e_scan_recover.cpp
+    tests/test_ata_health.cpp
+    tests/test_crypto_fve.cpp
+    tests/test_shredder.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
     # MSVC by default, so linking the test against the shared target would
@@ -159,6 +165,7 @@ if(WOLF_BUILD_TESTS)
     src/forensic/audit_logger.cpp
     src/forensic/nsrl_lookup.cpp
     src/crypto/md5.cpp
+    src/crypto/aes_xts.cpp
     src/imager/ewf_writer.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp
@@ -175,6 +182,8 @@ if(WOLF_BUILD_TESTS)
     src/fs/hfs_catalog.cpp
     src/fs/ntfs_logfile.cpp
     src/fs/vss_scanner.cpp
+    src/fs/volume_identity.cpp
+    src/fs/bitlocker_fve.cpp
     src/search/content_search.cpp
     src/fs/ntfs_parser.cpp
     src/fs/virtual_raid.cpp
@@ -182,6 +191,7 @@ if(WOLF_BUILD_TESTS)
     src/carver/signature_engine.cpp
     src/io/disk_reader_win.cpp
     src/memory/memory_pool.cpp
+    src/security/data_shredder.cpp
     third_party/sqlite3.c
   )
   target_link_libraries(wolf_tests

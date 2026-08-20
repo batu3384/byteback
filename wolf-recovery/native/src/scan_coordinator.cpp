@@ -1,6 +1,8 @@
 #include "scan_coordinator.h"
 #include "fs/partition_scanner.h"
 #include "fs/virtual_raid.h"
+#include "fs/vss_scanner.h"
+#include "fs/bitlocker_fve.h"
 #include "wolf_fs.h"
 #include <iostream>
 #include <chrono>
@@ -22,7 +24,8 @@ void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
     if (!reader.hasRaidBackend()) return;
     if (fr.source.empty()) return;
-    if (fr.source == "vss_snapshot" || fr.source == "vss_unbound" || fr.source == "bitlocker_detect") return;
+    if (fr.source == "vss_snapshot" || fr.source == "vss_unbound" || fr.source == "vss_bind" ||
+        fr.source == "bitlocker_detect" || fr.source == "bitlocker_fve") return;
     if (fr.source.rfind("raid_", 0) == 0) return;
     fr.source = "raid_" + fr.source;
 }
@@ -33,18 +36,19 @@ bool looksLikeBitLocker(const uint8_t* boot, size_t n) {
     return n >= 11 && std::memcmp(boot + 3, "-FVE-FS-", 8) == 0;
 }
 
-void emitBitLocker(const FileSystemParser::FileRecordCallback& onFileFound, uint64_t startSector) {
-    FileRecord fr;
-    fr.id = -1;
-    fr.name = "[BitLocker] Birim sifreli - kurtarma anahtari gerekli";
-    fr.path = "/";
-    fr.sizeBytes = 0;
-    fr.startSector = startSector;
-    fr.status = 2;
-    fr.confidence = 100;
-    fr.category = "Encrypted";
-    fr.source = "bitlocker_detect";
-    onFileFound(fr);
+void emitBitLockerFromBoot(DiskReader& reader, const uint8_t* boot, size_t bootLen,
+                           uint64_t volumeOffsetBytes, uint64_t startSector,
+                           const FileSystemParser::FileRecordCallback& onFileFound) {
+    BitLockerFveInfo info;
+    parseBitLockerFve(boot, bootLen, nullptr, 0, info);
+    if (info.metadataOffset > 0) {
+        std::vector<uint8_t> meta(256, 0);
+        uint64_t metaOff = volumeOffsetBytes + info.metadataOffset;
+        if (reader.readSectors(metaOff, static_cast<uint32_t>(meta.size()), meta.data()).success) {
+            parseBitLockerFve(boot, bootLen, meta.data(), meta.size(), info);
+        }
+    }
+    emitBitLockerRecord(info, startSector, onFileFound);
 }
 
 void runQuickScan(DiskReader& reader,
@@ -70,7 +74,7 @@ void runQuickScan(DiskReader& reader,
         std::vector<uint8_t> boot(sectorSize);
         if (reader.readSectors(0, sectorSize, boot.data()).success &&
             looksLikeBitLocker(boot.data(), boot.size())) {
-            emitBitLocker(onFileFound, 0);
+            emitBitLockerFromBoot(reader, boot.data(), boot.size(), 0, 0, onFileFound);
             bitlockerVolume = true;
         }
     }
@@ -92,7 +96,7 @@ void runQuickScan(DiskReader& reader,
             std::vector<uint8_t> boot(sectorSize);
             if (reader.readSectors(offsetBytes, sectorSize, boot.data()).success &&
                 looksLikeBitLocker(boot.data(), boot.size())) {
-                emitBitLocker(onFileFound, part.startSector);
+                emitBitLockerFromBoot(reader, boot.data(), boot.size(), offsetBytes, part.startSector, onFileFound);
                 continue;
             }
         }
@@ -142,18 +146,7 @@ void runQuickScan(DiskReader& reader,
     }
 
 #ifdef _WIN32
-    {
-        FileRecord fr;
-        fr.id = -1;
-        fr.name = "[VSS] Snapshot tarama baglanmadi - host karisimi kapali";
-        fr.path = "/";
-        fr.sizeBytes = 0;
-        fr.status = 2;
-        fr.confidence = 100;
-        fr.category = "Metadata";
-        fr.source = "vss_unbound";
-        onFileFound(fr);
-    }
+    scanVssSnapshotsBound(reader, callbackWrapper, onProgress, isRunning);
 #endif
 
     if (!anyFsScanned && !bitlockerVolume) {
@@ -254,6 +247,21 @@ ScanCoordinator::~ScanCoordinator() {
     stopScan();
 }
 
+namespace {
+void joinNotSelf(std::thread& t) {
+    if (!t.joinable()) return;
+    if (t.get_id() == std::this_thread::get_id()) {
+        t.detach();
+        return;
+    }
+    t.join();
+}
+}
+
+void ScanCoordinator::requestStop() {
+    isRunning = false;
+}
+
 void ScanCoordinator::startScan(const std::string& drivePath, const std::string& scanType,
                                FileSystemParser::FileRecordCallback onFileFound,
                                ProgressCallback onProgress,
@@ -269,10 +277,8 @@ void ScanCoordinator::startScan(const std::string& drivePath, const std::string&
 }
 
 void ScanCoordinator::stopScan() {
-    isRunning = false;
-    if (scanThread.joinable()) {
-        scanThread.join();
-    }
+    requestStop();
+    joinNotSelf(scanThread);
 }
 
 void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
