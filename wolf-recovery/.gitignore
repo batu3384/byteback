@@ -20,6 +20,9 @@ Thumbs.db
 *.db
 *.sqlite
 
+playwright-report/
+test-results/
+
 # Logs & IDE state (do not commit runtime debug output or plan scratch files)
 *.log
 debug_electron.log
