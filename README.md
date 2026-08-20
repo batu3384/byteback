@@ -1,140 +1,152 @@
 # Byteback
 
-**Windows için profesyonel adli bilişim + veri kurtarma aracı.** Ham disk
-erişimini yerel bir C++ motoruyla, modern bir Electron/React arayüzüyle
-birleştirir. Motor diski yalnızca okur (`GENERIC_READ`); yazma işlemi
-kullanıcının seçtiği hedef dosyalara yapılır.
+**Professional Windows forensic imaging and data recovery.** Byteback combines a
+native C++17 engine with an Electron/React examiner surface. The engine opens
+source media with `GENERIC_READ` only; recovered bytes and image output are
+written only to user-selected destination paths.
 
-Hibrit konumlandırma: hem **adli bilişim** (E01 imajlama, hash zincirli
-denetim günlüğü, USN zaman çizelgesi, rapor bütünlük özeti) hem de **veri
-kurtarma** (MFT/FAT/ext4 kurtarma, imza carving, RAID 0/1/5/6/10 sanal
-yeniden kurulum, SSD/TRIM farkındalığı).
+Positioning: **digital forensics** (E01 imaging, hash-chained audit log, USN
+timeline, report integrity summary) and **data recovery** (NTFS/FAT/ext4
+metadata recovery, signature carving, virtual RAID 0/1/5/6/10, SSD/TRIM
+awareness).
 
-## Özellikler
+## Features
 
-### Çekirdek Motor (C++17)
-- **NTFS**: UTF-16 dosya adları, USA fixup, $STANDARD_INFORMATION zaman
-  damgaları, sparse data run'ları, LZNT1 açma, ADS (alternatif akıtlar),
-  USN journal ayrıştırma, INDX slack taraması, dizin ağacı kurulumu.
-  Hızlı tarama: boot `$MFT` LCN run yürüyüşü. Derin: yetim FILE carve.
-- **FAT12/16/32 + exFAT**: FAT zincir yürüyüşü (döngü korumalı), VFAT uzun
-  adlar, exFAT entry-set durum makinesi, DOS zaman damgaları.
-- **Ext2/3/4**: extent tree (derinlik destekli), directory entry'lerden
-  gerçek dosya adları, silinmiş inode/dirent kanıtı.
-- **ReFS**: boot/SUPB tanıma, ministore metadata walk, integrity-stream
-  CRC64-ECMA doğrulama (SUPB self-check + resident dosya trailer).
-- **E01 okuma**: yerel `.E01` (çok segment) + HTTP Range ham imaj; `attachEwfImage` /
-  `attachHttpRawImage` / `attachRawFile` DiskReader API.
-- **HFS+ / APFS**: HFS+ katalog B-tree (iptal edilene kadar). APFS NXSB
-  (`nx_block_size`, `nx_fs_oid[100]`), APSB volume, btree yaprak drec
-  (`source=apfs_file`, keşif) ve file extent (`apfs_extent`, run ile kurtarma).
-  Katalog: nx_fs_oid + ilk 256 blok + omap yaprak paddr (tam container walk yok).
-- **Carving**: Aho-Corasick imza taraması (~114 gömülü imza), yapısal
-  doğrulama (JPEG/PNG/ZIP/PDF/GZIP/RIFF), iki parçalı dosyalar için
-  kümelenmiş BGC kurtarma yolu (sektör adımlı, tarama başına bütçeli).
-  CPU only; CUDA/OpenCL PFAC yok.
-- **RAID**: 0/1/5/6/10 — GF(2⁸) Reed-Solomon çift parite, sektör hizalı
-  okuma. Bozuk üye veya I/O hatası: RAID 0 o aralığı sıfırlar (tarama
-  düşmez); RAID 1 ayna dener; RAID 5/6 parite ile okur. Üye `fail_disk`
-  ile işaretlenir (NAPI + RAID ekranı).
-- **İmajlama**: RAW (dd) ve **E01 (EWF)** — yazım sırasında MD5. E01 çok
-  segment (.E01 → .E02); segment başına uint32 tablo.
-- **SMART**: ATA öznitelikleri + NVMe Health Info Log, SSD/TRIM uyarısı.
-  ATA skoru ACS defect sayacı (realloc 0x05, pending 0xC5).
-- **NSRL**: kullanıcı seçimli metin/CSV MD5 seti (SQLite indeks). Gömülü RDS yok.
-- **Denetim**: SHA-256 hash zincirli adli günlük (RFC 6234 vektörlü).
+### Native engine (C++17)
 
-### Arayüz (Electron + React)
-Dashboard, canlı tarama + kötü sektör haritası, dizin ağacı + dosya detay
-bölmesi, hex inceleyici (entropi + veri şablonları), RAW/E01 imajlayıcı
-(MD5 bütünlük paneli), SMART paneli, sanal RAID kurucu, USN olay zaman
-çizelgesi, CSV dışa aktarım, SHA-256 özetli HTML/PDF adli rapor, dava/NSRL
-formu, açık/koyu tema.
+- **NTFS** — UTF-16 names, USA fixup, `$STANDARD_INFORMATION` timestamps,
+  sparse data runs, LZNT1 decompression, ADS, USN journal parse, INDX slack
+  scan, directory tree rebuild. Quick scan: boot `$MFT` LCN run walk. Deep:
+  orphan FILE carve.
+- **FAT12/16/32 + exFAT** — FAT chain walk (loop-safe), VFAT long names, exFAT
+  entry-set state machine, DOS timestamps.
+- **Ext2/3/4** — extent tree (multi-level), real names from directory entries,
+  deleted inode/dirent evidence.
+- **ReFS** — boot/SUPB probe, ministore metadata walk, integrity-stream
+  CRC64-ECMA validation (SUPB self-check + resident file trailer).
+- **E01 read** — local multi-segment `.E01` and HTTP Range raw images via
+  `attachEwfImage` / `attachHttpRawImage` / `attachRawFile` on `DiskReader`.
+- **HFS+ / APFS** — HFS+ catalog B-tree (until cancelled). APFS NXSB
+  discovery, APSB volume, btree leaf drec (`source=apfs_file`) and file extent
+  runs (`apfs_extent`). Catalog: `nx_fs_oid` + first 256 blocks + recursive omap
+  btree (not a full container snapshot walk).
+- **Carving** — Aho–Corasick signature scan (~114 built-in signatures),
+  structural validation (JPEG/PNG/ZIP/PDF/GZIP/RIFF), clustered BGC recovery
+  path for split fragments (sector-stepped, per-scan budget). CPU only; no
+  CUDA/OpenCL PFAC.
+- **RAID** — 0/1/5/6/10 with GF(2⁸) Reed–Solomon double parity, sector-aligned
+  reads. RAID 0 zero-fills bad stripes (scan continues); RAID 1 tries mirror;
+  RAID 5/6 uses parity. Members can be marked failed via `fail_disk` (NAPI +
+  RAID UI).
+- **Imaging** — RAW (dd) and **E01 (EWF)** with inline MD5. E01 supports
+  multi-segment chains (`.E01` → `.E02`) with per-segment uint32 tables.
+- **SMART** — ATA attributes and NVMe Health Information Log; SSD/TRIM warning.
+  ATA health score uses ACS defect counters (realloc 0x05, pending 0xC5).
+- **NSRL** — user-selected text/CSV MD5 set (SQLite index). No bundled RDS.
+- **Audit** — SHA-256 hash-chained forensic log (RFC 6234 test vectors).
 
-## Proje Yapısı
+### Examiner UI (Electron + React)
+
+Dashboard, live scan with bad-sector map, directory tree and file detail pane,
+hex viewer (entropy + data templates), RAW/E01 imager (MD5 integrity panel),
+SMART panel, virtual RAID builder, USN event timeline, CSV export, HTML/PDF
+forensic report with SHA-256 summary, case/NSRL forms, light/dark theme.
+
+## Repository layout
 
 ```
-byteback/                  # GitHub repo kökü (klonladığınız dizin)
+byteback/                  # repository root
 ├── .github/workflows/     # CI
-├── docs/                  # ARCHITECTURE, denetim raporları, yol haritası
-├── native/                # C++17 motor + GoogleTest
+├── docs/                  # ARCHITECTURE, audits, roadmap plans
+├── native/                # C++ engine + GoogleTest
 ├── src/                   # Electron main, preload, React renderer
-├── e2e/                   # Playwright duman testleri
-├── resources/             # İkon, imza JSON
+├── e2e/                   # Playwright smoke tests
+├── resources/             # icon, signature JSON
 ├── package.json
 └── README.md
 ```
 
-> **Not:** Yerel klasör adınız (`disk`, `byteback`, vb.) önemli değil; ürün kodu
-> repo kökündedir. GitHub’da repo adını `byteback` yapmanız önerilir.
+## Requirements
 
-## Gereksinimler
-- Visual Studio 2022 Build Tools ("Desktop development with C++")
+- Visual Studio 2022 Build Tools (“Desktop development with C++”)
 - Node.js 20+
 - CMake 3.20+
 
-## Kurulum ve Çalıştırma
+## Quick start
+
 ```bash
-git clone <repo-url>
-cd byteback    # veya klonladığınız klasör adı
+git clone https://github.com/batu3384/byteback.git
+cd byteback
 npm install
-npm run dev    # native derle + geliştirme oturumu
+npm run dev
 ```
 
-## Komutlar
+Run as **Administrator** for `\\.\PhysicalDriveN` access.
+
+## Commands
+
 ```bash
-npm run build:native   # C++ motoru derle (cmake-js)
-npm run build          # native + electron-vite üretim derlemesi
+npm run build:native   # build C++ engine (cmake-js)
+npm run build          # native + electron-vite production build
 npm run typecheck      # tsc (web + node)
 npm run test           # Vitest (renderer/shared)
-npm run test:native    # GoogleTest via `ctest -C Release`
-npm run test:e2e       # Playwright Electron duman (`out/main/main.js`)
-npm run dist           # NSIS x64 kurulum paketi (release/)
+npm run test:native    # GoogleTest via ctest -C Release
+npm run test:e2e       # Playwright Electron smoke (requires npm run build)
+npm run dist           # NSIS x64 installer (release/)
 ```
 
-> Not: `build:native` test üretecinin önbelleğini sıfırlar; `test:native`
-> öncesinde `cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON` ile
-> yeniden yapılandırın. Test sayısı `ctest -C Release` çıktısına bağlıdır;
-> `Ewf.OptionalEwfinfoCrossCheck` `BYTEBACK_EWFINFO` yoksa skip olur.
+> `build:native` resets the test generator cache. Before `test:native`, configure
+> with `cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON`. Test count
+> follows `ctest -C Release` output; `Ewf.OptionalEwfinfoCrossCheck` skips when
+> `BYTEBACK_EWFINFO` is unset.
 
-## Benchmark (geliştirici)
+## Benchmarks (developers)
 
-| Senaryo | Ortam | Not |
-|---------|-------|-----|
-| 64 MiB memory volume, deep scan | `BYTEBACK_RUN_BENCH=1 ctest -R BenchScan` | Programatik disk; gerçek SSD/HDD değil |
-| 500 GB sparse deep scan | Planlanıyor | CI süresi için henüz otomatik değil |
+| Scenario | Environment | Notes |
+|----------|-------------|-------|
+| 64 MiB memory volume, deep scan | `BYTEBACK_RUN_BENCH=1 ctest -R BenchScan` | Synthetic disk; not real SSD/HDD |
+| 500 GB sparse deep scan | Planned | Not automated in CI yet |
 
-Sonuçlar makineye bağlıdır; tablo dürüst referans içindir, pazarlama iddiası değil.
+Results are machine-dependent; reference only, not marketing claims.
 
-## Yol Haritası Durumu
-1. **Faz 0–6 (motor)** — güvenilirlik, NTFS derinliği, VSS, RAID/batch,
-   içerik FTS, Apple FS, ops (case SQLite + NSRL NAPI).
-2. **Faz 7 (inceleyici yüzeyi)** — Case/NSRL sayfası, ATA ACS etiketi,
-   README/ctest hizası.
-3. **Denetim** — `docs/codebase-audit/` tarihli raporlar yaşayan belgedir.
-   Bir koşunun "tamamı giderildi" iddiası sonraki koşuyu kapatmaz.
+## Roadmap status
 
-**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker recovery password yalnızca **0x0800 clear-key** koruyucusu (TPM/startup-key/password → açık hata). FVEK: 64/128 hex veya recovery password → AES-128/256-XTS tarama+kurtarma+hex (imaj ham ciphertext). GPU PFAC yok. APFS: nx_fs_oid + 256 blok + **recursive omap btree** (tam snapshot tree değil). PhysicalDrive: seri + **IMHA** + OS onay; SSD ≠ NIST 800-88. Eşzamanlı scan/imaj/wipe engellenir.
+1. **Phases 0–6 (engine)** — reliability, NTFS depth, VSS, RAID/batch, content
+   FTS, Apple FS, ops (case SQLite + NSRL NAPI).
+2. **Phase 7 (examiner surface)** — Case/NSRL page, ATA ACS labels, README/ctest
+   alignment.
+3. **Audits** — dated reports under `docs/codebase-audit/` are living documents.
+   A “all fixed” claim in one run does not close the next audit.
 
-## Güvenlik Notları
-- Uygulama sektör erişimi için Yönetici gerektirir (NSIS manifestı
-  `requireAdministrator`). Renderer `sandbox` + `contextIsolation`; native
-  addon yalnız main süreçte.
-- Motor kaynak diske `GENERIC_READ` ile açılır. Önce `FILE_SHARE_READ`;
-  birim kilitlerse `FILE_SHARE_WRITE` yedek. Bu yazma izni değildir;
-  donanım yazma engelleyici yoksa kanıt diski host OS değiştirebilir.
-- Kurtarma ve imaj çıktısı kullanıcının seçtiği hedefe yazılır. Recover
-  renderer `runs` kabul etmez; SQLite `fileId` + `scanId` şart.
-- Disk geneli PhysicalDrive imhası: Yok Edici’de sürücü seç + seriyi yaz +
-  OS onay. Native katman seri eşleşmeden yazmaz. Dosya/boş alan wipe hâlâ
-  aygıt yollarını reddeder (CA-001). SSD’de DoD NIST sanitization değildir.
-- NSRL yolu renderer'dan gelmez; main-process dosya diyaloğu seçer.
+**Documented limits (no false crypto/product claims):** BitLocker recovery
+password supports only the **0x0800 clear-key** protector (TPM/startup-key/password
+→ explicit error). FVEK: 64/128 hex or recovery password → AES-128/256-XTS
+scan/recover/hex on raw ciphertext images. No GPU PFAC. APFS: `nx_fs_oid` + 256
+blocks + **recursive omap btree** (not full snapshot tree). PhysicalDrive wipe:
+serial match + typed **IMHA** + OS confirmation; SSD ≠ NIST 800-88. Concurrent
+scan/image/wipe operations are serialized.
+
+## Security
+
+- Administrator elevation required for sector access (NSIS manifest
+  `requireAdministrator`). Renderer uses `sandbox` + `contextIsolation`; native
+  addon loads only in the main process.
+- Engine opens source media with `GENERIC_READ`. `FILE_SHARE_READ` first; falls
+  back to `FILE_SHARE_WRITE` when the volume is locked — not a write grant; host
+  OS may still modify evidence without hardware write blockers.
+- Recovery and imaging write only to user-chosen destinations. Recover rejects
+  renderer-supplied `runs`; SQLite `fileId` + `scanId` are required.
+- Full-disk PhysicalDrive wipe: Shredder UI + serial confirmation + OS dialog.
+  Native layer refuses without serial match. File/free-space wipe still rejects
+  device paths (CA-001). SSD wipe is not NIST 800-88 sanitization.
+- NSRL path is chosen via main-process file dialog, not from renderer input.
 
 ## GitHub
 
-Repo: **https://github.com/batu3384/byteback** (private)
+Repository: **https://github.com/batu3384/byteback** (private)
 
-CI workflow (`.github/workflows/build.yml`) yerelde hazır. Push için ek scope gerekir:
+CI workflow (`.github/workflows/build.yml`) is ready locally. Pushing it requires
+the `workflow` OAuth scope:
 
 ```powershell
 gh auth refresh -h github.com -s workflow
@@ -143,5 +155,6 @@ git commit -m "ci: add GitHub Actions workflow"
 git push
 ```
 
-## Lisans
+## License
+
 MIT License

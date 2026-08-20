@@ -1,237 +1,237 @@
-﻿# Adversarial review â€” Byteback
+﻿# Adversarial review — Byteback
 
-- Tarih: 2026-08-19
-- Kapsam: `` native + Electron (tam Ã¼rÃ¼n, HEAD)
-- YÃ¶ntem: Ã¼Ã§ zorunlu persona (Saboteur, New Hire, Security Auditor); 2+ persona = bir seviye terfi
-- Runtime: statik kod okuma + Ã¶nceki `ctest` 146/146 (birim testleri production teardown / 4 GiB E01 / gerÃ§ek FVE OEM kapsamÄ±yor)
+- Date: 2026-08-19
+- Scope: `` native + Electron (full product, HEAD)
+- Method: three mandatory personas (Saboteur, New Hire, Security Auditor); 2+ personas = one level promotion
+- Runtime: static code read + prior `ctest` 146/146 (unit tests do not cover production teardown / 4 GiB E01 / real FVE OEM)
 - Verdict: **BLOCK**
 
-Ã–nceki denetim (`2026-08-19.md`) Case/NSRL yÃ¼zeyi, HFS sentinel, SMART etiketi, README hizasÄ±nÄ± kapatmÄ±ÅŸtÄ±. Bu koÅŸu o yamalarÄ±n *altÄ±nda* kalan delil bÃ¼tÃ¼nlÃ¼ÄŸÃ¼, privilege IPC ve native crash/OOB yollarÄ±nÄ± aÃ§Ä±yor.
+Previous audit (`2026-08-19.md`) closed Case/NSRL surface, HFS sentinel, SMART label, README alignment. This run exposes evidence integrity, privilege IPC, and native crash/OOB paths *under* those patches.
 
-## Ã–zet sayÄ±larÄ±
+## Summary counts
 
-| Seviye | Adet |
+| Level | Count |
 |--------|------|
 | CRITICAL | 12 |
 | WARNING | 14 |
 | NOTE | 8 |
 
-## Persona notlarÄ±
+## Persona notes
 
-- **Saboteur:** Ã¼retimde tarama 2, `std::terminate`; HFS hostile volume OOB; recover sÄ±fÄ±r + `success=true`; E01 wrap; shared `DiskReader`.
-- **New Hire:** `status` Ã¼Ã§ anlama sahip (`byteback_db.h` Intact vs NTFS IN_USE vs rapor â€œÃ¼zerine yazÄ±lmÄ±ÅŸâ€); RAID 6 `fail_disk` NAPIâ€™de yok; CoC paragrafÄ± motorla Ã§eliÅŸiyor.
-- **Security Auditor:** `startWipe` hÃ¢lÃ¢ renderer string; recover `FileRecord.runs` rendererâ€™dan; `requireAdministrator` + `sandbox: false` + `asar: false`; rapor HTML XSS.
+- **Saboteur:** production scan 2 → `std::terminate`; HFS hostile volume OOB; recover zero + `success=true`; E01 wrap; shared `DiskReader`.
+- **New Hire:** `status` has three meanings (`byteback_db.h` Intact vs NTFS IN_USE vs report "overwritten"); RAID 6 `fail_disk` not in NAPI; CoC paragraph contradicts engine.
+- **Security Auditor:** `startWipe` still renderer string; recover `FileRecord.runs` from renderer; `requireAdministrator` + `sandbox: false` + `asar: false`; report HTML XSS.
 
 ---
 
 ## Critical Findings
 
-### AR-001 | Recover renderer `runs` gÃ¼veniyor â€” DB yok
+### AR-001 | Recover trusts renderer `runs` — not DB
 
-- Persona: Security Auditor, Saboteur â†’ **CRITICAL**
-- Yol: `native/src/bridge/bridge_wipe.cpp` `FileRecordFromJs` / `RecoverFile`; `byteback_db.h` `getFileById` (kullanÄ±lmÄ±yor)
-- KanÄ±t: Recover, IPC nesnesindeki `runs[].startSector/sectorCount` ile okur. `scanId` yalnÄ±z `incrementRecovered`.
-- Zarar: Admin sÃ¼reÃ§ rastgele sektÃ¶r aralÄ±ÄŸÄ±nÄ± â€œkurtarÄ±ldÄ± + MD5â€ diye yazar.
+- Persona: Security Auditor, Saboteur → **CRITICAL**
+- Path: `native/src/bridge/bridge_wipe.cpp` `FileRecordFromJs` / `RecoverFile`; `byteback_db.h` `getFileById` (unused)
+- Evidence: Recover reads via IPC object `runs[].startSector/sectorCount`. `scanId` only for `incrementRecovered`.
+- Harm: Admin process writes arbitrary sector range as "recovered + MD5".
 
-### AR-002 | `startWipe` ham dosya yolu, teyit yok
+### AR-002 | `startWipe` raw file path, no confirmation
 
-- Persona: Security Auditor â†’ **CRITICAL**
-- Yol: `src/main/ipc-handlers.ts` `start-wipe`; `preload/index.ts`; `bridge_wipe.cpp` `StartWipe`
-- KanÄ±t: Shredder UI disk wipeâ€™Ä± kilitli. Preload `startWipe(targetPath)` aÃ§Ä±k. Native yalnÄ±z `PhysicalDrive` / `\\.\` reddeder.
-- Zarar: Renderer (XSS/DevTools) dava dosyasÄ±nÄ± 3-pass yok eder.
+- Persona: Security Auditor → **CRITICAL**
+- Path: `src/main/ipc-handlers.ts` `start-wipe`; `preload/index.ts`; `bridge_wipe.cpp` `StartWipe`
+- Evidence: Shredder UI locks disk wipe. Preload exposes `startWipe(targetPath)`. Native rejects only `PhysicalDrive` / `\\.\`.
+- Harm: Renderer (XSS/DevTools) destroys case file in 3 passes.
 
-### AR-003 | E01 >4 GiB native hÃ¢lÃ¢ yazar, tablo `uint32` wrap
+### AR-003 | E01 >4 GiB native still writes, table `uint32` wrap
 
-- Persona: Saboteur, Security Auditor â†’ **CRITICAL**
-- Yol: `ewf_writer.cpp` `write` `static_cast<uint32_t>(currentChunkBytes_)`; `finish()` true
-- KanÄ±t: UI confirm var; writer reddetmez. Test yalnÄ±zca kÃ¼Ã§Ã¼k sentetik.
-- Zarar: Mahkeme E01 bozuk offset tablosu + â€œgeÃ§erliâ€ MD5.
+- Persona: Saboteur, Security Auditor → **CRITICAL**
+- Path: `ewf_writer.cpp` `write` `static_cast<uint32_t>(currentChunkBytes_)`; `finish()` true
+- Evidence: UI confirm exists; writer does not reject. Test only small synthetic.
+- Harm: Court E01 broken offset table + "valid" MD5.
 
-### AR-004 | KÃ¶tÃ¼ sektÃ¶r â†’ sÄ±fÄ±r, `success=true` / imaj tamamlandÄ±
+### AR-004 | Bad sector → zero, `success=true` / image complete
 
-- Persona: Saboteur, Security Auditor, New Hire â†’ **CRITICAL** (terfi)
-- Yol: `recovery_engine.cpp` ~157â€“183; `disk_imager.cpp` ~84â€“96
-- KanÄ±t: Okuma fail olunca sÄ±fÄ±r yazÄ±lÄ±r, MD5 sÄ±fÄ±rlarÄ± iÃ§erir, sonuÃ§ baÅŸarÄ±lÄ±.
-- Zarar: Bit-for-bit / kurtarÄ±ldÄ± iddiasÄ± uydurma bayt.
+- Persona: Saboteur, Security Auditor, New Hire → **CRITICAL** (promoted)
+- Path: `recovery_engine.cpp` ~157–183; `disk_imager.cpp` ~84–96
+- Evidence: Read fail writes zeros, MD5 includes zeros, result success.
+- Harm: Bit-for-bit / recovered claim with fabricated bytes.
 
-### AR-005 | VSS host gÃ¶lgesi + recover live disk
+### AR-005 | VSS host shadow + recover live disk
 
-- Persona: Saboteur, Security Auditor â†’ **CRITICAL**
-- Yol: `vss_scanner.cpp` `HarddiskVolumeShadowCopy1..64`; recover `openDrive(driveIndex_)`
-- KanÄ±t: Enumerate kanÄ±t diske baÄŸlÄ± deÄŸil. Recover VSS handle kullanmaz.
-- Zarar: Examiner makinesi C: dosyalarÄ± davaya karÄ±ÅŸÄ±r; â€œVSS kurtarmaâ€ canlÄ± PhysicalDrive okur.
+- Persona: Saboteur, Security Auditor → **CRITICAL**
+- Path: `vss_scanner.cpp` `HarddiskVolumeShadowCopy1..64`; recover `openDrive(driveIndex_)`
+- Evidence: Enumerate not tied to evidence disk. Recover does not use VSS handle.
+- Harm: Examiner machine C: files mix into case; "VSS recovery" reads live PhysicalDrive.
 
-### AR-006 | BitLocker OEM string gerÃ§ek VBR ile eÅŸleÅŸmez
+### AR-006 | BitLocker OEM string does not match real VBR
 
-- Persona: Saboteur, Security Auditor, New Hire â†’ **CRITICAL** (terfi)
-- Yol: `scan_coordinator.cpp` `memcmp(boot+3, "-FVEF-SYS-", 10)`; test aynÄ± sahte 10 byte
-- KanÄ±t: BitLocker volume OEM 8 byte `"-FVE-FS-"`. LBA 0 ayrÄ±ca GPTâ€™te protective MBR.
-- Zarar: Åifreli birim â€œtespit edilmediâ€; ciphertext carve/MFT sanÄ±lÄ±r. Test yeÅŸil yalan.
+- Persona: Saboteur, Security Auditor, New Hire → **CRITICAL** (promoted)
+- Path: `scan_coordinator.cpp` `memcmp(boot+3, "-FVEF-SYS-", 10)`; test same fake 10 bytes
+- Evidence: BitLocker volume OEM 8 bytes `"-FVE-FS-"`. LBA 0 also protective MBR on GPT.
+- Harm: Encrypted volume "not detected"; ciphertext carved/MFT mistaken. Test green lie.
 
 ### AR-007 | HFS B-tree `numRecords` heap OOB
 
-- Persona: Saboteur, Security Auditor â†’ **CRITICAL**
-- Yol: `hfs_catalog.cpp` `walkCatalogNode` `offTable = blockSize - (numRecords+1)*2`
-- KanÄ±t: `(numRecords+1)*2 <= blockSize` yok. 25k sentinel bu OOBâ€™u kapatmaz.
-- Zarar: Hostile/bozuk HFS â†’ admin sÃ¼reÃ§ crash / bellek bozumu.
+- Persona: Saboteur, Security Auditor → **CRITICAL**
+- Path: `hfs_catalog.cpp` `walkCatalogNode` `offTable = blockSize - (numRecords+1)*2`
+- Evidence: No `(numRecords+1)*2 <= blockSize`. 25k sentinel does not close this OOB.
+- Harm: Hostile/corrupt HFS → admin process crash / memory corruption.
 
-### AR-008 | `insertFilesBatch` sqlite rc yutar, hep `true`
+### AR-008 | `insertFilesBatch` swallows sqlite rc, always `true`
 
-- Persona: Saboteur, Security Auditor â†’ **CRITICAL**
-- Yol: `metadata_store.cpp` `sqlite3_step` / `COMMIT` / `return true`
-- KanÄ±t: AdÄ±m rc kontrolÃ¼ yok. UI TSFN ile dosya gÃ¶sterir; DB sessiz eksik.
-- Zarar: Dava DB â‰  ekran. `hfs_limit` sentinel kaybolabilir.
+- Persona: Saboteur, Security Auditor → **CRITICAL**
+- Path: `metadata_store.cpp` `sqlite3_step` / `COMMIT` / `return true`
+- Evidence: No per-step rc check. UI shows files via TSFN; DB silently incomplete.
+- Harm: Case DB ≠ screen. `hfs_limit` sentinel may disappear.
 
 ### AR-009 | `ScanCoordinator` join/terminate
 
-- Persona: Saboteur, New Hire â†’ **CRITICAL**
-- Yol: `scan_coordinator.cpp` `stopScan` yalnÄ±z `if (isRunning)`; worker sonunda `isRunning=false` joinable thread bÄ±rakÄ±r; `startScan` `scanThread = std::thread(...)` eskiyi join etmez
-- KanÄ±t: C++ `std::thread` atama joinable iken `std::terminate`.
-- Zarar: Ä°lk tarama bittikten sonra ikinci tarama / dtor sÃ¼reÃ§ Ã¶ldÃ¼rÃ¼r. `StopScan` JS threadâ€™de `join` + worker `BlockingCall` deadlock riski.
+- Persona: Saboteur, New Hire → **CRITICAL**
+- Path: `scan_coordinator.cpp` `stopScan` only `if (isRunning)`; worker end sets `isRunning=false` leaving joinable thread; `startScan` `scanThread = std::thread(...)` does not join old
+- Evidence: C++ `std::thread` assignment while joinable → `std::terminate`.
+- Harm: After first scan completes, second scan / dtor kills process. `StopScan` JS thread `join` + worker `BlockingCall` deadlock risk.
 
-### AR-010 | PaylaÅŸÄ±mlÄ± `Engine::diskReader_` Ä±rk koÅŸulu
+### AR-010 | Shared `Engine::diskReader_` race
 
-- Persona: Saboteur â†’ **CRITICAL**
-- Yol: `byteback_engine.h` tek reader; `RecoverWorker` `openDrive`/`setRaidBackend`; Hex `readSectors`
-- KanÄ±t: Mutex yok. Recover handle kapatÄ±rken hex okuyabilir.
-- Zarar: AV / yanlÄ±ÅŸ sektÃ¶r / RAID backendâ€™in hexâ€™e yapÄ±ÅŸmasÄ±.
+- Persona: Saboteur → **CRITICAL**
+- Path: `byteback_engine.h` single reader; `RecoverWorker` `openDrive`/`setRaidBackend`; Hex `readSectors`
+- Evidence: No mutex. Recover closes handle while hex reads.
+- Harm: AV / wrong sector / RAID backend stuck on hex.
 
-### AR-011 | Rapor `status` yalanÄ± + CoC paragrafÄ±
+### AR-011 | Report `status` lie + CoC paragraph
 
-- Persona: Saboteur, New Hire, Security Auditor â†’ **CRITICAL** (terfi)
-- Yol: `byteback_db.h` `0=Intact`; NTFS `IN_USEâ†’1`; SQL `SUM(status=0)` `deletedFiles`; `ReportGenerator.tsx` bunu â€œKurtarÄ±labilirâ€ ve kalanÄ± â€œKÄ±smen Ãœzerine YazÄ±lmÄ±ÅŸâ€ yazar. CoC: GENERIC_READ + â€œimajlama dÄ±ÅŸÄ±nda yazma yokâ€ â€” `FILE_SHARE_WRITE`, wipe IPC, recover write.
-- Zarar: SHA-256â€™lÄ± HTML/PDF uydurma overwrite istatistiÄŸi ve sahte gÃ¶zetim zinciri.
+- Persona: Saboteur, New Hire, Security Auditor → **CRITICAL** (promoted)
+- Path: `byteback_db.h` `0=Intact`; NTFS `IN_USE→1`; SQL `SUM(status=0)` `deletedFiles`; `ReportGenerator.tsx` labels these "Recoverable" and rest "Partially Overwritten". CoC: GENERIC_READ + "no writes except imaging" — `FILE_SHARE_WRITE`, wipe IPC, recover write.
+- Harm: SHA-256 HTML/PDF fabricated overwrite stats and fake chain of custody.
 
-### AR-012 | Resident NTFS / boÅŸ `runs` â†’ MFT kaydÄ± dump
+### AR-012 | Resident NTFS / empty `runs` → MFT record dump
 
-- Persona: Saboteur â†’ **CRITICAL**
-- Yol: `recovery_engine.cpp` `runs.empty()` â†’ `recoverCarvedFile` `startSector`â€™dan `sizeBytes`
-- KanÄ±t: Resident `$DATA` run yok; startSector MFT kaydÄ±. ADS resident aynÄ±.
-- Zarar: â€œKurtarÄ±ldÄ± + MD5â€ aslÄ±nda FILE kaydÄ±nÄ±n baÅŸÄ±.
+- Persona: Saboteur → **CRITICAL**
+- Path: `recovery_engine.cpp` `runs.empty()` → `recoverCarvedFile` `sizeBytes` from `startSector`
+- Evidence: Resident `$DATA` has no runs; startSector is MFT record. ADS resident same.
+- Harm: "Recovered + MD5" is actually start of FILE record.
 
 ---
 
 ## Warnings
 
-### AR-013 | RAID 6 Ã¼retimde `fail_disk` yok; bozuk Ã¼ye sÄ±fÄ±r
+### AR-013 | RAID 6 no `fail_disk` in production; failed member zero
 
 - Persona: Saboteur, New Hire
-- Yol: `virtual_raid.cpp` `fail_disk`; NAPI Ã§aÄŸrÄ±sÄ± yok; `readMemberAligned` sÄ±fÄ±r basar, RS devreye girmez
-- Zarar: â€œÃ‡ift pariteâ€ UI; tek Ã¼ye I/O failâ€™de sÄ±fÄ±r stripe.
+- Path: `virtual_raid.cpp` `fail_disk`; no NAPI call; `readMemberAligned` zero-fills, RS never engages
+- Harm: "Dual parity" UI; single member I/O fail → zero stripe.
 
-### AR-014 | Ä°maj `destPath` renderer string; open-fail sessiz
+### AR-014 | Image `destPath` renderer string; open-fail silent
 
 - Persona: Security Auditor, Saboteur
-- Yol: `ipc-handlers.ts` `start-imaging`; `disk_imager.cpp` fail â†’ `isRunning_=false` eventsiz
-- Zarar: Admin truncate; UI â€œÄ°maj AlÄ±nÄ±yorâ€¦â€ Ã¶lÃ¼ worker.
+- Path: `ipc-handlers.ts` `start-imaging`; `disk_imager.cpp` fail → `isRunning_=false` no event
+- Harm: Admin truncate; UI "Imaging…" dead worker.
 
 ### AR-015 | `sandbox: false` + `asar: false` + `requireAdministrator`
 
 - Persona: Security Auditor
-- Yol: `main.ts` webPreferences; `package.json` electron-builder
-- Zarar: YazÄ±labilir kurulum dizininde `.node`/renderer yamasÄ± + UAC. Native addon yÃ¼zÃ¼nden sandbox zor; unpacked tree ayrÄ± risk.
+- Path: `main.ts` webPreferences; `package.json` electron-builder
+- Harm: Writable install dir `.node`/renderer patch + UAC. Sandbox hard due to native addon; unpacked tree separate risk.
 
-### AR-016 | Content FTS 256 KB kesik; 16 MiB Ã¼stÃ¼ sessiz skip
+### AR-016 | Content FTS 256 KB cap; >16 MiB silent skip
 
 - Persona: Saboteur, New Hire
-- Yol: `content_search.h` `maxBytesPerFile` / `maxFileSize`
-- Zarar: â€œArandÄ± bulunamadÄ±â€ false negative. 256 KB UIâ€™da var; 16 MiB skip yok.
+- Path: `content_search.h` `maxBytesPerFile` / `maxFileSize`
+- Harm: "Searched not found" false negative. 256 KB in UI; 16 MiB skip not shown.
 
-### AR-017 | Resmi NSRL `NSRLFile.txt` SHA-1 â†’ 0 hash, `ok=true`
+### AR-017 | Official NSRL `NSRLFile.txt` SHA-1 → 0 hash, `ok=true`
 
 - Persona: Security Auditor, New Hire
-- Yol: `nsrl_lookup.cpp` 32 hex; RDS sÃ¼tun 1 SHA-1 40 hex
-- Zarar: Examiner â€œyÃ¼klendi, 0 hashâ€ veya kÄ±smi set ile â€œNSRLâ€™de yokâ€.
+- Path: `nsrl_lookup.cpp` 32 hex; RDS column 1 SHA-1 40 hex
+- Harm: Examiner "loaded, 0 hashes" or partial set "not in NSRL".
 
-### AR-018 | APFS recover = sÃ¼perblok / 4096 B Ã§Ã¶p
+### AR-018 | APFS recover = superblock / 4096 B garbage
 
 - Persona: New Hire, Saboteur
-- Yol: `apfs_container.cpp` volume `sizeBytes=blockSize`; Results `status` kurtarÄ±labilir gÃ¶rÃ¼nebilir
-- Zarar: Etiket â€œkatalog yokâ€ var; Recover hÃ¢lÃ¢ basÄ±lÄ±r.
+- Path: `apfs_container.cpp` volume `sizeBytes=blockSize`; Results `status` may look recoverable
+- Harm: Label says "no catalog"; Recover still clickable.
 
-### AR-019 | Audit log newline injection; zincir restartâ€™ta sÄ±fÄ±r
+### AR-019 | Audit log newline injection; chain resets on restart
 
 - Persona: Security Auditor
-- Yol: `audit_logger.cpp` `LogEvent` sanitize yok; `previousHash_` RAM
-- Zarar: Path/case notes sahte EVENT satÄ±rÄ±. â€œTamper-evidentâ€ abartÄ±.
+- Path: `audit_logger.cpp` `LogEvent` no sanitize; `previousHash_` RAM
+- Harm: Path/case notes fake EVENT line. "Tamper-evident" overstated.
 
 ### AR-020 | `searchFiles` regex ReDoS; count 1e6 RAM
 
 - Persona: Saboteur, Security Auditor
-- Yol: `metadata_store.cpp` `std::regex(query)` LIMITâ€™siz walk
-- Zarar: Examiner regex ile elevated sÃ¼reÃ§ asmasÄ±.
+- Path: `metadata_store.cpp` `std::regex(query)` LIMIT-less walk
+- Harm: Examiner regex hangs elevated process.
 
-### AR-021 | `destDir` canonicalize yok; 10000. Ã§akÄ±ÅŸmada overwrite
+### AR-021 | `destDir` no canonicalize; 10000th collision overwrite
 
 - Persona: Security Auditor
-- Yol: `path_util.cpp` yalnÄ±z basename; `uniqueDestPath` tavanÄ±
-- Zarar: `destDir=\..\Windows\...`; Ã¶nceki kurtarma silinir.
+- Path: `path_util.cpp` basename only; `uniqueDestPath` cap
+- Harm: `destDir=\..\Windows\...`; prior recovery deleted.
 
-### AR-022 | Hex I/O fail â†’ 0x00 Ä±zgara
+### AR-022 | Hex I/O fail → 0x00 grid
 
 - Persona: Saboteur
-- Yol: `ipc-handlers.ts` boÅŸ dizi; `HexEditor.tsx` pad 0
-- Zarar: Okunamayan sektÃ¶r delil gibi durur.
+- Path: `ipc-handlers.ts` empty array; `HexEditor.tsx` pad 0
+- Harm: Unreadable sector looks like evidence.
 
-### AR-023 | Live liste 5000 cap + sayfa dÃ¼ÄŸmeleri yalan
+### AR-023 | Live list 5000 cap + page buttons lie
 
 - Persona: Saboteur, New Hire
-- Yol: `App.tsx` cap; `ScanView.tsx` tÃ¼m `filesFound` render
-- Zarar: Ekran â‰  DB envanteri.
+- Path: `App.tsx` cap; `ScanView.tsx` renders all `filesFound`
+- Harm: Screen ≠ DB inventory.
 
 ### AR-024 | CSV formula injection
 
 - Persona: Security Auditor
-- Yol: `ResultsView.tsx` `esc` `=`/`+`/`@` nÃ¶tralize etmez
-- Zarar: Excel DDE forensic iÅŸ istasyonunda.
+- Path: `ResultsView.tsx` `esc` does not neutralize `=`/`+`/`@`
+- Harm: Excel DDE on forensic workstation.
 
-### AR-025 | Rapor case alanlarÄ± HTML escape yok
+### AR-025 | Report case fields no HTML escape
 
 - Persona: Security Auditor
-- Yol: `ReportGenerator.tsx` investigator/caseNumber ham interpolasyon
-- Zarar: PDF hash, Chromiumâ€™un Ã§alÄ±ÅŸtÄ±rdÄ±ÄŸÄ± sayfadan Ã¶nce alÄ±nÄ±r.
+- Path: `ReportGenerator.tsx` investigator/caseNumber raw interpolation
+- Harm: PDF hash taken before page Chromium executes.
 
-### AR-026 | SMART kahraman â€œSÃ¼rÃ¼cÃ¼ SaÄŸlÄ±klÄ±â€ / Good
+### AR-026 | SMART hero "Drive Healthy" / Good
 
 - Persona: Saboteur
-- Yol: `SmartView.tsx` bÃ¼yÃ¼k skor; dipnot KALÄ°BRASYONSUZ
-- Zarar: Etiket var; triyaj kararÄ± hÃ¢lÃ¢ skor.
+- Path: `SmartView.tsx` large score; footnote UNCALIBRATED
+- Harm: Label exists; triage decision still follows score.
 
 ---
 
 ## Notes
 
-| Kod | Konu |
+| Code | Topic |
 |-----|------|
-| AR-027 | Bilinen tavanlar (dÃ¼rÃ¼st): APFS omap yok, `$LogFile` redo yok, HFS 25k banner, E01 4 GiB metin, FTS 256 KB metin, Weibull etiket, NSRL â€œRDS deÄŸilâ€, BitLocker decrypt yok |
-| AR-028 | INDX README â€œslack taramasÄ±â€; kod path map, slack FileRecord yok |
-| AR-029 | USN timeline var; `mftRef=0`, MFT baÄŸ yok |
-| AR-030 | LZNT1 fail â†’ ham sÄ±kÄ±ÅŸÄ±k bayt + success |
-| AR-031 | `$ATTRIBUTE_LIST` yok; NTFS volume-wide FILE carve |
-| AR-032 | `APP_VERSION` / `package.json` / `Engine::version_` Ã¼Ã§ kopya; Sidebar â€œPRO MAXâ€ |
-| AR-033 | IPC validation testleri yok (Vitest yalnÄ±z shared helpers) |
-| AR-034 | Google Fonts CDN (`index.css`) â€” airgap telefon |
+| AR-027 | Known ceilings (honest): no APFS omap, no `$LogFile` redo, HFS 25k banner, E01 4 GiB text, FTS 256 KB text, Weibull label, NSRL "not RDS", no BitLocker decrypt |
+| AR-028 | INDX README "slack scan"; code path map, no slack FileRecord |
+| AR-029 | USN timeline exists; `mftRef=0`, no MFT link |
+| AR-030 | LZNT1 fail → raw compressed bytes + success |
+| AR-031 | No `$ATTRIBUTE_LIST`; NTFS volume-wide FILE carve |
+| AR-032 | `APP_VERSION` / `package.json` / `Engine::version_` three copies; Sidebar "PRO MAX" |
+| AR-033 | No IPC validation tests (Vitest only shared helpers) |
+| AR-034 | Google Fonts CDN (`index.css`) — airgap phone |
 
 ---
 
-## DÃ¼rÃ¼st tavan vs sessiz yalan
+## Honest ceiling vs silent lie
 
-DÃ¼rÃ¼st (examiner gÃ¶rÃ¼rse aldanmaz): decrypt yok, omap yok, redo yok, E01 4 GiB *uyarÄ±sÄ±*, HFS 25k banner, 256 KB FTS metni, Weibull dipnot, in-memory NSRL.
+Honest (examiner not misled if shown): no decrypt, no omap, no redo, E01 4 GiB *warning*, HFS 25k banner, 256 KB FTS text, Weibull footnote, in-memory NSRL.
 
-Sessiz yalan (mahkemeye giden yÃ¼zey): CoC, zero-fill success, status/overwrite sayÄ±larÄ±, resident MD5, VSS host mix, BitLocker miss, E01 wrap sonrasÄ± â€œtamamlandÄ±â€, RAID 6 sÄ±fÄ±r stripe, recover renderer runs.
+Silent lie (court-facing surface): CoC, zero-fill success, status/overwrite counts, resident MD5, VSS host mix, BitLocker miss, E01 wrap then "complete", RAID 6 zero stripe, recover renderer runs.
 
-## Merge kuralÄ±
+## Merge rule
 
-BLOCK kalkmaz ta ki en az:
+BLOCK lifts only after at least:
 
-1. Recover `getFileById(scan_id, id)` â€” renderer `runs` yok sayÄ±lÄ±r.
-2. `startWipe` / imaj dest yalnÄ±z main `dialog`; wipe iÃ§in typed confirm.
-3. E01 `currentChunkBytes_ > 0xffffffff` â†’ `write`/`finish` false.
-4. Zero-fill `success=false` veya `zeroFilled/badSectors` examiner alanÄ±.
-5. BitLocker OEM `"-FVE-FS-"` + GPT volume boot; sahte test vektÃ¶rÃ¼ silinir.
-6. HFS offset table bound; `insertFilesBatch` step rc; `ScanCoordinator` her zaman join.
-7. Rapor `status` sÃ¶zlÃ¼ÄŸÃ¼ tek kaynak; CoC `FILE_SHARE_WRITE` ve write-blocker yokluÄŸunu yazar.
+1. Recover `getFileById(scan_id, id)` — renderer `runs` ignored.
+2. `startWipe` / image dest only main `dialog`; typed confirm for wipe.
+3. E01 `currentChunkBytes_ > 0xffffffff` → `write`/`finish` false.
+4. Zero-fill `success=false` or `zeroFilled/badSectors` examiner field.
+5. BitLocker OEM `"-FVE-FS-"` + GPT volume boot; delete fake test vector.
+6. HFS offset table bound; `insertFilesBatch` step rc; `ScanCoordinator` always join.
+7. Report `status` dictionary single source; CoC documents `FILE_SHARE_WRITE` and no write-blocker.
 
-## Test boÅŸluklarÄ± (kanÄ±t)
+## Test gaps (evidence)
 
-Birim testler 146 geÃ§ti. Productionâ€™da kÄ±rÄ±lan yollar yeÅŸil deÄŸil: E01 4 GiB, gerÃ§ek FVE OEM, VSS recover, `insertFilesBatch` fail, hostile HFS `numRecords`, scan start-after-complete, recover renderer runs, wipe IPC.
+Unit tests pass 146. Paths broken in production not green: E01 4 GiB, real FVE OEM, VSS recover, `insertFilesBatch` fail, hostile HFS `numRecords`, scan start-after-complete, recover renderer runs, wipe IPC.
