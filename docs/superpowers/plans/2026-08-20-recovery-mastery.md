@@ -1,56 +1,56 @@
-# Byteback — Tarama & Kurtarma Ustalığı Planı
+﻿# Byteback â€” Tarama & Kurtarma UstalÄ±ÄŸÄ± PlanÄ±
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Byteback'yi ticari veri kurtarma yazılımlarına (R-Studio, Recuva, Disk Drill, PhotoRec) yaklaştırmak; ana odak disk tarama, silinmiş veri bulma genişliği ve kurtarma yetkinliği.
+**Goal:** Byteback'yi ticari veri kurtarma yazÄ±lÄ±mlarÄ±na (R-Studio, Recuva, Disk Drill, PhotoRec) yaklaÅŸtÄ±rmak; ana odak disk tarama, silinmiÅŸ veri bulma geniÅŸliÄŸi ve kurtarma yetkinliÄŸi.
 
-**Architecture:** Mevcut `ScanCoordinator` → FS parser'lar → `CarvingEngine` → `RecoveryEngine` hattını genişlet; tarama kapsamını (partition/volume/unallocated), metadata derinliğini (NTFS path rebuild, ReFS), carving kapsamını (imza + özel parser) ve kurtarma kalitesini (preview, doğrulama, dedup) katman katman yükselt.
+**Architecture:** Mevcut `ScanCoordinator` â†’ FS parser'lar â†’ `CarvingEngine` â†’ `RecoveryEngine` hattÄ±nÄ± geniÅŸlet; tarama kapsamÄ±nÄ± (partition/volume/unallocated), metadata derinliÄŸini (NTFS path rebuild, ReFS), carving kapsamÄ±nÄ± (imza + Ã¶zel parser) ve kurtarma kalitesini (preview, doÄŸrulama, dedup) katman katman yÃ¼kselt.
 
 **Tech Stack:** C++17 native motor, Electron/React UI, SQLite metadata, GoogleTest + Vitest + Playwright.
 
-**Spec:** Bu plan doğrudan kullanıcı gereksiniminden türetildi; ayrı spec dosyası `docs/superpowers/specs/2026-08-20-recovery-mastery-design.md` onay sonrası yazılacak.
+**Spec:** Bu plan doÄŸrudan kullanÄ±cÄ± gereksiniminden tÃ¼retildi; ayrÄ± spec dosyasÄ± `docs/superpowers/specs/2026-08-20-recovery-mastery-design.md` onay sonrasÄ± yazÄ±lacak.
 
 ## Global Constraints
 
 - Windows-only native I/O (`\\.\PhysicalDriveN`, `DeviceIoControl`).
-- Motor kaynak diske `GENERIC_READ`; yazma yalnız kullanıcı hedef yoluna.
-- BitLocker bypass yok; FVEK veya recovery password şart.
-- SSD TRIM sonrası kurtarma fiziksel olarak imkansız — UI bunu açık söylemeli.
-- GPU/CUDA PFAC ilk fazlarda yok; CPU paralelleştirme öncelikli.
-- Her faz sonunda `ctest -C Release` + `npm run test` yeşil kalmalı.
+- Motor kaynak diske `GENERIC_READ`; yazma yalnÄ±z kullanÄ±cÄ± hedef yoluna.
+- BitLocker bypass yok; FVEK veya recovery password ÅŸart.
+- SSD TRIM sonrasÄ± kurtarma fiziksel olarak imkansÄ±z â€” UI bunu aÃ§Ä±k sÃ¶ylemeli.
+- GPU/CUDA PFAC ilk fazlarda yok; CPU paralelleÅŸtirme Ã¶ncelikli.
+- Her faz sonunda `ctest -C Release` + `npm run test` yeÅŸil kalmalÄ±.
 
 ---
 
-## Mevcut Durum Özeti (Ağustos 2026)
+## Mevcut Durum Ã–zeti (AÄŸustos 2026)
 
-### Güçlü yanlar (korunacak)
-- NTFS: MFT run walk, silinen kayıt (`status=0`), orphan FILE carve (deep), USN timeline, INDX slack, $LogFile hints, LZNT1 kurtarma.
-- FAT/exFAT: zincir yürüyüşü, silinmiş 0xE5, VFAT.
-- ext4: extent tree, silinmiş inode/dirent.
-- Carving: Aho-Corasick ~114 imza, FOV validator, BGC (sektör adımlı, bütçeli).
+### GÃ¼Ã§lÃ¼ yanlar (korunacak)
+- NTFS: MFT run walk, silinen kayÄ±t (`status=0`), orphan FILE carve (deep), USN timeline, INDX slack, $LogFile hints, LZNT1 kurtarma.
+- FAT/exFAT: zincir yÃ¼rÃ¼yÃ¼ÅŸÃ¼, silinmiÅŸ 0xE5, VFAT.
+- ext4: extent tree, silinmiÅŸ inode/dirent.
+- Carving: Aho-Corasick ~114 imza, FOV validator, BGC (sektÃ¶r adÄ±mlÄ±, bÃ¼tÃ§eli).
 - BitLocker FVEK + clear-key recovery password, VSS, RAID 0/1/5/6/10.
-- Audit SHA-256 zinciri testli; kötü sektör telemetrisi UI'ya bağlı.
+- Audit SHA-256 zinciri testli; kÃ¶tÃ¼ sektÃ¶r telemetrisi UI'ya baÄŸlÄ±.
 
-### Kritik eksiklikler (ticari araçlara göre)
-| Alan | Byteback bugün | R-Studio / PhotoRec / Recuva |
+### Kritik eksiklikler (ticari araÃ§lara gÃ¶re)
+| Alan | Byteback bugÃ¼n | R-Studio / PhotoRec / Recuva |
 |------|-----------|------------------------------|
-| Tarama hedefi | Tüm fiziksel disk | Partition / volume / unallocated seçimi |
-| Sürücü harfi (D:) | Yok | Var |
-| Carve kapsamı | Tüm disk sektörleri | Çoğunlukla boş küme / unallocated |
-| İmza sayısı | ~114 | 300–400+ |
-| NTFS path rebuild | Kısmi (MFT parent walk) | Tam dizin ağacı + $LogFile |
+| Tarama hedefi | TÃ¼m fiziksel disk | Partition / volume / unallocated seÃ§imi |
+| SÃ¼rÃ¼cÃ¼ harfi (D:) | Yok | Var |
+| Carve kapsamÄ± | TÃ¼m disk sektÃ¶rleri | Ã‡oÄŸunlukla boÅŸ kÃ¼me / unallocated |
+| Ä°mza sayÄ±sÄ± | ~114 | 300â€“400+ |
+| NTFS path rebuild | KÄ±smi (MFT parent walk) | Tam dizin aÄŸacÄ± + $LogFile |
 | ReFS | Yok | Var |
-| Paralel tarama | Tek thread | Çok çekirdek |
-| Önizleme | Yok | Resim/PDF/text |
-| Dedup | Yok | MFT+carve birleştirme |
-| Office/SQLite/Video | Yok | Özel parser |
+| Paralel tarama | Tek thread | Ã‡ok Ã§ekirdek |
+| Ã–nizleme | Yok | Resim/PDF/text |
+| Dedup | Yok | MFT+carve birleÅŸtirme |
+| Office/SQLite/Video | Yok | Ã–zel parser |
 | E2E kurtarma testi | Duman testi | Senaryo testleri |
 
 ---
 
-## Faz 0 — Tarama Altyapısı & UX Temeli (P0)
+## Faz 0 â€” Tarama AltyapÄ±sÄ± & UX Temeli (P0)
 
-**Amaç:** Kullanıcı D: gibi bir birimi doğru hedefleyebilsin; carve gereksiz yere tüm diski taramasın.
+**AmaÃ§:** KullanÄ±cÄ± D: gibi bir birimi doÄŸru hedefleyebilsin; carve gereksiz yere tÃ¼m diski taramasÄ±n.
 
 ### Task 0.1: Volume / partition hedefli tarama
 
@@ -67,7 +67,7 @@
   ```cpp
   struct ScanTarget {
       int driveIndex;
-      int64_t partitionStartSector = -1; // -1 = tüm disk
+      int64_t partitionStartSector = -1; // -1 = tÃ¼m disk
       uint64_t partitionSizeSectors = 0;
       bool carveUnallocatedOnly = false;
   };
@@ -75,12 +75,12 @@
   ```
 
 - [ ] **Step 1:** `ScanTarget` struct + `DiskReader::setReadBounds(startSector, sectorCount)` ekle (okuma clamp).
-- [ ] **Step 2:** `runQuickScan` partition offset/size ile sınırla; carve aynı bounds içinde kalsın.
-- [ ] **Step 3:** NAPI `startScan(driveIndex, scanType, opts?)` — `partitionIndex` veya `startSector`+`sizeSectors`.
-- [ ] **Step 4:** UI: `listPartitions` API'sini DriveCard'da kullan; partition seçici dropdown.
-- [ ] **Step 5:** Test: sentetik GPT görüntüsünde yalnızca 2. partition taranır.
+- [ ] **Step 2:** `runQuickScan` partition offset/size ile sÄ±nÄ±rla; carve aynÄ± bounds iÃ§inde kalsÄ±n.
+- [ ] **Step 3:** NAPI `startScan(driveIndex, scanType, opts?)` â€” `partitionIndex` veya `startSector`+`sizeSectors`.
+- [ ] **Step 4:** UI: `listPartitions` API'sini DriveCard'da kullan; partition seÃ§ici dropdown.
+- [ ] **Step 5:** Test: sentetik GPT gÃ¶rÃ¼ntÃ¼sÃ¼nde yalnÄ±zca 2. partition taranÄ±r.
 
-### Task 0.2: Sürücü harfi → fiziksel disk eşlemesi
+### Task 0.2: SÃ¼rÃ¼cÃ¼ harfi â†’ fiziksel disk eÅŸlemesi
 
 **Files:**
 - Create: `native/src/io/volume_mapper_win.cpp`, `native/include/io/volume_mapper_win.h`
@@ -89,10 +89,10 @@
 **Interfaces:**
 - Produces: `std::optional<ScanTarget> resolveDriveLetter(const std::wstring& letter); // e.g. L"D:"`
 
-- [ ] **Step 1:** `QueryDosDeviceW` + `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` ile harf → PhysicalDrive + offset.
-- [ ] **Step 2:** NAPI `resolveVolume("D:")` → `{ driveIndex, startSector, sizeSectors, fsType }`.
-- [ ] **Step 3:** UI: "D: tara" hızlı kısayolu Dashboard'da.
-- [ ] **Step 4:** Test: mock IOCTL veya entegrasyon (test ortamında mevcut birim varsa).
+- [ ] **Step 1:** `QueryDosDeviceW` + `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` ile harf â†’ PhysicalDrive + offset.
+- [ ] **Step 2:** NAPI `resolveVolume("D:")` â†’ `{ driveIndex, startSector, sizeSectors, fsType }`.
+- [ ] **Step 3:** UI: "D: tara" hÄ±zlÄ± kÄ±sayolu Dashboard'da.
+- [ ] **Step 4:** Test: mock IOCTL veya entegrasyon (test ortamÄ±nda mevcut birim varsa).
 
 ### Task 0.3: Unallocated-only carve modu
 
@@ -107,39 +107,39 @@
   std::vector<SectorRange> buildUnallocatedRanges(DiskReader&, VolumeFsKind, uint64_t volOffset, uint64_t volSize);
   ```
 
-- [ ] **Step 1:** NTFS: `$Bitmap` okuyarak free cluster → sektör aralıkları.
-- [ ] **Step 2:** FAT: FAT tablosundan free cluster zinciri dışı aralıklar.
-- [ ] **Step 3:** `CarvingEngine::scanRanges(reader, ranges, ...)` — mevcut `scan`'i refactor.
-- [ ] **Step 4:** Deep scan varsayılan: metadata full partition + carve unallocated only.
-- [ ] **Step 5:** Test: NTFS görüntüsünde allocated bölgede carve adayı üretilmez.
+- [ ] **Step 1:** NTFS: `$Bitmap` okuyarak free cluster â†’ sektÃ¶r aralÄ±klarÄ±.
+- [ ] **Step 2:** FAT: FAT tablosundan free cluster zinciri dÄ±ÅŸÄ± aralÄ±klar.
+- [ ] **Step 3:** `CarvingEngine::scanRanges(reader, ranges, ...)` â€” mevcut `scan`'i refactor.
+- [ ] **Step 4:** Deep scan varsayÄ±lan: metadata full partition + carve unallocated only.
+- [ ] **Step 5:** Test: NTFS gÃ¶rÃ¼ntÃ¼sÃ¼nde allocated bÃ¶lgede carve adayÄ± Ã¼retilmez.
 
-### Task 0.4: Tarama profilleri & dürüst etiketler
+### Task 0.4: Tarama profilleri & dÃ¼rÃ¼st etiketler
 
 **Files:**
 - Modify: `src/renderer/components/ScanView/ScanView.tsx`, `DriveCard.tsx`
 
-- [ ] **Step 1:** Üç mod: **Hızlı** (metadata, orphan kapalı), **Derin** (metadata + unallocated carve), **Tam Disk Carve** (eski davranış, uyarı ile).
-- [ ] **Step 2:** SSD tespit edilince scan başlamadan TRIM uyarısı modal.
-- [ ] **Step 3:** Playwright: mod seçimi + uyarı metni smoke.
+- [ ] **Step 1:** ÃœÃ§ mod: **HÄ±zlÄ±** (metadata, orphan kapalÄ±), **Derin** (metadata + unallocated carve), **Tam Disk Carve** (eski davranÄ±ÅŸ, uyarÄ± ile).
+- [ ] **Step 2:** SSD tespit edilince scan baÅŸlamadan TRIM uyarÄ±sÄ± modal.
+- [ ] **Step 3:** Playwright: mod seÃ§imi + uyarÄ± metni smoke.
 
-**Faz 0 çıkış kriteri:** D: harfi veya partition seçilerek deep scan; carve yalnız boş alan; testler yeşil.
+**Faz 0 Ã§Ä±kÄ±ÅŸ kriteri:** D: harfi veya partition seÃ§ilerek deep scan; carve yalnÄ±z boÅŸ alan; testler yeÅŸil.
 
 ---
 
-## Faz 1 — NTFS Metadata Derinliği (P0)
+## Faz 1 â€” NTFS Metadata DerinliÄŸi (P0)
 
-**Amaç:** Silinmiş dosyalarda isim + klasör yolu oranını R-Studio'ya yaklaştır.
+**AmaÃ§:** SilinmiÅŸ dosyalarda isim + klasÃ¶r yolu oranÄ±nÄ± R-Studio'ya yaklaÅŸtÄ±r.
 
-### Task 1.1: Tam $MFT kapsamı
+### Task 1.1: Tam $MFT kapsamÄ±
 
 **Files:**
 - Modify: `native/src/fs/ntfs_parser.cpp`
 
-- [ ] **Step 1:** Boot `$MFT` run yürüyüşüne ek olarak `$MFT::$DATA` attribute runs ile tüm MFT extent'leri tara.
-- [ ] **Step 2:** MFT fragmentasyonu (non-contiguous $MFT) sentetik test görüntüsü.
-- [ ] **Step 3:** Orphan carve ile çakışan kayıtları MFT record numarasına göre birleştir.
+- [ ] **Step 1:** Boot `$MFT` run yÃ¼rÃ¼yÃ¼ÅŸÃ¼ne ek olarak `$MFT::$DATA` attribute runs ile tÃ¼m MFT extent'leri tara.
+- [ ] **Step 2:** MFT fragmentasyonu (non-contiguous $MFT) sentetik test gÃ¶rÃ¼ntÃ¼sÃ¼.
+- [ ] **Step 3:** Orphan carve ile Ã§akÄ±ÅŸan kayÄ±tlarÄ± MFT record numarasÄ±na gÃ¶re birleÅŸtir.
 
-### Task 1.2: Dizin ağacı yeniden kurulumu
+### Task 1.2: Dizin aÄŸacÄ± yeniden kurulumu
 
 **Files:**
 - Create: `native/src/fs/ntfs_path_rebuild.cpp`, `native/include/fs/ntfs_path_rebuild.h`
@@ -148,58 +148,58 @@
 **Interfaces:**
 - Produces: `std::string rebuildPath(uint64_t mftRecord, const MftIndex& idx);`
 
-- [ ] **Step 1:** Tüm FILE record'lardan parent MFT ref + isim topla.
-- [ ] **Step 2:** Silinmiş parent'lar için `$LogFile` + INDX slack hint'lerini düşük güven skoruyla bağla.
-- [ ] **Step 3:** `fr.path` ve `fr.name` alanlarını tam yol olarak doldur (`/Users/foo/bar.jpg`).
-- [ ] **Step 4:** Test: silinmiş alt dizin + dosya senaryosu.
+- [ ] **Step 1:** TÃ¼m FILE record'lardan parent MFT ref + isim topla.
+- [ ] **Step 2:** SilinmiÅŸ parent'lar iÃ§in `$LogFile` + INDX slack hint'lerini dÃ¼ÅŸÃ¼k gÃ¼ven skoruyla baÄŸla.
+- [ ] **Step 3:** `fr.path` ve `fr.name` alanlarÄ±nÄ± tam yol olarak doldur (`/Users/foo/bar.jpg`).
+- [ ] **Step 4:** Test: silinmiÅŸ alt dizin + dosya senaryosu.
 
-### Task 1.3: $LogFile → kurtarılabilir kayıt yükseltme
+### Task 1.3: $LogFile â†’ kurtarÄ±labilir kayÄ±t yÃ¼kseltme
 
 **Files:**
 - Modify: `native/src/fs/ntfs_logfile.cpp`, `ntfs_parser.cpp`
 
-- [ ] **Step 1:** LogFile'dan çıkan isimleri MFT record ID ile eşleştir (LSN/transaction hint).
-- [ ] **Step 2:** Eşleşen kayıtların `confidence` alanını yükselt; UI'da "LogFile doğrulandı" etiketi.
-- [ ] **Step 3:** Test: `test_ntfs_logfile.cpp` genişlet.
+- [ ] **Step 1:** LogFile'dan Ã§Ä±kan isimleri MFT record ID ile eÅŸleÅŸtir (LSN/transaction hint).
+- [ ] **Step 2:** EÅŸleÅŸen kayÄ±tlarÄ±n `confidence` alanÄ±nÄ± yÃ¼kselt; UI'da "LogFile doÄŸrulandÄ±" etiketi.
+- [ ] **Step 3:** Test: `test_ntfs_logfile.cpp` geniÅŸlet.
 
-### Task 1.4: USN → silme olayı filtreleme
+### Task 1.4: USN â†’ silme olayÄ± filtreleme
 
 **Files:**
 - Modify: `native/src/fs/ntfs_parser.cpp`, `src/renderer/components/ResultsView/ResultsView.tsx`
 
-- [ ] **Step 1:** USN kayıtlarını timeline'da tut; ayrı "kurtarılabilir" listesine karıştırma.
-- [ ] **Step 2:** ResultsView'da "Yalnız silinmiş" filtresi (`status === 0`).
+- [ ] **Step 1:** USN kayÄ±tlarÄ±nÄ± timeline'da tut; ayrÄ± "kurtarÄ±labilir" listesine karÄ±ÅŸtÄ±rma.
+- [ ] **Step 2:** ResultsView'da "YalnÄ±z silinmiÅŸ" filtresi (`status === 0`).
 - [ ] **Step 3:** Test: Vitest filtre birimi.
 
-**Faz 1 çıkış kriteri:** NTFS silinmiş dosyalarda %80+ tam yol (sentetik golden image setinde).
+**Faz 1 Ã§Ä±kÄ±ÅŸ kriteri:** NTFS silinmiÅŸ dosyalarda %80+ tam yol (sentetik golden image setinde).
 
 ---
 
-## Faz 2 — Carving Genişliği & Hız (P1)
+## Faz 2 â€” Carving GeniÅŸliÄŸi & HÄ±z (P1)
 
-**Amaç:** PhotoRec seviyesine yaklaşan format kapsamı ve kabul edilebilir hız.
+**AmaÃ§:** PhotoRec seviyesine yaklaÅŸan format kapsamÄ± ve kabul edilebilir hÄ±z.
 
-### Task 2.1: İmza kütüphanesi genişletme
+### Task 2.1: Ä°mza kÃ¼tÃ¼phanesi geniÅŸletme
 
 **Files:**
 - Modify: `native/src/carver/signature_engine.cpp` (embedded table)
 - Create: `resources/signatures-extended.json`
 - Create: `native/tests/test_signature_coverage.cpp`
 
-- [ ] **Step 1:** PhotoRec / file(1) magic listesinden 200+ yeni imza ekle (öncelik: jpg, png, mp4, mov, docx, xlsx, pptx, zip, rar, 7z, pdf, sqlite, pst, eml, wav, mp3, heic, cr2, nef, orf, arw).
-- [ ] **Step 2:** Her imza için FOV validator veya footer zorunluluğu belirle.
-- [ ] **Step 3:** Test: bilinen magic → doğru uzantı.
+- [ ] **Step 1:** PhotoRec / file(1) magic listesinden 200+ yeni imza ekle (Ã¶ncelik: jpg, png, mp4, mov, docx, xlsx, pptx, zip, rar, 7z, pdf, sqlite, pst, eml, wav, mp3, heic, cr2, nef, orf, arw).
+- [ ] **Step 2:** Her imza iÃ§in FOV validator veya footer zorunluluÄŸu belirle.
+- [ ] **Step 3:** Test: bilinen magic â†’ doÄŸru uzantÄ±.
 
-### Task 2.2: Özel yapısal parser'lar
+### Task 2.2: Ã–zel yapÄ±sal parser'lar
 
 **Files:**
 - Create: `native/src/carver/parsers/zip_family.cpp`, `sqlite_carver.cpp`, `mp4_carver.cpp`
 - Modify: `native/src/carver/signature_engine.cpp`
 
-- [ ] **Step 1:** ZIP tabanlı Office (docx/xlsx/pptx): central directory scan.
+- [ ] **Step 1:** ZIP tabanlÄ± Office (docx/xlsx/pptx): central directory scan.
 - [ ] **Step 2:** SQLite: header + schema page validation, boyut tahmini.
 - [ ] **Step 3:** MP4/MOV: `ftyp` + `moov`/`mdat` atom walk; moov sonda ise tail search.
-- [ ] **Step 4:** Test: her parser için minimal binary fixture.
+- [ ] **Step 4:** Test: her parser iÃ§in minimal binary fixture.
 
 ### Task 2.3: CPU paralel carve
 
@@ -207,25 +207,25 @@
 - Modify: `native/src/carver/signature_engine.cpp`
 - Create: `native/include/util/thread_pool.h` (minimal, ponytail: std::async veya fixed pool)
 
-- [ ] **Step 1:** Chunk listesini N worker'a böl; sonuçları mutex'li birleştir.
-- [ ] **Step 2:** `std::atomic` progress birleştirme.
+- [ ] **Step 1:** Chunk listesini N worker'a bÃ¶l; sonuÃ§larÄ± mutex'li birleÅŸtir.
+- [ ] **Step 2:** `std::atomic` progress birleÅŸtirme.
 - [ ] **Step 3:** Benchmark test: 1 GB sentetik imaj, 4 thread vs 1 thread.
 
-### Task 2.4: MFT ↔ carve deduplikasyon
+### Task 2.4: MFT â†” carve deduplikasyon
 
 **Files:**
 - Create: `native/src/scan/dedup_index.cpp`
 - Modify: `native/src/bridge/bridge_scan.cpp`, `native/src/db/metadata_store.cpp`
 
-- [ ] **Step 1:** `(startSector, size, hash prefix)` ile carve/MFT çakışmasını tespit.
-- [ ] **Step 2:** Yüksek güvenli MFT kaydını tut; carve kopyasını `duplicate_of` ile işaretle.
-- [ ] **Step 3:** UI: "Tekrarları gizle" toggle.
+- [ ] **Step 1:** `(startSector, size, hash prefix)` ile carve/MFT Ã§akÄ±ÅŸmasÄ±nÄ± tespit.
+- [ ] **Step 2:** YÃ¼ksek gÃ¼venli MFT kaydÄ±nÄ± tut; carve kopyasÄ±nÄ± `duplicate_of` ile iÅŸaretle.
+- [ ] **Step 3:** UI: "TekrarlarÄ± gizle" toggle.
 
-**Faz 2 çıkış kriteri:** 250+ imza; 4 çekirdekte ≥2× hız; Office/SQLite/MP4 carve çalışır.
+**Faz 2 Ã§Ä±kÄ±ÅŸ kriteri:** 250+ imza; 4 Ã§ekirdekte â‰¥2Ã— hÄ±z; Office/SQLite/MP4 carve Ã§alÄ±ÅŸÄ±r.
 
 ---
 
-## Faz 3 — Diğer Dosya Sistemleri (P1)
+## Faz 3 â€” DiÄŸer Dosya Sistemleri (P1)
 
 ### Task 3.1: ReFS parser (Windows Server / Win10+)
 
@@ -233,76 +233,76 @@
 - Create: `native/src/fs/refs_parser.cpp`, `native/include/fs/refs_parser.h`
 - Modify: `native/src/fs/partition_scanner.cpp`, `scan_coordinator.cpp`
 
-- [ ] **Step 1:** ReFS süperblok + container tablosu tanıma.
-- [ ] **Step 2:** Directory B+ tree walk, silinmiş entry.
-- [ ] **Step 3:** Test: ReFS test görüntüsü (veya minimal fixture).
+- [ ] **Step 1:** ReFS sÃ¼perblok + container tablosu tanÄ±ma.
+- [ ] **Step 2:** Directory B+ tree walk, silinmiÅŸ entry.
+- [ ] **Step 3:** Test: ReFS test gÃ¶rÃ¼ntÃ¼sÃ¼ (veya minimal fixture).
 
-### Task 3.2: exFAT silinmiş entry iyileştirme
+### Task 3.2: exFAT silinmiÅŸ entry iyileÅŸtirme
 
 **Files:**
 - Modify: `native/src/fs/fat_parser.cpp`
 
-- [ ] **Step 1:** Entry-set fragmentation (non-contiguous name entries) toleransı.
-- [ ] **Step 2:** Silinmiş + allocated karışık dizin taraması.
+- [ ] **Step 1:** Entry-set fragmentation (non-contiguous name entries) toleransÄ±.
+- [ ] **Step 2:** SilinmiÅŸ + allocated karÄ±ÅŸÄ±k dizin taramasÄ±.
 
-### Task 3.3: APFS katalog derinliği
+### Task 3.3: APFS katalog derinliÄŸi
 
 **Files:**
 - Modify: `native/src/fs/apfs_container.cpp`, `apfs_parser.cpp`
 
-- [ ] **Step 1:** Snapshot tree walk (dokümante sınır kaldırma).
-- [ ] **Step 2:** `apfs_file` keşif → `runs` doldurma oranını artır.
-- [ ] **Step 3:** Test: mevcut APFS fixture genişlet.
+- [ ] **Step 1:** Snapshot tree walk (dokÃ¼mante sÄ±nÄ±r kaldÄ±rma).
+- [ ] **Step 2:** `apfs_file` keÅŸif â†’ `runs` doldurma oranÄ±nÄ± artÄ±r.
+- [ ] **Step 3:** Test: mevcut APFS fixture geniÅŸlet.
 
-**Faz 3 çıkış kriteri:** ReFS volume tanınır ve dosya listeler; APFS kurtarılabilir dosya oranı artar.
+**Faz 3 Ã§Ä±kÄ±ÅŸ kriteri:** ReFS volume tanÄ±nÄ±r ve dosya listeler; APFS kurtarÄ±labilir dosya oranÄ± artar.
 
 ---
 
-## Faz 4 — Kurtarma Kalitesi & Doğrulama (P1)
+## Faz 4 â€” Kurtarma Kalitesi & DoÄŸrulama (P1)
 
-### Task 4.1: Kurtarma önizleme
+### Task 4.1: Kurtarma Ã¶nizleme
 
 **Files:**
 - Create: `native/src/recovery/preview_reader.cpp`
 - Modify: `src/renderer/components/ResultsView/ResultsView.tsx`
 - Modify: `src/main/ipc-handlers.ts`
 
-- [ ] **Step 1:** İlk 64 KB okuma NAPI `readFilePreview(scanId, fileId)`.
+- [ ] **Step 1:** Ä°lk 64 KB okuma NAPI `readFilePreview(scanId, fileId)`.
 - [ ] **Step 2:** UI: resim thumbnail (jpg/png/gif), text hex+ascii, PDF ilk sayfa (basit).
 - [ ] **Step 3:** Test: Vitest preview API mock.
 
-### Task 4.2: Kurtarma sonrası doğrulama
+### Task 4.2: Kurtarma sonrasÄ± doÄŸrulama
 
 **Files:**
 - Modify: `native/src/recovery/recovery_engine.cpp`
 
-- [ ] **Step 1:** Kurtarılan dosya için validator tekrar çalıştır (carve kaynaklı).
+- [ ] **Step 1:** KurtarÄ±lan dosya iÃ§in validator tekrar Ã§alÄ±ÅŸtÄ±r (carve kaynaklÄ±).
 - [ ] **Step 2:** `RecoveryResult.validationScore` + `validationError`.
-- [ ] **Step 3:** UI: "Bozuk / Tam" sütunu.
+- [ ] **Step 3:** UI: "Bozuk / Tam" sÃ¼tunu.
 
-### Task 4.3: Parçalı dosya birleştirme (çoklu run)
+### Task 4.3: ParÃ§alÄ± dosya birleÅŸtirme (Ã§oklu run)
 
 **Files:**
 - Modify: `native/src/recovery/recovery_engine.cpp`, `bgc.cpp`
 
-- [ ] **Step 1:** BGC `frag1 + gap + frag2` çıktısını `runs` vektörüne yaz (mevcut kısmen var — tamamla).
-- [ ] **Step 2:** 3+ parça için sınırlı brute (ponytail: max 3 gap, bütçe).
-- [ ] **Step 3:** Test: iki parçalı JPEG golden.
+- [ ] **Step 1:** BGC `frag1 + gap + frag2` Ã§Ä±ktÄ±sÄ±nÄ± `runs` vektÃ¶rÃ¼ne yaz (mevcut kÄ±smen var â€” tamamla).
+- [ ] **Step 2:** 3+ parÃ§a iÃ§in sÄ±nÄ±rlÄ± brute (ponytail: max 3 gap, bÃ¼tÃ§e).
+- [ ] **Step 3:** Test: iki parÃ§alÄ± JPEG golden.
 
-### Task 4.4: BitLocker genişletme (şifre koruyucu)
+### Task 4.4: BitLocker geniÅŸletme (ÅŸifre koruyucu)
 
 **Files:**
 - Modify: `native/src/fs/bitlocker_unlock.cpp`
 
-- [ ] **Step 1:** Password protector (VMK decrypt) — libmsbde veya minimal PBKDF2 implementasyonu.
-- [ ] **Step 2:** TPM/startup-key için açık hata mesajı koru.
-- [ ] **Step 3:** Test: bilinen test vector (Microsoft dokümantasyonu).
+- [ ] **Step 1:** Password protector (VMK decrypt) â€” libmsbde veya minimal PBKDF2 implementasyonu.
+- [ ] **Step 2:** TPM/startup-key iÃ§in aÃ§Ä±k hata mesajÄ± koru.
+- [ ] **Step 3:** Test: bilinen test vector (Microsoft dokÃ¼mantasyonu).
 
-**Faz 4 çıkış kriteri:** Kullanıcı kurtarmadan önce önizler; bozuk dosya oranı raporlanır.
+**Faz 4 Ã§Ä±kÄ±ÅŸ kriteri:** KullanÄ±cÄ± kurtarmadan Ã¶nce Ã¶nizler; bozuk dosya oranÄ± raporlanÄ±r.
 
 ---
 
-## Faz 5 — Güvenilirlik, Test & Benchmark (P2)
+## Faz 5 â€” GÃ¼venilirlik, Test & Benchmark (P2)
 
 ### Task 5.1: Golden image regression suite
 
@@ -310,91 +310,91 @@
 - Create: `native/tests/fixtures/ntfs_deleted/`, `native/tests/test_recovery_golden.cpp`
 - Create: `scripts/generate-fixtures.ps1`
 
-- [ ] **Step 1:** NTFS: 10 silinmiş dosya (txt, jpg, docx, parçalı jpg).
-- [ ] **Step 2:** FAT32: 5 silinmiş dosya.
-- [ ] **Step 3:** CI: `ctest -R GoldenRecovery` — bulunan / kurtarılan oran raporu.
+- [ ] **Step 1:** NTFS: 10 silinmiÅŸ dosya (txt, jpg, docx, parÃ§alÄ± jpg).
+- [ ] **Step 2:** FAT32: 5 silinmiÅŸ dosya.
+- [ ] **Step 3:** CI: `ctest -R GoldenRecovery` â€” bulunan / kurtarÄ±lan oran raporu.
 
-### Task 5.2: E2E kurtarma akışı
+### Task 5.2: E2E kurtarma akÄ±ÅŸÄ±
 
 **Files:**
 - Modify: `e2e/electron-smoke.spec.ts`
 - Create: `e2e/recovery-flow.spec.ts`
 
-- [ ] **Step 1:** Mock native veya test disk ile scan → result → recover.
-- [ ] **Step 2:** MD5 doğrulama.
+- [ ] **Step 1:** Mock native veya test disk ile scan â†’ result â†’ recover.
+- [ ] **Step 2:** MD5 doÄŸrulama.
 
 ### Task 5.3: Tarama checkpoint / resume
 
 **Files:**
 - Modify: `native/src/scan_coordinator.cpp`, `metadata_store.cpp`
 
-- [ ] **Step 1:** Son taranan sektör SQLite'a yaz.
-- [ ] **Step 2:** Kesilen taramayı "Devam et" ile sürdür.
-- [ ] **Step 3:** Test: yarıda kes + resume.
+- [ ] **Step 1:** Son taranan sektÃ¶r SQLite'a yaz.
+- [ ] **Step 2:** Kesilen taramayÄ± "Devam et" ile sÃ¼rdÃ¼r.
+- [ ] **Step 3:** Test: yarÄ±da kes + resume.
 
 ### Task 5.4: Performans profili
 
 **Files:**
 - Create: `native/tests/bench_scan.cpp` (gtest benchmark veya basit cronometre)
 
-- [ ] **Step 1:** 500 GB simüle (sparse file) deep scan süre raporu.
+- [ ] **Step 1:** 500 GB simÃ¼le (sparse file) deep scan sÃ¼re raporu.
 - [ ] **Step 2:** README'ye honest benchmark tablosu.
 
-**Faz 5 çıkış kriteri:** Golden testler CI'da; E2E recovery pass; resume çalışır.
+**Faz 5 Ã§Ä±kÄ±ÅŸ kriteri:** Golden testler CI'da; E2E recovery pass; resume Ã§alÄ±ÅŸÄ±r.
 
 ---
 
-## Faz 6 — İleri (P3, isteğe bağlı)
+## Faz 6 â€” Ä°leri (P3, isteÄŸe baÄŸlÄ±)
 
-| Task | Açıklama | Not |
+| Task | AÃ§Ä±klama | Not |
 |------|----------|-----|
-| 6.1 GPU PFAC | CUDA/OpenCL Aho-Corasick | Büyük yatırım; Faz 2 paralel CPU yetmezse |
-| 6.2 ReFS integrity stream | ReFS checksum doğrulama | Server senaryosu |
-| 6.3 Cloud / ağ imaj | E01 over network | Adli senaryo |
-| 6.4 macOS / Linux I/O | `disk_reader_posix.cpp` | Platform genişleme |
-| 6.5 AI dosya sınıflandırma | Entropi + ML kategori | Pazarlama değil, gerçek değer şüpheli |
+| 6.1 GPU PFAC | CUDA/OpenCL Aho-Corasick | BÃ¼yÃ¼k yatÄ±rÄ±m; Faz 2 paralel CPU yetmezse |
+| 6.2 ReFS integrity stream | ReFS checksum doÄŸrulama | Server senaryosu |
+| 6.3 Cloud / aÄŸ imaj | E01 over network | Adli senaryo |
+| 6.4 macOS / Linux I/O | `disk_reader_posix.cpp` | Platform geniÅŸleme |
+| 6.5 AI dosya sÄ±nÄ±flandÄ±rma | Entropi + ML kategori | Pazarlama deÄŸil, gerÃ§ek deÄŸer ÅŸÃ¼pheli |
 
 ---
 
-## Öncelik Sırası (Uygulama Sırası)
+## Ã–ncelik SÄ±rasÄ± (Uygulama SÄ±rasÄ±)
 
 ```
-Faz 0 (P0) → Faz 1 (P0) → Faz 2 (P1) → Faz 4.1-4.3 (P1) → Faz 3 (P1) → Faz 4.4 (P2) → Faz 5 (P2) → Faz 6 (P3)
+Faz 0 (P0) â†’ Faz 1 (P0) â†’ Faz 2 (P1) â†’ Faz 4.1-4.3 (P1) â†’ Faz 3 (P1) â†’ Faz 4.4 (P2) â†’ Faz 5 (P2) â†’ Faz 6 (P3)
 ```
 
-**Gerekçe:** Önce doğru hedef (D:/partition) + unallocated carve → NTFS path → format genişliği → kurtarma kalitesi → diğer FS → test harness.
+**GerekÃ§e:** Ã–nce doÄŸru hedef (D:/partition) + unallocated carve â†’ NTFS path â†’ format geniÅŸliÄŸi â†’ kurtarma kalitesi â†’ diÄŸer FS â†’ test harness.
 
 ---
 
-## Başarı Metrikleri (ticari kıyas)
+## BaÅŸarÄ± Metrikleri (ticari kÄ±yas)
 
-| Metrik | Bugün (tahmini) | Hedef (Faz 0-5 sonrası) |
+| Metrik | BugÃ¼n (tahmini) | Hedef (Faz 0-5 sonrasÄ±) |
 |--------|-----------------|-------------------------|
-| NTFS silinmiş dosya bulma (HDD, yeni silme) | ~70% | ≥90% |
-| NTFS tam yol ile | ~40% | ≥75% |
-| Carve format sayısı | 114 | ≥250 |
-| Deep scan süre (500GB HDD) | baseline | ≤0.5× (paralel + unallocated) |
-| Kurtarma doğrulama | MD5 only | MD5 + yapısal validator |
+| NTFS silinmiÅŸ dosya bulma (HDD, yeni silme) | ~70% | â‰¥90% |
+| NTFS tam yol ile | ~40% | â‰¥75% |
+| Carve format sayÄ±sÄ± | 114 | â‰¥250 |
+| Deep scan sÃ¼re (500GB HDD) | baseline | â‰¤0.5Ã— (paralel + unallocated) |
+| Kurtarma doÄŸrulama | MD5 only | MD5 + yapÄ±sal validator |
 | Partition hedefleme | Yok | Var |
 | ReFS | Yok | Temel |
 
 ---
 
-## Riskler & Bilinçli Sınırlar
+## Riskler & BilinÃ§li SÄ±nÄ±rlar
 
-1. **TRIM/SSD:** Yazılımla aşılamaz; yalnız uyarı ve erken silme senaryosu.
-2. **Üzerine yazma:** Hiçbir araç kurtaramaz.
-3. **BitLocker TPM:** Donanım bağlı; password/FVEK dışı destek sınırlı kalabilir.
-4. **APFS tam:** Apple ekosistemi karmaşık; %100 R-Studio Mac beklentisi gerçekçi değil.
-5. **Yasal:** Kurtarma aracı; kullanıcı veri sahipliği ve izin sorumluluğu UI'da hatırlatılmalı.
+1. **TRIM/SSD:** YazÄ±lÄ±mla aÅŸÄ±lamaz; yalnÄ±z uyarÄ± ve erken silme senaryosu.
+2. **Ãœzerine yazma:** HiÃ§bir araÃ§ kurtaramaz.
+3. **BitLocker TPM:** DonanÄ±m baÄŸlÄ±; password/FVEK dÄ±ÅŸÄ± destek sÄ±nÄ±rlÄ± kalabilir.
+4. **APFS tam:** Apple ekosistemi karmaÅŸÄ±k; %100 R-Studio Mac beklentisi gerÃ§ekÃ§i deÄŸil.
+5. **Yasal:** Kurtarma aracÄ±; kullanÄ±cÄ± veri sahipliÄŸi ve izin sorumluluÄŸu UI'da hatÄ±rlatÄ±lmalÄ±.
 
 ---
 
-## İlk Sprint Önerisi (onay sonrası)
+## Ä°lk Sprint Ã–nerisi (onay sonrasÄ±)
 
-1. Task 0.1 — partition hedefli tarama
-2. Task 0.3 — unallocated-only carve
-3. Task 0.2 — D: harfi eşlemesi
-4. Task 1.2 — NTFS path rebuild
+1. Task 0.1 â€” partition hedefli tarama
+2. Task 0.3 â€” unallocated-only carve
+3. Task 0.2 â€” D: harfi eÅŸlemesi
+4. Task 1.2 â€” NTFS path rebuild
 
-Bu dört task, kullanıcının "D: diskinde silinmiş veri bul" senaryosuna en doğrudan etkiyi yapar.
+Bu dÃ¶rt task, kullanÄ±cÄ±nÄ±n "D: diskinde silinmiÅŸ veri bul" senaryosuna en doÄŸrudan etkiyi yapar.

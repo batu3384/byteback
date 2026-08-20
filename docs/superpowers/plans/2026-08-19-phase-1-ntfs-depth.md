@@ -1,4 +1,4 @@
-# Phase 1 — NTFS Depth Implementation Plan
+﻿# Phase 1 â€” NTFS Depth Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans.
 
@@ -8,9 +8,9 @@
 
 ## Delivered
 
-- [x] `scoreMftConfidence()` — deleted records with data runs score higher
-- [x] `$LogFile` v2 — RCRD client-data scan + non-resident $DATA read
-- [x] `ScanSummary` USN fields — timelineEvents, usnCreates/Deletes/Renames
+- [x] `scoreMftConfidence()` â€” deleted records with data runs score higher
+- [x] `$LogFile` v2 â€” RCRD client-data scan + non-resident $DATA read
+- [x] `ScanSummary` USN fields â€” timelineEvents, usnCreates/Deletes/Renames
 - [x] Report HTML USN row
 - [x] Tests: `test_ntfs_logfile.cpp`, `test_usn_summary.cpp`
 

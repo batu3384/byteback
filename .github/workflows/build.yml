@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-defaults:
-  run:
-    working-directory: byteback
-
 jobs:
   typecheck:
     name: Type-check (tsc)
@@ -22,7 +18,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: byteback/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: |
@@ -46,7 +42,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: byteback/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Configure CMake
         run: cmake -S native -B native/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -108,6 +104,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: byteback_engine-windows-x64
-          path: byteback/native/build/Release/byteback_engine.node
+          path: native/build/Release/byteback_engine.node
           if-no-files-found: error
           retention-days: 14

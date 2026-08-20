@@ -1,4 +1,4 @@
-# Byteback — Professional Roadmap Design
+﻿# Byteback â€” Professional Roadmap Design
 
 **Date:** 2026-08-19  
 **Status:** Approved (depth-first Windows forensic)  
@@ -10,16 +10,16 @@ Bring Byteback from a capable prototype to a professional forensic recovery tool
 
 ## Strategy
 
-**Depth-first Windows Forensic** — finish reliability and NTFS/VSS depth before Apple FS or GPU carving.
+**Depth-first Windows Forensic** â€” finish reliability and NTFS/VSS depth before Apple FS or GPU carving.
 
 ## Phases
 
 | Phase | Focus | Exit criteria |
 |-------|-------|---------------|
-| **0** | Reliability & trust | E2E scan→recover test, bounded reads, honest UI state, carving FOV for noisy sigs |
+| **0** | Reliability & trust | E2E scanâ†’recover test, bounded reads, honest UI state, carving FOV for noisy sigs |
 | **1** | NTFS depth | `$LogFile` v2 hints, deleted MFT scoring, USN report |
 | **2** | VSS | Snapshot mount + scan path |
-| **3** | RAID & batch | Virtual RAID → scan/recover, BGC polish, batch export |
+| **3** | RAID & batch | Virtual RAID â†’ scan/recover, BGC polish, batch export |
 | **4** | Content search | Async grep, content FTS, DB-side filters |
 | **5** | Apple FS | HFS overflow, APFS container walk |
 | **6** | Ops | NSRL, E01 CI cross-check, case mgmt, fuzzing |
@@ -33,13 +33,13 @@ Bring Byteback from a capable prototype to a professional forensic recovery tool
 - Tests: `ctest -C Release` must pass before merge
 - Conscious limits documented in README (BitLocker decrypt, full APFS, GPU PFAC, etc.)
 
-## Phase 0 — Reliability (current sprint)
+## Phase 0 â€” Reliability (current sprint)
 
-1. **E2E integration test** — FAT fixture → `runQuickScan` → `MetadataStore` → `RecoveryEngine` → content + MD5
-2. **ReadSectors cap** — max 1 MiB per NAPI call (done)
-3. **Dashboard scan state** — resume banner only for `status === 0` (running)
-4. **MPEG-TS FOV** — structural sync-byte validation at 188-byte packet boundaries
-5. **VSS metadata** — `createdAt` from volume object creation time (Windows)
+1. **E2E integration test** â€” FAT fixture â†’ `runQuickScan` â†’ `MetadataStore` â†’ `RecoveryEngine` â†’ content + MD5
+2. **ReadSectors cap** â€” max 1 MiB per NAPI call (done)
+3. **Dashboard scan state** â€” resume banner only for `status === 0` (running)
+4. **MPEG-TS FOV** â€” structural sync-byte validation at 188-byte packet boundaries
+5. **VSS metadata** â€” `createdAt` from volume object creation time (Windows)
 
 ## Out of scope (this sprint)
 
@@ -50,6 +50,6 @@ Bring Byteback from a capable prototype to a professional forensic recovery tool
 
 ## Success metrics
 
-- Native tests ≥ 124 (was 123) after E2E + validator tests
+- Native tests â‰¥ 124 (was 123) after E2E + validator tests
 - Zero false "active scan" banners after completed scans
 - MPEG-TS validator rejects single-packet false positives
