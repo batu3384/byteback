@@ -418,6 +418,7 @@ Napi::Value RecoverFile(const Napi::CallbackInfo& info) {
 
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return env.Undefined();
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     int64_t fileId = info[1].As<Napi::Number>().Int64Value();
@@ -552,6 +553,7 @@ Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info) {
     }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return env.Undefined();
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     Napi::Array arr = info[1].As<Napi::Array>();
@@ -587,6 +589,7 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
     }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return env.Undefined();
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     int64_t scanId = info[1].As<Napi::Number>().Int64Value();

@@ -23,6 +23,31 @@ void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
     *badSectorOut = reader.getBadSectors();
 }
 
+std::vector<SectorRange> prepareCarveRanges(DiskReader& reader, ScanBounds bounds, bool unallocatedOnly) {
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    uint64_t diskSectors = reader.getDiskSize() / sectorSize;
+
+    uint64_t boundFirst = 0;
+    uint64_t boundLast = diskSectors;
+    if (bounds.active()) {
+        boundFirst = bounds.startSector;
+        boundLast = std::min(diskSectors, bounds.startSector + bounds.sizeInSectors);
+    }
+
+    std::vector<SectorRange> carveRanges;
+    if (unallocatedOnly) {
+        int64_t pStart = bounds.active() ? static_cast<int64_t>(bounds.startSector) : -1;
+        uint64_t pSize = bounds.active() ? bounds.sizeInSectors : 0;
+        carveRanges = collectUnallocatedForScan(reader, pStart, pSize);
+    }
+    if (carveRanges.empty()) {
+        if (unallocatedOnly) return {};
+        carveRanges.push_back({boundFirst, boundLast > boundFirst ? boundLast - boundFirst : 0});
+    }
+    return carveRanges;
+}
+
 } // namespace
 
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
@@ -251,31 +276,11 @@ void runCarveScan(DiskReader& reader,
                   uint64_t resumeCarveSector) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
-    uint64_t diskSectors = reader.getDiskSize() / sectorSize;
 
-    uint64_t boundFirst = 0;
-    uint64_t boundLast = diskSectors;
-    if (bounds.active()) {
-        boundFirst = bounds.startSector;
-        boundLast = std::min(diskSectors, bounds.startSector + bounds.sizeInSectors);
-    }
+    std::vector<SectorRange> carveRanges = prepareCarveRanges(reader, bounds, unallocatedOnly);
+    if (carveRanges.empty()) return;
 
-    std::vector<SectorRange> carveRanges;
-    if (unallocatedOnly) {
-        int64_t pStart = bounds.active() ? static_cast<int64_t>(bounds.startSector) : -1;
-        uint64_t pSize = bounds.active() ? bounds.sizeInSectors : 0;
-        carveRanges = collectUnallocatedForScan(reader, pStart, pSize);
-    }
-    if (carveRanges.empty()) {
-        if (unallocatedOnly) {
-            // ponytail: no FS unallocated map (exFAT/ReFS/APFS) — skip carve, not full volume.
-            return;
-        }
-        carveRanges.push_back({boundFirst, boundLast > boundFirst ? boundLast - boundFirst : 0});
-    }
-
-    uint64_t totalCarveSectors = 0;
-    for (const auto& r : carveRanges) totalCarveSectors += r.count;
+    uint64_t totalCarveSectors = totalSectorCount(carveRanges);
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
@@ -339,23 +344,31 @@ void runDeepScan(DiskReader& reader,
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
+    const uint64_t carveTotal = totalSectorCount(prepareCarveRanges(reader, bounds, true));
+    const bool unallocCarve = carveTotal > 0;
+    const uint64_t carveBudget =
+        unallocCarve ? std::min(carveTotal, totalSectors) : totalSectors / 4;
+    const uint64_t metaBudget =
+        target.metadataComplete ? 0 : (totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2);
+
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
-            onProgress(current / 2, denom);
+            onProgress(current * metaBudget / denom, totalSectors);
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
         if (onCheckpoint) onCheckpoint(true, 0);
+        onProgress(metaBudget, totalSectors);
     }
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
-        uint64_t metaWeight = totalSectors / 2;
-        onProgress(metaWeight + current, metaWeight + denom);
+        uint64_t slice = carveBudget > 0 ? (current * carveBudget / denom) : current;
+        onProgress(std::min(totalSectors, metaBudget + slice), totalSectors);
         if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, true,
+    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, unallocCarve,
                  target.carveResumeSector);
     onProgress(totalSectors, totalSectors);
 }
@@ -372,20 +385,27 @@ void runFullCarveScan(DiskReader& reader,
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
+    const uint64_t fullCarveTotal =
+        totalSectorCount(prepareCarveRanges(reader, bounds, false));
+    const uint64_t carveBudget = fullCarveTotal > 0 ? std::min(fullCarveTotal, totalSectors) : totalSectors / 2;
+    const uint64_t metaBudget =
+        target.metadataComplete ? 0 : (totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2);
+
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
-            onProgress(current / 2, denom);
+            onProgress(current * metaBudget / denom, totalSectors);
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
         if (onCheckpoint) onCheckpoint(true, 0);
+        onProgress(metaBudget, totalSectors);
     }
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
-        uint64_t metaWeight = totalSectors / 2;
-        onProgress(metaWeight + current, metaWeight + denom);
+        uint64_t slice = carveBudget > 0 ? (current * carveBudget / denom) : current;
+        onProgress(std::min(totalSectors, metaBudget + slice), totalSectors);
         if (onCheckpoint) onCheckpoint(true, current);
     };
     runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,

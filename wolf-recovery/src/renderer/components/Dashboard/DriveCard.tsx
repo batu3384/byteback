@@ -55,8 +55,8 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
     }
   }
 
-  const launchScan = (scanType: ScanProfile) => {
-    onStartScan && onStartScan(drive.index, scanType, scanOptions())
+  const launchScan = (scanType: ScanProfile, extra?: ScanOptions) => {
+    onStartScan && onStartScan(drive.index, scanType, { ...scanOptions(), ...extra })
   }
 
   const requestScan = (scanType: ScanProfile) => {
@@ -74,7 +74,13 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
 
   const confirmTrim = () => {
     setShowTrimModal(false)
-    if (pendingScan) launchScan(pendingScan)
+    if (pendingScan) {
+      const extra =
+        pendingScan === 'deep' || pendingScan === 'full_carve'
+          ? { allowSsdDeepScan: true }
+          : undefined
+      launchScan(pendingScan, extra)
+    }
     setPendingScan(null)
   }
 

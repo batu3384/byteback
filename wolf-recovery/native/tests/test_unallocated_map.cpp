@@ -153,3 +153,38 @@ TEST(UnallocatedMap, ExFatUnallocatedCarveFindsPngInFreeCluster) {
 
     EXPECT_GE(carved, 1u);
 }
+
+TEST(UnallocatedMap, Ext4ExcludesAllocatedBlock) {
+    auto extVol = wolf::testfix::buildExt4CarveVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(extVol));
+
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ext4, 0, reader.getDiskSize());
+    ASSERT_FALSE(ranges.empty());
+
+    const uint64_t allocatedSector = 7 * 2; // block 7 @ 1KiB blocks, 512 B sectors
+    const uint64_t freeSector = 8 * 2;
+    EXPECT_FALSE(rangeCovers(ranges, allocatedSector));
+    EXPECT_TRUE(rangeCovers(ranges, freeSector));
+}
+
+TEST(UnallocatedMap, Ext4UnallocatedCarveFindsPngInFreeBlock) {
+    auto extVol = wolf::testfix::buildExt4CarveVolume();
+    const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    const uint8_t iend[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+                              0xAE, 0x42, 0x60, 0x82};
+    const size_t freeOff = 8 * 1024;
+    std::memcpy(extVol.data() + freeOff, pngSig, sizeof(pngSig));
+    std::memcpy(extVol.data() + freeOff + 1024 - sizeof(iend), iend, sizeof(iend));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(extVol));
+
+    std::atomic<bool> running{true};
+    size_t carved = 0;
+    runCarveScan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+
+    EXPECT_GE(carved, 1u);
+}

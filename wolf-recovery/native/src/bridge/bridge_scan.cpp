@@ -271,10 +271,14 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     Napi::Function cb;
     wolf::ScanTarget target;
     int64_t resumeScanId = -1;
+    bool allowSsdDeepScan = false;
 
     if (info.Length() >= 4 && info[2].IsObject() && info[3].IsFunction()) {
         Napi::Object opts = info[2].As<Napi::Object>();
         cb = info[3].As<Napi::Function>();
+        if (opts.Has("allowSsdDeepScan") && opts.Get("allowSsdDeepScan").IsBoolean()) {
+            allowSsdDeepScan = opts.Get("allowSsdDeepScan").As<Napi::Boolean>().Value();
+        }
         if (opts.Has("partitionStartSector") && opts.Get("partitionStartSector").IsNumber()) {
             target.partitionStartSector =
                 static_cast<int64_t>(opts.Get("partitionStartSector").As<Napi::Number>().Int64Value());
@@ -354,6 +358,19 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     } else {
         try { driveIndex = std::stoi(drivePath); } catch(...) {}
     }
+
+    if ((scanType == "deep" || scanType == "full_carve") && !allowSsdDeepScan && driveIndex >= 0 && drivePath != "raid") {
+        wolf::SmartMonitor smart;
+        wolf::SmartStatus st = smart.getSmartStatus(driveIndex);
+        if (st.isValid && st.isSsd) {
+            bdata->endHeavyOp();
+            Napi::Error::New(env,
+                             "SSD deep carve is unlikely after TRIM; set allowSsdDeepScan to proceed")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+    }
+
     if (resumeScanId > 0) {
         context->scanId = resumeScanId;
         if (!bdata->engine.getMetadataStore().setScanRunning(resumeScanId)) {
@@ -422,7 +439,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
         wolf::FileRecord out = fr;
         context->dedupIndex.observe(out);
-        context->dedupIndex.markDuplicate(out);
+        if (context->dedupIndex.markDuplicate(out)) return;
 
         {
             std::lock_guard<std::mutex> lock(context->bufferMutex);

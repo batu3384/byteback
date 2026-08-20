@@ -21,4 +21,7 @@ std::unique_ptr<ByteSource> openHttpByteSource(const std::string& url, std::stri
 
 bool isHttpUrl(const std::string& s);
 
+/** Returns false for localhost, link-local, and RFC1918 targets (SSRF guard). */
+bool httpUrlHostAllowed(const std::string& url);
+
 } // namespace wolf

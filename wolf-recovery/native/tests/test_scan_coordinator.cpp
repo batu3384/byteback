@@ -171,7 +171,7 @@ TEST(ScanCoordinator, DeepScanCarvesPng) {
     std::atomic<bool> running{true};
     runCarveScan(reader, [&](const FileRecord& fr) {
         if (fr.id != -1) sources.push_back(fr.source);
-    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, false);
 
     bool carved = false;
     for (const auto& s : sources) {

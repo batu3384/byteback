@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import DriveCard from './DriveCard'
 import SsdTrimModal from './SsdTrimModal'
-import type { DriveInfo, ResolvedVolume } from '../../../shared/types'
+import type { DriveInfo, ResolvedVolume, ScanOptions } from '../../../shared/types'
 import { SCAN_PROFILES } from '../../../shared/scan-profiles'
 import type { ScanProfile } from '../../../shared/scan-profiles'
 import './Dashboard.css'
@@ -108,7 +108,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
     return d?.type === 'SSD'
   }
 
-  const startVolumeScan = (resolved: ResolvedVolume, scanType: ScanProfile) => {
+  const startVolumeScan = (resolved: ResolvedVolume, scanType: ScanProfile, extra?: ScanOptions) => {
     if (!onStartScan) return
     setVolumeResolveStatus(
       `PhysicalDrive${resolved.driveIndex} @ sektör ${resolved.startSector} (${resolved.fsType})`
@@ -116,6 +116,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
     onStartScan(resolved.driveIndex, scanType, {
       partitionStartSector: resolved.startSector,
       partitionSizeInSectors: resolved.sizeSectors,
+      ...extra,
     })
   }
 
@@ -126,7 +127,11 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
         scanType={pendingVolumeScan?.scanType ?? 'deep'}
         onConfirm={() => {
           setVolumeTrimOpen(false)
-          if (pendingVolumeScan) startVolumeScan(pendingVolumeScan.resolved, pendingVolumeScan.scanType)
+          if (pendingVolumeScan) {
+            startVolumeScan(pendingVolumeScan.resolved, pendingVolumeScan.scanType, {
+              allowSsdDeepScan: true,
+            })
+          }
           setPendingVolumeScan(null)
         }}
         onCancel={() => {

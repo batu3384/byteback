@@ -147,6 +147,8 @@ export interface ScanOptions {
   partitionStartSector?: number
   partitionSizeInSectors?: number
   resumeScanId?: number
+  /** Required for deep/full_carve on SSD after TRIM warning. */
+  allowSsdDeepScan?: boolean
 }
 
 /** Logical drive letter resolved to PhysicalDrive + partition extent. */

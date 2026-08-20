@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cstring>
+#include <cctype>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -183,6 +184,75 @@ private:
 
 } // namespace
 
+namespace {
+
+bool parseHttpHost(const std::string& url, std::string& hostOut) {
+    const size_t scheme = url.find("://");
+    if (scheme == std::string::npos) return false;
+    size_t start = scheme + 3;
+    if (start >= url.size()) return false;
+    if (url[start] == '[') {
+        const size_t end = url.find(']', start);
+        if (end == std::string::npos) return false;
+        hostOut = url.substr(start + 1, end - start - 1);
+        return !hostOut.empty();
+    }
+    const size_t end = url.find_first_of(":/", start);
+    hostOut = (end == std::string::npos) ? url.substr(start) : url.substr(start, end - start);
+    return !hostOut.empty();
+}
+
+bool ipv4Octets(const std::string& host, uint8_t o[4]) {
+    int parts[4] = {};
+    char tail = 0;
+    if (std::sscanf(host.c_str(), "%d.%d.%d.%d%c", &parts[0], &parts[1], &parts[2], &parts[3], &tail) != 4) {
+        return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (parts[i] < 0 || parts[i] > 255) return false;
+        o[i] = static_cast<uint8_t>(parts[i]);
+    }
+    return true;
+}
+
+bool isBlockedHostLiteral(const std::string& host) {
+    std::string h = host;
+    std::transform(h.begin(), h.end(), h.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (h == "localhost" || h == "0.0.0.0" || h == "::1" || h == "::") return true;
+    if (h.size() >= 6 && h.compare(h.size() - 6, 6, ".local") == 0) return true;
+
+    uint8_t o[4] = {};
+    if (ipv4Octets(h, o)) {
+        if (o[0] == 127) return true;
+        if (o[0] == 10) return true;
+        if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return true;
+        if (o[0] == 192 && o[1] == 168) return true;
+        if (o[0] == 169 && o[1] == 254) return true;
+        if (o[0] == 0) return true;
+        return false;
+    }
+
+    if (!h.empty() && h[0] == '[') {
+        const std::string inner = h.substr(1, h.size() - 2);
+        if (inner == "::1") return true;
+        if (inner.rfind("fe80:", 0) == 0 || inner.rfind("fc", 0) == 0 || inner.rfind("fd", 0) == 0) {
+            return true;
+        }
+    }
+    if (h.rfind("fe80:", 0) == 0 || h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0) return true;
+    return false;
+}
+
+} // namespace
+
+bool httpUrlHostAllowed(const std::string& url) {
+    if (!isHttpUrl(url)) return false;
+    std::string host;
+    if (!parseHttpHost(url, host)) return false;
+    return !isBlockedHostLiteral(host);
+}
+
 bool isHttpUrl(const std::string& s) {
     return s.rfind("http://", 0) == 0 || s.rfind("https://", 0) == 0;
 }
@@ -207,6 +277,10 @@ std::unique_ptr<ByteSource> openHttpByteSource(const std::string& url, std::stri
 #else
     if (!isHttpUrl(url)) {
         err = "not an http(s) url";
+        return nullptr;
+    }
+    if (!httpUrlHostAllowed(url)) {
+        err = "http url host not allowed";
         return nullptr;
     }
     auto src = std::make_unique<HttpRangeByteSource>(url);
