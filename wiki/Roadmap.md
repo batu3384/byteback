@@ -66,5 +66,5 @@ gantt
 ## Where to track work
 
 - **Bugs / features:** https://github.com/batu3384/byteback/issues
-- **Security:** [Security](Security) page + private advisory when enabled
+- **Security:** [Security](Security.md) page + private advisory when enabled
 - **Detailed plans:** `docs/superpowers/plans/` in the repository (not duplicated here)

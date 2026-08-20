@@ -5,8 +5,7 @@ out/
 dist/
 .vite/
 native/build/
-native/third_party/sqlite3.c
-native/third_party/sqlite3.h
+# Vendored amalgamation (required for native build — do not ignore)
 *.node
 *.obj
 *.o

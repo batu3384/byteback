@@ -52,4 +52,4 @@ npm run test:e2e      # requires npm run build first
 4. **Results** — recover via SQLite `fileId` + `scanId` (not raw sector runs from UI).
 5. **Imager** — pick allowlisted destination path, RAW or E01, verify MD5 panel.
 
-See [Architecture](Architecture) for engine boundaries and [Security](Security) for write paths.
+See [Architecture](Architecture.md) for engine boundaries and [Security](Security.md) for write paths.

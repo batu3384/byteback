@@ -6,6 +6,9 @@ import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { callNative } from './ipc-native'
 
+let dbReady = false
+let dbInitError: string | null = null
+
 export function registerIpcHandlers(): void {
   const allowlistPath = join(app.getPath('userData'), 'allowed-image-dest.json')
   const allowedImageDest = loadAllowedImageDest(allowlistPath)
@@ -15,10 +18,19 @@ export function registerIpcHandlers(): void {
     const engine = getEngine()
     const dbPath = join(app.getPath('userData'), 'byteback.db')
     const ok = engine.initDatabase(dbPath)
+    dbReady = !!ok
+    if (!ok) dbInitError = 'initDatabase returned false'
     console.log('[IPC] Database initialized:', ok, 'at', dbPath)
   } catch (err) {
+    dbReady = false
+    dbInitError = err instanceof Error ? err.message : String(err)
     console.error('[IPC] Database init failed:', err)
   }
+
+  ipcMain.handle('get-db-status', () => ({
+    ready: dbReady,
+    error: dbInitError ?? undefined,
+  }))
 
   ipcMain.handle('get-version', () =>
     callNative('get-version', () => getEngine().getVersion())

@@ -50,6 +50,7 @@ declare global {
   interface Window {
     api: {
       getVersion: () => Promise<string>
+      getDbStatus: () => Promise<{ ready: boolean; error?: string }>
       isAdmin: () => Promise<boolean>
       listDrives: () => Promise<DriveInfo[]>
       listPartitions: (driveIndex: number) => Promise<PartitionInfo[]>

@@ -26,7 +26,7 @@ Virtual RAID 0/1/5/6/10 in UI. Mark failed members with `fail_disk`. Not hardwar
 
 ## Is APFS fully supported?
 
-Discovery + partial extent recovery. Full APFS container snapshot walk is **not** shipped — see [Roadmap](Roadmap).
+Discovery + partial extent recovery. Full APFS container snapshot walk is **not** shipped — see [Roadmap](Roadmap.md).
 
 ## Where are scans stored?
 

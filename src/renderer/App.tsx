@@ -106,6 +106,13 @@ function App(): React.ReactElement {
     }
   }
 
+  const startScanTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => {
+      setScanElapsed(prev => prev + 1)
+    }, 1000)
+  }
+
   const handleStartScan = (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
     const isResume = !!(scanOptions?.resumeScanId && scanOptions.resumeScanId > 0)
     setSelectedDrive(driveIndex)
@@ -118,22 +125,22 @@ function App(): React.ReactElement {
     }
     setScanStatus(isResume ? 'Tarama Devam Ediyor...' : 'Tarama Sürüyor...')
     setActivePage('scan')
-    
-    // Start Engine Scan
-    if (window.api && window.api.startScan) {
-      window.api.startScan(driveIndex, scanType, scanOptions)
-        .then((id) => {
-          if (id > 0) setActiveScanId(id)
-          else failScan('Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.')
-        })
-        .catch((e: Error) => failScan(`Tarama hatası: ${e.message}`))
+
+    if (!window.api?.startScan) {
+      failScan('Tarama API\'si kullanılamıyor. Native backend yüklü mü kontrol edin.')
+      return
     }
 
-    // Start Timer
-    if (timerRef.current) clearInterval(timerRef.current)
-    timerRef.current = setInterval(() => {
-      setScanElapsed(prev => prev + 1)
-    }, 1000)
+    window.api.startScan(driveIndex, scanType, scanOptions)
+      .then((id) => {
+        if (id > 0) {
+          setActiveScanId(id)
+          startScanTimer()
+        } else {
+          failScan('Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.')
+        }
+      })
+      .catch((e: Error) => failScan(`Tarama hatası: ${e.message}`))
   }
 
   const handleStartRaidScan = (scanType: string) => {
@@ -144,16 +151,20 @@ function App(): React.ReactElement {
     setScanStatus('RAID Taraması Sürüyor...')
     setScanElapsed(0)
     setActivePage('scan')
-    if (window.api?.startScan) {
-      window.api.startScan(-1, scanType)
-        .then((id) => {
-          if (id > 0) setActiveScanId(id)
-          else failScan('RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.')
-        })
-        .catch((e: Error) => failScan(`RAID tarama hatası: ${e.message}`))
+    if (!window.api?.startScan) {
+      failScan('RAID tarama API\'si kullanılamıyor.')
+      return
     }
-    if (timerRef.current) clearInterval(timerRef.current)
-    timerRef.current = setInterval(() => setScanElapsed(prev => prev + 1), 1000)
+    window.api.startScan(-1, scanType)
+      .then((id) => {
+        if (id > 0) {
+          setActiveScanId(id)
+          startScanTimer()
+        } else {
+          failScan('RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.')
+        }
+      })
+      .catch((e: Error) => failScan(`RAID tarama hatası: ${e.message}`))
   }
 
   const handleStopScan = () => {
@@ -168,6 +179,7 @@ function App(): React.ReactElement {
       setSelectedDrive(data.driveIndex)
       if (data.sectorSize) setSelectedDriveSectorSize(data.sectorSize)
     }
+    if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
     setActivePage(page)
   }
 

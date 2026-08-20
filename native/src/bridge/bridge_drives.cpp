@@ -54,7 +54,7 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
         return Napi::Array::New(env, 0);
     }
-    if (bdata->diskOpInProgress()) return Napi::Array::New(env, 0);
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     byteback::DiskReader& reader = bdata->engine.getDiskReader();
@@ -87,6 +87,7 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 3) return env.Undefined();
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     double offset = info[1].As<Napi::Number>().DoubleValue();

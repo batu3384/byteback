@@ -5,6 +5,7 @@ import type { DriveInfo, ResolvedVolume, ScanOptions } from '../../../shared/typ
 import { SCAN_PROFILES } from '../../../shared/scan-profiles'
 import type { ScanProfile } from '../../../shared/scan-profiles'
 import './Dashboard.css'
+import InlineAlert from '../InlineAlert'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search } from 'lucide-react'
 
 interface DashboardProps {
@@ -36,6 +37,15 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
     resolved: ResolvedVolume
     scanType: ScanProfile
   } | null>(null)
+  const [dbError, setDbError] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.api?.getDbStatus?.()
+      .then((s) => {
+        if (!s.ready) setDbError(s.error ?? 'Veritabanı başlatılamadı')
+      })
+      .catch(() => setDbError('Veritabanı durumu okunamadı'))
+  }, [])
 
   const fetchDrives = async () => {
     setLoading(true)
@@ -146,6 +156,12 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
             <strong style={{ color: 'var(--alert-red)' }}>Yönetici İzni Yok</strong> — Sürücüler listelenebilir ancak sektör tabanlı işlemler için uygulamayı <em>Yönetici Olarak Çalıştır</em> ile yeniden başlatmanız gerekir.
           </div>
         </div>
+      )}
+
+      {dbError && (
+        <InlineAlert variant="error" title="Veritabanı kullanılamıyor">
+          Tarama sonuçları, kurtarma ve rapor SQLite veritabanına bağlıdır. Hata: {dbError}. Uygulamayı yeniden başlatın; sorun sürerse `%APPDATA%/byteback` yazma iznini kontrol edin.
+        </InlineAlert>
       )}
 
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>

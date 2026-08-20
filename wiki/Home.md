@@ -5,18 +5,18 @@ native C++17 engine + Electron/React examiner UI.
 
 | Page | Description |
 |------|-------------|
-| [Getting Started](Getting-Started) | Install, build, run, first scan |
-| [Architecture](Architecture) | Engine layers, modules, data flow |
-| [Security](Security) | Trust boundaries, threat model, limits |
-| [Roadmap](Roadmap) | Now / Next / Later milestones |
-| [Troubleshooting](Troubleshooting) | Common failures and fixes |
-| [FAQ](FAQ) | Short answers |
+| [Getting Started](Getting-Started.md) | Install, build, run, first scan |
+| [Architecture](Architecture.md) | Engine layers, modules, data flow |
+| [Security](Security.md) | Trust boundaries, threat model, limits |
+| [Roadmap](Roadmap.md) | Now / Next / Later milestones |
+| [Troubleshooting](Troubleshooting.md) | Common failures and fixes |
+| [FAQ](FAQ.md) | Short answers |
 
 ## Links
 
 - **Repository:** https://github.com/batu3384/byteback
 - **Issues:** https://github.com/batu3384/byteback/issues
-- **Security:** report via [Security](Security) (private repo — contact maintainer)
+- **Security:** report via [Security](Security.md) (private repo — contact maintainer)
 - **Contributing:** see `CONTRIBUTING.md` in the repo (git identity required)
 
 ## Status snapshot
