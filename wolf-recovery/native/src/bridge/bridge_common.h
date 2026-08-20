@@ -105,6 +105,8 @@ Napi::Value StopImaging(const Napi::CallbackInfo& info);
 
 // bridge_wipe.cpp — wipe / RAID / recovery
 Napi::Value StartWipe(const Napi::CallbackInfo& info);
+Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info);
+Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info);
 template<typename Callback>
 void tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
     (void)tsfn.NonBlockingCall(std::forward<Callback>(cb));

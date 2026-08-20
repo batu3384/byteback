@@ -7,8 +7,44 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 
 namespace security {
+
+namespace {
+std::string normSerial(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (unsigned char c : s) {
+        if (std::isspace(c)) continue;
+        o.push_back(static_cast<char>(std::toupper(c)));
+    }
+    return o;
+}
+}
+
+bool DataShredder::wipeSerialMatches(const std::string& typed, const std::string& actual) {
+    if (typed.empty() || actual.empty()) return false;
+    return normSerial(typed) == normSerial(actual);
+}
+
+bool DataShredder::shred_physical_drive(int driveIndex, const std::string& typedSerial,
+                                        const std::string& actualSerial, uint64_t sizeBytes) {
+    if (driveIndex < 0 || sizeBytes < 512) return false;
+    if (!wipeSerialMatches(typedSerial, actualSerial)) return false;
+#ifdef _WIN32
+    char path[64];
+    snprintf(path, sizeof(path), "\\\\.\\PhysicalDrive%d", driveIndex);
+    const std::size_t n = static_cast<std::size_t>(sizeBytes);
+    if (!overwrite_pass(path, n, 0x00, false)) return false;
+    if (!overwrite_pass(path, n, 0xFF, false)) return false;
+    return overwrite_pass(path, n, 0x00, true);
+#else
+    (void)driveIndex;
+    return false;
+#endif
+}
 
 bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random) {
     HANDLE hFile = CreateFileA(

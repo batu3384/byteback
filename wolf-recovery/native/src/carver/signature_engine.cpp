@@ -429,15 +429,12 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             // removing one contiguous gap makes the object
                             // validate, report the two fragments as data runs so
                             // recovery stitches them correctly.
-                            // CA-001 fix: the search steps on sector boundaries
-                            // (filesystems allocate there — published BGC does the
-                            // same), the gap ceiling is clamped to 64 KiB inside
-                            // bgc.cpp, and a per-scan attempt budget keeps junk
-                            // candidates from stalling the scan.
+                            // CA-001: sector-step BGC; per-scan attempt budget.
+                            // Gap size is the caller max (span/4 below), no 64 KiB clamp.
                             bool bgcRescued = false;
                             BgcResult bgc{};
                             if (bgcBudget_ > 0 &&
-                                actualSize > 4096 && actualSize <= (256u << 10)) {
+                                actualSize > 4096 && actualSize <= (16u << 20)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
                                 auto rres = reader.readSectors(it->startOffset, alignedSize, alignedBuf.data());

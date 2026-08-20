@@ -104,3 +104,17 @@ TEST(VssScan, TagsNtfsFilesAsVssNtfs) {
     EXPECT_TRUE(vssNtfs);
     EXPECT_TRUE(pathPrefixed);
 }
+
+TEST(VssScan, DevicePathFromTaggedPath) {
+    FileRecord rec;
+    rec.source = "vss_ntfs";
+    rec.path = "/VSS12/Users/a.txt";
+    EXPECT_EQ(vssDevicePathFromRecord(rec),
+              "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy12");
+    rec.source = "ntfs_mft";
+    EXPECT_TRUE(vssDevicePathFromRecord(rec).empty());
+    rec.source = "vss_fat";
+    rec.path = "/VSS1/";
+    EXPECT_EQ(vssDevicePathFromRecord(rec),
+              "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1");
+}

@@ -8,7 +8,9 @@
 namespace wolf {
 
 // Walk an APFS container: NXSB (block size + nx_fs_oid[100]), APSB volumes,
-// and btree-leaf dir records (source=apfs_file). Full block count, cancellable.
+// btree-leaf dir records (source=apfs_file, discovery-only) and file extents
+// (source=apfs_extent, recoverable runs). Superblock/btree probe is the first
+// 256 container blocks plus nx_fs_oid — not a full-container sequential walk.
 bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                        uint64_t partitionSizeBytes,
                        FileSystemParser::FileRecordCallback callback,

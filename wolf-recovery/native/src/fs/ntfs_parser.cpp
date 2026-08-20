@@ -165,11 +165,65 @@ std::string categoryForName(const std::string& name) {
 } // namespace
 
 bool NTFSParser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
-    return scanAt(reader, callback, isRunning, 0, 0);
+    return scanAt(reader, callback, isRunning, 0, 0, true);
+}
+
+std::vector<FileRecord::DataRun> unnamedDataRunsFromRecord(
+    const uint8_t* rec, uint32_t recordSize,
+    uint64_t volumeStartSector, uint32_t sectorsPerCluster) {
+    std::vector<FileRecord::DataRun> out;
+    if (!rec || recordSize < 64) return out;
+    const auto* header = reinterpret_cast<const MFT_RecordHeader*>(rec);
+    uint32_t attrOffset = header->firstAttributeOffset;
+    while (attrOffset + sizeof(NTFS_AttributeHeader) <= recordSize) {
+        const auto* attr = reinterpret_cast<const NTFS_AttributeHeader*>(rec + attrOffset);
+        if (attr->type == ntfs::ATTR_END_MARKER || attr->length == 0) break;
+        if (attr->type == ntfs::ATTR_DATA && attr->nonResidentFlag != 0 && attr->nameLength == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) > recordSize)
+                break;
+            const auto* nonRes = reinterpret_cast<const NTFS_NonResidentHeader*>(
+                rec + attrOffset + sizeof(NTFS_AttributeHeader));
+            size_t currentRunPos = attrOffset + nonRes->dataRunOffset;
+            int64_t previousLcn = 0;
+            while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize) {
+                uint8_t headerByte = rec[currentRunPos];
+                if (headerByte == 0x00) break;
+                uint8_t lenSize = headerByte & 0x0F;
+                uint8_t offSize = (headerByte >> 4) & 0x0F;
+                currentRunPos++;
+                if (currentRunPos + lenSize + offSize > recordSize) break;
+                uint64_t clusterCount = 0;
+                for (int j = 0; j < lenSize; j++)
+                    clusterCount |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                currentRunPos += lenSize;
+                bool sparse = (offSize == 0);
+                int64_t lcnOffset = 0;
+                if (!sparse) {
+                    for (int j = 0; j < offSize; j++)
+                        lcnOffset |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                    if (rec[currentRunPos + offSize - 1] & 0x80) {
+                        for (int j = offSize; j < 8; j++)
+                            lcnOffset |= static_cast<int64_t>(0xFF) << (j * 8);
+                    }
+                    previousLcn += lcnOffset;
+                }
+                currentRunPos += offSize;
+                FileRecord::DataRun run;
+                run.startSector = sparse ? UINT64_MAX
+                    : volumeStartSector + static_cast<uint64_t>(previousLcn) * sectorsPerCluster;
+                run.sectorCount = clusterCount * sectorsPerCluster;
+                if (!sparse && run.sectorCount > 0) out.push_back(run);
+            }
+            break;
+        }
+        if (attr->length < sizeof(NTFS_AttributeHeader)) break;
+        attrOffset += attr->length;
+    }
+    return out;
 }
 
 bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
-                        uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes) {
+                        uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes, bool carveOrphanMft) {
     if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
 
     uint64_t diskSize = reader.getDiskSize();
@@ -179,10 +233,52 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     const uint64_t volumeStartSector = partitionOffsetBytes / sectorSize;
     
     uint32_t sectorsPerCluster = 8;
+    uint64_t mftStartCluster = 0;
+    uint32_t mftRecordBytes = 1024;
     std::vector<uint8_t> bootSector(sectorSize);
     if (reader.readSectors(partitionOffsetBytes, sectorSize, bootSector.data()).success) {
-        sectorsPerCluster = bootSector[0x0D];
-        if (sectorsPerCluster == 0) sectorsPerCluster = 8;
+        uint32_t bootBps = sectorSize;
+        uint32_t recBytes = 1024;
+        uint64_t lcn = 0;
+        uint32_t spc = 8;
+        if (ntfs::parseNtfsBoot(bootSector.data(), bootSector.size(), bootBps, spc, lcn, recBytes)) {
+            sectorsPerCluster = spc;
+            mftStartCluster = lcn;
+            mftRecordBytes = recBytes;
+        } else {
+            sectorsPerCluster = bootSector[0x0D];
+            if (sectorsPerCluster == 0) sectorsPerCluster = 8;
+        }
+    }
+
+    uint64_t scanEndSector = diskSize / sectorSize;
+    if (partitionSizeBytes > 0) {
+        scanEndSector = std::min(scanEndSector, volumeStartSector + partitionSizeBytes / sectorSize);
+    }
+
+    struct ScanRange { uint64_t startSector; uint64_t sectorCount; };
+    std::vector<ScanRange> ranges;
+    if (mftStartCluster > 0) {
+        std::vector<uint8_t> rec0(mftRecordBytes, 0);
+        uint64_t rec0Off = partitionOffsetBytes + mftStartCluster * static_cast<uint64_t>(sectorsPerCluster) * sectorSize;
+        if (reader.readSectors(rec0Off, mftRecordBytes, rec0.data()).success &&
+            std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) == 0) {
+            auto runs = unnamedDataRunsFromRecord(rec0.data(), mftRecordBytes, volumeStartSector,
+                                                  sectorsPerCluster);
+            for (const auto& r : runs) {
+                if (r.startSector != UINT64_MAX && r.sectorCount > 0)
+                    ranges.push_back({r.startSector, r.sectorCount});
+            }
+        }
+        if (ranges.empty()) {
+            ranges.push_back({volumeStartSector + mftStartCluster * sectorsPerCluster,
+                              (1024ull * mftRecordBytes + sectorSize - 1) / sectorSize});
+        }
+    }
+    if (carveOrphanMft || ranges.empty()) {
+        uint64_t full = scanEndSector > volumeStartSector ? scanEndSector - volumeStartSector : 0;
+        ranges.clear();
+        ranges.push_back({volumeStartSector, full});
     }
     
     // We will scan in 4MB chunks for MFT records (RAW MFT Carving)
@@ -191,10 +287,6 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     auto poolBufA = MemoryPool::getInstance().acquireBuffer(chunkSize);
     auto* currentBuf = poolBufA.get();
     
-    uint64_t scanEndSector = diskSize / sectorSize;
-    if (partitionSizeBytes > 0) {
-        scanEndSector = std::min(scanEndSector, volumeStartSector + partitionSizeBytes / sectorSize);
-    }
     int foundCount = 0;
 
     struct TempFile {
@@ -208,10 +300,16 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     std::unordered_map<uint64_t, uint64_t> indxParentMap;
     std::unordered_map<uint64_t, std::string> indxNameMap;
 
-    for (uint64_t sector = volumeStartSector; sector < scanEndSector; sector += chunkSectors) {
+    for (const auto& rg : ranges) {
+    if (rg.sectorCount == 0) continue;
+    const uint64_t rangeEnd = rg.startSector + rg.sectorCount;
+    for (uint64_t sector = rg.startSector; sector < rangeEnd; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
         
-        auto res = reader.readSectors(sector * sectorSize, chunkSize, currentBuf->data());
+        uint64_t remain = rangeEnd - sector;
+        uint32_t thisSectors = static_cast<uint32_t>(std::min<uint64_t>(chunkSectors, remain));
+        uint32_t thisSize = thisSectors * sectorSize;
+        auto res = reader.readSectors(sector * sectorSize, thisSize, currentBuf->data());
         if (!res.success) continue;
 
         // Iterate through the buffer in sector-sized steps (MFT records are sector-aligned)
@@ -570,6 +668,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         progressTick.id = -1; // Special ID for progress tick
         progressTick.startSector = sector + chunkSectors;
         callback(progressTick);
+    }
     }
     
     // Post-processing: reconstruct full paths

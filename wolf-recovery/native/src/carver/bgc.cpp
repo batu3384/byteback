@@ -22,19 +22,9 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
     size_t span = footerOffset - headerOffset;
     if (span < 4) return out;
 
-    // CA-001 fix: two independent cost bounds.
-    //  (1) Absolute gap ceiling (64 KiB) regardless of what the caller passed —
-    //      a bigger gap than that is vanishingly unlikely to validate and the
-    //      search space grows with gapLimit.
-    //  (2) Alignment step: published BGC implementations step candidate gaps on
-    //      cluster/sector boundaries because filesystems allocate on those
-    //      boundaries — this cuts the search space by ~step×, making the
-    //      rescue path tractable (byte-stepping 256 KiB junk was ~1.7e10
-    //      reassemblies ≈ days; sector-stepping is ~512x cheaper, and the
-    //      reassembly copy itself shrinks proportionally).
-    constexpr size_t kAbsoluteGapCeiling = 64 * 1024;
-    size_t gapLimit = maxGapBytes ? maxGapBytes : kAbsoluteGapCeiling;
-    if (gapLimit > kAbsoluteGapCeiling) gapLimit = kAbsoluteGapCeiling;
+    // Caller supplies maxGapBytes (0 → 64 KiB default). No absolute clamp.
+    // Step on allocation boundaries so the search stays tractable.
+    size_t gapLimit = maxGapBytes ? maxGapBytes : (64 * 1024);
     if (gapLimit > span) gapLimit = span;
 
     if (stepBytes == 0) stepBytes = 1;

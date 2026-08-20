@@ -18,6 +18,12 @@ public:
     // maxFillBytes==0 fills until the volume is full. Device paths are refused.
     bool shred_free_space(const std::string& dirPath, uint64_t maxFillBytes = 0);
 
+    // PhysicalDrive wipe. typedSerial must match actualSerial (case-insensitive).
+    // Tests never pass a live drive; mismatch/empty always false.
+    static bool wipeSerialMatches(const std::string& typed, const std::string& actual);
+    bool shred_physical_drive(int driveIndex, const std::string& typedSerial,
+                              const std::string& actualSerial, uint64_t sizeBytes);
+
 private:
     bool overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random);
     std::size_t get_file_size(const std::string& file_path);

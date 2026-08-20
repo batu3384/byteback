@@ -157,10 +157,11 @@ void scanVssSnapshotsBound(DiskReader& evidence,
                            VssScanProgressFn onProgress,
                            std::atomic<bool>* isRunning) {
 #ifdef _WIN32
-    auto serials = collectVolumeSerials(evidence);
-    if (serials.empty()) return;
+    auto ids = collectVolumeIdentities(evidence);
+    if (ids.empty()) return;
 
     int matched = 0;
+    int collisions = 0;
     for (const auto& snap : enumerateVssSnapshots()) {
         if (isRunning && !(*isRunning)) break;
         DiskReader vssReader;
@@ -170,7 +171,13 @@ void scanVssSnapshotsBound(DiskReader& evidence,
         std::vector<uint8_t> boot(ss);
         if (!vssReader.readSectors(0, ss, boot.data()).success) continue;
         uint64_t ser = parseVolumeSerial(boot.data(), boot.size());
-        if (ser == 0 || serials.count(ser) == 0) continue;
+        if (ser == 0) continue;
+        int hits = 0;
+        for (const auto& id : ids) {
+            if (volumeIdentityMatches(id, ser, snap.sizeBytes)) ++hits;
+        }
+        if (hits == 0) continue;
+        if (hits > 1) ++collisions;
 
         FileRecord meta;
         meta.id = -1;
@@ -189,7 +196,10 @@ void scanVssSnapshotsBound(DiskReader& evidence,
     if (matched > 0) {
         FileRecord fr;
         fr.id = -1;
-        fr.name = "[VSS] " + std::to_string(matched) + " snapshot(s) bound by volume serial";
+        fr.name = collisions > 0
+            ? "[VSS] " + std::to_string(matched) + " snapshot(s); serial collision on "
+              + std::to_string(collisions)
+            : "[VSS] " + std::to_string(matched) + " snapshot(s) bound by volume serial+size";
         fr.path = "/";
         fr.status = 1;
         fr.confidence = 100;
@@ -203,6 +213,23 @@ void scanVssSnapshotsBound(DiskReader& evidence,
     (void)onProgress;
     (void)isRunning;
 #endif
+}
+
+std::string vssDevicePathFromRecord(const FileRecord& rec) {
+    if (rec.source != "vss_ntfs" && rec.source != "vss_fat") return {};
+    const std::string& p = rec.path;
+    if (p.find("HarddiskVolumeShadowCopy") != std::string::npos) return p;
+    if (p.size() < 5 || p.compare(0, 4, "/VSS") != 0) return {};
+    size_t i = 4;
+    if (i >= p.size() || p[i] < '0' || p[i] > '9') return {};
+    int idx = 0;
+    while (i < p.size() && p[i] >= '0' && p[i] <= '9') {
+        idx = idx * 10 + (p[i] - '0');
+        ++i;
+        if (idx > 256) return {};
+    }
+    if (idx <= 0) return {};
+    return "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy" + std::to_string(idx);
 }
 
 } // namespace wolf

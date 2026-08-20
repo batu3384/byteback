@@ -38,6 +38,8 @@ public:
     // Enumerate all physical drives
     std::vector<DriveInfo> enumerateDrives();
 
+    bool openedWithWriteShare() const;
+
     // Open a drive for reading (returns false on failure)
     bool openDrive(int driveIndex);
 
@@ -74,6 +76,13 @@ public:
     void detachMemoryVolume();
     bool hasMemoryVolume() const;
 
+    // AES-128-XTS FVEK (32 bytes: data || tweak). Decrypts each sector after read.
+    // Empty/null clears. Not a password cracker — caller supplies the FVEK.
+    bool setXtsFvek128(const uint8_t* key32, size_t n);
+    void clearXtsFvek();
+    bool hasXtsFvek() const;
+    void copyXtsFvekFrom(const DiskReader& src);
+
 private:
     void noteBadRead(uint64_t startSectorBytes, uint32_t sizeBytes);
     void closeDriveUnlocked();
@@ -87,9 +96,14 @@ private:
     uint64_t diskSize_;
     uint32_t sectorSize_;
     int currentDriveIndex_ = -1;
+    bool shareWrite_ = false;
     std::shared_ptr<VirtualRaid> raidBackend_;
     std::vector<uint8_t> memoryImage_;
     bool memoryMode_ = false;
+    uint8_t xtsKey_[32]{};
+    bool xtsEnabled_ = false;
+
+    void maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer);
 };
 
 } // namespace wolf

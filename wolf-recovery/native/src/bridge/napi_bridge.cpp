@@ -37,6 +37,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
     // bridge_wipe.cpp
     exports.Set("startWipe", Napi::Function::New(env, StartWipe));
+    exports.Set("setBitLockerFvek", Napi::Function::New(env, SetBitLockerFvek));
+    exports.Set("startPhysicalWipe", Napi::Function::New(env, StartPhysicalWipe));
     exports.Set("reconstructRaid", Napi::Function::New(env, ReconstructRaid));
     exports.Set("failRaidDisk", Napi::Function::New(env, FailRaidDisk));
     exports.Set("getRaidState", Napi::Function::New(env, GetRaidState));

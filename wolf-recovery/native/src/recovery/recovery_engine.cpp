@@ -3,6 +3,8 @@
 #include "recovery/path_util.h"
 #include "crypto/wolf_md5.h"
 #include "fs/ntfs_util.h"
+#include "fs/vss_scanner.h"
+#include "fs/virtual_raid.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -20,13 +22,6 @@ bool destReady(RecoveryResult& result, const std::string& destDir) {
     return true;
 }
 
-bool isDiscoveryOnly(const std::string& source) {
-    return source == "apfs_volume" || source == "apfs_container" ||
-           source == "bitlocker_detect" || source == "bitlocker_fve" ||
-           source == "vss_unbound" || source == "vss_bind" ||
-           source == "hfs_limit";
-}
-
 bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const std::string& name) {
     result.destPath = uniqueDestPath(destDir, name);
     if (result.destPath.empty()) {
@@ -36,7 +31,57 @@ bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const s
     return true;
 }
 
+void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::string& md5) {
+    result.bytesRecovered = bytes;
+    result.md5Hash = md5;
+    if (result.zeroFilled) {
+        result.success = false;
+        if (result.error.empty()) result.error = "short or padded read; output is incomplete";
+        return;
+    }
+    result.success = true;
+}
+
 } // namespace
+
+bool isDiscoveryOnlySource(const std::string& source) {
+    return source == "apfs_volume" || source == "apfs_container" ||
+           source == "apfs_file" || source == "bitlocker_detect" ||
+           source == "bitlocker_fve" || source == "vss_unbound" ||
+           source == "vss_bind" || source == "vss_snapshot" ||
+           source == "hfs_limit";
+}
+
+bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
+                         std::shared_ptr<VirtualRaid> raid, std::string& err) {
+    err.clear();
+    const std::string vss = vssDevicePathFromRecord(rec);
+    if (!vss.empty()) {
+        if (!reader.openVolumePath(vss)) {
+            err = "VSS volume not available";
+            return false;
+        }
+        return true;
+    }
+    if (raid) {
+        reader.setRaidBackend(raid);
+        return true;
+    }
+    if (driveIndex < 0) {
+        err = "Disk is not open";
+        return false;
+    }
+    if (!reader.openDrive(driveIndex)) {
+        err = "could not open PhysicalDrive";
+        return false;
+    }
+    return true;
+}
+
+void applyBoundFvek(DiskReader& dest, const DiskReader& src, const FileRecord& rec) {
+    if (!vssDevicePathFromRecord(rec).empty()) return;
+    dest.copyXtsFvekFrom(src);
+}
 
 RecoveryEngine::RecoveryEngine() {}
 RecoveryEngine::~RecoveryEngine() {}
@@ -69,7 +114,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         return result;
     }
 
-    if (isDiscoveryOnly(record.source)) {
+    if (isDiscoveryOnlySource(record.source)) {
         result.error = "discovery-only record; no recoverable data";
         return result;
     }
@@ -177,9 +222,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                               static_cast<std::streamsize>(writeLen));
                 md5ctx.update(inflated.data(), static_cast<size_t>(writeLen));
                 outFile.close();
-                result.success = true;
-                result.bytesRecovered = writeLen;
-                result.md5Hash = md5ctx.finalHex();
+                finishRecoverWrite(result, writeLen, md5ctx.finalHex());
                 return result;
             }
             // Decompression failed: fall through to raw recovery so the user
@@ -252,9 +295,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     }
 
     outFile.close();
-    result.success = true;
-    result.bytesRecovered = bytesWritten;
-    result.md5Hash = md5ctx.finalHex();
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex());
     return result;
 }
 
@@ -272,7 +313,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
         return result;
     }
 
-    if (isDiscoveryOnly(record.source)) {
+    if (isDiscoveryOnlySource(record.source)) {
         result.error = "discovery-only record; no recoverable data";
         return result;
     }
@@ -327,9 +368,7 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     }
 
     outFile.close();
-    result.success = true;
-    result.bytesRecovered = bytesWritten;
-    result.md5Hash = md5ctx.finalHex();
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex());
     return result;
 }
 

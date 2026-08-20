@@ -55,7 +55,8 @@ void runQuickScan(DiskReader& reader,
                   FileSystemParser::FileRecordCallback onFileFound,
                   ProgressCallback onProgress,
                   std::atomic<bool>* isRunning,
-                  std::vector<uint64_t>* badSectorOut) {
+                  std::vector<uint64_t>* badSectorOut,
+                  bool ntfsCarveOrphans) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = reader.getDiskSize() / sectorSize;
@@ -106,7 +107,8 @@ void runQuickScan(DiskReader& reader,
         switch (kind) {
             case VolumeFsKind::Ntfs: {
                 NTFSParser ntfs;
-                if (ntfs.scanAt(reader, callbackWrapper, isRunning, offsetBytes, partSizeBytes)) {
+                if (ntfs.scanAt(reader, callbackWrapper, isRunning, offsetBytes, partSizeBytes,
+                                ntfsCarveOrphans)) {
                     anyFsScanned = true;
                 }
                 break;
@@ -154,7 +156,7 @@ void runQuickScan(DiskReader& reader,
         switch (kind0) {
             case VolumeFsKind::Ntfs: {
                 NTFSParser ntfs;
-                ntfs.scanAt(reader, callbackWrapper, isRunning, 0, 0);
+                ntfs.scanAt(reader, callbackWrapper, isRunning, 0, 0, ntfsCarveOrphans);
                 break;
             }
             case VolumeFsKind::ExFat:
@@ -313,7 +315,7 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
     uint64_t totalSectors = reader.getDiskSize() / sectorSize;
 
     if (scanType == "quick") {
-        runQuickScan(reader, onFileFound, onProgress, &isRunning, badSectorOut);
+        runQuickScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, false);
     } else if (scanType == "deep") {
         runDeepScan(reader, onFileFound, onProgress, &isRunning, badSectorOut);
     }

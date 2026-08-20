@@ -6,8 +6,11 @@
 #include <functional>
 #include <atomic>
 #include <vector>
+#include <memory>
 
 namespace wolf {
+
+class VirtualRaid;
 
 struct RecoveryResult {
     bool success = false;
@@ -24,6 +27,15 @@ inline bool countsAsRecovered(const RecoveryResult& r) {
 
 bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
                        FileRecord& out, std::string& err);
+
+bool isDiscoveryOnlySource(const std::string& source);
+
+// Open PhysicalDrive, RAID, or the VSS volume named on the record. False = err set.
+bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
+                         std::shared_ptr<VirtualRaid> raid, std::string& err);
+
+// Copy AES-XTS FVEK onto a recover reader. Skip VSS — Windows already presents plaintext.
+void applyBoundFvek(DiskReader& dest, const DiskReader& src, const FileRecord& rec);
 
 struct BatchRecoverySummary {
     int succeeded = 0;

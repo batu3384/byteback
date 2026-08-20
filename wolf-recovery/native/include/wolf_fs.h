@@ -28,7 +28,8 @@ public:
     bool scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr) override;
 
     bool scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
-                uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes = 0);
+                uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes = 0,
+                bool carveOrphanMft = true);
 };
 
 class FATParser : public FileSystemParser {

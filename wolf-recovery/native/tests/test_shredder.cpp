@@ -19,3 +19,12 @@ TEST(Shredder, RefusesDevicePath) {
     DataShredder s;
     EXPECT_FALSE(s.shred_free_space("\\\\.\\PhysicalDrive0", 4096));
 }
+
+TEST(Shredder, WipeSerialMustMatch) {
+    EXPECT_FALSE(DataShredder::wipeSerialMatches("", "ABC"));
+    EXPECT_FALSE(DataShredder::wipeSerialMatches("ABC", ""));
+    EXPECT_FALSE(DataShredder::wipeSerialMatches("AAA", "BBB"));
+    EXPECT_TRUE(DataShredder::wipeSerialMatches(" ab c ", "ABC"));
+    DataShredder s;
+    EXPECT_FALSE(s.shred_physical_drive(0, "NOPE", "REAL", 1024));
+}

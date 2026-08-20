@@ -1,5 +1,7 @@
 #include "search/content_search.h"
 #include "fs/virtual_raid.h"
+#include "fs/vss_scanner.h"
+#include "wolf_recovery.h"
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -148,16 +150,32 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
         auto files = store.getFiles(scanId, static_cast<int>(off), page);
         for (auto& f : files) {
             if (isRunning && !(*isRunning)) break;
+            if (isDiscoveryOnlySource(f.source)) {
+                ++processed;
+                if (onProgress) onProgress(static_cast<uint64_t>(processed), static_cast<uint64_t>(total));
+                continue;
+            }
+            DiskReader* active = &reader;
+            DiskReader vssReader;
+            const std::string vssPath = vssDevicePathFromRecord(f);
+            if (!vssPath.empty()) {
+                if (!vssReader.openVolumePath(vssPath)) {
+                    ++processed;
+                    if (onProgress) onProgress(static_cast<uint64_t>(processed), static_cast<uint64_t>(total));
+                    continue;
+                }
+                active = &vssReader;
+            }
             const uint64_t chunk = opts.chunkBytes > 0 ? opts.chunkBytes : (256ull * 1024ull);
             uint64_t fileBytes = f.sizeBytes;
             if (fileBytes == 0 && !f.residentData.empty()) fileBytes = f.residentData.size();
             if (fileBytes == 0) {
-                uint32_t ss = reader.getSectorSize();
+                uint32_t ss = active->getSectorSize();
                 if (ss == 0) ss = 512;
                 for (const auto& run : f.runs) fileBytes += run.sectorCount * ss;
             }
             if (fileBytes == 0 && f.endSector > f.startSector) {
-                uint32_t ss = reader.getSectorSize();
+                uint32_t ss = active->getSectorSize();
                 if (ss == 0) ss = 512;
                 fileBytes = (f.endSector - f.startSector) * ss;
             }
@@ -167,7 +185,7 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                 for (uint64_t o = 0; o < fileBytes; o += chunk) {
                     if (isRunning && !(*isRunning)) break;
                     std::vector<uint8_t> sample;
-                    if (!readFileRange(reader, f, o, chunk, sample)) break;
+                    if (!readFileRange(*active, f, o, chunk, sample)) break;
                     std::string t = sanitizeContentSample(sample, chunk);
                     if (!t.empty()) chunks.push_back(std::move(t));
                 }
