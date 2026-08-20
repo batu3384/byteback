@@ -1,6 +1,7 @@
 // bridge_drives.cpp — drive enumeration, partition tables, raw sector reads
 // and SMART/health queries. See bridge_common.h for the shared context.
 #include "bridge_common.h"
+#include "io/volume_mapper_win.h"
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -167,5 +168,51 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
         obj.Set("seekPenaltyKnown", Napi::Boolean::New(env, status.seekPenaltyKnown));
     }
     return obj;
+    NAPI_CATCH
+}
+
+Napi::Value ResolveVolume(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsString()) return env.Null();
+
+    std::string letter = info[0].As<Napi::String>().Utf8Value();
+    auto norm = wolf::normalizeDriveLetterUtf8(letter);
+    if (!norm) return env.Null();
+
+#ifndef _WIN32
+    return env.Null();
+#else
+    auto resolved = wolf::resolveDriveLetter(*norm);
+    if (!resolved) return env.Null();
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("driveIndex", Napi::Number::New(env, resolved->driveIndex));
+    obj.Set("startSector", Napi::Number::New(env, static_cast<double>(resolved->partitionStartSector)));
+    obj.Set("sizeSectors", Napi::Number::New(env, static_cast<double>(resolved->partitionSizeSectors)));
+    obj.Set("fsType", Napi::String::New(env, wolf::volumeFsKindLabel(resolved->fsKind)));
+    return obj;
+#endif
+    NAPI_CATCH
+}
+
+Napi::Value ListVolumeLetters(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+#ifndef _WIN32
+    return Napi::Array::New(env, 0);
+#else
+    auto letters = wolf::listLogicalDriveLetters();
+    Napi::Array result = Napi::Array::New(env, letters.size());
+    for (size_t i = 0; i < letters.size(); ++i) {
+        char narrow[4] = {
+            static_cast<char>(letters[i][0]),
+            ':',
+            '\0',
+        };
+        result[i] = Napi::String::New(env, narrow);
+    }
+    return result;
+#endif
     NAPI_CATCH
 }

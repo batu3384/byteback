@@ -38,7 +38,10 @@ set(SOURCES
   src/bridge/bridge_wipe.cpp
   src/bridge/bridge_ops.cpp
   src/wolf_engine.cpp
-  src/io/disk_reader_win.cpp
+  src/io/byte_source.cpp
+  src/imager/ewf_writer.cpp
+  src/imager/ewf_reader.cpp
+  src/carver/content_classifier.cpp
   src/db/metadata_store.cpp
   src/db/metadata_store_case.cpp
   src/db/metadata_store_content.cpp
@@ -49,6 +52,8 @@ set(SOURCES
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
     src/fs/apfs_container.cpp
+    src/fs/refs_parser.cpp
+    src/fs/refs_integrity.cpp
     src/fs/hfs_catalog.cpp
     src/fs/ntfs_logfile.cpp
     src/fs/vss_scanner.cpp
@@ -57,29 +62,42 @@ set(SOURCES
     src/fs/bitlocker_unlock.cpp
     src/search/content_search.cpp
     src/fs/partition_scanner.cpp
+    src/fs/unallocated_map.cpp
+    src/fs/ntfs_path_rebuild.cpp
     src/fs/virtual_raid.cpp
     src/fs/raid6_math.cpp
     src/fs/fat_chain.cpp
     src/fs/raid_layout.cpp
     src/imager/disk_imager.cpp
-    src/imager/ewf_writer.cpp
     src/crypto/md5.cpp
     src/crypto/aes_xts.cpp
     src/crypto/aes_ccm.cpp
     src/crypto/sha256.cpp
     src/carver/signature_engine.cpp
     src/carver/bgc.cpp
+    src/carver/parsers/zip_family.cpp
+    src/carver/parsers/sqlite_carver.cpp
+    src/carver/parsers/mp4_carver.cpp
     src/math/entropy.cpp
     src/smart/smart_monitor.cpp
     src/memory/memory_pool.cpp
     src/scan_coordinator.cpp
+    src/scan/dedup_index.cpp
     src/forensic/audit_logger.cpp
     src/forensic/nsrl_lookup.cpp
   src/security/data_shredder.cpp
   src/recovery/recovery_engine.cpp
   src/recovery/path_util.cpp
+  src/recovery/validation.cpp
+  src/recovery/preview_reader.cpp
   ${SQLITE_SOURCES}
 )
+
+if(WIN32)
+  list(APPEND SOURCES src/io/disk_reader_win.cpp src/io/volume_mapper_win.cpp)
+else()
+  list(APPEND SOURCES src/io/disk_reader_posix.cpp)
+endif()
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -92,7 +110,7 @@ target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 
 # Windows-specific libraries
 if(WIN32)
-  target_link_libraries(${PROJECT_NAME} setupapi)
+  target_link_libraries(${PROJECT_NAME} setupapi winhttp)
 endif()
 
 # ----------------------------------------------------------------------------
@@ -125,8 +143,11 @@ if(WOLF_BUILD_TESTS)
     tests/test_usn.cpp
     tests/test_validators.cpp
     tests/test_bgc.cpp
+    tests/test_preview_reader.cpp
     tests/test_raid6_math.cpp
     tests/test_ewf.cpp
+    tests/test_ewf_reader.cpp
+    tests/test_content_classifier.cpp
     tests/test_audit_sha256.cpp
     tests/test_fat_chain.cpp
     tests/test_raid_layout.cpp
@@ -145,13 +166,23 @@ if(WOLF_BUILD_TESTS)
     tests/test_raid_scan.cpp
     tests/test_content_search.cpp
     tests/test_apple_fs.cpp
+    tests/test_refs_parser.cpp
+    tests/test_refs_integrity.cpp
     tests/test_scan_coordinator.cpp
+    tests/test_ntfs_path_rebuild.cpp
+    tests/test_volume_mapper.cpp
     tests/test_nsrl.cpp
     tests/test_case_info.cpp
     tests/test_fuzz_runs_codec.cpp
     tests/test_virtual_raid_io.cpp
     tests/test_signature_carve.cpp
+    tests/test_signature_coverage.cpp
+    tests/test_structural_parsers.cpp
+    tests/test_carve_parallel.cpp
+    tests/test_dedup_index.cpp
     tests/test_e2e_scan_recover.cpp
+    tests/test_recovery_golden.cpp
+    tests/bench_scan.cpp
     tests/test_ata_health.cpp
     tests/test_crypto_fve.cpp
     tests/test_shredder.cpp
@@ -172,18 +203,27 @@ if(WOLF_BUILD_TESTS)
     src/crypto/aes_ccm.cpp
     src/crypto/sha256.cpp
     src/imager/ewf_writer.cpp
+    src/imager/ewf_reader.cpp
+    src/io/byte_source.cpp
+    src/carver/content_classifier.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp
+    src/recovery/validation.cpp
+    src/recovery/preview_reader.cpp
     src/recovery/recovery_engine.cpp
     src/db/metadata_store.cpp
     src/db/metadata_store_case.cpp
     src/db/metadata_store_content.cpp
     src/fs/partition_scanner.cpp
+    src/fs/unallocated_map.cpp
+    src/fs/ntfs_path_rebuild.cpp
     src/fs/fat_parser.cpp
     src/fs/ext4_parser.cpp
     src/fs/hfs_parser.cpp
     src/fs/apfs_parser.cpp
     src/fs/apfs_container.cpp
+    src/fs/refs_parser.cpp
+    src/fs/refs_integrity.cpp
     src/fs/hfs_catalog.cpp
     src/fs/ntfs_logfile.cpp
     src/fs/vss_scanner.cpp
@@ -194,8 +234,13 @@ if(WOLF_BUILD_TESTS)
     src/fs/ntfs_parser.cpp
     src/fs/virtual_raid.cpp
     src/scan_coordinator.cpp
+    src/scan/dedup_index.cpp
     src/carver/signature_engine.cpp
+    src/carver/parsers/zip_family.cpp
+    src/carver/parsers/sqlite_carver.cpp
+    src/carver/parsers/mp4_carver.cpp
     src/io/disk_reader_win.cpp
+    src/io/volume_mapper_win.cpp
     src/memory/memory_pool.cpp
     src/security/data_shredder.cpp
     third_party/sqlite3.c
@@ -210,7 +255,7 @@ if(WOLF_BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/tests
   )
   if(WIN32)
-    target_link_libraries(wolf_tests PRIVATE setupapi)
+    target_link_libraries(wolf_tests PRIVATE setupapi winhttp)
   endif()
   include(GoogleTest)
   gtest_discover_tests(wolf_tests)

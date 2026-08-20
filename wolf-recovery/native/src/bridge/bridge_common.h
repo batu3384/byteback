@@ -14,6 +14,7 @@
 #include "wolf_recovery.h"
 #include "fs/virtual_raid.h"
 #include "fs/partition_scanner.h"
+#include "scan/dedup_index.h"
 #include "forensic/audit_logger.h"
 #include "forensic/nsrl_lookup.h"
 #include <cstdlib>
@@ -45,6 +46,7 @@ struct ScanContext {
     Napi::ThreadSafeFunction tsfn;
     int64_t scanId = -1;
     std::vector<wolf::FileRecord> fileBuffer;
+    wolf::DedupIndex dedupIndex;
     std::mutex bufferMutex;
     // CA-007: bad-sector sample list mirrored by the coordinator before each
     // progress tick (written and read on the same worker thread).
@@ -89,6 +91,8 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info);
 Napi::Value ListPartitions(const Napi::CallbackInfo& info);
 Napi::Value ReadSectors(const Napi::CallbackInfo& info);
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info);
+Napi::Value ResolveVolume(const Napi::CallbackInfo& info);
+Napi::Value ListVolumeLetters(const Napi::CallbackInfo& info);
 
 // bridge_scan.cpp — scans / results / timeline / audit log / DB
 Napi::Value InitDatabase(const Napi::CallbackInfo& info);
@@ -114,6 +118,7 @@ Napi::Value StopImaging(const Napi::CallbackInfo& info);
 Napi::Value StartWipe(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info);
+Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info);
 Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info);
 template<typename Callback>
 void tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
@@ -125,6 +130,7 @@ Napi::Value FailRaidDisk(const Napi::CallbackInfo& info);
 Napi::Value GetRaidState(const Napi::CallbackInfo& info);
 Napi::Value RecoverFile(const Napi::CallbackInfo& info);
 Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info);
+Napi::Value ReadFilePreview(const Napi::CallbackInfo& info);
 
 // bridge_ops.cpp — case metadata + NSRL
 Napi::Value GetCaseInfo(const Napi::CallbackInfo& info);
