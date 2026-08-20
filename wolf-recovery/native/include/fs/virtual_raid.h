@@ -50,6 +50,7 @@ public:
 
     void fail_disk(size_t disk_index);
     void reconstruct_disk(size_t disk_index);
+    bool is_disk_active(size_t disk_index) const;
 
     size_t num_disks() const { return num_disks_; }
     RaidLevel level() const { return level_; }

@@ -16,12 +16,12 @@ inline bool hfsOffsetTableFits(uint32_t blockSize, uint16_t numRecords) {
 }
 
 // Walk an HFS+ catalog B-tree and emit FileRecord entries for files/folders.
-// ponytail: max 25k catalog records; cutoff emits source=hfs_limit sentinel + audit.
-// Extent overflow btree for 9+ fork extents.
+// maxFiles==0 walks until the tree ends or isRunning is false. maxFiles>0 is a
+// test/emergency brake that emits source=hfs_limit.
 bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
                         uint64_t partitionSizeBytes,
                         FileSystemParser::FileRecordCallback callback,
                         std::atomic<bool>* isRunning,
-                        int maxFiles = 25000);
+                        int maxFiles = 0);
 
 } // namespace wolf

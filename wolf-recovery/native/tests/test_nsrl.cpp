@@ -2,8 +2,17 @@
 
 #include <gtest/gtest.h>
 #include <fstream>
+#include <string>
 
 using forensic::NsrlLookup;
+
+namespace {
+void cleanupNsrl(const char* path) {
+    std::remove(path);
+    const std::string side = std::string(path) + ".wolf-nsrl.sqlite";
+    std::remove(side.c_str());
+}
+} // namespace
 
 TEST(NsrlLookup, LoadsBareHexLines) {
     const char* path = "test_nsrl_subset.txt";
@@ -20,7 +29,7 @@ TEST(NsrlLookup, LoadsBareHexLines) {
     EXPECT_TRUE(nsrl.contains("d41d8cd98f00b204e9800998ecf8427e"));
     EXPECT_TRUE(nsrl.contains("0cc175b9c0f1b6a831c399e269772661"));
     EXPECT_FALSE(nsrl.contains("900150983cd24fb0d6963f7d28e17f72"));
-    std::remove(path);
+    cleanupNsrl(path);
 }
 
 TEST(NsrlLookup, AcceptsCsvFirstColumn) {
@@ -34,7 +43,7 @@ TEST(NsrlLookup, AcceptsCsvFirstColumn) {
     ASSERT_TRUE(nsrl.loadFromFile(path));
     EXPECT_EQ(nsrl.size(), 1u);
     EXPECT_TRUE(nsrl.contains("900150983cd24fb0d6963f7d28e17f72"));
-    std::remove(path);
+    cleanupNsrl(path);
 }
 
 TEST(NsrlLookup, RejectsInvalidHashes) {
@@ -54,5 +63,5 @@ TEST(NsrlLookup, OfficialRdsUsesMd5ColumnNotSha1) {
     ASSERT_TRUE(nsrl.loadFromFile(path));
     EXPECT_EQ(nsrl.size(), 1u);
     EXPECT_TRUE(nsrl.contains("d41d8cd98f00b204e9800998ecf8427e"));
-    std::remove(path);
+    cleanupNsrl(path);
 }

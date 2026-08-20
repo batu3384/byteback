@@ -3,8 +3,11 @@
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace wolf;
@@ -68,6 +71,48 @@ TEST(ScanCoordinator, StartScanTwiceJoinsPreviousThread) {
     coord.startScan("also-bad", "quick", onFile, onProg);
     coord.stopScan();
     SUCCEED();
+}
+
+TEST(ScanCoordinator, RequestStopReturnsWhileOnFinishedBlocked) {
+    std::mutex gate;
+    gate.lock();
+    ScanCoordinator coord;
+    std::atomic<bool> inFinish{false};
+    auto onFinished = [&](int) {
+        inFinish = true;
+        std::lock_guard<std::mutex> hold(gate);
+    };
+    coord.startScan("not-a-number", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, nullptr, onFinished);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!inFinish.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(inFinish.load());
+
+    const auto t0 = std::chrono::steady_clock::now();
+    coord.requestStop();
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(200));
+
+    gate.unlock();
+}
+
+TEST(ScanCoordinator, StopScanFromFinishedCallbackDoesNotDeadlock) {
+    ScanCoordinator coord;
+    std::atomic<bool> finished{false};
+    auto onFinished = [&](int) {
+        coord.stopScan();
+        finished = true;
+    };
+    coord.startScan("not-a-number", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, nullptr, onFinished);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(finished.load());
 }
 
 TEST(ScanCoordinator, DeepScanCarvesPng) {

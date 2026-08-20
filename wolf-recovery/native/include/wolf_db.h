@@ -23,6 +23,7 @@ struct FileRecord {
         uint64_t sectorCount;
     };
     std::vector<DataRun> runs;
+    std::vector<uint8_t> residentData; // NTFS resident $DATA bytes (no runs)
     bool compressed = false; // NTFS: $DATA has a compression unit (LZNT1)
     int status;            // 0=deleted/unallocated, 1=in-use/allocated, 2=encrypted/other
     int confidence;        // 0-100
@@ -108,8 +109,9 @@ public:
     int64_t searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
                              const std::string& categoryFilter = "");
 
-    // Content FTS — first 256 KB text sample per file, indexed during content search.
+    // Content FTS — full-file windows (chunked), indexed during content search.
     bool upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text);
+    bool replaceContentChunks(int64_t fileId, const std::vector<std::string>& chunks);
     std::string getContentSample(int64_t fileId);
     int64_t getContentIndexCount(int64_t scanId);
     bool isContentIndexComplete(int64_t scanId);

@@ -44,6 +44,17 @@ struct SmartStatus {
     bool seekPenaltyKnown = false;
 };
 
+// ATA ACS / Backblaze triage: pre-fail counters 0x05 (reallocated) and
+// 0xC5 (pending). Any pending+realloc together is Bad; either alone is
+// Warning. No Weibull, no uncalibrated eta/beta.
+inline const char* ataHealthFromDefects(int reallocatedSectors, int pendingSectors) {
+    if (reallocatedSectors < 0) reallocatedSectors = 0;
+    if (pendingSectors < 0) pendingSectors = 0;
+    if (reallocatedSectors > 0 && pendingSectors > 0) return "Bad";
+    if (reallocatedSectors > 0 || pendingSectors > 0) return "Warning";
+    return "Good";
+}
+
 class SmartMonitor {
 public:
     SmartMonitor();

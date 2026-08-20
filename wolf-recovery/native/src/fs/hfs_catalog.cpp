@@ -102,7 +102,7 @@ struct CatalogCtx {
     HfsFork extentsFileFork;
     bool hasExtentsFile = false;
     int fileCount = 0;
-    int maxFiles = 25000;
+    int maxFiles = 0;
     bool emittedLimit = false;
 };
 
@@ -206,7 +206,7 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
     if (valLen < 2) return true;
     uint16_t recType = be16(val);
     if (recType != 1 && recType != 2) return true;
-    if (recType == 2 && ctx.fileCount >= ctx.maxFiles) {
+    if (ctx.maxFiles > 0 && recType == 2 && ctx.fileCount >= ctx.maxFiles) {
         if (!ctx.emittedLimit && ctx.callback) {
             FileRecord sentinel{};
             sentinel.id = -1;
@@ -342,7 +342,7 @@ bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
     ctx.sectorSize = sectorSize;
     ctx.callback = &callback;
     ctx.isRunning = isRunning;
-    ctx.maxFiles = maxFiles > 0 ? maxFiles : 25000;
+    ctx.maxFiles = maxFiles;
     ctx.paths[2] = "/";
 
     HfsFork extentsFork;

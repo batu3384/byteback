@@ -1,5 +1,6 @@
 #include "fs/vss_scanner.h"
 #include "fs/partition_scanner.h"
+#include "fs/volume_identity.h"
 #include "wolf_fs.h"
 #include <ctime>
 #include <cstring>
@@ -145,6 +146,59 @@ void scanVssSnapshots(FileSystemParser::FileRecordCallback onFileFound,
         scanVssVolumeFilesystem(vssReader, snap, onFileFound, onProgress, isRunning);
     }
 #else
+    (void)onFileFound;
+    (void)onProgress;
+    (void)isRunning;
+#endif
+}
+
+void scanVssSnapshotsBound(DiskReader& evidence,
+                           FileSystemParser::FileRecordCallback onFileFound,
+                           VssScanProgressFn onProgress,
+                           std::atomic<bool>* isRunning) {
+#ifdef _WIN32
+    auto serials = collectVolumeSerials(evidence);
+    if (serials.empty()) return;
+
+    int matched = 0;
+    for (const auto& snap : enumerateVssSnapshots()) {
+        if (isRunning && !(*isRunning)) break;
+        DiskReader vssReader;
+        if (!vssReader.openVolumePath(snap.devicePath)) continue;
+        uint32_t ss = vssReader.getSectorSize();
+        if (ss == 0) ss = 512;
+        std::vector<uint8_t> boot(ss);
+        if (!vssReader.readSectors(0, ss, boot.data()).success) continue;
+        uint64_t ser = parseVolumeSerial(boot.data(), boot.size());
+        if (ser == 0 || serials.count(ser) == 0) continue;
+
+        FileRecord meta;
+        meta.id = -1;
+        meta.name = "VSS_Snapshot_" + std::to_string(snap.index);
+        meta.path = snap.devicePath;
+        meta.sizeBytes = snap.sizeBytes;
+        meta.status = 1;
+        meta.confidence = 95;
+        meta.category = "System";
+        meta.source = "vss_snapshot";
+        meta.createdAt = snap.createdAt > 0 ? snap.createdAt : snap.discoveredAt;
+        onFileFound(meta);
+        scanVssVolumeFilesystem(vssReader, snap, onFileFound, onProgress, isRunning);
+        ++matched;
+    }
+    if (matched > 0) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "[VSS] " + std::to_string(matched) + " snapshot(s) bound by volume serial";
+        fr.path = "/";
+        fr.status = 1;
+        fr.confidence = 100;
+        fr.category = "Metadata";
+        fr.source = "vss_bind";
+        onFileFound(fr);
+    }
+#else
+    (void)evidence;
     (void)onFileFound;
     (void)onProgress;
     (void)isRunning;

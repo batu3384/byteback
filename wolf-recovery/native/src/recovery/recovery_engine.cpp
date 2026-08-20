@@ -22,7 +22,8 @@ bool destReady(RecoveryResult& result, const std::string& destDir) {
 
 bool isDiscoveryOnly(const std::string& source) {
     return source == "apfs_volume" || source == "apfs_container" ||
-           source == "bitlocker_detect" || source == "vss_unbound" ||
+           source == "bitlocker_detect" || source == "bitlocker_fve" ||
+           source == "vss_unbound" || source == "vss_bind" ||
            source == "hfs_limit";
 }
 
@@ -40,6 +41,20 @@ bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const s
 RecoveryEngine::RecoveryEngine() {}
 RecoveryEngine::~RecoveryEngine() {}
 
+bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
+                       FileRecord& out, std::string& err) {
+    if (scanId <= 0 || fileId <= 0) {
+        err = "scan and file id required";
+        return false;
+    }
+    out = store.getFileById(fileId, scanId);
+    if (out.id <= 0) {
+        err = "file id not in scan";
+        return false;
+    }
+    return true;
+}
+
 RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord& record,
                                             const std::string& destDir, ProgressCallback onProgress,
                                             std::atomic<bool>* isRunning) {
@@ -56,6 +71,28 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
 
     if (isDiscoveryOnly(record.source)) {
         result.error = "discovery-only record; no recoverable data";
+        return result;
+    }
+
+    if (!record.residentData.empty()) {
+        std::filesystem::create_directories(destDir);
+        if (!applyUniquePath(result, destDir, record.name)) return result;
+        std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!outFile.is_open()) {
+            result.error = "Could not open destination file: " + result.destPath;
+            return result;
+        }
+        uint64_t n = record.residentData.size();
+        if (record.sizeBytes > 0) n = std::min(n, record.sizeBytes);
+        outFile.write(reinterpret_cast<const char*>(record.residentData.data()),
+                      static_cast<std::streamsize>(n));
+        crypto::Md5 md5ctx;
+        md5ctx.update(record.residentData.data(), static_cast<size_t>(n));
+        outFile.close();
+        result.success = true;
+        result.bytesRecovered = n;
+        result.md5Hash = md5ctx.finalHex();
+        if (onProgress) onProgress(n, n);
         return result;
     }
 

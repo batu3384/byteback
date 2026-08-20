@@ -23,11 +23,18 @@ void DiskImager::startImaging(int driveIndex, const std::string& destPath, Progr
     imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts);
 }
 
-void DiskImager::stopImaging() {
+void DiskImager::requestStop() {
     isRunning_ = false;
-    if (imagingThread_.joinable()) {
-        imagingThread_.join();
+}
+
+void DiskImager::stopImaging() {
+    requestStop();
+    if (!imagingThread_.joinable()) return;
+    if (imagingThread_.get_id() == std::this_thread::get_id()) {
+        imagingThread_.detach();
+        return;
     }
+    imagingThread_.join();
 }
 
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,

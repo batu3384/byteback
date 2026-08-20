@@ -3,6 +3,7 @@
 #include "wolf_io.h"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <vector>
 
@@ -213,6 +214,67 @@ TEST(HfsCatalog, EmitsSentinelWhenHittingMaxFiles) {
     EXPECT_TRUE(sawLimit);
     EXPECT_EQ(std::count_if(hits.begin(), hits.end(),
                             [](const FileRecord& r) { return r.source == "hfs_catalog"; }), 1);
+}
+
+TEST(HfsCatalog, UnlimitedDefaultEmitsBothFiles) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(64 * bs, 0);
+    writeHfsVolumeHeader(img, 4, 5, bs);
+    writeCatalogTwoFileLeaf(img, 4, bs);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    scanHfsPlusCatalog(reader, 0, 0, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) hits.push_back(fr);
+    }, &running);
+
+    EXPECT_EQ(std::count_if(hits.begin(), hits.end(),
+                            [](const FileRecord& r) { return r.source == "hfs_catalog"; }), 2);
+    EXPECT_FALSE(std::any_of(hits.begin(), hits.end(),
+                             [](const FileRecord& r) { return r.source == "hfs_limit"; }));
+}
+
+void writeLe32(uint8_t* p, uint32_t v) {
+    p[0] = static_cast<uint8_t>(v);
+    p[1] = static_cast<uint8_t>(v >> 8);
+    p[2] = static_cast<uint8_t>(v >> 16);
+    p[3] = static_cast<uint8_t>(v >> 24);
+}
+
+void writeLe64At(uint8_t* p, uint64_t v) {
+    for (int i = 0; i < 8; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
+}
+
+TEST(ApfsContainer, CatalogEmitsHashedDirRec) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(8 * bs, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);
+    writeLe64At(img.data() + 40, 8);
+
+    uint8_t* node = img.data() + 2 * bs;
+    writeLe32(node + 24, 2);
+    node[32] = 2;
+    writeLe32(node + 36, 1);
+    const uint64_t hdr = (9ull << 48) | 7ull;
+    writeLe64At(node + 56, hdr);
+    const char* name = "note.txt";
+    const uint32_t nlen = 9;
+    writeLe32(node + 64, nlen);
+    std::memcpy(node + 68, name, 8);
+    node[68 + 8] = 0;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawFile = false;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_file" && fr.name == "note.txt") sawFile = true;
+    }, &running);
+    EXPECT_TRUE(sawFile);
 }
 
 TEST(HfsCatalog, OffsetTableFitsRejectsUnderflow) {

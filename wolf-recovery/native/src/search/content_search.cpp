@@ -2,8 +2,10 @@
 #include "fs/virtual_raid.h"
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace wolf {
 
@@ -19,48 +21,68 @@ bool icontains(const std::string& hay, const std::string& needle) {
     return it != hay.end();
 }
 
-bool readFileSample(DiskReader& reader, const FileRecord& rec, uint64_t maxBytes,
+bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, uint64_t maxBytes,
                     std::vector<uint8_t>& buf) {
+    buf.clear();
+    if (maxBytes == 0) return false;
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
-    uint64_t toRead = std::min(maxBytes, rec.sizeBytes > 0 ? rec.sizeBytes : maxBytes);
-    buf.clear();
-    buf.resize(static_cast<size_t>(toRead), 0);
+
+    if (!rec.residentData.empty()) {
+        if (byteOff >= rec.residentData.size()) return false;
+        uint64_t take = std::min(maxBytes, rec.residentData.size() - byteOff);
+        buf.assign(rec.residentData.begin() + static_cast<std::ptrdiff_t>(byteOff),
+                   rec.residentData.begin() + static_cast<std::ptrdiff_t>(byteOff + take));
+        return true;
+    }
+
+    auto copyFromRuns = [&](uint64_t wantOff, uint64_t wantLen) -> bool {
+        uint64_t logical = 0;
+        uint64_t filled = 0;
+        buf.assign(static_cast<size_t>(wantLen), 0);
+        for (const auto& run : rec.runs) {
+            if (filled >= wantLen) break;
+            uint64_t runBytes = run.sectorCount * sectorSize;
+            if (logical + runBytes <= wantOff) {
+                logical += runBytes;
+                continue;
+            }
+            uint64_t skipInRun = wantOff > logical ? wantOff - logical : 0;
+            uint64_t avail = runBytes - skipInRun;
+            uint64_t take = std::min(avail, wantLen - filled);
+            uint64_t readOff = run.startSector * sectorSize + skipInRun;
+            uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
+            std::vector<uint8_t> tmp(readBytes, 0);
+            auto res = reader.readSectors(readOff, readBytes, tmp.data());
+            if (res.success) {
+                std::memcpy(buf.data() + filled, tmp.data(), static_cast<size_t>(take));
+            }
+            filled += take;
+            logical += runBytes;
+        }
+        buf.resize(static_cast<size_t>(filled));
+        return filled > 0;
+    };
 
     if (!rec.runs.empty()) {
-        uint64_t filled = 0;
-        uint64_t allocSize = 0;
-        for (const auto& run : rec.runs) {
-            if (filled >= toRead) break;
-            uint64_t runBytes = run.sectorCount * sectorSize;
-            uint64_t take = std::min(runBytes, toRead - filled);
-            allocSize += ((take + sectorSize - 1) / sectorSize) * sectorSize;
-            filled += take;
+        uint64_t total = rec.sizeBytes;
+        if (total == 0) {
+            for (const auto& run : rec.runs) total += run.sectorCount * sectorSize;
         }
-        buf.resize(static_cast<size_t>(allocSize), 0);
-        filled = 0;
-        for (const auto& run : rec.runs) {
-            if (filled >= toRead) break;
-            uint64_t runBytes = run.sectorCount * sectorSize;
-            uint64_t take = std::min(runBytes, toRead - filled);
-            uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
-            auto res = reader.readSectors(run.startSector * sectorSize, readBytes, buf.data() + filled);
-            if (!res.success) std::memset(buf.data() + filled, 0, static_cast<size_t>(take));
-            filled += take;
-        }
-        buf.resize(static_cast<size_t>(toRead));
-        return toRead > 0;
+        if (byteOff >= total) return false;
+        uint64_t take = std::min(maxBytes, total - byteOff);
+        return copyFromRuns(byteOff, take);
     }
 
     if (rec.endSector > rec.startSector) {
-        uint32_t sectorSize = reader.getSectorSize();
-        if (sectorSize == 0) sectorSize = 512;
         uint64_t span = (rec.endSector - rec.startSector) * sectorSize;
-        toRead = std::min(toRead, span);
-        uint32_t readBytes = static_cast<uint32_t>(((toRead + sectorSize - 1) / sectorSize) * sectorSize);
-        buf.resize(readBytes, 0);
-        auto res = reader.readSectors(rec.startSector * sectorSize, readBytes, buf.data());
-        if (res.success) buf.resize(static_cast<size_t>(toRead));
+        if (byteOff >= span) return false;
+        uint64_t take = std::min(maxBytes, span - byteOff);
+        uint64_t readOff = rec.startSector * sectorSize + byteOff;
+        uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
+        buf.assign(readBytes, 0);
+        auto res = reader.readSectors(readOff, readBytes, buf.data());
+        if (res.success) buf.resize(static_cast<size_t>(take));
         return res.success;
     }
     return false;
@@ -126,22 +148,37 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
         auto files = store.getFiles(scanId, static_cast<int>(off), page);
         for (auto& f : files) {
             if (isRunning && !(*isRunning)) break;
-            if (f.sizeBytes > opts.maxFileSize) {
-                ++processed;
-                if (onProgress) onProgress(static_cast<uint64_t>(processed), static_cast<uint64_t>(total));
-                continue;
+            const uint64_t chunk = opts.chunkBytes > 0 ? opts.chunkBytes : (256ull * 1024ull);
+            uint64_t fileBytes = f.sizeBytes;
+            if (fileBytes == 0 && !f.residentData.empty()) fileBytes = f.residentData.size();
+            if (fileBytes == 0) {
+                uint32_t ss = reader.getSectorSize();
+                if (ss == 0) ss = 512;
+                for (const auto& run : f.runs) fileBytes += run.sectorCount * ss;
+            }
+            if (fileBytes == 0 && f.endSector > f.startSector) {
+                uint32_t ss = reader.getSectorSize();
+                if (ss == 0) ss = 512;
+                fileBytes = (f.endSector - f.startSector) * ss;
             }
 
-            std::string text = store.getContentSample(f.id);
-            if (text.empty()) {
-                std::vector<uint8_t> sample;
-                if (readFileSample(reader, f, opts.maxBytesPerFile, sample)) {
-                    text = sanitizeContentSample(sample, opts.maxBytesPerFile);
-                    if (!text.empty()) store.upsertContentSample(scanId, f.id, text);
+            std::vector<std::string> chunks;
+            if (fileBytes > 0) {
+                for (uint64_t o = 0; o < fileBytes; o += chunk) {
+                    if (isRunning && !(*isRunning)) break;
+                    std::vector<uint8_t> sample;
+                    if (!readFileRange(reader, f, o, chunk, sample)) break;
+                    std::string t = sanitizeContentSample(sample, chunk);
+                    if (!t.empty()) chunks.push_back(std::move(t));
                 }
             }
+            if (!chunks.empty()) store.replaceContentChunks(f.id, chunks);
 
-            if (!text.empty() && icontains(text, query)) {
+            bool hit = false;
+            for (const auto& t : chunks) {
+                if (icontains(t, query)) { hit = true; break; }
+            }
+            if (hit) {
                 tagContentMatch(f);
                 onMatch(f);
             }
@@ -185,9 +222,18 @@ std::vector<FileRecord> searchFileContent(MetadataStore& store, DiskReader& read
     return out;
 }
 
-void ContentSearchCoordinator::stopSearch() {
+void ContentSearchCoordinator::requestStop() {
     running_ = false;
-    if (worker_.joinable()) worker_.join();
+}
+
+void ContentSearchCoordinator::stopSearch() {
+    requestStop();
+    if (!worker_.joinable()) return;
+    if (worker_.get_id() == std::this_thread::get_id()) {
+        worker_.detach();
+        return;
+    }
+    worker_.join();
 }
 
 void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,

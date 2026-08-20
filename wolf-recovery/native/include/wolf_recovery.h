@@ -18,6 +18,13 @@ struct RecoveryResult {
     bool zeroFilled = false; // at least one read was padded/failed
 };
 
+inline bool countsAsRecovered(const RecoveryResult& r) {
+    return r.success && !r.zeroFilled;
+}
+
+bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
+                       FileRecord& out, std::string& err);
+
 struct BatchRecoverySummary {
     int succeeded = 0;
     int failed = 0;

@@ -56,6 +56,7 @@ public:
                    std::shared_ptr<VirtualRaid> raid = nullptr,
                    FinishedCallback onFinished = nullptr);
     
+    void requestStop();
     void stopScan();
 
 private:

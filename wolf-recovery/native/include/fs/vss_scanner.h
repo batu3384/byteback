@@ -35,4 +35,10 @@ void scanVssSnapshots(FileSystemParser::FileRecordCallback onFileFound,
                       VssScanProgressFn onProgress,
                       std::atomic<bool>* isRunning);
 
+// Bind snapshots whose boot serial matches the evidence disk (host mix-up closed).
+void scanVssSnapshotsBound(DiskReader& evidence,
+                           FileSystemParser::FileRecordCallback onFileFound,
+                           VssScanProgressFn onProgress,
+                           std::atomic<bool>* isRunning);
+
 } // namespace wolf

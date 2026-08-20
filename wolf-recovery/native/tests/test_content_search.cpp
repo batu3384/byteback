@@ -95,3 +95,32 @@ TEST_F(ContentSearchTest, SearchFilesCategoryFilter) {
     ASSERT_EQ(images.size(), 1u);
     EXPECT_EQ(images[0].category, "Image");
 }
+
+TEST_F(ContentSearchTest, IndexesPastFirst256KiB) {
+    const size_t ss = 512;
+    const size_t sectors = 800;
+    std::vector<uint8_t> img(ss * sectors, 0);
+    const char payload[] = "SECRET_TAIL_XYZ";
+    std::memcpy(img.data() + 300 * 1024, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "big.bin";
+    r.sizeBytes = 400 * 1024;
+    r.startSector = 0;
+    r.endSector = sectors;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "SECRET_TAIL", {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].name, "big.bin");
+}

@@ -123,6 +123,10 @@ void VirtualRaid::fail_disk(size_t disk_index) {
     disk_active_[disk_index] = false;
 }
 
+bool VirtualRaid::is_disk_active(size_t disk_index) const {
+    return disk_index < disk_active_.size() && disk_active_[disk_index];
+}
+
 void VirtualRaid::reconstruct_disk(size_t disk_index) {
     if (disk_index >= num_disks_) throw std::out_of_range("Invalid disk index");
     if (disk_active_[disk_index]) return;
@@ -145,13 +149,11 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
         if (disk_offset + (block_size_ - offset_in_block) > disk_size_) {
             throw std::out_of_range("Read exceeds RAID capacity");
         }
-        if (!disk_active_[disk_idx]) {
-            throw std::runtime_error("Reading from a failed disk in RAID 0 (no redundancy)");
-        }
 
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
-        if (!readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx])) {
-            throw std::runtime_error("RAID 0 member I/O failed (no redundancy)");
+        if (!disk_active_[disk_idx] ||
+            !readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx])) {
+            std::memset(&result[res_idx], 0, read_len);
         }
 
         res_idx += read_len;

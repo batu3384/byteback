@@ -3,6 +3,7 @@
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
+#include <cstdint>
 #include <regex>
 #include <cctype>
 
@@ -13,6 +14,37 @@ std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
 }
+
+void bindFileRecord(sqlite3_stmt* stmt, int64_t scanId, const FileRecord& r) {
+    sqlite3_bind_int64(stmt, 1, scanId);
+    sqlite3_bind_int64(stmt, 2, r.parentId);
+    sqlite3_bind_text(stmt, 3, r.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, r.extension.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, r.path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.sizeBytes));
+    sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
+    sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
+    sqlite3_bind_int(stmt, 9, r.status);
+    sqlite3_bind_int(stmt, 10, r.compressed ? 1 : 0);
+    sqlite3_bind_int(stmt, 11, r.confidence);
+    sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
+    std::string runsJson = serializeRuns(r.runs);
+    sqlite3_bind_int64(stmt, 14, r.createdAt);
+    sqlite3_bind_int64(stmt, 15, r.modifiedAt);
+    sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
+    if (r.residentData.empty()) {
+        sqlite3_bind_null(stmt, 17);
+    } else {
+        sqlite3_bind_blob(stmt, 17, r.residentData.data(),
+                          static_cast<int>(r.residentData.size()), SQLITE_TRANSIENT);
+    }
+}
+
+constexpr const char* kFileSelect =
+    "id, parent_id, name, extension, path, size_bytes, "
+    "start_sector, end_sector, status, compressed, confidence, category, source, "
+    "created_at, modified_at, runs_json, resident_blob";
 
 std::string buildFtsMatch(const std::string& query) {
     std::string out;
@@ -108,6 +140,8 @@ bool MetadataStore::open(const std::string& dbPath) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN runs_json TEXT DEFAULT '';", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN resident_blob BLOB;", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
         ensureFtsIndex(db_);
         ensureContentFtsIndex(db_);
     }
@@ -155,6 +189,7 @@ bool MetadataStore::createTables() {
             created_at INTEGER,
             modified_at INTEGER,
             runs_json TEXT DEFAULT '',
+            resident_blob BLOB,
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         );
 
@@ -198,8 +233,8 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at, runs_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json, resident_blob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -208,23 +243,7 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
         return -1;
     }
 
-    sqlite3_bind_int64(stmt, 1, scanId);
-    sqlite3_bind_int64(stmt, 2, r.parentId);
-    sqlite3_bind_text(stmt, 3, r.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, r.extension.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, r.path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.sizeBytes));
-    sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
-    sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
-    sqlite3_bind_int(stmt, 9, r.status);
-    sqlite3_bind_int(stmt, 10, r.compressed ? 1 : 0);
-    sqlite3_bind_int(stmt, 11, r.confidence);
-    sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
-    std::string runsJson = serializeRuns(r.runs);
-    sqlite3_bind_int64(stmt, 14, r.createdAt);
-    sqlite3_bind_int64(stmt, 15, r.modifiedAt);
-    sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
+    bindFileRecord(stmt, scanId, r);
 
     int rc = sqlite3_step(stmt);
     int64_t rowId = (rc == SQLITE_DONE) ? sqlite3_last_insert_rowid(db_) : -1;
@@ -241,8 +260,8 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at, runs_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json, resident_blob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -252,23 +271,7 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     }
 
     for (const auto& r : records) {
-        sqlite3_bind_int64(stmt, 1, scanId);
-        sqlite3_bind_int64(stmt, 2, r.parentId);
-        sqlite3_bind_text(stmt, 3, r.name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 4, r.extension.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 5, r.path.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.sizeBytes));
-        sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(r.startSector));
-        sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(r.endSector));
-        sqlite3_bind_int(stmt, 9, r.status);
-        sqlite3_bind_int(stmt, 10, r.compressed ? 1 : 0);
-        sqlite3_bind_int(stmt, 11, r.confidence);
-        sqlite3_bind_text(stmt, 12, r.category.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 13, r.source.c_str(), -1, SQLITE_TRANSIENT);
-        std::string runsJson = serializeRuns(r.runs);
-        sqlite3_bind_int64(stmt, 14, r.createdAt);
-        sqlite3_bind_int64(stmt, 15, r.modifiedAt);
-        sqlite3_bind_text(stmt, 16, runsJson.c_str(), -1, SQLITE_TRANSIENT);
+        bindFileRecord(stmt, scanId, r);
 
         const int rc = sqlite3_step(stmt);
         sqlite3_reset(stmt);
@@ -360,7 +363,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
     const char* sql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json
+               created_at, modified_at, runs_json, resident_blob
         FROM files WHERE scan_id = ? ORDER BY id LIMIT ? OFFSET ?
     )";
 
@@ -615,8 +618,14 @@ FileRecord rowToFileRecord(sqlite3_stmt* stmt) {
     r.source = safe_column_text(stmt, 12);
     r.createdAt = sqlite3_column_int64(stmt, 13);
     r.modifiedAt = sqlite3_column_int64(stmt, 14);
-    r.runs = deserializeRuns(safe_column_text(stmt, 15));
-    return r;
+        r.runs = deserializeRuns(safe_column_text(stmt, 15));
+        const void* blob = sqlite3_column_blob(stmt, 16);
+        const int blobLen = sqlite3_column_bytes(stmt, 16);
+        if (blob && blobLen > 0) {
+            const auto* p = static_cast<const uint8_t*>(blob);
+            r.residentData.assign(p, p + blobLen);
+        }
+        return r;
 }
 } // namespace
 
@@ -630,7 +639,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
     const char* baseSql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json
+               created_at, modified_at, runs_json, resident_blob
         FROM files WHERE scan_id = ?
     )";
 
@@ -639,7 +648,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
         std::string sql = R"(
             SELECT f.id, f.parent_id, f.name, f.extension, f.path, f.size_bytes,
                    f.start_sector, f.end_sector, f.status, f.compressed, f.confidence, f.category, f.source,
-                   f.created_at, f.modified_at, f.runs_json
+                   f.created_at, f.modified_at, f.runs_json, f.resident_blob
             FROM files f
             INNER JOIN files_fts fts ON f.id = fts.rowid
             WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
@@ -756,12 +765,12 @@ FileRecord MetadataStore::getFileById(int64_t fileId, int64_t scanId) {
     const char* sql = scanId > 0 ? R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json
+               created_at, modified_at, runs_json, resident_blob
         FROM files WHERE id = ? AND scan_id = ?
     )" : R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json
+               created_at, modified_at, runs_json, resident_blob
         FROM files WHERE id = ?
     )";
     sqlite3_stmt* stmt = nullptr;

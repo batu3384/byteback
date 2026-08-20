@@ -92,6 +92,50 @@ TEST(NtfsLogfile, RcrdClientDataFindsFilename) {
     EXPECT_TRUE(found);
 }
 
+TEST(NtfsLogfile, RestartPageEmitsLsn) {
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr uint32_t mftSize = 1024;
+    const size_t mftBase = spc * ss;
+    const size_t logMft = mftBase + 2 * mftSize;
+
+    std::vector<uint8_t> img(logMft + mftSize, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    img[0x0D] = static_cast<uint8_t>(spc);
+    writeLe64(img, 44, 1);
+    img[60] = static_cast<uint8_t>(0xF6);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    std::memcpy(img.data() + logMft, "FILE", 4);
+    writeLe16(img, logMft + 0x14, 0x38);
+    writeLe32(img, logMft + 0x18, 256);
+    writeLe32(img, logMft + 0x1C, mftSize);
+
+    std::vector<uint8_t> payload(16, 0);
+    std::memcpy(payload.data(), "RSTR", 4);
+    writeLe64(payload, 8, 42);
+
+    size_t attr = logMft + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + payload.size()));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(payload.size()));
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, payload.data(), payload.size());
+    attr += 16 + 8 + payload.size();
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool saw = false;
+    std::atomic<bool> running{true};
+    scanNtfsLogFileHints(reader, 0, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_logfile_restart" && fr.name.find("42") != std::string::npos) saw = true;
+    }, &running);
+    EXPECT_TRUE(saw);
+}
+
 TEST(MftConfidence, DeletedWithRunsScoresHigherThanMetadataOnly) {
     EXPECT_GT(ntfs::scoreMftConfidence(false, true, false, 4096, true, false),
               ntfs::scoreMftConfidence(false, true, false, 4096, false, false));
