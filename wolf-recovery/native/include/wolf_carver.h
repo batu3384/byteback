@@ -46,11 +46,25 @@ public:
     ~CarvingEngine();
 
     bool loadSignatures(const std::string& jsonPath);
+    size_t signatureCount() const { return signatures.size(); }
     bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);
+    bool scanRange(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
+                   FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);
+
+    // ponytail: test hook; 0 = auto (hardware, max 4)
+    void setCarveWorkerCount(unsigned count) { carveWorkers_ = count; }
 
 private:
+    bool scanRangeSingle(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
+                         FileSystemParser::FileRecordCallback callback,
+                         std::atomic<bool>* isRunning,
+                         uint64_t emitFirstSector, uint64_t emitLastSector,
+                         std::atomic<int>* bgcBudget);
+
     std::vector<FileSignature> signatures;
     std::vector<ACTrieNode> acNodes;
+    uint32_t maxPatternBytes_ = 64;
+    unsigned carveWorkers_ = 0;
     // CA-001: per-scan BGC budget — the rescue path is bounded so a stream of
     // partially-validated junk candidates can never dominate the scan time.
     int bgcBudget_ = 32;
@@ -81,6 +95,9 @@ struct BgcResult {
     bool found = false;
     size_t frag1Len = 0;
     size_t gapLen = 0;
+    // ponytail: 3+ fragments — up to two internal gaps (three data spans).
+    size_t frag2Len = 0;
+    size_t gap2Len = 0;
 };
 
 BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
@@ -88,6 +105,13 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t maxGapBytes,
                                const std::function<int(const uint8_t*, size_t)>& validator,
                                size_t stepBytes = 1);
+
+// ponytail: max two internal gaps (three fragments), bounded attempt budget.
+BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
+                                size_t headerOffset, size_t footerOffset,
+                                size_t maxGapBytes,
+                                const std::function<int(const uint8_t*, size_t)>& validator,
+                                size_t stepBytes = 1, size_t attemptBudget = 8192);
 
 } // namespace wolf
 
