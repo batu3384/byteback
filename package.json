@@ -38,7 +38,7 @@
     "appId": "com.byteback.app",
     "productName": "Byteback",
     "copyright": "MIT License",
-    "icon": "resources/icon.svg",
+    "icon": "resources/icon.png",
     "directories": {
       "output": "release"
     },
