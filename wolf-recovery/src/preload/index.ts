@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld('api', {
 
   pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),
   pickAndWipeFreeSpace: () => ipcRenderer.invoke('pick-and-wipe-freespace'),
+  wipePhysicalDrive: (driveIndex: number, typedSerial: string) =>
+    ipcRenderer.invoke('wipe-physical-drive', driveIndex, typedSerial),
+  setBitLockerFvek: (hex: string) => ipcRenderer.invoke('set-bitlocker-fvek', hex),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),

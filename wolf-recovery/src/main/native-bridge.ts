@@ -62,6 +62,8 @@ interface WolfEngine {
   ): boolean
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
+  setBitLockerFvek(hex: string): boolean
+  startPhysicalWipe(driveIndex: number, typedSerial: string): Promise<boolean>
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
   failRaidDisk(diskIndex: number): boolean
   getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }

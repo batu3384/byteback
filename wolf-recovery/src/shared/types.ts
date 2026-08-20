@@ -78,6 +78,8 @@ declare global {
 
       pickAndWipeFile: () => Promise<boolean>
       pickAndWipeFreeSpace: () => Promise<boolean>
+      wipePhysicalDrive: (driveIndex: number, typedSerial: string) => Promise<boolean>
+      setBitLockerFvek: (hex: string) => Promise<boolean>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }>
