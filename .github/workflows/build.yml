@@ -92,6 +92,14 @@ jobs:
         run: npm run test
         shell: pwsh
 
+      - name: Unpackaged dist smoke (asarUnpack .node)
+        run: |
+          npx electron-builder --win dir --x64
+          $node = Get-ChildItem -Path release -Recurse -Filter wolf_engine.node -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $node) { throw "packaged wolf_engine.node missing under release/" }
+          Write-Host "found $($node.FullName)"
+        shell: pwsh
+
       - name: Upload native addon artifact
         uses: actions/upload-artifact@v4
         with:
