@@ -292,7 +292,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
             disabled={!isAdmin}
             onClick={async () => {
               if (!isAdmin) {
-                alert('Yönetici izni gerekli.')
+                setVolumeResolveStatus('Yönetici izni gerekli.')
                 return
               }
               if (!window.api?.resolveVolume || !onStartScan) {

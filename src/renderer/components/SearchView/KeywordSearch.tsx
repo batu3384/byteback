@@ -110,7 +110,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     }
 
     try {
-      const filtered = await window.api.searchFiles(
+      const res = await window.api.searchFiles(
         scanId,
         query,
         0,
@@ -118,8 +118,14 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         useRegex,
         category || undefined,
       );
-      setResults(filtered);
+      if (res.error) {
+        setRegexError(`Arama hatası: ${res.error}`);
+        setResults([]);
+      } else {
+        setResults(res.rows);
+      }
     } catch {
+      setRegexError('Arama sırasında beklenmeyen bir hata oluştu.');
       setResults([]);
     }
     setSearching(false);
@@ -139,7 +145,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   return (
     <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="search-header glass-panel" style={{ padding: '24px' }}>
-        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması (Keyword Search)</h2>
+        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması</h2>
         <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması. 16 MiB üstü dosyalar içerik indeksine alınmaz. Derin tarama imzası CPU Aho-Corasick; GPU PFAC yok.</p>
       </div>
 

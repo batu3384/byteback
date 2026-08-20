@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import type { ScanProfile } from '../../../shared/scan-profiles'
 import { SCAN_PROFILES } from '../../../shared/scan-profiles'
@@ -11,6 +11,18 @@ interface SsdTrimModalProps {
 }
 
 function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps): React.ReactElement | null {
+  const confirmRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    confirmRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onCancel])
+
   if (!open) return null
 
   const profile = SCAN_PROFILES[scanType]
@@ -39,7 +51,7 @@ function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-          <AlertTriangle size={28} color="var(--warning-yellow)" style={{ flexShrink: 0 }} />
+          <AlertTriangle size={28} color="var(--warning-yellow)" style={{ flexShrink: 0 }} aria-hidden="true" />
           <div>
             <h3 id="ssd-trim-title" style={{ marginBottom: '8px' }}>SSD / TRIM uyarısı</h3>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.5, margin: 0 }}>
@@ -58,7 +70,7 @@ function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps
         </div>
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <button type="button" className="btn-secondary" onClick={onCancel}>İptal</button>
-          <button type="button" className="btn-primary" data-testid="ssd-trim-confirm" onClick={onConfirm}>
+          <button ref={confirmRef} type="button" className="btn-primary" data-testid="ssd-trim-confirm" onClick={onConfirm}>
             Yine de tara
           </button>
         </div>

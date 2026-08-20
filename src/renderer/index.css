@@ -5,6 +5,7 @@
   /* Premium Dark Tech Palette (Slate & Electric Blue) */
   --bg-color: #09090B; /* Zinc 950 */
   --bg-surface: #18181B; /* Zinc 900 */
+  --bg-main: var(--bg-surface);
   
   --panel-bg: rgba(24, 24, 27, 0.6);
   --panel-border: rgba(255, 255, 255, 0.08);
@@ -69,6 +70,17 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-weight: 500;
   letter-spacing: -0.02em;
@@ -82,6 +94,7 @@ h1, h2, h3, h4, h5, h6 {
 [data-theme='light'] {
   --bg-color: #F4F4F5;
   --bg-surface: #FFFFFF;
+  --bg-main: #FFFFFF;
   --panel-bg: rgba(255, 255, 255, 0.75);
   --panel-border: rgba(9, 9, 11, 0.12);
   --panel-border-hover: rgba(9, 9, 11, 0.25);

@@ -88,6 +88,17 @@
   color: var(--accent-blue);
 }
 
+.nav-btn-disabled,
+.nav-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.nav-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding-top: var(--space-xl);

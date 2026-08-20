@@ -37,11 +37,11 @@ const DiskMapVisualizer: React.FC<DiskMapProps> = ({ totalSectors, currentSector
   return (
     <div className="disk-map-container glass-panel">
       <div className="disk-map-header">
-        <h3>Live Disk Surface Map</h3>
+        <h3>Canlı Disk Yüzey Haritası</h3>
         <div className="disk-map-legend">
-          <span className="legend-item"><span className="dot healthy"></span> Healthy</span>
-          <span className="legend-item"><span className="dot bad"></span> Bad Sector</span>
-          <span className="legend-item"><span className="dot unscanned"></span> Unscanned</span>
+          <span className="legend-item"><span className="dot healthy"></span> Sağlıklı</span>
+          <span className="legend-item"><span className="dot bad"></span> Bozuk sektör</span>
+          <span className="legend-item"><span className="dot unscanned"></span> Taranmadı</span>
         </div>
       </div>
       

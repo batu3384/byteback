@@ -44,13 +44,13 @@ jobs:
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
-      - name: Configure CMake
-        run: cmake -S native -B native/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-        shell: pwsh
-
       - name: Install dependencies
         run: |
           if (Test-Path package-lock.json) { npm ci } else { npm install }
+        shell: pwsh
+
+      - name: Configure CMake
+        run: cmake -S native -B native/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
         shell: pwsh
 
       - name: Build native engine
