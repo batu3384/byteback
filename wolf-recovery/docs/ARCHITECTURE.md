@@ -56,8 +56,8 @@ Kritik matematiğin tamamı birim testlidir (`native/tests/`, 86 test):
 - **LZNT1 / USA fixup / USN / entropi / EWF konteyner** — kendi format
   ayrıştırıcılarıyla gidiş-dönüş testleri.
 
-Sahne arkasında kalan bilinen sınırlar (Weibull kalibrasyonu, bağımsız EWF
-okuyucu doğrulaması vb.) ilgili dosyalarda ve README'de açıkça etiketlidir.
+Sahne arkasında kalan spek sınırları (BitLocker şifre kırma yok, GPU PFAC yok)
+ilgili dosyalarda ve README'de yazılıdır.
 
 ## Çalışma Zamanı Varlıkları
 

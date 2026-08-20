@@ -20,18 +20,21 @@ yeniden kurulum, SSD/TRIM farkındalığı).
   adlar, exFAT entry-set durum makinesi, DOS zaman damgaları.
 - **Ext2/3/4**: extent tree (derinlik destekli), directory entry'lerden
   gerçek dosya adları, silinmiş inode/dirent kanıtı.
-- **HFS+ / APFS**: HFS+ katalog B-tree (25k tavan; kesince `hfs_limit`
-  sentinel + denetim olayı). APFS NXSB + volume keşfi — katalog/omap yok.
+- **HFS+ / APFS**: HFS+ katalog B-tree (iptal edilene kadar). APFS NXSB
+  (`nx_block_size`, `nx_fs_oid[100]`), APSB volume, btree yaprak drec
+  (`source=apfs_file`).
 - **Carving**: Aho-Corasick imza taraması (~114 gömülü imza), yapısal
   doğrulama (JPEG/PNG/ZIP/PDF/GZIP/RIFF), iki parçalı dosyalar için
   kümelenmiş BGC kurtarma yolu (sektör adımlı, tarama başına bütçeli).
 - **RAID**: 0/1/5/6/10 — GF(2⁸) Reed-Solomon çift parite, sektör hizalı
-  okuma, bozuk sektörde sıfır doldurma (tarama asla düşmez).
-- **İmajlama**: RAW (dd) ve **E01 (EWF)** — yazım sırasında MD5. E01 tek
-  segment; tablo `uint32` (~4 GiB chunk tavanı).
+  okuma. Bozuk üye veya I/O hatası: RAID 0 o aralığı sıfırlar (tarama
+  düşmez); RAID 1 ayna dener; RAID 5/6 parite ile okur. Üye `fail_disk`
+  ile işaretlenir (NAPI + RAID ekranı).
+- **İmajlama**: RAW (dd) ve **E01 (EWF)** — yazım sırasında MD5. E01 çok
+  segment (.E01 → .E02); segment başına uint32 tablo.
 - **SMART**: ATA öznitelikleri + NVMe Health Info Log, SSD/TRIM uyarısı.
-  ATA skoru KALİBRASYONSUZ heuristic.
-- **NSRL**: kullanıcı seçimli metin/CSV MD5 seti (bellek içi). Gömülü RDS yok.
+  ATA skoru ACS defect sayacı (realloc 0x05, pending 0xC5).
+- **NSRL**: kullanıcı seçimli metin/CSV MD5 seti (SQLite indeks). Gömülü RDS yok.
 - **Denetim**: SHA-256 hash zincirli adli günlük (RFC 6234 vektörlü).
 
 ### Arayüz (Electron + React)
@@ -44,26 +47,16 @@ formu, açık/koyu tema.
 ## Proje Yapısı
 
 ```
-wolf-recovery/
-├── .github/workflows/     # CI: native + electron build, testler, ewfinfo kapısı
-├── docs/
-│   ├── ARCHITECTURE.md    # katman/modül haritası, doğrulama öyküsü
-│   └── codebase-audit/    # denetim raporları (md + json sidecar)
-├── resources/
-│   ├── signatures.json    # isteğe bağlı kullanıcı imza seti (yoksa gömülü tablo)
-│   └── icon.svg           # ürün işareti
-├── native/
-│   ├── include/           # başlıklar (fs/, carver/, crypto/, imager/, ...)
-│   ├── src/               # motor kaynakları (modül tablosu ARCHITECTURE.md'de)
-│   ├── tests/             # GoogleTest — sayı için `ctest -C Release`
-│   └── third_party/       # vendored sqlite3
-├── src/
-│   ├── main/              # Electron main + IPC + native köprüsü
-│   ├── preload/           # contextBridge (güvenli beyaz liste API)
-│   ├── renderer/          # React bileşenleri (görünüm başına klasör)
-│   └── shared/            # paylaşılan tipler + saf yardımcılar
-├── package.json
-└── README.md
+disk/
+├── .github/workflows/     # CI: typecheck + Windows native/Electron/vitest
+└── wolf-recovery/
+    ├── docs/
+    │   ├── ARCHITECTURE.md
+    │   └── codebase-audit/
+    ├── native/
+    ├── src/
+    ├── package.json
+    └── README.md
 ```
 
 ## Gereksinimler
@@ -97,23 +90,28 @@ npm run dist           # NSIS x64 kurulum paketi (release/)
 ## Yol Haritası Durumu
 1. **Faz 0–6 (motor)** — güvenilirlik, NTFS derinliği, VSS, RAID/batch,
    içerik FTS, Apple FS, ops (case SQLite + NSRL NAPI).
-2. **Faz 7 (inceleyici yüzeyi)** — Case/NSRL sayfası, HFS tavan uyarısı,
-   ATA KALİBRASYONSUZ etiketi, README/ctest hizası.
+2. **Faz 7 (inceleyici yüzeyi)** — Case/NSRL sayfası, ATA ACS etiketi,
+   README/ctest hizası.
 3. **Denetim** — `docs/codebase-audit/` tarihli raporlar yaşayan belgedir.
    Bir koşunun "tamamı giderildi" iddiası sonraki koşuyu kapatmaz.
 
-**Bilinen sınırlar (bilinçli, etiketli):** BitLocker şifre çözme (tespit var),
-APFS omap/katalog yok (NXSB + volume keşfi), `$LogFile` redo yok, GPU PFAC yok,
-NSRL tam RDS/on-disk indeks yok (bellek seti), Weibull ATA modeli
-KALİBRASYONSUZ, E01 çoklu segment yok (~4 GiB tek segment), HFS katalog 25k,
-içerik FTS örnek tavanı 256 KB.
+**Kalan spek sınırı (yanlış kripto/ürün yok):** BitLocker volume **şifre
+kırma yok** — FVE metadata parse + AES-XTS NIST vektörleri; FVEK/48 haneli
+anahtar yoksa birim şifreli kalır. GPU PFAC yok (taşınabilir CPU
+Aho-Corasick). Playwright E2E yok (ctest + vitest). PhysicalDrive wipe yok
+(CA-001; boş alan filler klasör ile).
 
 ## Güvenlik Notları
 - Uygulama sektör erişimi için Yönetici gerektirir (NSIS manifestı
-  `requireAdministrator`); motor diske asla yazmaz.
-- Disk geneli boş-alan imhası, dosya sistemi farkında bir uygulama
-  yazılana kadar bilinçli olarak devre dışıdır; yerel imha yalnızca tek
-  dosya yollarını kabul eder.
+  `requireAdministrator`). Renderer `sandbox` + `contextIsolation`; native
+  addon yalnız main süreçte.
+- Motor kaynak diske `GENERIC_READ` ile açılır. Windows birim yöneticisi
+  için paylaşım `FILE_SHARE_READ|FILE_SHARE_WRITE` kalır — bu yazma izni
+  değildir; donanım yazma engelleyici yoksa kanıt diski host OS değiştirebilir.
+- Kurtarma ve imaj çıktısı kullanıcının seçtiği hedefe yazılır. Recover
+  renderer `runs` kabul etmez; SQLite `fileId` + `scanId` şart.
+- Disk geneli PhysicalDrive imhası kapalı. Boş alan wipe, kullanıcının
+  seçtiği klasörün biriminde filler dosya + DoD 3 geçiş.
 - NSRL yolu renderer'dan gelmez; main-process dosya diyaloğu seçer.
 
 ## Lisans
