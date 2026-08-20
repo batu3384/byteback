@@ -9,7 +9,7 @@
 namespace wolf {
 
 // Boot-sector probe at a partition offset (not partition-table type strings).
-enum class VolumeFsKind { Unknown, Ntfs, ExFat, Fat, Ext4, Apfs, Hfs };
+enum class VolumeFsKind { Unknown, Ntfs, ExFat, Fat, Ext4, Apfs, Hfs, Refs };
 
 VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, uint32_t sectorSize);
 

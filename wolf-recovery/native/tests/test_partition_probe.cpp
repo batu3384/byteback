@@ -87,6 +87,21 @@ TEST(PartitionProbe, HfsPlusMagic) {
     EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Hfs);
 }
 
+static void writeRefsBoot(std::vector<uint8_t>& img, size_t sector = 0, uint32_t ss = 512) {
+    std::memcpy(img.data() + sector * ss + 3, "ReFS\x00\x00\x00\x00", 8);
+    std::memcpy(img.data() + sector * ss + 16, "FSRS", 4);
+    img[sector * ss + 32] = 0x00; img[sector * ss + 33] = 0x02; // 512
+    img[sector * ss + 36] = 8; // sectors per cluster
+}
+
+TEST(PartitionProbe, RefsAtOffset) {
+    auto img = makeImage(64);
+    writeRefsBoot(img, 2);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    EXPECT_EQ(probeVolumeAt(reader, 2 * 512, 512), VolumeFsKind::Refs);
+}
+
 TEST(PartitionProbe, UnknownOnEmpty) {
     auto img = makeImage(8);
     DiskReader reader;
