@@ -1,85 +1,85 @@
-﻿# Byteback â€” Mimari
+﻿# Byteback — Architecture
 
-Bu belge, kod tabanÄ±ndaki modÃ¼l haritasÄ±nÄ± ve veri akÄ±ÅŸÄ±nÄ± Ã¶zetler. Hedef
-kitle: projeye katkÄ± yapacak mÃ¼hendisler. KullanÄ±cÄ± yÃ¼zÃ¼ iÃ§in `README.md`'ye bakÄ±n.
+Module map and data flow for contributors. For the examiner-facing feature list,
+see [README.md](../README.md).
 
-## Katmanlar ve Veri AkÄ±ÅŸÄ±
+## Layers and data flow
 
 ```
 Renderer (React)          Main (Electron)           Native (C++ .node)
-â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€          â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€           â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-components/*  â”€â”€preloadâ”€â”€â–¶ ipc-handlers.ts â”€â”€â”€â”€â”€â”€â”€â”€â–¶ bridge_*.cpp
-window.api                 native-bridge.ts          â”‚
-                                                  â”Œâ”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-                                                  â”‚ byteback::Engine     â”‚
-                                                  â”‚ ScanCoordinator  â”‚
-                                                  â”‚ DiskImager/Ewf   â”‚
-                                                  â”‚ RecoveryEngine   â”‚
-                                                  â”‚ VirtualRaid      â”‚
-                                                  â””â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-                                                     â”‚ DiskReader (DeviceIoControl)
-                                                  Fiziksel disk (salt-okunur)
+----------------          ---------------           ------------------
+components/*  --preload-> ipc-handlers.ts --------> bridge_*.cpp
+window.api                 native-bridge.ts          |
+                                                  +--+----------------+
+                                                  | byteback::Engine |
+                                                  | ScanCoordinator  |
+                                                  | DiskImager/Ewf   |
+                                                  | RecoveryEngine   |
+                                                  | VirtualRaid      |
+                                                  +--------+---------+
+                                                           | DiskReader (DeviceIoControl)
+                                                  Physical disk (read-only)
 ```
 
-- Renderer hiÃ§bir zaman native'e doÄŸrudan dokunmaz; `preload/index.ts`
-  `contextBridge` ile beyaz liste API'si aÃ§ar (`contextIsolation: true`).
-- TÃ¼m disk eriÅŸimi `GENERIC_READ` Ã¼zerindendir; motor yazma yapmaz (imaj
-  Ã§Ä±ktÄ±sÄ± dosyaya, diske deÄŸil).
+- The renderer never calls native code directly. `preload/index.ts` exposes a
+  allowlisted API via `contextBridge` (`contextIsolation: true`).
+- All disk access uses `GENERIC_READ`. The engine does not write to source media
+  (image output goes to files, not disks).
 
-## Native ModÃ¼ller (`native/src/`)
+## Native modules (`native/src/`)
 
-| Dizin | Sorumluluk | Ã–ne Ã§Ä±kan dosyalar |
-|---|---|---|
-| `io/` | Ham fiziksel disk eriÅŸimi, kÃ¶tÃ¼ sektÃ¶r telemetrisi | `disk_reader_win.cpp` |
-| `fs/` | Dosya sistemi ayrÄ±ÅŸtÄ±rÄ±cÄ±larÄ± ve yerleÅŸim matematiÄŸi | `ntfs_parser.cpp`, `fat_parser.cpp`, `ext4_parser.cpp`, `fat_chain.cpp` (saf FAT zincir/DOS-zaman), `raid_layout.cpp` (saf RAID 5/6/10 yerleÅŸimi), `raid6_math.cpp` (GF(2â¸)), `virtual_raid.cpp`, `partition_scanner.cpp` |
-| `carver/` | Ä°mza tabanlÄ± kurtarma | `signature_engine.cpp` (Aho-Corasick + FOV + BGC kurtarma yolu), `bgc.cpp` (iki parÃ§alÄ± gap carving) |
-| `recovery/` | DosyayÄ± diskten hedefe yazma | `recovery_engine.cpp` (sparse/LZNT1 aÃ§ma, MD5) |
-| `imager/` | Disk imajlama | `disk_imager.cpp` (raw/EWF seÃ§imi), `ewf_writer.cpp` (E01 konteyneri) |
-| `crypto/` | Ã–zet + AES-128/256-XTS (FVEK) + AES-CCM + SHA-256 | `md5.cpp`, `aes_xts.cpp`, `aes_ccm.cpp`, `sha256.cpp` |
-| `db/` | SQLite Ã¼stveri deposu | `metadata_store.cpp` (taramalar/dosyalar), `metadata_store_case.cpp`, `metadata_store_content.cpp` |
-| `forensic/` | Denetim gÃ¼nlÃ¼ÄŸÃ¼ + NSRL MD5 seti | `audit_logger.cpp` (SHA-256, RFC 6234), `nsrl_lookup.cpp` |
-| `smart/` | ATA SMART + NVMe saÄŸlÄ±k gÃ¼nlÃ¼ÄŸÃ¼ | `smart_monitor.cpp` |
-| `bridge/` | NAPI baÄŸlayÄ±cÄ±larÄ±, konuya gÃ¶re bÃ¶lÃ¼nmÃ¼ÅŸ | `bridge_common.h`, `bridge_{drives,scan,imager,wipe}.cpp`, `napi_bridge.cpp` (yalnÄ±zca Init) |
-| `security/` | Dosya/boÅŸ alan imhasÄ±; PhysicalDrive seri kapÄ±sÄ± | `data_shredder.cpp` |
+| Directory | Responsibility | Key files |
+|-----------|----------------|-----------|
+| `io/` | Raw physical disk I/O, bad-sector telemetry | `disk_reader_win.cpp` |
+| `fs/` | Filesystem parsers and layout math | `ntfs_parser.cpp`, `fat_parser.cpp`, `ext4_parser.cpp`, `fat_chain.cpp`, `raid_layout.cpp`, `raid6_math.cpp`, `virtual_raid.cpp`, `partition_scanner.cpp` |
+| `carver/` | Signature-based recovery | `signature_engine.cpp`, `bgc.cpp` |
+| `recovery/` | Write recovered files to destination | `recovery_engine.cpp`, `preview_reader.cpp`, `validation.cpp` |
+| `imager/` | Disk imaging | `disk_imager.cpp`, `ewf_writer.cpp`, `ewf_reader.cpp` |
+| `crypto/` | Digests + AES-XTS/CCM + SHA-256 | `md5.cpp`, `aes_xts.cpp`, `aes_ccm.cpp`, `sha256.cpp` |
+| `db/` | SQLite metadata store | `metadata_store*.cpp`, `runs_codec.cpp` |
+| `forensic/` | Audit log + NSRL MD5 set | `audit_logger.cpp`, `nsrl_lookup.cpp` |
+| `smart/` | ATA SMART + NVMe health log | `smart_monitor.cpp` |
+| `bridge/` | NAPI bindings by concern | `bridge_{drives,scan,imager,wipe,ops}.cpp`, `napi_bridge.cpp` |
+| `security/` | File/free-space wipe; PhysicalDrive serial gate | `data_shredder.cpp` |
 
-## DoÄŸruluk GÃ¼vencesi
+## Correctness assurance
 
-Kritik matematiÄŸin tamamÄ± birim testlidir (`native/tests/`; bu makinede
-`ctest -C Release` 194 geÃ§ti, `Ewf.OptionalEwfinfoCrossCheck` skip):
+Critical math is unit-tested (`native/tests/`; `ctest -C Release` on a typical
+dev machine runs 260+ tests, with optional skips):
 
-- **MD5 / SHA-256** â€” RFC 1321 / RFC 6234 vektÃ¶rleri, zincir katlama testi.
-- **GF(2â¸) Reed-Solomon** â€” alan aksiyomlarÄ±, Ã¼s tablosu, iki-disk kaybÄ±
-  kurtarma cebiri (polinom 0x11D).
-- **RAID yerleÅŸimi** â€” stripeâ†’(veri, parite) beklenti tablolarÄ± ve her
-  stripe'ta her diskin birer kez kullanÄ±ldÄ±ÄŸÄ± permutasyon deÄŸiÅŸmezgeci.
-- **FAT zincir + DOS zaman** â€” sentetik tablolar, dÃ¶ngÃ¼ korumasÄ±, artÄ±k gÃ¼n
-  vektÃ¶rleri (Python `datetime` ile baÄŸÄ±msÄ±z doÄŸrulanmÄ±ÅŸ).
-- **LZNT1 / USA fixup / USN / entropi / EWF konteyner** â€” kendi format
-  ayrÄ±ÅŸtÄ±rÄ±cÄ±larÄ±yla gidiÅŸ-dÃ¶nÃ¼ÅŸ testleri.
+- **MD5 / SHA-256** — RFC 1321 / RFC 6234 vectors, chain folding tests.
+- **GF(2⁸) Reed–Solomon** — field axioms, exponent table, two-disk loss recovery.
+- **RAID layout** — stripe→(data, parity) tables and per-stripe disk permutation
+  invariants.
+- **FAT chain + DOS time** — synthetic tables, loop protection, leap-day vectors.
+- **LZNT1 / USA fixup / USN / entropy / EWF container** — round-trip parser tests.
 
-Sahne arkasÄ±nda kalan spek sÄ±nÄ±rlarÄ± (BitLocker ÅŸifre kÄ±rma yok â€” FVEK hex
-varsa XTS decrypt, GPU PFAC yok, APFS recursive omap btree (tam snapshot deÄŸil), hÄ±zlÄ± NTFS `$MFT` run yÃ¼rÃ¼yÃ¼ÅŸÃ¼) READMEâ€™de yazÄ±lÄ±dÄ±r.
+Intentional spec limits (no BitLocker password cracking — FVEK hex enables XTS
+decrypt, no GPU PFAC, APFS recursive omap btree not full snapshot, quick NTFS
+`$MFT` run walk) are documented in [README.md](../README.md).
 
-## Ã‡alÄ±ÅŸma ZamanÄ± VarlÄ±klarÄ±
+## Runtime assets
 
-- `resources/signatures.json` â€” isteÄŸe baÄŸlÄ± kullanÄ±cÄ± imza seti; yoksa motor
-  gÃ¶mÃ¼lÃ¼ ~114 imzalÄ± tabloyu kullanÄ±r.
-- `<userData>/byteback.db` â€” tarama Ã¼stverisi (WAL).
-- `<userData>/byteback.db.audit.log` â€” SHA-256 hash zincirli denetim
-  gÃ¼nlÃ¼ÄŸÃ¼; raporlar son kayÄ±tlarÄ± gÃ¶mer.
+- `resources/signatures.json` — optional user signature overlay; engine falls
+  back to ~114 built-in signatures.
+- `<userData>/byteback.db` — scan metadata (WAL).
+- `<userData>/byteback.db.audit.log` — SHA-256 hash-chained audit log; reports
+  embed recent chain entries.
 
-## GeliÅŸtirme KomutlarÄ±
+## Development commands
 
 ```bash
-npm run build:native   # C++ motoru derle (cmake-js)
-npm run dev            # native + electron-vite geliÅŸtirme oturumu
+npm run build:native   # build C++ engine (cmake-js)
+npm run dev            # native + electron-vite dev session
 npm run typecheck      # tsc (web + node)
-npm run test           # Vitest (renderer)
-npm run test:native    # GoogleTest via ctest (sayÄ± ctest Ã§Ä±ktÄ±sÄ±na baÄŸlÄ±)
-npm run test:e2e       # Playwright Electron duman (Ã¶nce `npm run build`)
-npm run dist           # NSIS kurulum paketi (release/)
+npm run test           # Vitest (renderer/shared)
+npm run test:native    # GoogleTest via ctest (count varies)
+npm run test:e2e       # Playwright Electron smoke (run npm run build first)
+npm run dist           # NSIS installer (release/)
 ```
 
-Not: `npm run build:native` test Ã¼retecinin Ã¶nbelleÄŸini sÄ±fÄ±rlar; test
-koÅŸusundan Ã¶nce `cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON` ile
-yeniden yapÄ±landÄ±rÄ±n.
+Before `test:native`, configure tests:
+
+```bash
+cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON
+```

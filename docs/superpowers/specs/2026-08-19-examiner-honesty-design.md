@@ -1,8 +1,8 @@
-﻿# Byteback â€” Examiner Honesty & Surface Design
+﻿# Byteback — Examiner Honesty & Surface Design
 
 **Date:** 2026-08-19  
 **Status:** Draft (audit-driven; implement after plan approval)  
-**Spec for:** Phase 7 (post 0â€“6)  
+**Spec for:** Phase 7 (post 0–6)  
 **Audit:** `docs/codebase-audit/2026-08-19.md`
 
 ## Goal
@@ -11,19 +11,19 @@ Close the gap between native ops APIs and the examiner: case metadata and NSRL m
 
 ## Approaches (chosen)
 
-**A â€” Examiner honesty (this spec).** Wire existing NAPI. Label limits. Fix docs. No new FS parsers.
+**A — Examiner honesty (this spec).** Wire existing NAPI. Label limits. Fix docs. No new FS parsers.
 
-**B â€” FS depth.** APFS omap, `$LogFile` redo, USNâ†”MFT boost. Deferred: motor already deeper than UI trust.
+**B — FS depth.** APFS omap, `$LogFile` redo, USN↔MFT boost. Deferred: motor already deeper than UI trust.
 
-**C â€” Scale.** On-disk NSRL, E01 multi-segment >4 GiB. Deferred: no UI for the in-memory set yet.
+**C — Scale.** On-disk NSRL, E01 multi-segment >4 GiB. Deferred: no UI for the in-memory set yet.
 
 ## In scope
 
 1. Case form (number, investigator, agency, notes) via existing `getCaseInfo`/`setCaseInfo`. Persist SQLite singleton. E01 already reads case in `bridge_imager.cpp`. Report HTML includes the same fields.
-2. NSRL: file picker (main `dialog`), `loadNsrl`, stats in UI, optional column/filter on results (`lookupNsrl` per MD5 if hash present â€” if files have no MD5 yet, show set loaded count only; do not invent hashing of every file this phase unless recover path already hashes).
+2. NSRL: file picker (main `dialog`), `loadNsrl`, stats in UI, optional column/filter on results (`lookupNsrl` per MD5 if hash present — if files have no MD5 yet, show set loaded count only; do not invent hashing of every file this phase unless recover path already hashes).
 3. HFS: when catalog hits `kMaxFiles`, emit audit + scan warning payload; UI banner.
-4. SMART: ATA `healthScore` panel shows "KALÄ°BRASYONSUZ" copy; NVMe unchanged.
-5. Docs: README test count, faz 0â€“6, `test:native -C Release`, ewf_writer comment, sidebar labels/version.
+4. SMART: ATA `healthScore` panel shows "UNCALIBRATED" copy; NVMe unchanged.
+5. Docs: README test count, Phases 0–6, `test:native -C Release`, ewf_writer comment, sidebar labels/version.
 
 ## Out of scope
 
@@ -38,5 +38,5 @@ Dense dark forensic tool (existing Geist/zinc). Case page: form at top, inline e
 - Examiner sets case number, next E01 header contains it (existing imager path).
 - Examiner loads a 2-hash text file, stats show 2.
 - HFS fixture or unit test proves cutoff surfaces a warning flag.
-- SMART ATA copy contains KALÄ°BRASYONSUZ.
+- SMART ATA copy contains UNCALIBRATED.
 - `npm run typecheck` green; native tests not reduced.

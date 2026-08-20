@@ -1,4 +1,4 @@
-﻿# Phase 7 â€” Examiner Honesty Implementation Plan
+﻿# Phase 7 — Examiner Honesty Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -88,8 +88,8 @@ Expected: PASS
 **Files:**
 - Create: `src/renderer/components/CaseView/CaseView.tsx`
 - Create: `src/renderer/components/CaseView/CaseView.css`
-- Modify: `App.tsx`, `Sidebar.tsx` (`id: 'case'`, label `Dava`)
-- Modify: `ReportGenerator.tsx` â€” load `getCaseInfo`, put case number/investigator in HTML header
+- Modify: `App.tsx`, `Sidebar.tsx` (`id: 'case'`, label `Case`)
+- Modify: `ReportGenerator.tsx` — load `getCaseInfo`, put case number/investigator in HTML header
 
 **Interfaces:**
 - Consumes: Task 1 `window.api`
@@ -103,7 +103,7 @@ Fields: caseNumber, investigator, agency, notes. Save button. On failure, `role=
 
 - [ ] **Step 3: Report**
 
-`getCaseInfo` before building HTML; if empty, show "Dava numarasÄ± yok" â€” do not invent a number.
+`getCaseInfo` before building HTML; if empty, show "No case number" — do not invent a number.
 
 - [ ] **Step 4: Typecheck**
 
@@ -122,7 +122,7 @@ Expected: PASS
 
 **Interfaces:**
 - Consumes: `CatalogCtx::kMaxFiles`
-- Produces: when cutoff hits, insert a `FileRecord` with `name="[HFS] catalog truncated at 25000"` and `source="hfs_limit"` OR set a scan-level flag persisted in `scans` â€” prefer one extra FileRecord so UI/results already show it without schema change.
+- Produces: when cutoff hits, insert a `FileRecord` with `name="[HFS] catalog truncated at 25000"` and `source="hfs_limit"` OR set a scan-level flag persisted in `scans` — prefer one extra FileRecord so UI/results already show it without schema change.
 
 - [ ] **Step 1: Failing test**
 
@@ -145,12 +145,12 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 
 ---
 
-### Task 4: SMART KALÄ°BRASYONSUZ copy
+### Task 4: SMART UNCALIBRATED copy
 
 **Files:**
 - Modify: `src/renderer/components/SmartView/SmartView.tsx`
 
-- [ ] **Step 1:** Under ATA (non-NVMe) score, add paragraph: `ATA saÄŸlÄ±k skoru KALÄ°BRASYONSUZ heuristic (Î·=500, Î²=1.5). Ã–mÃ¼r tahmini deÄŸil.` NVMe block unchanged.
+- [ ] **Step 1:** Under ATA (non-NVMe) score, add paragraph: `ATA health score is an UNCALIBRATED heuristic (η=500, β=1.5). Not a lifespan estimate.` NVMe block unchanged.
 
 - [ ] **Step 2:** Typecheck PASS
 
@@ -159,11 +159,11 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 ### Task 5: Docs + test script + sidebar honesty
 
 **Files:**
-- Modify: `README.md` (test count 145, Faz 0â€“6, NSRL: "UI Phase 7" or after Task 1â€“2 "kullanÄ±cÄ± dosyasÄ±")
+- Modify: `README.md` (test count 145, Phases 0–6, NSRL: "UI Phase 7" or after Task 1–2 "user-provided file")
 - Modify: `package.json` `test:native` add `-C Release`
-- Modify: `Sidebar.tsx` label `Ä°maj (RAW / E01)`; version from a constant matching `0.1.0`; replace emoji with `resources/icon.svg` or lucide `Shield`
+- Modify: `Sidebar.tsx` label `Image (RAW / E01)`; version from a constant matching `0.1.0`; replace emoji with `resources/icon.svg` or lucide `Shield`
 - Modify: `ewf_writer.h` CA-004 comment: optional `ewfinfo` / skip
-- Modify: `ImagerView.css`, `HexEditor.css`, `ShredderView.css`, `RaidBuilder.css`, `KeywordSearch.css` â€” `outline: none` â†’ `:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }`
+- Modify: `ImagerView.css`, `HexEditor.css`, `ShredderView.css`, `RaidBuilder.css`, `KeywordSearch.css` — `outline: none` → `:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }`
 
 - [ ] **Step 1:** Apply copy/CSS
 - [ ] **Step 2:** `npm run typecheck`
@@ -175,7 +175,7 @@ Run: `ctest -C Release -R HfsCatalog.EmitsSentinel --output-on-failure`
 
 | Spec item | Task |
 |-----------|------|
-| Case form + E01 existing path | 1â€“2 |
+| Case form + E01 existing path | 1–2 |
 | NSRL picker | 1 (+ optional stats on CaseView) |
 | HFS warning | 3 |
 | SMART label | 4 |

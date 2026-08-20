@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship trust-layer fixes: E2E scanâ†’recover proof, honest dashboard state, MPEG-TS FOV, VSS creation timestamps.
+**Goal:** Ship trust-layer fixes: E2E scan→recover proof, honest dashboard state, MPEG-TS FOV, VSS creation timestamps.
 
 **Architecture:** Extend existing `file_validators.h` dispatch, add one integration test compiling scan+db+recovery sources, minimal UI guard on scan status enum.
 
@@ -26,13 +26,13 @@
 - Modify: `native/tests/test_validators.cpp`
 
 **Interfaces:**
-- Produces: `int validateMpegTs(const uint8_t* data, size_t size)` â€” 0 reject, â‰¥90 accept
+- Produces: `int validateMpegTs(const uint8_t* data, size_t size)` — 0 reject, ≥90 accept
 
-- [x] Add `validateMpegTs` â€” require 5Ã—188-byte packets each starting with `0x47`
+- [x] Add `validateMpegTs` — require 5×188-byte packets each starting with `0x47`
 - [x] Wire `ext == "ts"` in `dispatchValidator`
 - [x] Tests: valid TS buffer scores high; `0x47 0x40 0x00` junk scores 0
 
-### Task 2: E2E scan â†’ recover test
+### Task 2: E2E scan → recover test
 
 **Files:**
 - Create: `native/tests/test_e2e_scan_recover.cpp`

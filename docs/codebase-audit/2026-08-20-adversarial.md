@@ -1,26 +1,26 @@
-﻿# Adversarial review — Byteback rebrand + repo düzeni
+﻿# Adversarial review — Byteback rebrand + repo layout
 
-- Tarih: 2026-08-20 (güncelleme: düz repo yapısı)
-- Kapsam: Tüm repo — kaynak repo kökünde, `docs/`, `.github/`
-- Yöntem: Saboteur / New Hire / Security Auditor
+- Date: 2026-08-20 (update: flat repo layout)
+- Scope: Full repo — source at repo root, `docs/`, `.github/`
+- Method: Saboteur / New Hire / Security Auditor
 - Runtime: `tsc` OK, Vitest 36/36
-- Verdict: **CONCERNS** (bilinçli spek sınırları duruyor)
+- Verdict: **CONCERNS** (documented spec limits remain)
 
-## Önceki BLOCK maddeleri — durum
+## Previous BLOCK items — status
 
-| ID | Konu | Durum |
+| ID | Topic | Status |
 |----|------|--------|
-| AR20-001 | StopScan TSFN deadlock | **Kapalı** |
-| AR20-002 | Recover renderer `runs` bypass | **Kapalı** |
-| AR20-003 | Resident NTFS kurtarma | **Kapalı** |
-| Rebrand | wolf-recovery kalıntısı | **Kapalı** |
-| Repo yapısı | `disk/byteback/` iç içe klasör | **Kapalı** — uygulama repo kökünde |
+| AR20-001 | StopScan TSFN deadlock | **Closed** |
+| AR20-002 | Recover renderer `runs` bypass | **Closed** |
+| AR20-003 | Resident NTFS recovery | **Closed** |
+| Rebrand | wolf-recovery residue | **Closed** |
+| Repo layout | nested `disk/byteback/` folder | **Closed** — application at repo root |
 
-## Kalan uyarılar
+## Remaining warnings
 
-- Paylaşımlı `diskReader_` modeli
-- VSS / APFS derinliği / BitLocker decrypt sınırları (README'de belgelenmiş)
+- Shared `diskReader_` model
+- VSS / APFS depth / BitLocker decrypt limits (documented in README)
 
 ## Summary
 
-Ürün kodu artık repo kökünde (`native/`, `src/`, `package.json`). GitHub repo adı `byteback` olmalı; yerel klasör adı (`disk` vb.) clone tercihine bağlı.
+Product code now lives at repo root (`native/`, `src/`, `package.json`). GitHub repo name should be `byteback`; local folder name (`disk` etc.) depends on clone preference.
