@@ -1,6 +1,8 @@
 #include "wolf_carver.h"
 #include "wolf_memory.h"
 #include "carver/file_validators.h"
+#include "carver/structural_parsers.h"
+#include "carver/content_classifier.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -8,6 +10,9 @@
 #include <future>
 #include <algorithm>
 #include <regex>
+#include <functional>
+#include <mutex>
+#include "util/thread_pool.h"
 
 namespace wolf {
 
@@ -27,7 +32,34 @@ int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) 
     if (ext == "gz" || ext == "gzip" || ext == "tgz") return validateGzip(data, size);
     if (ext == "riff")                  return validateRiff(data, size);
     if (ext == "ts")                    return validateMpegTs(data, size);
+    if (ext == "sqlite" || ext == "db") return carver::validateSqlite(data, size);
+    if (ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "m4a" ||
+        ext == "qt" || ext == "3gp")   return carver::validateMp4(data, size);
     return 90; // no structural validator — trust the header/footer match
+}
+
+bool isZipFamilyExt(const std::string& ext) {
+    return ext == "zip" || ext == "docx" || ext == "xlsx" || ext == "pptx" ||
+           ext == "odt" || ext == "ods" || ext == "odp" || ext == "epub" || ext == "jar";
+}
+
+bool isMp4FamilyExt(const std::string& ext) {
+    return ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "m4a" ||
+           ext == "qt" || ext == "3gp";
+}
+
+void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size_t size,
+                               uint64_t& actualSize, std::string& effExt, int& confidence) {
+    carver::StructuralParseResult pr;
+    if (isZipFamilyExt(ext)) pr = carver::parseZipFamily(data, size);
+    else if (ext == "sqlite" || ext == "db") pr = carver::parseSqliteDb(data, size);
+    else if (isMp4FamilyExt(ext)) pr = carver::parseMp4Mov(data, size);
+    else return;
+
+    if (!pr.valid) return;
+    if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
+    if (!pr.extension.empty()) effExt = pr.extension;
+    if (pr.confidence > confidence) confidence = pr.confidence;
 }
 } // namespace
 
@@ -37,6 +69,7 @@ CarvingEngine::~CarvingEngine() {}
 std::vector<uint8_t> CarvingEngine::hexToBytes(const std::string& hex) {
     std::vector<uint8_t> bytes;
     for (size_t i = 0; i < hex.length(); i += 2) {
+        if (i + 1 >= hex.length()) break;
         std::string byteString = hex.substr(i, 2);
         uint8_t byte = (uint8_t)strtol(byteString.c_str(), nullptr, 16);
         bytes.push_back(byte);
@@ -44,44 +77,47 @@ std::vector<uint8_t> CarvingEngine::hexToBytes(const std::string& hex) {
     return bytes;
 }
 
-bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
-    signatures.clear();
+namespace {
 
-    if (!jsonPath.empty()) {
-        std::ifstream file(jsonPath);
-        if (file.is_open()) {
-            std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-            // Extremely basic regex for [{"format":"X","extension":"Y","category":"Z","header":"A","footer":"B","maxSize":123}]
-            std::regex sigRegex("\\{\\s*\"format\"\\s*:\\s*\"([^\"]+)\",\\s*\"extension\"\\s*:\\s*\"([^\"]+)\",\\s*\"category\"\\s*:\\s*\"([^\"]+)\",\\s*\"header\"\\s*:\\s*\"([^\"]*)\",\\s*\"footer\"\\s*:\\s*\"([^\"]*)\",\\s*\"maxSize\"\\s*:\\s*(\\d+)\\s*\\}");
-            
-            auto words_begin = std::sregex_iterator(content.begin(), content.end(), sigRegex);
-            auto words_end = std::sregex_iterator();
-            
-            for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-                std::smatch match = *i;
-                FileSignature s;
-                s.format = match[1].str();
-                s.extension = match[2].str();
-                s.category = match[3].str();
-                s.header = hexToBytes(match[4].str());
-                s.footer = hexToBytes(match[5].str());
-                s.maxSize = std::stoull(match[6].str());
-                s.id = (int)signatures.size();
-                signatures.push_back(s);
-            }
-        }
+bool appendSignaturesFromJson(std::vector<FileSignature>& signatures,
+                              const std::string& jsonPath,
+                              const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
+    std::ifstream file(jsonPath);
+    if (!file.is_open()) return false;
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::regex sigRegex(
+        "\\{\\s*\"format\"\\s*:\\s*\"([^\"]+)\",\\s*\"extension\"\\s*:\\s*\"([^\"]+)\",\\s*\"category\"\\s*:\\s*\"([^\"]+)\",\\s*\"header\"\\s*:\\s*\"([^\"]*)\",\\s*\"footer\"\\s*:\\s*\"([^\"]*)\",\\s*\"max_?[Ss]ize\"\\s*:\\s*(\\d+)\\s*\\}");
+
+    size_t before = signatures.size();
+    for (std::sregex_iterator i(content.begin(), content.end(), sigRegex), end; i != end; ++i) {
+        std::smatch match = *i;
+        FileSignature s;
+        s.format = match[1].str();
+        s.extension = match[2].str();
+        s.category = match[3].str();
+        s.header = hexToBytes(match[4].str());
+        s.footer = hexToBytes(match[5].str());
+        s.maxSize = std::stoull(match[6].str());
+        s.id = static_cast<int>(signatures.size());
+        signatures.push_back(s);
     }
+    return signatures.size() > before;
+}
 
-    // Fallback to embedded signatures if empty
-    if (signatures.empty()) {
-        auto addSig = [&](const std::string& fmt, const std::string& ext, const std::string& cat, 
-                          const std::vector<uint8_t>& head, const std::vector<uint8_t>& foot, uint64_t maxS) {
-            FileSignature s;
-            s.id = (int)signatures.size();
-            s.format = fmt; s.extension = ext; s.category = cat;
-            s.header = head; s.footer = foot; s.maxSize = maxS;
-            signatures.push_back(s);
-        };
+void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
+    auto addSig = [&](const std::string& fmt, const std::string& ext, const std::string& cat,
+                      const std::vector<uint8_t>& head, const std::vector<uint8_t>& foot, uint64_t maxS) {
+        FileSignature s;
+        s.id = static_cast<int>(signatures.size());
+        s.format = fmt;
+        s.extension = ext;
+        s.category = cat;
+        s.header = head;
+        s.footer = foot;
+        s.maxSize = maxS;
+        signatures.push_back(s);
+    };
 
     // ============================================================
     // Images (15 signatures)
@@ -249,18 +285,36 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     addSig("Windows Prefetch", ".pf", "Misc", {0x4D, 0x41, 0x4D, 0x04}, {}, 1024 * 1024); // MAMx (Win10/11)
     addSig("LNK Shortcut", ".lnk", "Misc", {0x4C, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00}, {}, 1024 * 1024);
     addSig("EVTX Log", ".evtx", "Misc", {0x65, 0x6C, 0x69, 0x66}, {}, 100 * 1024 * 1024); // "elf" magic
-    } // End of if (signatures.empty())
+}
+
+} // namespace
+
+bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
+    signatures.clear();
+    loadEmbeddedSignatures(signatures);
+
+    auto hexFn = [this](const std::string& hex) { return hexToBytes(hex); };
+    if (!jsonPath.empty()) appendSignaturesFromJson(signatures, jsonPath, hexFn);
+    appendSignaturesFromJson(signatures, "resources/signatures-extended.json", hexFn);
+    appendSignaturesFromJson(signatures, "../resources/signatures-extended.json", hexFn);
+    appendSignaturesFromJson(signatures, "../../resources/signatures-extended.json", hexFn);
+    appendSignaturesFromJson(signatures, "signatures-extended.json", hexFn);
+
+    for (size_t i = 0; i < signatures.size(); ++i) signatures[i].id = static_cast<int>(i);
 
     buildAhoCorasick();
-    return true;
+    return !signatures.empty();
 }
 
 void CarvingEngine::buildAhoCorasick() {
     acNodes.clear();
     acNodes.emplace_back(); // root node at index 0
+    maxPatternBytes_ = 64;
 
     // Add patterns to the trie
     for (const auto& sig : signatures) {
+        maxPatternBytes_ = std::max(maxPatternBytes_, static_cast<uint32_t>(sig.header.size()));
+        maxPatternBytes_ = std::max(maxPatternBytes_, static_cast<uint32_t>(sig.footer.size()));
         if (!sig.header.empty()) {
             int current = 0;
             for (uint8_t byte : sig.header) {
@@ -328,23 +382,106 @@ void CarvingEngine::buildAhoCorasick() {
 
 bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
     if (!reader.isOpen() || signatures.empty() || acNodes.empty()) return false;
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    uint64_t maxSector = reader.getDiskSize() / sectorSize;
+    return scanRange(reader, 0, maxSector, callback, isRunning);
+}
+
+bool CarvingEngine::scanRange(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
+                              FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
+    if (!reader.isOpen() || signatures.empty() || acNodes.empty()) return false;
+    if (lastSector <= firstSector) return false;
+
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+
+    const uint64_t rangeEndSector = std::min(lastSector, reader.getDiskSize() / sectorSize);
+    const uint64_t totalSectors = rangeEndSector - firstSector;
+    unsigned workers = carveWorkers_ > 0 ? carveWorkers_ : util::defaultCarveWorkers();
+    const uint64_t minParallelSectors = 8192 * 4; // 16 MiB at 4K chunks
+    if (workers <= 1 || totalSectors < minParallelSectors) {
+        return scanRangeSingle(reader, firstSector, rangeEndSector, callback, isRunning, 0, 0, nullptr);
+    }
+
+    const uint64_t band = (totalSectors + workers - 1) / workers;
+    const uint64_t overlapSectors =
+        std::max<uint64_t>(1, (maxPatternBytes_ + sectorSize - 1) / sectorSize + 1);
+
+    std::mutex callbackMu;
+    std::atomic<int> sharedBgc{bgcBudget_};
+    std::atomic<uint64_t> progressSector{firstSector};
+
+    auto safeCallback = [&](const FileRecord& fr) {
+        if (fr.id == -1) {
+            uint64_t prev = progressSector.load(std::memory_order_relaxed);
+            while (fr.startSector > prev &&
+                   !progressSector.compare_exchange_weak(prev, fr.startSector, std::memory_order_relaxed)) {}
+            std::lock_guard<std::mutex> lock(callbackMu);
+            FileRecord tick;
+            tick.id = -1;
+            tick.startSector = progressSector.load(std::memory_order_relaxed);
+            callback(tick);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(callbackMu);
+        callback(fr);
+    };
+
+    util::parallelFor(workers, [&](unsigned w, unsigned n) {
+        const uint64_t coreStart = firstSector + w * band;
+        const uint64_t coreEnd = std::min(rangeEndSector, coreStart + band);
+        if (coreStart >= coreEnd) return;
+
+        uint64_t scanStart = coreStart;
+        if (w > 0 && coreStart > overlapSectors) scanStart = coreStart - overlapSectors;
+        uint64_t scanEnd = coreEnd;
+        if (w + 1 < n && coreEnd + overlapSectors < rangeEndSector) {
+            scanEnd = coreEnd + overlapSectors;
+        }
+
+        scanRangeSingle(reader, scanStart, scanEnd, safeCallback, isRunning,
+                        coreStart, coreEnd, &sharedBgc);
+    });
+
+    FileRecord done;
+    done.id = -1;
+    done.startSector = rangeEndSector;
+    callback(done);
+    return true;
+}
+
+bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
+                                    FileSystemParser::FileRecordCallback callback,
+                                    std::atomic<bool>* isRunning,
+                                    uint64_t emitFirstSector, uint64_t emitLastSector,
+                                    std::atomic<int>* bgcBudget) {
+    if (!reader.isOpen() || signatures.empty() || acNodes.empty()) return false;
+    if (lastSector <= firstSector) return false;
 
     uint64_t diskSize = reader.getDiskSize();
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
+
+    auto emit = [&](const FileRecord& fr) {
+        if (emitLastSector > emitFirstSector && fr.id >= 0) {
+            if (fr.startSector < emitFirstSector || fr.startSector >= emitLastSector) return;
+        }
+        callback(fr);
+    };
     
     const uint32_t chunkSectors = 8192; // 4MB chunks
     const uint32_t chunkSize = chunkSectors * sectorSize;
     auto poolBufA = MemoryPool::getInstance().acquireBuffer(chunkSize);
     auto* currentBuf = poolBufA.get();
     
-    uint64_t maxSector = diskSize / sectorSize;
+    uint64_t rangeEndSector = std::min(lastSector, diskSize / sectorSize);
     int foundCount = 0;
     
     int currentState = 0;
     std::vector<ActiveCarve> activeCarves;
     
-    for (uint64_t sector = 0; sector < maxSector; sector += chunkSectors) {
+    for (uint64_t sector = firstSector; sector < rangeEndSector; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
         
         auto res = reader.readSectors(sector * sectorSize, chunkSize, currentBuf->data());
@@ -433,7 +570,7 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             // Gap size is the caller max (span/4 below), no 64 KiB clamp.
                             bool bgcRescued = false;
                             BgcResult bgc{};
-                            if (bgcBudget_ > 0 &&
+                            if ((bgcBudget ? bgcBudget->load() : bgcBudget_) > 0 &&
                                 actualSize > 4096 && actualSize <= (16u << 20)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
@@ -441,7 +578,8 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
                                     if (confidence >= 40 && confidence < 85) {
-                                        --bgcBudget_;
+                                        if (bgcBudget) bgcBudget->fetch_sub(1);
+                                        else --bgcBudget_;
                                         bgc = bifragmentedGapCarve(
                                             alignedBuf.data(), static_cast<size_t>(actualSize),
                                             0, static_cast<size_t>(actualSize),
@@ -450,6 +588,16 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                                                 return dispatchValidator(ext, d, n);
                                             },
                                             sectorSize);
+                                        if (!bgc.found) {
+                                            bgc = triFragmentedGapCarve(
+                                                alignedBuf.data(), static_cast<size_t>(actualSize),
+                                                0, static_cast<size_t>(actualSize),
+                                                static_cast<size_t>(actualSize) / 4,
+                                                [&ext](const uint8_t* d, size_t n) {
+                                                    return dispatchValidator(ext, d, n);
+                                                },
+                                                sectorSize);
+                                        }
                                         bgcRescued = bgc.found;
                                     }
                                 }
@@ -465,6 +613,22 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             // candidates of every size, not just the BGC window.
                             std::string effExt = ext;
                             std::string effName = it->filename;
+                            if (isZipFamilyExt(effExt) || effExt == "sqlite" || effExt == "db" ||
+                                isMp4FamilyExt(effExt)) {
+                                uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
+                                probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+                                if (probe > 0) {
+                                    std::vector<uint8_t> probeBuf(probe);
+                                    if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
+                                        applyStructuralRefinement(effExt, probeBuf.data(),
+                                                                  static_cast<size_t>(actualSize),
+                                                                  actualSize, effExt, confidence);
+                                        auto dot = effName.find_last_of('.');
+                                        if (dot != std::string::npos) effName = effName.substr(0, dot);
+                                        effName += std::string(".") + effExt;
+                                    }
+                                }
+                            }
                             if (ext == "riff") {
                                 uint8_t hdr[512];
                                 uint32_t hdrAligned = ((512u + sectorSize - 1) / sectorSize) * sectorSize;
@@ -488,14 +652,25 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                                 fr.name = effNameBgc;
                                 fr.extension = effExtBgc;
                                 fr.path = "/recovered_raw/" + fr.name;
-                                fr.sizeBytes = actualSize - bgc.gapLen;
+                                fr.sizeBytes = actualSize - bgc.gapLen - bgc.gap2Len;
                                 fr.startSector = it->startSector;
                                 fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                                 fr.runs.push_back({it->startOffset / sectorSize,
                                                    (bgc.frag1Len + sectorSize - 1) / sectorSize});
                                 uint64_t frag2Start = it->startOffset + bgc.frag1Len + bgc.gapLen;
-                                fr.runs.push_back({frag2Start / sectorSize,
-                                                   (actualSize - bgc.frag1Len - bgc.gapLen + sectorSize - 1) / sectorSize});
+                                if (bgc.frag2Len > 0 || bgc.gap2Len > 0) {
+                                    fr.runs.push_back({frag2Start / sectorSize,
+                                                       (bgc.frag2Len + sectorSize - 1) / sectorSize});
+                                    uint64_t frag3Start = frag2Start + bgc.frag2Len + bgc.gap2Len;
+                                    fr.runs.push_back({frag3Start / sectorSize,
+                                                       (actualSize - bgc.frag1Len - bgc.gapLen -
+                                                        bgc.frag2Len - bgc.gap2Len + sectorSize - 1) /
+                                                           sectorSize});
+                                } else {
+                                    fr.runs.push_back({frag2Start / sectorSize,
+                                                       (actualSize - bgc.frag1Len - bgc.gapLen + sectorSize - 1) /
+                                                           sectorSize});
+                                }
                                 fr.status = 0;
                                 fr.confidence = 88; // BGC-validated reassembly
                                 fr.category = sig.category;
@@ -503,7 +678,7 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                                 fr.createdAt = 0;
                                 fr.modifiedAt = 0;
 
-                                callback(fr);
+                                emit(fr);
 
                                 it = activeCarves.erase(it);
                                 continue;
@@ -525,7 +700,7 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
                             fr.createdAt = 0;
                             fr.modifiedAt = 0;
                             
-                            callback(fr);
+                            emit(fr);
                             
                             // Remove from active carves
                             it = activeCarves.erase(it);
@@ -542,26 +717,39 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
         auto it = activeCarves.begin();
         while (it != activeCarves.end()) {
             if (currentOffsetEndOfChunk > it->endOffsetLimit) {
-                // Max size reached without footer. We can still emit it as a partial file if desired.
                 const auto& sig = signatures[it->sigId];
-                
+                std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
+                uint64_t actualSize = sig.maxSize;
+                int confidence = 70;
+                uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(sig.maxSize, 1u << 20));
+                probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+                std::vector<uint8_t> probeBuf;
+                if (probe > 0) {
+                    probeBuf.resize(probe);
+                    if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
+                        applyStructuralRefinement(effExt, probeBuf.data(), probeBuf.size(),
+                                                  actualSize, effExt, confidence);
+                    }
+                }
+
                 FileRecord fr;
                 fr.id = 0;
                 fr.parentId = 0;
                 fr.name = it->filename;
-                fr.extension = sig.extension.empty() ? "" : sig.extension.substr(1);
+                fr.extension = effExt;
                 fr.path = "/recovered_raw/" + fr.name;
-                fr.sizeBytes = sig.maxSize;
+                fr.sizeBytes = actualSize;
                 fr.startSector = it->startSector;
-                fr.endSector = it->startSector + (sig.maxSize + sectorSize - 1) / sectorSize;
+                fr.endSector = it->startSector + (actualSize + sectorSize - 1) / sectorSize;
                 fr.status = 0;
-                fr.confidence = 70; // Max size reached, no footer
-                fr.category = sig.category;
+                fr.confidence = confidence;
+                fr.category = refineCarveCategory(probeBuf.empty() ? nullptr : probeBuf.data(),
+                                                  probeBuf.size(), effExt, sig.category);
                 fr.source = "carver";
                 fr.createdAt = 0;
                 fr.modifiedAt = 0;
                 
-                callback(fr);
+                emit(fr);
                 
                 it = activeCarves.erase(it);
             } else {
@@ -572,32 +760,45 @@ bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallbac
         FileRecord progressTick;
         progressTick.id = -1;
         progressTick.startSector = sector + chunkSectors;
-        callback(progressTick);
+        emit(progressTick);
     }
 
     // Process remaining active carves when disk ends
-    uint64_t endOfDiskOffset = diskSize;
+    uint64_t endOfDiskOffset = std::min(diskSize, rangeEndSector * sectorSize);
     for (const auto& ac : activeCarves) {
         const auto& sig = signatures[ac.sigId];
         uint64_t actualSize = std::min(sig.maxSize, endOfDiskOffset > ac.startOffset ? endOfDiskOffset - ac.startOffset : 0);
-        
+        std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
+        int confidence = 70;
+        uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
+        probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+        std::vector<uint8_t> probeBuf;
+        if (probe > 0) {
+            probeBuf.resize(probe);
+            if (reader.readSectors(ac.startOffset, probe, probeBuf.data()).success) {
+                applyStructuralRefinement(effExt, probeBuf.data(), probeBuf.size(),
+                                          actualSize, effExt, confidence);
+            }
+        }
+
         FileRecord fr;
         fr.id = 0;
         fr.parentId = 0;
         fr.name = ac.filename;
-        fr.extension = sig.extension.empty() ? "" : sig.extension.substr(1);
+        fr.extension = effExt;
         fr.path = "/recovered_raw/" + fr.name;
         fr.sizeBytes = actualSize;
         fr.startSector = ac.startSector;
         fr.endSector = ac.startSector + (actualSize + sectorSize - 1) / sectorSize;
         fr.status = 0;
-        fr.confidence = 70;
-        fr.category = sig.category;
+        fr.confidence = confidence;
+        fr.category = refineCarveCategory(probeBuf.empty() ? nullptr : probeBuf.data(), probeBuf.size(),
+                                        effExt, sig.category);
         fr.source = "carver";
         fr.createdAt = 0;
         fr.modifiedAt = 0;
         
-        callback(fr);
+        emit(fr);
     }
 
     return true;
