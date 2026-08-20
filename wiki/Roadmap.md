@@ -8,15 +8,14 @@ Sources: `README.md`, `docs/superpowers/plans/`, `.superpowers/sdd/2026-08-20-re
 
 | Item | Status | Notes |
 |------|--------|-------|
-| GitHub Actions CI on `main` | Now | Workflow exists locally; push requires `gh auth refresh -s workflow` |
+| GitHub Actions CI on `main` | Done | Typecheck, native, Vitest, Playwright, dist smoke |
 | GitHub Wiki publish | Now | `wiki/` + `scripts/sync-wiki.sh` |
-| Shared `diskReader_` hardening | Now | Audit AR20-004; serialize or split reader handles |
+| Shared `diskReader_` hardening | Done | `heavyOps` serializes scan/imaging/wipe/content-search |
 
 ## Next
 
 | Item | Status | Notes |
 |------|--------|-------|
-| VSS snapshot scan path | Next | Phase 2 plan; quick scan uses sentinel today |
 | APFS full container walk | Next | Partial omap btree only; documented limit |
 | 500 GB sparse deep-scan bench in CI | Next | README benchmark table — manual only |
 | Issue triage from audit CONCERNS | Next | Track in GitHub Issues |
@@ -26,7 +25,7 @@ Sources: `README.md`, `docs/superpowers/plans/`, `.superpowers/sdd/2026-08-20-re
 | Item | Status | Notes |
 |------|--------|-------|
 | GPU PFAC carving | Later | Explicitly deferred (Task 6.1, CPU-only constraint) |
-| BitLocker TPM/password unlock | Later | Out of scope — FVEK/clear-key only |
+| BitLocker user/recovery password (0x2000/0x0800) | Done | FVEK apply + scan; TPM-only still out of scope |
 | NIST 800-88 SSD sanitization | Later | PhysicalDrive wipe is DoD-style, not certified sanitization |
 
 ## Done (selected milestones)

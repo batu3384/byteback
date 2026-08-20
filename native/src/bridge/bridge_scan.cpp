@@ -590,7 +590,16 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
 
     if (bdata->contentSearchContext) {
         bdata->contentSearchContext->coordinator.stopSearch();
+        if (bdata->contentSearchContext->holdsHeavyOp) {
+            bdata->endHeavyOp();
+            bdata->contentSearchContext->holdsHeavyOp = false;
+        }
         bdata->contentSearchContext.reset();
+    }
+
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
@@ -598,14 +607,19 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     Napi::Function cb = info[2].As<Napi::Function>();
 
     auto state = bdata->engine.getMetadataStore().getScanState(scanId);
-    if (state.id <= 0) return Napi::Boolean::New(env, false);
+    if (state.id <= 0) {
+        bdata->endHeavyOp();
+        return Napi::Boolean::New(env, false);
+    }
 
     int driveIndex = state.driveIndex;
     if (driveIndex < 0 && !bdata->raid) {
+        bdata->endHeavyOp();
         return Napi::Boolean::New(env, false);
     }
 
     auto context = std::make_shared<ContentSearchContext>();
+    context->holdsHeavyOp = true;
     bdata->contentSearchContext = context;
     context->tsfn = Napi::ThreadSafeFunction::New(env, cb, "ContentSearchCallback", 0, 1,
                                                   [](Napi::Env) {});
@@ -638,7 +652,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
         tsfnPost(context->tsfn, callback);
     };
 
-    auto onFinished = [context](int status) {
+    auto onFinished = [context, bdata](int status) {
         auto callback = [status](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "complete"));
@@ -647,6 +661,10 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
         };
         tsfnPost(context->tsfn, callback);
         context->tsfn.Release();
+        if (context->holdsHeavyOp && bdata) {
+            bdata->endHeavyOp();
+            context->holdsHeavyOp = false;
+        }
     };
 
     context->coordinator.startSearch(bdata->engine.getMetadataStore(), driveIndex, bdata->raid,
@@ -662,6 +680,10 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (bdata && bdata->contentSearchContext) {
         bdata->contentSearchContext->coordinator.requestStop();
+        if (bdata->contentSearchContext->holdsHeavyOp) {
+            bdata->endHeavyOp();
+            bdata->contentSearchContext->holdsHeavyOp = false;
+        }
     }
     return env.Undefined();
     NAPI_CATCH

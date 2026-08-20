@@ -23,6 +23,8 @@ export type {
   SearchFilesResult,
 } from './ipc-contract'
 
+export type { HexReadResult, IpcOkResult } from './ipc-result'
+
 import type {
   DriveInfo,
   FileRecord,
@@ -45,6 +47,7 @@ import type {
   NsrlStats,
   SearchFilesResult,
 } from './ipc-contract'
+import type { HexReadResult, IpcOkResult } from './ipc-result'
 
 declare global {
   interface Window {
@@ -69,13 +72,13 @@ declare global {
       onImagingProgress: (callback: (data: { current: number; total: number; md5?: string }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
-      readHexData: (driveIndex: number, offset: number, size: number) => Promise<number[] | null>
+      readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>
 
       getFileCount: (scanId: number) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
       searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<SearchFilesResult>
       searchFileContent: (scanId: number, query: string, offset: number, limit: number) => Promise<SearchFilesResult>
-      startContentSearch: (scanId: number, query: string) => Promise<boolean>
+      startContentSearch: (scanId: number, query: string) => Promise<IpcOkResult>
       stopContentSearch: () => void
       onContentSearchProgress: (callback: (data: { current: number; total: number }) => void) => () => void
       onContentSearchMatch: (callback: (data: FileRecord) => void) => () => void
@@ -89,7 +92,7 @@ declare global {
 
       pickAndWipeFile: () => Promise<boolean>
       pickAndWipeFreeSpace: () => Promise<boolean>
-      wipePhysicalDrive: (driveIndex: number, typedSerial: string, confirmPhrase: string) => Promise<boolean>
+      wipePhysicalDrive: (driveIndex: number, typedSerial: string, confirmPhrase: string) => Promise<IpcOkResult>
       setBitLockerFvek: (hex: string) => Promise<boolean>
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>
       setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>

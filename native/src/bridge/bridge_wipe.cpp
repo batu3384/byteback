@@ -84,7 +84,10 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info) {
 
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return Napi::Boolean::New(env, false);
-    if (!bdata->tryBeginHeavyOp()) return Napi::Boolean::New(env, false);
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     forensic::AuditLogger::GetInstance().LogEvent("WIPE_START | target=" + targetPath);
 
@@ -234,7 +237,10 @@ Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
     }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return Napi::Boolean::New(env, false);
-    if (!bdata->tryBeginHeavyOp()) return Napi::Boolean::New(env, false);
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
     int index = info[0].As<Napi::Number>().Int32Value();
     std::string typed = info[1].As<Napi::String>().Utf8Value();
     auto drives = bdata->engine.getDiskReader().enumerateDrives();

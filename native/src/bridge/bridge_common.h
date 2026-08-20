@@ -61,6 +61,7 @@ struct ImagerContext {
 struct ContentSearchContext {
     byteback::ContentSearchCoordinator coordinator;
     Napi::ThreadSafeFunction tsfn;
+    bool holdsHeavyOp = false;
 };
 
 struct BridgeData {

@@ -18,9 +18,9 @@
 
 ## Documented product limits (not vulnerabilities)
 
-- BitLocker: FVEK hex / clear-key recovery password only — no TPM/password cracking.
+- BitLocker: FVEK hex, **0x0800 recovery password**, or **0x2000 user password** (Windows) — no TPM-only / startup-key bypass.
 - APFS: partial container walk — not full snapshot parse.
-- VSS: quick-scan sentinel — full snapshot mount not shipped.
+- VSS: quick-scan shadow-copy enumeration — not full snapshot mount workflow.
 - SSD TRIM: deep carve after TRIM is physically unreliable — UI warns.
 - SSD / file wipe ≠ NIST 800-88 sanitization.
 

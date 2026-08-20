@@ -15,6 +15,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
   const [sector, setSector] = useState(globalSectorCache)
   const [data, setData] = useState<number[]>([])
   const [readFailed, setReadFailed] = useState(false)
+  const [readError, setReadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   // Update cache whenever sector changes
@@ -29,11 +30,13 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
       const offset = secIndex * sectorSize
       if (window.api && window.api.readHexData) {
         const result = await window.api.readHexData(driveIndex, offset, sectorSize)
-        if (result && Array.isArray(result) && result.length > 0) {
+        if (result.data && result.data.length > 0) {
           setReadFailed(false)
-          setData(result)
+          setReadError(null)
+          setData(result.data)
         } else {
           setReadFailed(true)
+          setReadError(result.error ?? 'Sektör okunamadı')
           setData([])
         }
       }
@@ -96,7 +99,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
 
       {readFailed && (
         <div className="glass-panel" role="alert" style={{ padding: '16px 24px', marginBottom: '16px', borderLeft: '4px solid var(--alert-red)' }}>
-          Sektör okunamadı. Sıfır dolu ızgara gösterilmiyor.
+          {readError ?? 'Sektör okunamadı.'} Sıfır dolu ızgara gösterilmiyor.
         </div>
       )}
 
