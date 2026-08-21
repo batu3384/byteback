@@ -44,7 +44,7 @@ describe('scan-required', () => {
   })
 
   it('diskBusyMessage translates native busy errors', () => {
-    expect(diskBusyMessage('Another disk operation is already running')?.includes('Tarama')).toBe(true)
+    expect(diskBusyMessage('Another disk operation is already running')?.includes('önizleme')).toBe(true)
     expect(diskBusyMessage('Sektör okunamadı')).toBe('Sektör okunamadı')
   })
 })

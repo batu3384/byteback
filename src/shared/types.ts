@@ -89,8 +89,11 @@ declare global {
       getScanSummary: (scanId: number) => Promise<ScanSummary>
       getScanState: (scanId: number) => Promise<ScanState>
       getLatestScanId: () => Promise<number>
+      getLatestUsableScanId: () => Promise<number>
+      resetScanDatabase: () => Promise<boolean>
       getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
       getAuditLog: (maxLines?: number) => Promise<string[]>
+      getSessionLog: (maxLines?: number) => Promise<{ path: string; lines: string[]; summary: string }>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
       pickAndWipeFile: () => Promise<IpcOkResult>

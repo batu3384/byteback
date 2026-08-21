@@ -70,8 +70,12 @@ contextBridge.exposeInMainWorld('api', {
   getScanSummary: (scanId: number) => ipcRenderer.invoke('get-scan-summary', scanId),
   getScanState: (scanId: number) => ipcRenderer.invoke('get-scan-state', scanId),
   getLatestScanId: () => ipcRenderer.invoke('get-latest-scan-id'),
+  getLatestUsableScanId: () => ipcRenderer.invoke('get-latest-usable-scan-id'),
+  resetScanDatabase: () => ipcRenderer.invoke('reset-scan-database'),
   getTimelineEvents: (scanId: number, offset: number, limit: number, filter?: string) => ipcRenderer.invoke('get-timeline-events', scanId, offset, limit, filter),
   getAuditLog: (maxLines?: number) => ipcRenderer.invoke('get-audit-log', maxLines),
+  getSessionLog: (maxLines?: number) =>
+    ipcRenderer.invoke('get-session-log', maxLines) as Promise<{ path: string; lines: string[]; summary: string }>,
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
 
   pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),

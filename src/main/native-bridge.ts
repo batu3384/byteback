@@ -47,6 +47,8 @@ interface BytebackEngine {
   getScanSummary(scanId: number): ScanSummary
   getScanState(scanId: number): ScanState
   getLatestScanId(): number
+  getLatestUsableScanId(): number
+  resetScanDatabase(): boolean
   getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
   getAuditLog(maxLines?: number): string[]
   readSectors(driveIndex: number, offset: number, size: number): {

@@ -66,7 +66,7 @@ function Sidebar({ activePage, activeScanId, scanBusy, onNavigate }: SidebarProp
                 const isActive = activePage === item.id
                 let title: string | undefined
                 if (needsScan && !scanReady) title = 'Önce bir taramayı tamamlayın'
-                else if (needsIdleDisk && scanBusy) title = 'Tarama bitince kullanılabilir'
+                else if (needsIdleDisk && scanBusy) title = 'Hex, imaj ve imha tarama bitene kadar kapalı'
                 return (
                   <li key={item.id}>
                     <button

@@ -36,9 +36,9 @@ export function getExtension(filename: string): string {
 }
 
 export function getFileType(ext: string): string {
-  if (['jpg', 'png', 'gif', 'jpeg', 'bmp', 'webp', 'heic', 'tiff', 'svg'].includes(ext)) return 'img'
+  if (['jpg', 'png', 'gif', 'jpeg', 'bmp', 'webp', 'heic', 'heif', 'avif', 'tiff', 'svg'].includes(ext)) return 'img'
   if (['doc', 'docx', 'pdf', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'doc'
-  if (['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv'].includes(ext)) return 'video'
+  if (['mp4', 'avi', 'mkv', 'mov', 'flv', 'wmv', 'm4v', 'webm'].includes(ext)) return 'video'
   if (['mp3', 'wav', 'flac', 'ogg', 'aac'].includes(ext)) return 'audio'
   if (['zip', 'rar', '7z', 'gz', 'tar', 'iso'].includes(ext)) return 'archive'
   return 'other'

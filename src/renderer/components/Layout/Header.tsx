@@ -2,10 +2,6 @@ import React, { useEffect, useState } from 'react'
 import './Header.css'
 import { Sun, Moon } from 'lucide-react'
 
-interface HeaderProps {
-  title: string
-}
-
 const pageTitles: Record<string, string> = {
   dashboard: 'Ana Ekran',
   scan: 'Aktif Tarama',
@@ -21,7 +17,14 @@ const pageTitles: Record<string, string> = {
   case: 'Dava / NSRL',
 }
 
-function Header({ title }: HeaderProps): React.ReactElement {
+interface HeaderProps {
+  title: string
+  scanBusy?: boolean
+  scanPercent?: number
+  onOpenScan?: () => void
+}
+
+function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): React.ReactElement {
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     (localStorage.getItem('byteback-theme') as 'dark' | 'light') || 'dark'
   )
@@ -37,6 +40,11 @@ function Header({ title }: HeaderProps): React.ReactElement {
         <h2>{pageTitles[title] || title.toUpperCase()}</h2>
       </div>
       <div className="header-actions">
+        {scanBusy && onOpenScan && title !== 'scan' && (
+          <button type="button" className="scan-pill" onClick={onOpenScan}>
+            Tarama sürüyor{typeof scanPercent === 'number' ? ` · %${scanPercent}` : ''}
+          </button>
+        )}
         <button
           className="icon-btn"
           type="button"
