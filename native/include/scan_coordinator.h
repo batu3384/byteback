@@ -27,6 +27,7 @@ struct ScanBounds {
 struct ScanTarget {
     int64_t partitionStartSector = -1;
     uint64_t partitionSizeSectors = 0;
+    // Overall scanned_sectors from DB at resume; floors progress so UI never rewinds.
     uint64_t resumeAtSector = 0;
     bool metadataComplete = false;
     uint64_t carveResumeSector = 0;

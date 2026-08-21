@@ -1,4 +1,4 @@
-/** Pages and actions that require a completed scan persisted in SQLite. */
+/** Pages and actions that require a scan session persisted in SQLite. */
 
 import { isCompleteScan, isUsableScan, SCAN_STATUS } from './scan-session'
 import type { ScanState } from './ipc-contract'
@@ -22,12 +22,14 @@ export function hasValidScanId(scanId: number): boolean {
   return typeof scanId === 'number' && scanId > 0
 }
 
+/** Results / search / timeline: paused or complete session is enough. */
 export function hasUsableScanSession(scanId: number, state?: ScanState | null): boolean {
   if (!hasValidScanId(scanId)) return false
   if (state && state.id === scanId) return isUsableScan(state)
   return true
 }
 
+/** Adli rapor: only status=complete (1). Paused scans stay locked. */
 export function canGenerateReport(scanId: number, state?: ScanState | null): boolean {
   if (!hasValidScanId(scanId)) return false
   if (state && state.id === scanId) return isCompleteScan(state)

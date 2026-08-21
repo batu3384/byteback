@@ -254,6 +254,36 @@ TEST(ScanCoordinator, QuickScanProgressNeverDecreasesOnJumpingRuns) {
     EXPECT_FALSE(decreased) << "progress used file startSector and rewound";
 }
 
+TEST(ScanCoordinator, DeepResumeProgressNeverRewinds) {
+    auto img = byteback::testfix::buildPngCarveDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    const uint64_t total = reader.getDiskSize() / reader.getSectorSize();
+    ScanTarget target;
+    target.metadataComplete = true;
+    target.carveResumeSector = 0;
+    // Simulate pause near end of metadata share of the bar.
+    target.resumeAtSector = (total * 3) / 4;
+
+    uint64_t last = 0;
+    bool decreased = false;
+    size_t ticks = 0;
+    std::atomic<bool> running{true};
+    runDeepScan(reader, [](const FileRecord&) {},
+                [&](uint64_t current, uint64_t) {
+                    ++ticks;
+                    if (ticks == 1) EXPECT_GE(current, target.resumeAtSector);
+                    if (current < last) decreased = true;
+                    last = current;
+                },
+                &running, nullptr, {}, target);
+
+    EXPECT_GT(ticks, 0u);
+    EXPECT_FALSE(decreased) << "resume mapped carve progress below resumeAtSector";
+    EXPECT_EQ(last, total);
+}
+
 TEST(ScanCoordinator, QuickScanMetadataProgressHasMidTicks) {
     auto img = byteback::testfix::buildNtfsJumpingDataRunsVolume();
     DiskReader reader;
