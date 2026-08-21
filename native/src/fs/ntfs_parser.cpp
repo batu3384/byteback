@@ -4,6 +4,7 @@
 #include "fs/ntfs_logfile.h"
 #include "fs/ntfs_path_rebuild.h"
 #include "fs/ntfs_recycle.h"
+#include "fs/ntfs_thumbcache.h"
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -688,9 +689,12 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
     ntfs::applyRecycleBinRecords(tempFiles);
 
+    int64_t thumbcacheId = 900000;
     for (auto& tf : tempFiles) {
         if (tf.fr.source == "ntfs_recycle_meta") continue;
         callback(tf.fr);
+        if (isRunning && !(*isRunning)) break;
+        ntfs::emitThumbcacheThumbnails(reader, tf.fr, thumbcacheId, callback, isRunning);
     }
 
     // ponytail: resident $INDEX_ROOT only. Slack names stay off the MFT map so

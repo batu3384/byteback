@@ -3,8 +3,8 @@
 
 using namespace byteback;
 
-TEST(SignatureCoverage, LoadsAtLeastTwoHundredSignatures) {
+TEST(SignatureCoverage, LoadsAtLeastFourHundredSignatures) {
     CarvingEngine carver;
     ASSERT_TRUE(carver.loadSignatures(""));
-    EXPECT_GE(carver.signatureCount(), 200u);
+    EXPECT_GE(carver.signatureCount(), 400u);
 }

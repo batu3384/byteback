@@ -1,7 +1,15 @@
 // bridge_drives.cpp — drive enumeration, partition tables, raw sector reads
 // and SMART/health queries. See bridge_common.h for the shared context.
 #include "bridge_common.h"
+#include "byteback_carver.h"
 #include "io/volume_mapper_win.h"
+
+Napi::Value GetCarveSignatureCount(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    return Napi::Number::New(env, static_cast<double>(byteback::CarvingEngine::globalSignatureCount()));
+    NAPI_CATCH
+}
 
 Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();

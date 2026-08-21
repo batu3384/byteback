@@ -36,6 +36,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('get-version', () =>
     callNative('get-version', () => getEngine().getVersion())
   )
+  ipcMain.handle('get-carve-signature-count', () =>
+    callNative('get-carve-signature-count', () => getEngine().getCarveSignatureCount())
+  )
 
   ipcMain.handle('is-admin', () =>
     callNative('is-admin', () => getEngine().isAdministrator())

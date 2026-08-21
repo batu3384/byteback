@@ -31,6 +31,7 @@ function ScanView({
   const [deletedCount, setDeletedCount] = useState(0)
   const [listCount, setListCount] = useState(0)
   const [carvedCount, setCarvedCount] = useState(0)
+  const [carveSignatureCount, setCarveSignatureCount] = useState<number | null>(null)
   const [filesFound, setFilesFound] = useState<any[]>([])
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const [hfsTruncated, setHfsTruncated] = useState(false)
@@ -42,6 +43,17 @@ function ScanView({
   const [etaSeconds, setEtaSeconds] = useState(-1)
 
   useEffect(() => { pageRef.current = page }, [page])
+
+  useEffect(() => {
+    if (scanType !== 'deep' && scanType !== 'full_carve') {
+      setCarveSignatureCount(null)
+      return
+    }
+    if (!window.api?.getCarveSignatureCount) return
+    void window.api.getCarveSignatureCount()
+      .then((n) => setCarveSignatureCount(n))
+      .catch(() => setCarveSignatureCount(null))
+  }, [scanType])
 
   useEffect(() => {
     if (status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi') {
@@ -177,7 +189,7 @@ function ScanView({
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
         {scanType === 'deep' || scanType === 'full_carve'
-          ? 'Önce dosya sistemi metadata ($MFT vb.), sonra boş alan oyması. Oymada sayı yavaş artar; metadata bitince kayıt sayısı zaten dolu olabilir.'
+          ? `Önce dosya sistemi metadata ($MFT vb.), sonra boş alan oyması (${carveSignatureCount != null ? carveSignatureCount.toLocaleString('tr-TR') : '…'} imza). Oymada sayı yavaş artar; metadata bitince kayıt sayısı zaten dolu olabilir. Thumbcache DB içindeki küçük önizlemeler de taranır.`
           : 'Hızlı tarama yalnız metadata okur (silinmiş MFT/FAT kayıtları dahil). Boş alan oyması için Derin tarama kullanın.'}
       </div>
 

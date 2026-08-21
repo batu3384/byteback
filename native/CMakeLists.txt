@@ -188,6 +188,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_virtual_raid_io.cpp
     tests/test_signature_carve.cpp
     tests/test_signature_coverage.cpp
+    tests/test_ntfs_thumbcache.cpp
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
     tests/test_dedup_index.cpp

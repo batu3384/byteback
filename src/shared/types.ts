@@ -55,6 +55,7 @@ declare global {
   interface Window {
     api: {
       getVersion: () => Promise<string>
+      getCarveSignatureCount: () => Promise<number>
       getDbStatus: () => Promise<{ ready: boolean; error?: string }>
       isAdmin: () => Promise<boolean>
       listDrives: () => Promise<DriveInfo[]>

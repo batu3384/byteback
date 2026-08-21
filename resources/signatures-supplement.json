@@ -1,0 +1,1914 @@
+[
+  {
+    "format": "HEIF Image",
+    "extension": ".heif",
+    "category": "Image",
+    "header": "000000186674797068656966",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "HEIF mif1",
+    "extension": ".heif",
+    "category": "Image",
+    "header": "00000018667479706d696631",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "HEVC HEIC",
+    "extension": ".heic",
+    "category": "Image",
+    "header": "000000186674797068656576",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "HEIC heix",
+    "extension": ".heic",
+    "category": "Image",
+    "header": "000000186674797068656978",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "HEIC hev1",
+    "extension": ".heic",
+    "category": "Image",
+    "header": "000000186674797068657631",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "HEIC msf1",
+    "extension": ".heic",
+    "category": "Image",
+    "header": "00000018667479706d736631",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "AVIF avif1",
+    "extension": ".avif",
+    "category": "Image",
+    "header": "000000206674797061766966",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "AVIF avis",
+    "extension": ".avif",
+    "category": "Image",
+    "header": "000000206674797061766973",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "MP4 isom",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "000000186674797069736f6d",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 iso2",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "000000186674797069736f32",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 mp41",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "00000018667479706d703431",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 mp42",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "00000018667479706d703432",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 avc1",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "000000186674797061766331",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 M4V",
+    "extension": ".m4v",
+    "category": "Video",
+    "header": "0000001c667479704d345620",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "MP4 M4A",
+    "extension": ".m4a",
+    "category": "Audio",
+    "header": "0000001c667479704d344120",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "MP4 f4v",
+    "extension": ".f4v",
+    "category": "Video",
+    "header": "000000186674797066347620",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "3GP 3gp5",
+    "extension": ".3gp",
+    "category": "Video",
+    "header": "000000186674797033677035",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "MOV qt  ",
+    "extension": ".mov",
+    "category": "Video",
+    "header": "000000146674797071742020",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "JPEG EXIF alt",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffe2",
+    "footer": "ffd9",
+    "max_size": 268435456
+  },
+  {
+    "format": "JPEG Canon",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffe8",
+    "footer": "ffd9",
+    "max_size": 268435456
+  },
+  {
+    "format": "JPEG SPIFF",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffeb",
+    "footer": "ffd9",
+    "max_size": 268435456
+  },
+  {
+    "format": "JPEG raw",
+    "extension": ".jpg",
+    "category": "Image",
+    "header": "ffd8ffdb",
+    "footer": "ffd9",
+    "max_size": 268435456
+  },
+  {
+    "format": "Windows Thumbs OLE",
+    "extension": ".db",
+    "category": "Image",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "RealMedia RV",
+    "extension": ".rv",
+    "category": "Video",
+    "header": "5245460304",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Matroska audio",
+    "extension": ".mka",
+    "category": "Audio",
+    "header": "1a45dfa393428288",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Ogg Video",
+    "extension": ".ogv",
+    "category": "Video",
+    "header": "4f676753",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "MPEG-4 AAC in MP4",
+    "extension": ".aac",
+    "category": "Audio",
+    "header": "000000186674797041414320",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Canon THM JPEG",
+    "extension": ".thm",
+    "category": "Image",
+    "header": "ffd8ffe1",
+    "footer": "",
+    "max_size": 5242880
+  },
+  {
+    "format": "GoPro LRV",
+    "extension": ".lrv",
+    "category": "Video",
+    "header": "000000186674797071742020",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "DJI video",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "0000001866747970646a696d",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Samsung NX",
+    "extension": ".srw",
+    "category": "Image",
+    "header": "49492a00",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Panasonic RAW",
+    "extension": ".raw",
+    "category": "Image",
+    "header": "49492a00",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Fuji X RAW",
+    "extension": ".raf",
+    "category": "Image",
+    "header": "46554a495346494c4d434320",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Photoshop PSB large",
+    "extension": ".psb",
+    "category": "Image",
+    "header": "3842505342",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Corel PaintShop",
+    "extension": ".pspimage",
+    "category": "Image",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Sketch ZIP",
+    "extension": ".sketch",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Figma ZIP",
+    "extension": ".fig",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Blender",
+    "extension": ".blend",
+    "category": "Document",
+    "header": "424c454e444552",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Unity asset",
+    "extension": ".assets",
+    "category": "Archive",
+    "header": "556e697479465320",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Unreal pak",
+    "extension": ".pak",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Steam VPK",
+    "extension": ".vpk",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Android backup",
+    "extension": ".ab",
+    "category": "Archive",
+    "header": "414e64726f696420",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "iOS backup plist",
+    "extension": ".plist",
+    "category": "System",
+    "header": "62706c6973743030",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Chrome cache",
+    "extension": ".cache",
+    "category": "Database",
+    "header": "c3cfdcba",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Firefox places",
+    "extension": ".sqlite",
+    "category": "Database",
+    "header": "53514c69746520666f726d6174203300",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Thunderbird mbox",
+    "extension": ".msf",
+    "category": "Email",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Outlook OST OLE",
+    "extension": ".ost",
+    "category": "Email",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Outlook PST OLE",
+    "extension": ".pst",
+    "category": "Email",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Windows Event XML",
+    "extension": ".evtx",
+    "category": "System",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Windows EVTX",
+    "extension": ".evtx",
+    "category": "System",
+    "header": "456c6646696c6500",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Jump list",
+    "extension": ".automaticDestinations-ms",
+    "category": "System",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "LNK shortcut",
+    "extension": ".lnk",
+    "category": "System",
+    "header": "4c0000000114",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "Prefetch MAM",
+    "extension": ".pf",
+    "category": "System",
+    "header": "4d414d04",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "VeraCrypt",
+    "extension": ".hc",
+    "category": "Encrypted",
+    "header": "564552415452",
+    "footer": "",
+    "max_size": 0
+  },
+  {
+    "format": "TrueCrypt",
+    "extension": ".tc",
+    "category": "Encrypted",
+    "header": "54525545",
+    "footer": "",
+    "max_size": 0
+  },
+  {
+    "format": "Bitcoin wallet",
+    "extension": ".dat",
+    "category": "Database",
+    "header": "f9beb4d9",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Ethereum keystore",
+    "extension": ".json",
+    "category": "Database",
+    "header": "7b0a20202261646472657373",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Git pack",
+    "extension": ".pack",
+    "category": "Archive",
+    "header": "5041434b",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Git index",
+    "extension": ".idx",
+    "category": "Archive",
+    "header": "ff744f63",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Docker image",
+    "extension": ".tar",
+    "category": "Archive",
+    "header": "7573746172",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "WIM image",
+    "extension": ".wim",
+    "category": "Archive",
+    "header": "4d5357494d010000",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "ESD install",
+    "extension": ".esd",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "Apple plist XML",
+    "extension": ".plist",
+    "category": "System",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Apple bookmark",
+    "extension": ".bookmark",
+    "category": "System",
+    "header": "62706c6973743030",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "macOS sparsebundle",
+    "extension": ".sparsebundle",
+    "category": "DiskImage",
+    "header": "62706c6973743030",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "APFS container",
+    "extension": ".apfs",
+    "category": "DiskImage",
+    "header": "4e585346535f4353",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "HFS+ wrapper",
+    "extension": ".dmg",
+    "category": "DiskImage",
+    "header": "48584653",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "NTFS image",
+    "extension": ".img",
+    "category": "DiskImage",
+    "header": "4e54465320",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "ZFS pool",
+    "extension": ".zfs",
+    "category": "DiskImage",
+    "header": "5a4f5320",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "LVM metadata",
+    "extension": ".meta",
+    "category": "DiskImage",
+    "header": "4c564d32",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "GPT header",
+    "extension": ".gpt",
+    "category": "DiskImage",
+    "header": "4546492050415254",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "VMDK sparse",
+    "extension": ".vmdk",
+    "category": "DiskImage",
+    "header": "4b444d56",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "VHDX footer",
+    "extension": ".vhdx",
+    "category": "DiskImage",
+    "header": "7668647866696c65",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "QCOW header",
+    "extension": ".qcow2",
+    "category": "DiskImage",
+    "header": "514649fb",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "Parallels HDD",
+    "extension": ".hdd",
+    "category": "DiskImage",
+    "header": "50415241",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "VirtualBox VDI",
+    "extension": ".vdi",
+    "category": "DiskImage",
+    "header": "3c3c3c20",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "Xen VDI",
+    "extension": ".vdi",
+    "category": "DiskImage",
+    "header": "78656e76",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "Hyper-V AVHD",
+    "extension": ".avhd",
+    "category": "DiskImage",
+    "header": "636f6e6563746978",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "VMware VMX",
+    "extension": ".vmx",
+    "category": "Misc",
+    "header": "2369643a",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "VMware VMSD",
+    "extension": ".vmsd",
+    "category": "Misc",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "VirtualBox OVA",
+    "extension": ".ova",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 107374182400
+  },
+  {
+    "format": "OpenDocument ODG",
+    "extension": ".odg",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "OpenDocument ODF",
+    "extension": ".odf",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "OpenDocument ODB",
+    "extension": ".odb",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "StarOffice",
+    "extension": ".sdc",
+    "category": "Archive",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Works WPS",
+    "extension": ".wps",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "WordPerfect",
+    "extension": ".wpd",
+    "category": "Document",
+    "header": "ff575043",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Quattro Pro",
+    "extension": ".wb1",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Lotus 123 WK1",
+    "extension": ".wk1",
+    "category": "Document",
+    "header": "00001a00",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Lotus 123 WK3",
+    "extension": ".wk3",
+    "category": "Document",
+    "header": "00001b00",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Excel XLSB",
+    "extension": ".xlsb",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "PowerPoint PPS",
+    "extension": ".pps",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Visio VSDX",
+    "extension": ".vsdx",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Project MPP",
+    "extension": ".mpp",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "OneNote ONE",
+    "extension": ".one",
+    "category": "Document",
+    "header": "e4525c7b8cd9a74d",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Publisher PUB",
+    "extension": ".pub",
+    "category": "Document",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Access MDB OLE",
+    "extension": ".mdb",
+    "category": "Database",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Access ACCDB OLE",
+    "extension": ".accdb",
+    "category": "Database",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "MyISAM MYD",
+    "extension": ".myd",
+    "category": "Database",
+    "header": "fe010007",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "PostgreSQL backup",
+    "extension": ".backup",
+    "category": "Database",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Redis AOF",
+    "extension": ".aof",
+    "category": "Database",
+    "header": "5245444953",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "LevelDB SST",
+    "extension": ".sst",
+    "category": "Database",
+    "header": "3a737461747573",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Cassandra SSTable",
+    "extension": ".db",
+    "category": "Database",
+    "header": "535441424c4500",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "InfluxDB",
+    "extension": ".db",
+    "category": "Database",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Parquet",
+    "extension": ".parquet",
+    "category": "Database",
+    "header": "50415231",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Arrow IPC",
+    "extension": ".arrow",
+    "category": "Database",
+    "header": "414152314631",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "ORC",
+    "extension": ".orc",
+    "category": "Database",
+    "header": "4f52430a",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Avro",
+    "extension": ".avro",
+    "category": "Database",
+    "header": "4f626a01",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "HDF5",
+    "extension": ".h5",
+    "category": "Database",
+    "header": "894844460d0a1a0a",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "NetCDF",
+    "extension": ".nc",
+    "category": "Database",
+    "header": "43444601",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "GRIB weather",
+    "extension": ".grib",
+    "category": "Misc",
+    "header": "47524942",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Shapefile SHP",
+    "extension": ".shp",
+    "category": "Misc",
+    "header": "0000270a",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "GeoJSON",
+    "extension": ".geojson",
+    "category": "Misc",
+    "header": "7b0a2020227479706522",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "KML Google",
+    "extension": ".kml",
+    "category": "Misc",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "GPX GPS",
+    "extension": ".gpx",
+    "category": "Misc",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "NMEA GPS",
+    "extension": ".nmea",
+    "category": "Misc",
+    "header": "24504752",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "FIT Garmin",
+    "extension": ".fit",
+    "category": "Misc",
+    "header": "0e104309",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "TCX training",
+    "extension": ".tcx",
+    "category": "Misc",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "ICS calendar",
+    "extension": ".ics",
+    "category": "Misc",
+    "header": "424547494e3a5643414c",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "VCF contact",
+    "extension": ".vcf",
+    "category": "Misc",
+    "header": "424547494e3a5643415244",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "EML received",
+    "extension": ".eml",
+    "category": "Email",
+    "header": "52656365697665643a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "TNEF winmail",
+    "extension": ".dat",
+    "category": "Email",
+    "header": "786f666a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "MBOX from",
+    "extension": ".mbox",
+    "category": "Email",
+    "header": "46726f6d20",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "PST OST BDB",
+    "extension": ".pst",
+    "category": "Email",
+    "header": "2142444e",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Wireshark pcapng",
+    "extension": ".pcapng",
+    "category": "Network",
+    "header": "0a0d0d0a",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "pcap classic",
+    "extension": ".pcap",
+    "category": "Network",
+    "header": "d4c3b2a1",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "pcap nanosecond",
+    "extension": ".pcap",
+    "category": "Network",
+    "header": "a1b2c34d",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "snoop pcap",
+    "extension": ".snoop",
+    "category": "Network",
+    "header": "736e6f6f70000000",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Ethereal",
+    "extension": ".pcap",
+    "category": "Network",
+    "header": "a1b23c4d",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "Cisco CAPWAP",
+    "extension": ".pcap",
+    "category": "Network",
+    "header": "4d3c2b1a",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "SSL keylog",
+    "extension": ".sslkeylog",
+    "category": "Network",
+    "header": "434c49454e545f5241",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Bitcoin block",
+    "extension": ".dat",
+    "category": "Misc",
+    "header": "f9beb4d9",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "ZIP spanned",
+    "extension": ".zip",
+    "category": "Archive",
+    "header": "504b0708",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "ZIP empty",
+    "extension": ".zip",
+    "category": "Archive",
+    "header": "504b0506",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "ZIP store",
+    "extension": ".zip",
+    "category": "Archive",
+    "header": "504b030414000000",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "XZ tar",
+    "extension": ".txz",
+    "category": "Archive",
+    "header": "fd377a585a00",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "ZSTD tar",
+    "extension": ".tar.zst",
+    "category": "Archive",
+    "header": "28b52ffd",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "LZ4 frame",
+    "extension": ".lz4",
+    "category": "Archive",
+    "header": "04224d18",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Snappy",
+    "extension": ".sz",
+    "category": "Archive",
+    "header": "ff060000734e61705059",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "LHA archive",
+    "extension": ".lzh",
+    "category": "Archive",
+    "header": "2d6c682d",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "ACE archive",
+    "extension": ".ace",
+    "category": "Archive",
+    "header": "2a2a4143452a2a",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "StuffIt SIT",
+    "extension": ".sit",
+    "category": "Archive",
+    "header": "5369746821",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "StuffIt SITX",
+    "extension": ".sitx",
+    "category": "Archive",
+    "header": "537474757874",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "NSIS installer",
+    "extension": ".exe",
+    "category": "Executable",
+    "header": "4d5a9000",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "MSI patch",
+    "extension": ".msp",
+    "category": "Archive",
+    "header": "d0cf11e0a1b11ae1",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "CAB install",
+    "extension": ".cab",
+    "category": "Archive",
+    "header": "4d53434600000000",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Android XAPK",
+    "extension": ".xapk",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "iOS IPA",
+    "extension": ".ipa",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Windows APPX",
+    "extension": ".appx",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Mac PKG",
+    "extension": ".pkg",
+    "category": "Archive",
+    "header": "78617221",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Debian DEB",
+    "extension": ".deb",
+    "category": "Archive",
+    "header": "213c617263686465622e",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "RPM package",
+    "extension": ".rpm",
+    "category": "Archive",
+    "header": "edabeedb",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Snap package",
+    "extension": ".snap",
+    "category": "Archive",
+    "header": "68666e73",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Flatpak",
+    "extension": ".flatpak",
+    "category": "Archive",
+    "header": "504b0304",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Kubernetes yaml",
+    "extension": ".yaml",
+    "category": "Document",
+    "header": "2d2d2d0a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Terraform state",
+    "extension": ".tfstate",
+    "category": "Document",
+    "header": "7b0a20202276657273696f6e22",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Ansible vault",
+    "extension": ".vault",
+    "category": "Encrypted",
+    "header": "2453414e535249424c4524",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "JWT token",
+    "extension": ".jwt",
+    "category": "Misc",
+    "header": "7b22747970223a",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "JSON config",
+    "extension": ".json",
+    "category": "Document",
+    "header": "7b0a2022",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "XML config",
+    "extension": ".xml",
+    "category": "Document",
+    "header": "3c3f786d6c",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "YAML config",
+    "extension": ".yaml",
+    "category": "Document",
+    "header": "2d2d2d0a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "INI config",
+    "extension": ".ini",
+    "category": "Document",
+    "header": "5b73656374696f6e5d",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "ENV file",
+    "extension": ".env",
+    "category": "Document",
+    "header": "4d4f44453d",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "Shell script",
+    "extension": ".sh",
+    "category": "Executable",
+    "header": "23212f62696e2f7368",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Batch file",
+    "extension": ".bat",
+    "category": "Executable",
+    "header": "406563686f",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "Python script",
+    "extension": ".py",
+    "category": "Document",
+    "header": "23202d2a2d",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Ruby script",
+    "extension": ".rb",
+    "category": "Document",
+    "header": "23202d2a2d",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Perl script",
+    "extension": ".pl",
+    "category": "Document",
+    "header": "23212f7573722f62696e",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "PHP script",
+    "extension": ".php",
+    "category": "Document",
+    "header": "3c3f706870",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Java source",
+    "extension": ".java",
+    "category": "Document",
+    "header": "7061636b61676520",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Go module",
+    "extension": ".go",
+    "category": "Document",
+    "header": "7061636b61676520",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Rust crate",
+    "extension": ".rs",
+    "category": "Document",
+    "header": "6372656174652120",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Swift source",
+    "extension": ".swift",
+    "category": "Document",
+    "header": "7061636b61676520",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Kotlin source",
+    "extension": ".kt",
+    "category": "Document",
+    "header": "7061636b61676520",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "TypeScript",
+    "extension": ".ts",
+    "category": "Document",
+    "header": "696d706f727420",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "JavaScript",
+    "extension": ".js",
+    "category": "Document",
+    "header": "696d706f727420",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "WebAssembly",
+    "extension": ".wasm",
+    "category": "Executable",
+    "header": "0061736d",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "LLVM bitcode",
+    "extension": ".bc",
+    "category": "Executable",
+    "header": "4243c0de",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "ELF object",
+    "extension": ".o",
+    "category": "Executable",
+    "header": "7f454c46",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Mach-O fat",
+    "extension": ".macho",
+    "category": "Executable",
+    "header": "cafebabeface",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Windows PDB",
+    "extension": ".pdb",
+    "category": "Executable",
+    "header": "4d6963726f736f6674",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "Windows MAP",
+    "extension": ".map",
+    "category": "Executable",
+    "header": "204d616e61676572",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "Canon CRW",
+    "extension": ".crw",
+    "category": "Image",
+    "header": "494146001010000000484441100104a",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "Kodak DCR",
+    "extension": ".dcr",
+    "category": "Image",
+    "header": "49492a00108000000e0000000600",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Minolta MRW",
+    "extension": ".mrw",
+    "category": "Image",
+    "header": "49492a000e0000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Olympus ORF",
+    "extension": ".orf",
+    "category": "Image",
+    "header": "49492a0010000000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Pentax PEF",
+    "extension": ".pef",
+    "category": "Image",
+    "header": "50454620",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Sigma X3F",
+    "extension": ".x3f",
+    "category": "Image",
+    "header": "464f75696368616e",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Sony ARW",
+    "extension": ".arw",
+    "category": "Image",
+    "header": "49492a0018000000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Nikon NEF",
+    "extension": ".nef",
+    "category": "Image",
+    "header": "49492a0010000000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Leica DNG",
+    "extension": ".dng",
+    "category": "Image",
+    "header": "49492a0010000000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Adobe DNG",
+    "extension": ".dng",
+    "category": "Image",
+    "header": "49492a0010000000000800",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "WMV ASF",
+    "extension": ".asf",
+    "category": "Video",
+    "header": "3026b2758e66cf11",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "RealAudio",
+    "extension": ".ra",
+    "category": "Audio",
+    "header": "2e7261fd",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "AU Sun audio",
+    "extension": ".au",
+    "category": "Audio",
+    "header": "2e736e64",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "AIFF audio",
+    "extension": ".aiff",
+    "category": "Audio",
+    "header": "464f524d",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "MIDI SMF",
+    "extension": ".mid",
+    "category": "Audio",
+    "header": "4d546864",
+    "footer": "",
+    "max_size": 5242880
+  },
+  {
+    "format": "DTS audio",
+    "extension": ".dts",
+    "category": "Audio",
+    "header": "7ffe8001",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "AMR audio",
+    "extension": ".amr",
+    "category": "Audio",
+    "header": "2321414d52",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "3GPP audio",
+    "extension": ".3ga",
+    "category": "Audio",
+    "header": "0000001866747970336761",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Vorbis OGG",
+    "extension": ".ogg",
+    "category": "Audio",
+    "header": "4f676753",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Speex OGG",
+    "extension": ".spx",
+    "category": "Audio",
+    "header": "4f676753",
+    "footer": "",
+    "max_size": 52428800
+  },
+  {
+    "format": "FLAC audio",
+    "extension": ".flac",
+    "category": "Audio",
+    "header": "664c6143",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "WV WavPack",
+    "extension": ".wv",
+    "category": "Audio",
+    "header": "7776706b",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Musepack",
+    "extension": ".mpc",
+    "category": "Audio",
+    "header": "4d502b05",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "TTA audio",
+    "extension": ".tta",
+    "category": "Audio",
+    "header": "54544131",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "DSF audio",
+    "extension": ".dsf",
+    "category": "Audio",
+    "header": "4453460304",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "IFF audio",
+    "extension": ".iff",
+    "category": "Audio",
+    "header": "464f524d",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "CAF audio",
+    "extension": ".caf",
+    "category": "Audio",
+    "header": "63616666",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "RF64 WAV",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "5246363420",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Sony WAV",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "BWF WAV",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "ADPCM WAV",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "PNG animated",
+    "extension": ".apng",
+    "category": "Image",
+    "header": "89504e470d0a1a0a",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "GIF87a",
+    "extension": ".gif",
+    "category": "Image",
+    "header": "474946383761",
+    "footer": "",
+    "max_size": 67108864
+  },
+  {
+    "format": "GIF89a",
+    "extension": ".gif",
+    "category": "Image",
+    "header": "474946383961",
+    "footer": "",
+    "max_size": 67108864
+  },
+  {
+    "format": "ICO favicon",
+    "extension": ".ico",
+    "category": "Image",
+    "header": "00000100",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "CUR cursor",
+    "extension": ".cur",
+    "category": "Image",
+    "header": "00000200",
+    "footer": "",
+    "max_size": 1048576
+  },
+  {
+    "format": "PCX image",
+    "extension": ".pcx",
+    "category": "Image",
+    "header": "0a050108",
+    "footer": "",
+    "max_size": 67108864
+  },
+  {
+    "format": "PSD large",
+    "extension": ".psd",
+    "category": "Image",
+    "header": "38425053",
+    "footer": "",
+    "max_size": 1073741824
+  },
+  {
+    "format": "XCF GIMP",
+    "extension": ".xcf",
+    "category": "Image",
+    "header": "67696d7020786366",
+    "footer": "",
+    "max_size": 524288000
+  },
+  {
+    "format": "ILBM IFF",
+    "extension": ".ilbm",
+    "category": "Image",
+    "header": "464f524d",
+    "footer": "",
+    "max_size": 67108864
+  },
+  {
+    "format": "Sun RAS",
+    "extension": ".ras",
+    "category": "Image",
+    "header": "59a66a95",
+    "footer": "",
+    "max_size": 67108864
+  },
+  {
+    "format": "XBM image",
+    "extension": ".xbm",
+    "category": "Image",
+    "header": "2f2a20584342",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "XPM image",
+    "extension": ".xpm",
+    "category": "Image",
+    "header": "2f2a2058504d",
+    "footer": "",
+    "max_size": 10485760
+  },
+  {
+    "format": "JPEG XR",
+    "extension": ".jxr",
+    "category": "Image",
+    "header": "49492a00",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "JPEG2000 jpm",
+    "extension": ".jpm",
+    "category": "Image",
+    "header": "0000000c6a502020",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "JPEG2000 jpx",
+    "extension": ".jpx",
+    "category": "Image",
+    "header": "0000000c6a502020",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "WebP RIFF",
+    "extension": ".webp",
+    "category": "Image",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 268435456
+  },
+  {
+    "format": "AVI RIFF",
+    "extension": ".avi",
+    "category": "Video",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "WAVE RIFF",
+    "extension": ".wav",
+    "category": "Audio",
+    "header": "52494646",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "RMVB video",
+    "extension": ".rmvb",
+    "category": "Video",
+    "header": "2e524d46",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "NSV video",
+    "extension": ".nsv",
+    "category": "Video",
+    "header": "4e53564d",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "MPEG-4 part2",
+    "extension": ".mp4",
+    "category": "Video",
+    "header": "00000018667479706d702432",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "Sony MXF",
+    "extension": ".mxf",
+    "category": "Video",
+    "header": "060e2b34",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "Material eXchange",
+    "extension": ".mxf",
+    "category": "Video",
+    "header": "060e2b34",
+    "footer": "",
+    "max_size": 4294967296
+  },
+  {
+    "format": "IVF VP8",
+    "extension": ".ivf",
+    "category": "Video",
+    "header": "444b4946",
+    "footer": "",
+    "max_size": 2147483648
+  },
+  {
+    "format": "Ogg Opus",
+    "extension": ".opus",
+    "category": "Audio",
+    "header": "4f676753",
+    "footer": "",
+    "max_size": 104857600
+  },
+  {
+    "format": "Matroska webm",
+    "extension": ".webm",
+    "category": "Video",
+    "header": "1a45dfa39f428681",
+    "footer": "",
+    "max_size": 4294967296
+  }
+]

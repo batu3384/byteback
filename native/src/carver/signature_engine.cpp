@@ -34,7 +34,8 @@ int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) 
     if (ext == "ts")                    return validateMpegTs(data, size);
     if (ext == "sqlite" || ext == "db") return carver::validateSqlite(data, size);
     if (ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "m4a" ||
-        ext == "qt" || ext == "3gp")   return carver::validateMp4(data, size);
+        ext == "qt" || ext == "3gp" || ext == "heic" || ext == "heif" ||
+        ext == "avif" || ext == "cr3")   return carver::validateMp4(data, size);
     return 90; // no structural validator — trust the header/footer match
 }
 
@@ -45,7 +46,8 @@ bool isZipFamilyExt(const std::string& ext) {
 
 bool isMp4FamilyExt(const std::string& ext) {
     return ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "m4a" ||
-           ext == "qt" || ext == "3gp";
+           ext == "qt" || ext == "3gp" || ext == "heic" || ext == "heif" ||
+           ext == "avif" || ext == "cr3";
 }
 
 void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size_t size,
@@ -122,9 +124,9 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     // ============================================================
     // Images (15 signatures)
     // ============================================================
-    addSig("JPEG Image", ".jpg", "Image", {0xFF, 0xD8, 0xFF}, {0xFF, 0xD9}, 15 * 1024 * 1024);
-    addSig("PNG Image", ".png", "Image", {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}, 30 * 1024 * 1024);
-    addSig("GIF Image", ".gif", "Image", {0x47, 0x49, 0x46, 0x38}, {0x00, 0x3B}, 10 * 1024 * 1024);
+    addSig("JPEG Image", ".jpg", "Image", {0xFF, 0xD8, 0xFF}, {0xFF, 0xD9}, 256 * 1024 * 1024);
+    addSig("PNG Image", ".png", "Image", {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}, 256 * 1024 * 1024);
+    addSig("GIF Image", ".gif", "Image", {0x47, 0x49, 0x46, 0x38}, {0x00, 0x3B}, 64 * 1024 * 1024);
     addSig("BMP Image", ".bmp", "Image", {0x42, 0x4D}, {}, 50 * 1024 * 1024);
     addSig("TIFF Image (LE)", ".tiff", "Image", {0x49, 0x49, 0x2A, 0x00}, {}, 100 * 1024 * 1024);
     addSig("TIFF Image (BE)", ".tiff", "Image", {0x4D, 0x4D, 0x00, 0x2A}, {}, 100 * 1024 * 1024);
@@ -132,7 +134,7 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     // lives at bytes 8..11 and is resolved by validateRiff at emit time —
     // the old trio of same-magic signatures triple-reported every RIFF file.
     addSig("RIFF Container", ".riff", "Container", {0x52, 0x49, 0x46, 0x46}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("HEIC Image", ".heic", "Image", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63}, {}, 30 * 1024 * 1024);
+    addSig("HEIC Image", ".heic", "Image", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63}, {}, 256 * 1024 * 1024);
     addSig("PSD Photoshop", ".psd", "Image", {0x38, 0x42, 0x50, 0x53}, {}, 500 * 1024 * 1024);
     addSig("ICO Icon", ".ico", "Image", {0x00, 0x00, 0x01, 0x00}, {}, 1 * 1024 * 1024);
     addSig("CUR Cursor", ".cur", "Image", {0x00, 0x00, 0x02, 0x00}, {}, 1 * 1024 * 1024);
@@ -180,8 +182,8 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     // ============================================================
     // Audio (12 signatures)
     // ============================================================
-    addSig("MP3 Audio", ".mp3", "Audio", {0x49, 0x44, 0x33}, {}, 20 * 1024 * 1024);
-    addSig("MP3 Audio (no ID3)", ".mp3", "Audio", {0xFF, 0xFB}, {}, 20 * 1024 * 1024);
+    addSig("MP3 Audio", ".mp3", "Audio", {0x49, 0x44, 0x33}, {}, 128 * 1024 * 1024);
+    addSig("MP3 Audio (no ID3)", ".mp3", "Audio", {0xFF, 0xFB}, {}, 128 * 1024 * 1024);
     addSig("FLAC Audio", ".flac", "Audio", {0x66, 0x4C, 0x61, 0x43}, {}, 100 * 1024 * 1024);
     addSig("OGG Audio", ".ogg", "Audio", {0x4F, 0x67, 0x67, 0x53}, {}, 100 * 1024 * 1024);
     addSig("AAC Audio", ".aac", "Audio", {0xFF, 0xF1}, {}, 20 * 1024 * 1024);
@@ -274,7 +276,7 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("Canon CR3 RAW", ".cr3", "Image", {0x66, 0x74, 0x79, 0x70, 0x63, 0x72, 0x78, 0x20}, {}, 100 * 1024 * 1024);
     // Documents
     addSig("Windows EDB", ".edb", "Database", {0xEF, 0xCD, 0xAB, 0x89}, {}, 500 * 1024 * 1024);
-    addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 50 * 1024 * 1024);
+    addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 512 * 1024 * 1024);
     // Archives / containers
     addSig("Apple DMG UDIF", ".dmg", "DiskImage", {0x78, 0x01, 0x73, 0x0D, 0x62, 0x70, 0x69, 0x73, 0x74}, {}, 50 * 1024 * 1024); // kolye block
     addSig("Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);
@@ -287,18 +289,99 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("EVTX Log", ".evtx", "Misc", {0x65, 0x6C, 0x69, 0x66}, {}, 100 * 1024 * 1024); // "elf" magic
 }
 
+void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
+    struct BrandRow {
+        const char* fmt;
+        const char* ext;
+        const char* cat;
+        const char* brand; // 4-char major brand
+        uint32_t boxSize;
+        uint64_t maxS;
+    };
+    static const BrandRow rows[] = {
+        {"HEIF heif", ".heif", "Image", "heif", 0x18, 256u << 20},
+        {"HEIF mif1", ".heif", "Image", "mif1", 0x18, 256u << 20},
+        {"HEIC hevc", ".heic", "Image", "hevc", 0x18, 256u << 20},
+        {"HEIC heix", ".heic", "Image", "heix", 0x18, 256u << 20},
+        {"HEIC hev1", ".heic", "Image", "hev1", 0x18, 256u << 20},
+        {"HEIC msf1", ".heic", "Image", "msf1", 0x18, 256u << 20},
+        {"AVIF avif", ".avif", "Image", "avif", 0x20, 256u << 20},
+        {"AVIF avis", ".avif", "Image", "avis", 0x20, 256u << 20},
+        {"MP4 isom", ".mp4", "Video", "isom", 0x18, 4u << 30},
+        {"MP4 iso2", ".mp4", "Video", "iso2", 0x18, 4u << 30},
+        {"MP4 mp41", ".mp4", "Video", "mp41", 0x18, 4u << 30},
+        {"MP4 mp42", ".mp4", "Video", "mp42", 0x18, 4u << 30},
+        {"MP4 avc1", ".mp4", "Video", "avc1", 0x18, 4u << 30},
+        {"MP4 ndas", ".mp4", "Video", "ndas", 0x18, 4u << 30},
+        {"MP4 dash", ".mp4", "Video", "dash", 0x18, 4u << 30},
+        {"M4V video", ".m4v", "Video", "M4V ", 0x1C, 4u << 30},
+        {"M4A audio", ".m4a", "Audio", "M4A ", 0x1C, 256u << 20},
+        {"3GP 3gp4", ".3gp", "Video", "3gp4", 0x18, 2u << 30},
+        {"3GP 3gp5", ".3gp", "Video", "3gp5", 0x18, 2u << 30},
+        {"3GP 3ga", ".3ga", "Audio", "3ga ", 0x18, 256u << 20},
+        {"MOV qt  ", ".mov", "Video", "qt  ", 0x14, 4u << 30},
+        {"F4V flash", ".f4v", "Video", "f4v ", 0x18, 4u << 30},
+        {"CR3 Canon", ".cr3", "Image", "crx ", 0x18, 256u << 20},
+    };
+    for (const auto& r : rows) {
+        FileSignature s;
+        s.id = static_cast<int>(signatures.size());
+        s.format = r.fmt;
+        s.extension = r.ext;
+        s.category = r.cat;
+        s.maxSize = r.maxS;
+        s.header.resize(12);
+        s.header[0] = static_cast<uint8_t>((r.boxSize >> 24) & 0xFF);
+        s.header[1] = static_cast<uint8_t>((r.boxSize >> 16) & 0xFF);
+        s.header[2] = static_cast<uint8_t>((r.boxSize >> 8) & 0xFF);
+        s.header[3] = static_cast<uint8_t>(r.boxSize & 0xFF);
+        s.header[4] = 'f';
+        s.header[5] = 't';
+        s.header[6] = 'y';
+        s.header[7] = 'p';
+        for (int i = 0; i < 4; ++i) s.header[8 + i] = static_cast<uint8_t>(r.brand[i]);
+        signatures.push_back(s);
+    }
+}
+
+void appendResourceSignatureFiles(std::vector<FileSignature>& signatures,
+                                  const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
+    static const char* kFiles[] = {
+        "resources/signatures.json",
+        "resources/signatures-extended.json",
+        "resources/signatures-supplement.json",
+        "../resources/signatures.json",
+        "../resources/signatures-extended.json",
+        "../resources/signatures-supplement.json",
+        "../../resources/signatures.json",
+        "../../resources/signatures-extended.json",
+        "../../resources/signatures-supplement.json",
+        "signatures-extended.json",
+        "signatures-supplement.json",
+    };
+    for (const char* path : kFiles) appendSignaturesFromJson(signatures, path, hexToBytes);
+}
+
 } // namespace
+
+size_t CarvingEngine::globalSignatureCount() {
+    static size_t count = 0;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        CarvingEngine engine;
+        if (engine.loadSignatures("")) count = engine.signatureCount();
+    });
+    return count;
+}
 
 bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     signatures.clear();
     loadEmbeddedSignatures(signatures);
+    appendFtypMediaSignatures(signatures);
 
     auto hexFn = [this](const std::string& hex) { return hexToBytes(hex); };
     if (!jsonPath.empty()) appendSignaturesFromJson(signatures, jsonPath, hexFn);
-    appendSignaturesFromJson(signatures, "resources/signatures-extended.json", hexFn);
-    appendSignaturesFromJson(signatures, "../resources/signatures-extended.json", hexFn);
-    appendSignaturesFromJson(signatures, "../../resources/signatures-extended.json", hexFn);
-    appendSignaturesFromJson(signatures, "signatures-extended.json", hexFn);
+    appendResourceSignatureFiles(signatures, hexFn);
 
     for (size_t i = 0; i < signatures.size(); ++i) signatures[i].id = static_cast<int>(i);
 

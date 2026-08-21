@@ -31,6 +31,7 @@ import type {
 
 interface BytebackEngine {
   getVersion(): string
+  getCarveSignatureCount(): number
   isAdministrator(): boolean
   listDrives(): DriveInfo[]
   listPartitions(driveIndex: number): PartitionInfo[]
