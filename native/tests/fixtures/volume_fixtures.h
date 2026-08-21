@@ -414,4 +414,112 @@ inline std::vector<uint8_t> buildExFatUnallocatedVolume() {
     return img;
 }
 
+// Two named files: first $DATA at a high cluster, second resident (MFT sector).
+// Using file startSector as scan progress rewinds the bar on this volume.
+inline std::vector<uint8_t> buildNtfsJumpingDataRunsVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t spc = 8;
+    const uint32_t dataCluster = 20;
+    const uint32_t dataSector = dataCluster * spc;
+    const char* payload = "high";
+    const uint32_t payloadLen = 4;
+
+    std::vector<uint8_t> img(ss * 256, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, ss);
+    img[0x0D] = static_cast<uint8_t>(spc);
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, static_cast<uint64_t>(spc) * ss);
+    writeLe64(img, attr + 0x30, 3072);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "high.bin";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, payloadLen);
+    writeLe64(img, attr + 56, payloadLen);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe64(img, attr + 16, 0);
+    writeLe64(img, attr + 24, 0);
+    writeLe16(img, attr + 32, 0x40);
+    writeLe64(img, attr + 40, static_cast<uint64_t>(spc) * ss);
+    writeLe64(img, attr + 48, payloadLen);
+    writeLe64(img, attr + 56, payloadLen);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = static_cast<uint8_t>(dataCluster);
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec2 = rec0 + 2048;
+    std::memcpy(img.data() + rec2, "FILE", 4);
+    writeLe16(img, rec2 + 0x14, 0x38);
+    writeLe16(img, rec2 + 0x16, 0x01);
+    writeLe32(img, rec2 + 0x18, 256);
+    writeLe32(img, rec2 + 0x1C, 1024);
+    attr = rec2 + 0x38;
+    const char* lowName = "low.txt";
+    const size_t lowLen = 7;
+    const size_t lowFn = 66 + lowLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + lowFn));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(lowFn));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    writeLe64(img, attr + 56, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(lowLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < lowLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(lowName[i]));
+    attr += 16 + 8 + lowFn;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    std::memcpy(img.data() + static_cast<size_t>(dataSector) * ss, payload, payloadLen);
+    return img;
+}
+
 } // namespace byteback::testfix

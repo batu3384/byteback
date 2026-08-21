@@ -1,4 +1,5 @@
 #include "scan_coordinator.h"
+#include "scan_progress.h"
 #include "fs/partition_scanner.h"
 #include "fs/refs_parser.h"
 #include "fs/unallocated_map.h"
@@ -7,12 +8,15 @@
 #include "fs/bitlocker_fve.h"
 #include "byteback_fs.h"
 #include <iostream>
+#include <exception>
 #include <chrono>
 #include <cstring>
 #include <climits>
 #include <algorithm>
 
 namespace byteback {
+
+thread_local const char* g_scanPhase = "metadata";
 
 namespace {
 
@@ -93,12 +97,20 @@ void runQuickScan(DiskReader& reader,
     uint64_t totalSectors = diskSectors;
     if (bounds.active()) totalSectors = bounds.sizeInSectors;
 
+    g_scanPhase = "metadata";
+    MonotonicMeter meter;
+    uint64_t workUnits = 0;
+    const uint64_t progressTotal = totalSectors > 0 ? totalSectors : 1;
+    const uint64_t estimated = std::max<uint64_t>(1, progressTotal / 8);
+
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
         FileRecord out = fr;
         tagRaidScanSource(out, reader);
-        if (!out.name.empty() || out.id != -1) onFileFound(out);
-        onProgress(out.startSector, totalSectors);
+        const bool progressOnly = out.id == -1 && out.name.empty();
+        if (!progressOnly && (!out.name.empty() || out.id != -1)) onFileFound(out);
+        ++workUnits;
+        onProgress(meter.tick(mapWorkToBudget(workUnits, estimated, progressTotal)), progressTotal);
         syncBadSectors(reader, badSectorOut);
     };
 
@@ -277,10 +289,13 @@ void runCarveScan(DiskReader& reader,
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
+    g_scanPhase = "carve";
     std::vector<SectorRange> carveRanges = prepareCarveRanges(reader, bounds, unallocatedOnly);
     if (carveRanges.empty()) return;
 
     uint64_t totalCarveSectors = totalSectorCount(carveRanges);
+    const uint64_t progressTotal = totalCarveSectors > 0 ? totalCarveSectors : 1;
+    MonotonicMeter meter;
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
@@ -305,7 +320,7 @@ void runCarveScan(DiskReader& reader,
 
         if (resumeCarveSector > 0 && carvedSectors + rg.count <= resumeCarveSector) {
             carvedSectors += rg.count;
-            onProgress(carvedSectors, totalCarveSectors > 0 ? totalCarveSectors : 1);
+            onProgress(meter.tick(carvedSectors), progressTotal);
             continue;
         }
         if (resumeCarveSector > carvedSectors) {
@@ -313,7 +328,7 @@ void runCarveScan(DiskReader& reader,
             rangeStart += skip;
             if (rangeStart >= rangeEnd) {
                 carvedSectors += rg.count;
-                onProgress(carvedSectors, totalCarveSectors > 0 ? totalCarveSectors : 1);
+                onProgress(meter.tick(carvedSectors), progressTotal);
                 continue;
             }
         }
@@ -323,12 +338,12 @@ void runCarveScan(DiskReader& reader,
                              callbackWrapper(fr);
                              if (fr.id == -1 && fr.startSector > 0) {
                                  uint64_t rel = fr.startSector >= rg.start ? fr.startSector - rg.start : 0;
-                                 onProgress(carvedSectors + rel, totalCarveSectors > 0 ? totalCarveSectors : 1);
+                                 onProgress(meter.tick(carvedSectors + rel), progressTotal);
                              }
                          },
                          isRunning);
         carvedSectors += rg.count;
-        onProgress(carvedSectors, totalCarveSectors > 0 ? totalCarveSectors : 1);
+        onProgress(meter.tick(carvedSectors), progressTotal);
     }
 }
 
@@ -466,50 +481,66 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 const DiskReader* fvekSource,
                                 ScanTarget target,
                                 ScanCheckpointCallback onCheckpoint) {
-    DiskReader reader;
-    if (raid) {
-        reader.setRaidBackend(std::move(raid));
-    } else if (drivePath == "raid") {
-        if (onFinished) onFinished(3);
-        isRunning = false;
-        return;
-    } else {
-        int driveIndex = 0;
-        try { driveIndex = std::stoi(drivePath); } catch (...) {
-            if (onFinished) onFinished(3);
-            isRunning = false;
-            return;
+    int status = 3;
+    try {
+        DiskReader reader;
+        bool opened = false;
+        if (raid) {
+            reader.setRaidBackend(std::move(raid));
+            opened = true;
+        } else if (drivePath == "raid") {
+            opened = false;
+        } else {
+            int driveIndex = 0;
+            bool parsed = true;
+            try {
+                driveIndex = std::stoi(drivePath);
+            } catch (...) {
+                parsed = false;
+            }
+            opened = parsed && reader.openDrive(driveIndex);
         }
-        if (!reader.openDrive(driveIndex)) {
-            if (onFinished) onFinished(3);
-            isRunning = false;
-            return;
+
+        if (opened) {
+            if (fvekSource) reader.copyXtsFvekFrom(*fvekSource);
+
+            ScanBounds bounds = target.bounds();
+            uint32_t sectorSize = reader.getSectorSize();
+            if (sectorSize == 0) sectorSize = 512;
+            uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
+
+            if (scanType == "quick") {
+                runQuickScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, false, bounds);
+                status = isRunning ? 1 : 2;
+            } else if (scanType == "deep") {
+                runDeepScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
+                status = isRunning ? 1 : 2;
+            } else if (scanType == "full_carve") {
+                runFullCarveScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
+                status = isRunning ? 1 : 2;
+            } else {
+                status = 3;
+            }
+
+            if (status != 3) {
+                syncBadSectors(reader, badSectorOut);
+                onProgress(totalSectors, totalSectors);
+            }
         }
+    } catch (const std::exception& e) {
+        std::cerr << "[byteback] scanWorker exception: " << e.what() << std::endl;
+        status = 3;
+    } catch (...) {
+        std::cerr << "[byteback] scanWorker unknown exception" << std::endl;
+        status = 3;
     }
-    if (fvekSource) reader.copyXtsFvekFrom(*fvekSource);
-
-    ScanBounds bounds = target.bounds();
-    uint32_t sectorSize = reader.getSectorSize();
-    if (sectorSize == 0) sectorSize = 512;
-    uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
-
-    if (scanType == "quick") {
-        runQuickScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, false, bounds);
-    } else if (scanType == "deep") {
-        runDeepScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
-    } else if (scanType == "full_carve") {
-        runFullCarveScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
-    } else {
-        if (onFinished) onFinished(3);
-        isRunning = false;
-        return;
+    try {
+        if (onFinished) onFinished(status);
+    } catch (const std::exception& e) {
+        std::cerr << "[byteback] scan onFinished exception: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[byteback] scan onFinished unknown exception" << std::endl;
     }
-
-    syncBadSectors(reader, badSectorOut);
-    onProgress(totalSectors, totalSectors);
-
-    const int status = isRunning ? 1 : 2;
-    if (onFinished) onFinished(status);
     isRunning = false;
 }
 

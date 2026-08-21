@@ -1,6 +1,7 @@
 #include "byteback_db.h"
 #include "../../third_party/sqlite3.h"
 #include <cctype>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,7 @@ void deleteChunks(sqlite3* db, int64_t fileId) {
 } // namespace
 
 bool MetadataStore::replaceContentChunks(int64_t fileId, const std::vector<std::string>& chunks) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     if (!db_ || fileId <= 0) return false;
     ensureContentFtsIndex(db_);
     deleteChunks(db_, fileId);
@@ -82,12 +84,14 @@ bool MetadataStore::replaceContentChunks(int64_t fileId, const std::vector<std::
 }
 
 bool MetadataStore::upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     (void)scanId;
     if (text.empty()) return replaceContentChunks(fileId, {});
     return replaceContentChunks(fileId, {text});
 }
 
 std::string MetadataStore::getContentSample(int64_t fileId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     if (!db_ || fileId <= 0) return {};
     ensureContentFtsIndex(db_);
     const char* sql = "SELECT body FROM content_chunk_fts WHERE file_id = ? ORDER BY rowid LIMIT 1";
@@ -108,6 +112,7 @@ std::string MetadataStore::getContentSample(int64_t fileId) {
 }
 
 int64_t MetadataStore::getContentIndexCount(int64_t scanId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     if (!db_) return 0;
     ensureContentFtsIndex(db_);
     const char* sql = R"(
@@ -127,6 +132,7 @@ int64_t MetadataStore::getContentIndexCount(int64_t scanId) {
 }
 
 bool MetadataStore::isContentIndexComplete(int64_t scanId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     int64_t files = getFileCount(scanId);
     if (files <= 0) return false;
     return getContentIndexCount(scanId) >= files;
@@ -134,6 +140,7 @@ bool MetadataStore::isContentIndexComplete(int64_t scanId) {
 
 std::vector<int64_t> MetadataStore::searchContentFts(int64_t scanId, const std::string& query,
                                                     int offset, int limit) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     std::vector<int64_t> ids;
     if (!db_ || query.empty() || limit <= 0) return ids;
     ensureContentFtsIndex(db_);

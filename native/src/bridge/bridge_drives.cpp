@@ -36,8 +36,8 @@ Napi::Value ListDrives(const Napi::CallbackInfo& info) {
     for (size_t i = 0; i < drives.size(); ++i) {
         Napi::Object drive = Napi::Object::New(env);
         drive.Set("index", Napi::Number::New(env, drives[i].index));
-        drive.Set("model", Napi::String::New(env, drives[i].model));
-        drive.Set("serial", Napi::String::New(env, drives[i].serial));
+        drive.Set("model", jsUtf8(env, drives[i].model));
+        drive.Set("serial", jsUtf8(env, drives[i].serial));
         drive.Set("sizeBytes", Napi::Number::New(env, static_cast<double>(drives[i].sizeBytes)));
         drive.Set("sectorSize", Napi::Number::New(env, drives[i].sectorSize));
         drive.Set("type", Napi::String::New(env, drives[i].type));
@@ -54,7 +54,7 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
         return Napi::Array::New(env, 0);
     }
-    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
+    if (sharedReaderBusy(bdata)) return Napi::Array::New(env, 0);
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     byteback::DiskReader& reader = bdata->engine.getDiskReader();
@@ -70,10 +70,10 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     Napi::Array result = Napi::Array::New(env, parts.size());
     for (size_t i = 0; i < parts.size(); ++i) {
         Napi::Object p = Napi::Object::New(env);
-        p.Set("type", Napi::String::New(env, parts[i].type));
+        p.Set("type", jsUtf8(env, parts[i].type));
         p.Set("startSector", Napi::Number::New(env, static_cast<double>(parts[i].startSector)));
         p.Set("sizeInSectors", Napi::Number::New(env, static_cast<double>(parts[i].sizeInSectors)));
-        p.Set("label", Napi::String::New(env, parts[i].label));
+        p.Set("label", jsUtf8(env, parts[i].label));
         p.Set("isActive", Napi::Boolean::New(env, parts[i].isActive));
         result[i] = p;
     }
@@ -87,7 +87,14 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
     if (!engine || info.Length() < 3) return env.Undefined();
-    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
+    if (sharedReaderBusy(bdata)) {
+        Napi::Object fail = Napi::Object::New(env);
+        fail.Set("success", Napi::Boolean::New(env, false));
+        fail.Set("bytesRead", Napi::Number::New(env, 0));
+        fail.Set("paddedZeros", Napi::Boolean::New(env, false));
+        fail.Set("error", Napi::String::New(env, "Another disk operation is already running"));
+        return fail;
+    }
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     double offset = info[1].As<Napi::Number>().DoubleValue();
@@ -150,8 +157,8 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("isValid", Napi::Boolean::New(env, status.isValid));
     if (status.isValid) {
-        obj.Set("driveModel", Napi::String::New(env, status.driveModel));
-        obj.Set("healthScore", Napi::String::New(env, status.healthScore));
+        obj.Set("driveModel", jsUtf8(env, status.driveModel));
+        obj.Set("healthScore", jsUtf8(env, status.healthScore));
         obj.Set("temperatureC", Napi::Number::New(env, status.temperatureC));
         obj.Set("powerOnHours", Napi::Number::New(env, status.powerOnHours));
         obj.Set("reallocatedSectors", Napi::Number::New(env, status.reallocatedSectors));

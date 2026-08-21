@@ -1,4 +1,5 @@
 #include "scan_coordinator.h"
+#include "scan_progress.h"
 #include "byteback_io.h"
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
@@ -110,6 +111,19 @@ TEST(ScanCoordinator, BitLockerIgnoresFakeTenByteOem) {
     for (const auto& s : sources) EXPECT_NE(s, "bitlocker_detect");
 }
 
+TEST(ScanCoordinator, InvalidDriveStillCallsOnFinished) {
+    ScanCoordinator coord;
+    std::atomic<int> finished{-1};
+    coord.startScan("not-a-number", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, nullptr,
+                    [&](int s) { finished = s; });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(finished.load(), 3);
+}
+
 TEST(ScanCoordinator, StartScanTwiceJoinsPreviousThread) {
     ScanCoordinator coord;
     auto onFile = [](const FileRecord&) {};
@@ -201,4 +215,32 @@ TEST(ScanCoordinator, CarveScanResumesFromCheckpoint) {
 
     EXPECT_GE(countCarved(110), 1u) << "PNG after resume checkpoint should be found";
     EXPECT_EQ(countCarved(kSectors - 1), 0u) << "resume past PNG should find nothing";
+}
+
+TEST(ScanProgress, MeterDoesNotRewind) {
+    MonotonicMeter meter;
+    EXPECT_EQ(meter.tick(10), 10u);
+    EXPECT_EQ(meter.tick(3), 10u);
+    EXPECT_EQ(meter.tick(12), 12u);
+}
+
+TEST(ScanCoordinator, QuickScanProgressNeverDecreasesOnJumpingRuns) {
+    auto img = byteback::testfix::buildNtfsJumpingDataRunsVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    uint64_t last = 0;
+    bool decreased = false;
+    size_t ticks = 0;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [](const FileRecord&) {},
+                 [&](uint64_t current, uint64_t) {
+                     ++ticks;
+                     if (current < last) decreased = true;
+                     last = current;
+                 },
+                 &running, nullptr, false);
+
+    EXPECT_GT(ticks, 0u);
+    EXPECT_FALSE(decreased) << "progress used file startSector and rewound";
 }
