@@ -310,7 +310,7 @@ function App(): React.ReactElement {
 
   return (
     <div className="app-layout">
-      <Sidebar activePage={activePage} activeScanId={activeScanId} scanBusy={scanBusy} onNavigate={handleNavigate} />
+      <Sidebar activePage={activePage} activeScanId={activeScanId} scanState={scanRowState} scanBusy={scanBusy} onNavigate={handleNavigate} />
       <div className="app-main">
         <Header
           title={activePage}

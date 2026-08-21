@@ -382,32 +382,42 @@ void runDeepScan(DiskReader& reader,
     const bool unallocCarve = carveTotal > 0;
     const uint64_t carveBudget =
         unallocCarve ? std::min(carveTotal, totalSectors) : totalSectors / 4;
-    const uint64_t metaBudget =
-        target.metadataComplete ? 0 : (totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2);
+    // Metadata share of the overall bar. Kept even when metadataComplete so
+    // resume mid-carve maps onto [metaShare, total] instead of rewinding to 0.
+    const uint64_t metaShare =
+        totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2;
+    const uint64_t metaBudget = target.metadataComplete ? 0 : metaShare;
+    const uint64_t carveProgressBase = target.metadataComplete ? metaShare : metaBudget;
+
+    MonotonicMeter overall;
+    if (target.resumeAtSector > 0) overall.tick(std::min(totalSectors, target.resumeAtSector));
+    auto emit = [&](uint64_t current) {
+        onProgress(overall.tick(std::min(totalSectors, current)), totalSectors);
+    };
 
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
-            onProgress(mulDivU64(current, metaBudget, denom), totalSectors);
+            emit(mulDivU64(current, metaBudget, denom));
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
         if (onCheckpoint) onCheckpoint(true, 0);
-        onProgress(metaBudget, totalSectors);
+        emit(metaBudget);
     }
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
         uint64_t slice = carveBudget > 0 ? mulDivU64(current, carveBudget, denom) : current;
-        onProgress(std::min(totalSectors, metaBudget + slice), totalSectors);
+        emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);
     };
     runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, unallocCarve,
                  target.carveResumeSector);
     if (unallocCarve) {
-        onProgress(totalSectors, totalSectors);
+        emit(totalSectors);
     } else {
-        onProgress(metaBudget, totalSectors);
+        emit(carveProgressBase);
     }
 }
 
@@ -426,32 +436,40 @@ void runFullCarveScan(DiskReader& reader,
     const uint64_t fullCarveTotal =
         totalSectorCount(prepareCarveRanges(reader, bounds, false));
     const uint64_t carveBudget = fullCarveTotal > 0 ? std::min(fullCarveTotal, totalSectors) : totalSectors / 2;
-    const uint64_t metaBudget =
-        target.metadataComplete ? 0 : (totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2);
+    const uint64_t metaShare =
+        totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2;
+    const uint64_t metaBudget = target.metadataComplete ? 0 : metaShare;
+    const uint64_t carveProgressBase = target.metadataComplete ? metaShare : metaBudget;
+
+    MonotonicMeter overall;
+    if (target.resumeAtSector > 0) overall.tick(std::min(totalSectors, target.resumeAtSector));
+    auto emit = [&](uint64_t current) {
+        onProgress(overall.tick(std::min(totalSectors, current)), totalSectors);
+    };
 
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
-            onProgress(mulDivU64(current, metaBudget, denom), totalSectors);
+            emit(mulDivU64(current, metaBudget, denom));
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
         if (isRunning && !(*isRunning)) return;
         if (onCheckpoint) onCheckpoint(true, 0);
-        onProgress(metaBudget, totalSectors);
+        emit(metaBudget);
     }
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
         uint64_t slice = carveBudget > 0 ? mulDivU64(current, carveBudget, denom) : current;
-        onProgress(std::min(totalSectors, metaBudget + slice), totalSectors);
+        emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);
     };
     runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
                  target.carveResumeSector);
     if (fullCarveTotal > 0) {
-        onProgress(totalSectors, totalSectors);
+        emit(totalSectors);
     } else {
-        onProgress(metaBudget, totalSectors);
+        emit(carveProgressBase);
     }
 }
 

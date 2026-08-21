@@ -134,7 +134,21 @@ void deliverScanComplete(BridgeData* bdata, ScanContext* context, int64_t scanId
         teardownScanOnJs(bdata, gen);
     };
     if (context->tsfn.BlockingCall(forceComplete) != napi_ok) {
-        bdata->endHeavyOp();
+        std::fprintf(stderr, "[byteback] forcing scanContext teardown scanId=%lld\n",
+                     static_cast<long long>(scanId));
+        // Last resort: release heavy-op and drop context without JS callback.
+        // Prefer teardownScanOnJs when context still matches generation.
+        if (bdata->scanContext && bdata->scanContext->generation == gen) {
+            try {
+                bdata->scanContext->tsfn.Release();
+            } catch (...) {
+                /* Release may throw if already closed */
+            }
+            bdata->scanContext.reset();
+            bdata->endHeavyOp();
+        } else {
+            bdata->endHeavyOp();
+        }
     }
 }
 

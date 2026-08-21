@@ -2,11 +2,14 @@ import React from 'react'
 import './Sidebar.css'
 import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock, Briefcase, Shield } from 'lucide-react'
 import { APP_VERSION } from '../../../shared/app-version'
-import { hasValidScanId, isScanDependentPage, isDiskBusyPage } from '../../../shared/scan-required'
+import { hasValidScanId, isScanDependentPage, isDiskBusyPage, canGenerateReport } from '../../../shared/scan-required'
+import type { ScanState } from '../../../shared/ipc-contract'
 
 interface SidebarProps {
   activePage: string
   activeScanId: number
+  /** When set, report nav needs status=complete; results/search/timeline need usable id only. */
+  scanState?: ScanState | null
   scanBusy?: boolean
   onNavigate: (page: string) => void
 }
@@ -43,8 +46,11 @@ const GROUPS: { title: string; items: MenuItem[] }[] = [
   },
 ]
 
-function Sidebar({ activePage, activeScanId, scanBusy, onNavigate }: SidebarProps): React.ReactElement {
-  const scanReady = hasValidScanId(activeScanId)
+function Sidebar({ activePage, activeScanId, scanState, scanBusy, onNavigate }: SidebarProps): React.ReactElement {
+  // Results/search/timeline: any hydrated usable scan id (paused or complete).
+  const resultsReady = hasValidScanId(activeScanId)
+  // Adli rapor: only completed scans (status=1).
+  const reportReady = canGenerateReport(activeScanId, scanState ?? undefined)
 
   return (
     <aside className="sidebar">
@@ -62,11 +68,17 @@ function Sidebar({ activePage, activeScanId, scanBusy, onNavigate }: SidebarProp
               {group.items.map((item) => {
                 const needsScan = isScanDependentPage(item.id)
                 const needsIdleDisk = isDiskBusyPage(item.id)
-                const disabled = (needsScan && !scanReady) || (needsIdleDisk && !!scanBusy)
+                const scanOk = item.id === 'report' ? reportReady : resultsReady
+                const disabled = (needsScan && !scanOk) || (needsIdleDisk && !!scanBusy)
                 const isActive = activePage === item.id
                 let title: string | undefined
-                if (needsScan && !scanReady) title = 'Önce bir taramayı tamamlayın'
-                else if (needsIdleDisk && scanBusy) title = 'Hex, imaj ve imha tarama bitene kadar kapalı'
+                if (needsScan && !scanOk) {
+                  title = item.id === 'report'
+                    ? 'Adli rapor için tamamlanmış tarama gerekli'
+                    : 'Önce bir taramayı tamamlayın veya duraklatılmış oturumu açın'
+                } else if (needsIdleDisk && scanBusy) {
+                  title = 'Hex, imaj ve imha tarama bitene kadar kapalı'
+                }
                 return (
                   <li key={item.id}>
                     <button
