@@ -266,3 +266,44 @@ TEST_F(MetadataStoreTest, DeletedFilterIsNotPageLocal) {
     auto hits = store_.getFiles(scanId, 0, 10, byName);
     ASSERT_EQ(hits.size(), 1u);
 }
+
+TEST_F(MetadataStoreTest, CarvedFilterAndDuplicateToggle) {
+    int64_t scanId = store_.createScan(0, "deep", 100);
+    ASSERT_GT(scanId, 0);
+    FileRecord mft;
+    mft.name = "a.jpg";
+    mft.status = 0;
+    mft.source = "ntfs_mft";
+    FileRecord carved;
+    carved.name = "carve.bin";
+    carved.status = 0;
+    carved.source = "carver";
+    FileRecord dup;
+    dup.name = "carve.bin";
+    dup.status = 0;
+    dup.source = "carver_duplicate";
+    FileRecord disc;
+    disc.name = "hint";
+    disc.status = 0;
+    disc.source = "ntfs_recycle_meta";
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {mft, carved, dup, disc}));
+
+    FileListFilter deleted;
+    deleted.status = 0;
+    deleted.includeDuplicates = false;
+    deleted.includeDiscovery = false;
+    EXPECT_EQ(store_.getFileCount(scanId, deleted), 2);
+
+    FileListFilter carvedOnly;
+    carvedOnly.sourceLike = "carver%";
+    carvedOnly.includeDuplicates = false;
+    carvedOnly.includeDiscovery = false;
+    EXPECT_EQ(store_.getFileCount(scanId, carvedOnly), 1);
+    auto page = store_.getFiles(scanId, 0, 10, carvedOnly);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].source, "carver");
+
+    FileListFilter withDup = carvedOnly;
+    withDup.includeDuplicates = true;
+    EXPECT_EQ(store_.getFileCount(scanId, withDup), 2);
+}

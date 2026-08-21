@@ -88,8 +88,10 @@ void applyRecycleBinRecords(std::vector<Rec>& files) {
         if (p.iIdx < 0 || p.rIdx < 0) continue;
         Rec& iRec = files[static_cast<size_t>(p.iIdx)];
         Rec& rRec = files[static_cast<size_t>(p.rIdx)];
+        // Non-resident $I has no inline bytes; skip pairing, keep $R as-is.
+        if (iRec.fr.residentData.empty()) continue;
         RecycleIInfo info = parseRecycleIFile(
-            iRec.fr.residentData.empty() ? nullptr : iRec.fr.residentData.data(),
+            iRec.fr.residentData.data(),
             iRec.fr.residentData.size());
         if (!info.ok) continue;
         const std::string leaf = recycleFileName(info.originalPath);

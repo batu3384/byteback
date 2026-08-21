@@ -74,7 +74,12 @@ export function registerIpcHandlers(): void {
       
       const callback = (data: any) => {
         if (data.type === 'progress') {
-          event.sender.send('scan-progress', { current: data.current, total: data.total, badSectors: data.badSectors })
+          event.sender.send('scan-progress', {
+            current: data.current,
+            total: data.total,
+            badSectors: data.badSectors,
+            phase: data.phase,
+          })
         } else if (data.type === 'file') {
           event.sender.send('scan-file-found', data)
         } else if (data.type === 'complete') {

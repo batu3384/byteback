@@ -244,3 +244,33 @@ TEST(ScanCoordinator, QuickScanProgressNeverDecreasesOnJumpingRuns) {
     EXPECT_GT(ticks, 0u);
     EXPECT_FALSE(decreased) << "progress used file startSector and rewound";
 }
+
+TEST(ScanCoordinator, QuickScanMetadataProgressHasMidTicks) {
+    auto img = byteback::testfix::buildNtfsJumpingDataRunsVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    uint64_t last = 0;
+    bool decreased = false;
+    bool midPositive = false;
+    size_t distinct = 0;
+    uint64_t prev = 0;
+    bool havePrev = false;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [](const FileRecord&) {},
+                 [&](uint64_t current, uint64_t) {
+                     if (current < last) decreased = true;
+                     last = current;
+                     if (current > 0) midPositive = true;
+                     if (!havePrev || current != prev) {
+                         ++distinct;
+                         prev = current;
+                         havePrev = true;
+                     }
+                 },
+                 &running, nullptr, false);
+
+    EXPECT_FALSE(decreased);
+    EXPECT_TRUE(midPositive) << "metadata current stayed at 0 until complete";
+    EXPECT_GE(distinct, 2u);
+}

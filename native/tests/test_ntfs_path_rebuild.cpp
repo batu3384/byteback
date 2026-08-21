@@ -34,6 +34,13 @@ TEST(NtfsPathRebuild, IndxOnlyHintsAreWalkable) {
     EXPECT_EQ(name, "gone.docx");
 }
 
+TEST(NtfsPathRebuild, RecordNameDoesNotUseIndxHintWhenFileExists) {
+    MftIndex idx;
+    idx.putFileRecord(3, MftIndex::kRootMft, "alive.bin", true, false);
+    idx.putIndxHint(3, MftIndex::kRootMft, "gone.txt");
+    EXPECT_EQ(idx.recordName(3), "alive.bin");
+}
+
 TEST(NtfsPathRebuild, StopsAtRoot) {
     MftIndex idx;
     idx.putFileRecord(48, MftIndex::kRootMft, "boot.ini", false, false);

@@ -32,6 +32,15 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     if (o.Has("query") && o.Get("query").IsString()) {
         f.query = o.Get("query").As<Napi::String>().Utf8Value();
     }
+    if (o.Has("sourceLike") && o.Get("sourceLike").IsString()) {
+        f.sourceLike = o.Get("sourceLike").As<Napi::String>().Utf8Value();
+    }
+    if (o.Has("includeDuplicates") && o.Get("includeDuplicates").IsBoolean()) {
+        f.includeDuplicates = o.Get("includeDuplicates").As<Napi::Boolean>().Value();
+    }
+    if (o.Has("includeDiscovery") && o.Get("includeDiscovery").IsBoolean()) {
+        f.includeDiscovery = o.Get("includeDiscovery").As<Napi::Boolean>().Value();
+    }
     return f;
 }
 
@@ -460,7 +469,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
         byteback::FileRecord out = fr;
         context->dedupIndex.observe(out);
-        if (context->dedupIndex.markDuplicate(out)) return;
+        context->dedupIndex.markDuplicate(out);
 
         {
             std::lock_guard<std::mutex> lock(context->bufferMutex);

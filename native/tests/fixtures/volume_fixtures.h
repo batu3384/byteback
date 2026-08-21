@@ -522,4 +522,129 @@ inline std::vector<uint8_t> buildNtfsJumpingDataRunsVolume() {
     return img;
 }
 
+// Directory $INDEX_ROOT slack names gone.txt at reused MFT 2 (alive.bin).
+inline std::vector<uint8_t> buildNtfsIndexRootReuseVolume() {
+    constexpr uint32_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, ss);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 3072);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x03);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* dirName = "Dir";
+    const size_t dirLen = 3;
+    const size_t dirFn = 66 + dirLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + dirFn));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(dirFn));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(dirLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < dirLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(dirName[i]));
+    attr += 16 + 8 + dirFn;
+
+    std::vector<uint8_t> root(32, 0);
+    root[0] = 0x30;
+    root[16] = 16;
+    const size_t lastAt = root.size();
+    root.resize(lastAt + 16, 0);
+    root[lastAt + 8] = 16;
+    root[lastAt + 12] = 0x02;
+    const uint32_t usedEnd = static_cast<uint32_t>(root.size() - 16);
+    const char* slackName = "gone.txt";
+    const size_t slackLen = 8;
+    const uint16_t keyLen = static_cast<uint16_t>(66 + slackLen * 2);
+    const uint16_t entryLen = static_cast<uint16_t>(16 + keyLen);
+    const size_t slackAt = root.size();
+    root.resize(slackAt + entryLen, 0);
+    root[slackAt] = 2;
+    root[slackAt + 8] = static_cast<uint8_t>(entryLen & 0xFF);
+    root[slackAt + 9] = static_cast<uint8_t>((entryLen >> 8) & 0xFF);
+    root[slackAt + 10] = static_cast<uint8_t>(keyLen & 0xFF);
+    root[slackAt + 11] = static_cast<uint8_t>((keyLen >> 8) & 0xFF);
+    root[slackAt + 16] = 5;
+    root[slackAt + 16 + 64] = static_cast<uint8_t>(slackLen);
+    root[slackAt + 16 + 65] = 1;
+    for (size_t i = 0; i < slackLen; ++i)
+        root[slackAt + 16 + 66 + i * 2] = static_cast<uint8_t>(slackName[i]);
+    const uint32_t allocRel = static_cast<uint32_t>(root.size() - 16);
+    for (int i = 0; i < 4; ++i) {
+        root[20 + i] = static_cast<uint8_t>((usedEnd >> (8 * i)) & 0xFF);
+        root[24 + i] = static_cast<uint8_t>((allocRel >> (8 * i)) & 0xFF);
+    }
+    uint32_t valueLen = static_cast<uint32_t>(root.size());
+    uint32_t attrLen = 24 + valueLen;
+    while (attrLen % 8) ++attrLen;
+    writeLe32(img, attr + 0, 0x90);
+    writeLe32(img, attr + 4, attrLen);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, valueLen);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, root.data(), root.size());
+    writeLe32(img, attr + attrLen, 0xFFFFFFFF);
+
+    const size_t rec2 = rec0 + 2048;
+    std::memcpy(img.data() + rec2, "FILE", 4);
+    writeLe16(img, rec2 + 0x14, 0x38);
+    writeLe16(img, rec2 + 0x16, 0x01);
+    writeLe32(img, rec2 + 0x18, 256);
+    writeLe32(img, rec2 + 0x1C, 1024);
+    attr = rec2 + 0x38;
+    const char* liveName = "alive.bin";
+    const size_t liveLen = 9;
+    const size_t liveFn = 66 + liveLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + liveFn));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(liveFn));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 4);
+    writeLe64(img, attr + 56, 4);
+    img[attr + 24 + 64] = static_cast<uint8_t>(liveLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < liveLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(liveName[i]));
+    attr += 16 + 8 + liveFn;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 4);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "live", 4);
+    attr += 32;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+    return img;
+}
+
 } // namespace byteback::testfix

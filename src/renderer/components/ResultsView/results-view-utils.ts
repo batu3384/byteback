@@ -53,6 +53,34 @@ export function chipToCategory(chip: string): string {
   return ''
 }
 
+export type StatusChip = 'deleted' | 'allocated' | 'all' | 'carved'
+
+export function toSqlListFilter(
+  statusChip: StatusChip,
+  typeChip: string,
+  query: string,
+  showDuplicates: boolean,
+): {
+  status: number
+  category: string
+  query: string
+  sourceLike: string
+  includeDuplicates: boolean
+  includeDiscovery: boolean
+} {
+  const base = {
+    category: chipToCategory(typeChip),
+    query,
+    sourceLike: '',
+    includeDuplicates: showDuplicates,
+    includeDiscovery: false,
+  }
+  if (statusChip === 'carved') return { ...base, status: -1, sourceLike: 'carver%' }
+  if (statusChip === 'deleted') return { ...base, status: 0 }
+  if (statusChip === 'allocated') return { ...base, status: 1 }
+  return { ...base, status: -1 }
+}
+
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'

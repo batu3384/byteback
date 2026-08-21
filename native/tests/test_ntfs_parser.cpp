@@ -1,5 +1,6 @@
 #include "byteback_fs.h"
 #include "byteback_io.h"
+#include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstring>
@@ -460,4 +461,75 @@ TEST(NtfsParser, LogfileHintBoostsMatchingMftRecord) {
     }, &running));
     EXPECT_EQ(boosted.source, "ntfs_mft_logfile");
     EXPECT_GE(boosted.confidence, 12);
+}
+
+TEST(NtfsParser, IndexRootSlackSurvivesMftReuse) {
+    auto img = byteback::testfix::buildNtfsIndexRootReuseVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) hits.push_back(fr);
+    }, &running, 0, 0, false));
+
+    bool alive = false, gone = false, goneIsI30 = false;
+    for (const auto& fr : hits) {
+        if (fr.name == "alive.bin" && fr.source == "ntfs_mft") alive = true;
+        if (fr.name == "gone.txt") {
+            gone = true;
+            goneIsI30 = fr.source == "ntfs_i30" && fr.status == 0;
+        }
+    }
+    EXPECT_TRUE(alive);
+    EXPECT_TRUE(gone);
+    EXPECT_TRUE(goneIsI30);
+}
+
+TEST(NtfsParser, OrphanIndxMagicDoesNotEmitI30) {
+    auto img = buildNtfsBootMftWalkDisk();
+    const size_t indx = 50 * 512;
+    std::memcpy(img.data() + indx, "INDX", 4);
+    img[indx + 0x18] = 16;
+    img[indx + 0x1C] = 16;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool i30 = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_i30") i30 = true;
+    }, &running, 0, 0, true));
+    EXPECT_FALSE(i30);
+}
+
+TEST(NtfsParser, AdsSurvivesParentDedup) {
+    auto img = byteback::testfix::buildNtfsDeletedResidentVolume();
+    const size_t rec1 = 8 * 512 + 1024;
+    const size_t fnValueLen = 66 + 7 * 2;
+    size_t attr = rec1 + 0x38 + 16 + 8 + fnValueLen + 29;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 40);
+    img[attr + 8] = 0;
+    img[attr + 9] = 1;
+    writeLe16(img, attr + 10, 24);
+    writeLe32(img, attr + 16, 1);
+    writeLe16(img, attr + 20, 26);
+    img[attr + 24] = 'Z';
+    img[attr + 25] = 0;
+    img[attr + 26] = 'x';
+    writeLe32(img, attr + 40, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool parent = false, ads = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "doc.txt") parent = true;
+        if (fr.source == "ntfs_ads" && fr.name.find(":Z") != std::string::npos) ads = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(parent);
+    EXPECT_TRUE(ads);
 }

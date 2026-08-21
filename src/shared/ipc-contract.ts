@@ -100,6 +100,9 @@ export interface FileListFilter {
   status?: number
   category?: string
   query?: string
+  sourceLike?: string
+  includeDuplicates?: boolean
+  includeDiscovery?: boolean
 }
 
 export type ProgressCallback = (data: {

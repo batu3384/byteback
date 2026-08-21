@@ -397,5 +397,87 @@ inline bool parseNtfsBoot(const uint8_t* boot, size_t n, uint32_t& bytesPerSecto
     return true;
 }
 
+// Resident $INDEX_ROOT ($I30) FILE_NAME entry. Live window vs slack after used.
+struct IndexNameHint {
+    uint64_t childMft = 0;
+    uint64_t parentMft = 0;
+    std::string name;
+    bool fromSlack = false;
+};
+
+inline uint32_t u32le(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+inline uint16_t u16le(const uint8_t* p) {
+    return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+inline uint64_t u64le(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(p[i]) << (8 * i);
+    return v;
+}
+
+inline void harvestIndexEntry(const uint8_t* entry, size_t avail, bool slack,
+                              std::vector<IndexNameHint>& out) {
+    if (avail < 16) return;
+    const uint16_t entryLen = u16le(entry + 8);
+    const uint16_t keyLen = u16le(entry + 10);
+    const uint16_t flags = u16le(entry + 12);
+    if (flags & 0x02) return;
+    if (entryLen < 16 || entryLen > avail) return;
+    if (keyLen < 66 || static_cast<size_t>(16) + keyLen > entryLen) return;
+    const uint8_t* fn = entry + 16;
+    const uint8_t nameLen = fn[64];
+    if (nameLen == 0 || nameLen > 255) return;
+    if (static_cast<size_t>(66) + static_cast<size_t>(nameLen) * 2 > keyLen) return;
+    const auto* units = reinterpret_cast<const uint16_t*>(fn + 66);
+    std::string name = utf16leToUtf8(units, nameLen);
+    if (name.empty()) return;
+    IndexNameHint h;
+    h.childMft = u64le(entry) & 0x0000FFFFFFFFFFFFULL;
+    h.parentMft = u64le(fn) & 0x0000FFFFFFFFFFFFULL;
+    h.name = std::move(name);
+    h.fromSlack = slack;
+    if (h.childMft == 0) return;
+    out.push_back(std::move(h));
+}
+
+// ponytail: resident INDEX_ROOT only. Full INDX ($INDEX_ALLOCATION) recarve later.
+inline std::vector<IndexNameHint> parseIndexRoot(const uint8_t* data, size_t n) {
+    std::vector<IndexNameHint> out;
+    if (!data || n < 32) return out;
+    if (u32le(data) != ATTR_FILE_NAME) return out;
+    const uint8_t* hdr = data + 16;
+    const uint32_t first = u32le(hdr + 0);
+    const uint32_t used = u32le(hdr + 4);
+    uint32_t alloc = u32le(hdr + 8);
+    const size_t hdrSpan = n - 16;
+    if (first < 16 || used < first || used > hdrSpan) return out;
+    uint32_t off = first;
+    while (off + 16 <= used) {
+        const uint8_t* e = hdr + off;
+        const uint16_t elen = u16le(e + 8);
+        if (elen < 16) break;
+        harvestIndexEntry(e, used - off, false, out);
+        if (u16le(e + 12) & 0x02) break;
+        off += elen;
+    }
+    if (alloc < used) alloc = used;
+    if (alloc > hdrSpan) alloc = static_cast<uint32_t>(hdrSpan);
+    off = used;
+    while (off + 16 <= alloc) {
+        const uint8_t* e = hdr + off;
+        const uint16_t elen = u16le(e + 8);
+        if (elen < 16 || off + elen > alloc) {
+            off += 8;
+            continue;
+        }
+        harvestIndexEntry(e, alloc - off, true, out);
+        off += elen;
+    }
+    return out;
+}
+
 } // namespace ntfs
 } // namespace byteback
