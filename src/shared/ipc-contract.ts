@@ -61,6 +61,8 @@ export interface ScanState {
   scannedSectors: number
   status: number
   recoveredFiles?: number
+  metadataComplete?: boolean
+  carveResumeSector?: number
 }
 
 export interface RecoverResult {
@@ -132,6 +134,7 @@ export interface BatchRecoverResult {
   succeeded: number
   failed: number
   results: RecoverResult[]
+  error?: string
 }
 
 export interface TimelineEvent {

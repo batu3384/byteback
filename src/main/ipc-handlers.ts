@@ -6,6 +6,7 @@ import { diskBusyMessage } from '../shared/scan-required'
 import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { callNative } from './ipc-native'
+import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from './session-log'
 
 let dbReady = false
 let dbInitError: string | null = null
@@ -22,10 +23,26 @@ export function registerIpcHandlers(): void {
     dbReady = !!ok
     if (!ok) dbInitError = 'initDatabase returned false'
     console.log('[IPC] Database initialized:', ok, 'at', dbPath)
+    appendSessionLog('DB_OPEN', `ok=${ok ? 1 : 0} path=${dbPath}`)
+    if (ok) {
+      try {
+        const latestId = engine.getLatestScanId()
+        if (latestId > 0) {
+          const st = engine.getScanState(latestId)
+          appendSessionLog(
+            'SCAN_STATUS',
+            `scanId=${latestId} status=${st.status} ${st.scannedSectors}/${st.totalSectors} type=${st.scanType}`,
+          )
+        }
+      } catch (e) {
+        appendSessionLog('DB_OPEN', `latest_scan_failed ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   } catch (err) {
     dbReady = false
     dbInitError = err instanceof Error ? err.message : String(err)
     console.error('[IPC] Database init failed:', err)
+    appendSessionLog('CRASH', `db_init ${dbInitError}`)
   }
 
   ipcMain.handle('get-db-status', () => ({
@@ -77,6 +94,7 @@ export function registerIpcHandlers(): void {
       
       const callback = (data: any) => {
         if (data.type === 'progress') {
+          appendProgressLog(data.current, data.total, data.phase)
           event.sender.send('scan-progress', {
             current: data.current,
             total: data.total,
@@ -86,6 +104,12 @@ export function registerIpcHandlers(): void {
         } else if (data.type === 'file') {
           event.sender.send('scan-file-found', data)
         } else if (data.type === 'complete') {
+          setScanLive(false)
+          const st = Number(data.status)
+          appendSessionLog(
+            st === 1 ? 'SCAN_COMPLETE' : st === 3 ? 'SCAN_FAIL' : 'SCAN_STOP',
+            `scanId=${data.scanId} status=${st}`,
+          )
           event.sender.send('scan-complete', { scanId: data.scanId, status: data.status })
         }
       }
@@ -93,13 +117,21 @@ export function registerIpcHandlers(): void {
       const drivePath = driveIndex === -1 ? 'raid' : String(driveIndex)
       console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType, 'opts:', scanOptions ?? {})
       const opts = scanOptions && Object.keys(scanOptions).length > 0 ? scanOptions : undefined
-      if (opts) {
-        return (engine.startScan as (a: string, b: string, c: object, d: (data: unknown) => void) => number)(
+      const id = opts
+        ? (engine.startScan as (a: string, b: string, c: object, d: (data: unknown) => void) => number)(
           drivePath, scanType, opts, callback)
+        : engine.startScan(drivePath, scanType, callback)
+      if (id > 0) {
+        setScanLive(true)
+        appendSessionLog('SCAN_START', `scanId=${id} drive=${drivePath} type=${scanType}`)
+      } else {
+        appendSessionLog('SCAN_FAIL', `scanId=${id} drive=${drivePath} type=${scanType}`)
       }
-      return engine.startScan(drivePath, scanType, callback)
+      return id
 
     } catch (err) {
+      setScanLive(false)
+      appendSessionLog('SCAN_FAIL', err instanceof Error ? err.message : String(err))
       console.error('[IPC] start-scan error:', err)
       throw err
     }
@@ -109,6 +141,8 @@ export function registerIpcHandlers(): void {
     try {
       const engine = getEngine()
       engine.stopScan()
+      setScanLive(false)
+      appendSessionLog('SCAN_STOP', 'user')
       console.log('[IPC] stop-scan')
     } catch (err) {
       console.error('[IPC] stop-scan error:', err)
@@ -161,6 +195,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('get-audit-log', (_event, maxLines?: number) =>
     callNative('get-audit-log', () => getEngine().getAuditLog(maxLines ?? 200))
   )
+
+  ipcMain.handle('get-session-log', (_event, maxLines?: number) => {
+    const n = typeof maxLines === 'number' && maxLines > 0 ? Math.min(maxLines, 500) : 80
+    return readSessionLog(n)
+  })
 
   ipcMain.handle('get-smart-status', (_event, driveIndex) =>
     callNative('get-smart-status', () => getEngine().getSmartStatus(driveIndex))
@@ -232,6 +271,22 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('get-latest-scan-id', () =>
     callNative('get-latest-scan-id', () => getEngine().getLatestScanId())
   )
+
+  ipcMain.handle('get-latest-usable-scan-id', () =>
+    callNative('get-latest-usable-scan-id', () => getEngine().getLatestUsableScanId())
+  )
+
+  ipcMain.handle('reset-scan-database', () => {
+    if (!dbReady) return false
+    try {
+      const ok = getEngine().resetScanDatabase()
+      if (ok) appendSessionLog('DB_RESET', 'scan_data_cleared')
+      return ok
+    } catch (err) {
+      console.error('[IPC] reset-scan-database error:', err)
+      return false
+    }
+  })
 
   ipcMain.handle('get-scan-state', (_event, scanId: number) =>
     callNative('get-scan-state', () => getEngine().getScanState(scanId))
@@ -506,7 +561,8 @@ export function registerIpcHandlers(): void {
       return await engine.recoverFile(driveIndex, parsed.fileId, destDir, parsed.scanId)
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
-      return { success: false, error: String(err) }
+      const raw = err instanceof Error ? err.message : String(err)
+      return { success: false, error: diskBusyMessage(raw) ?? raw }
     }
   })
 
@@ -518,7 +574,8 @@ export function registerIpcHandlers(): void {
       return await engine.recoverFilesBatch(driveIndex, parsed.fileIds, destDir, parsed.scanId)
     } catch (err) {
       console.error('[IPC] recover-files-batch error:', err)
-      return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: String(err) }
+      const raw = err instanceof Error ? err.message : String(err)
+      return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: diskBusyMessage(raw) ?? raw }
     }
   })
 
@@ -527,10 +584,13 @@ export function registerIpcHandlers(): void {
       const parsed = parseRecoverIds(scanId, fileId)
       if (!parsed.ok) return { success: false, error: parsed.error }
       const engine = getEngine()
-      return engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
+      const res = engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
+      if (res && res.error) return { ...res, error: diskBusyMessage(res.error) ?? res.error }
+      return res
     } catch (err) {
       console.error('[IPC] read-file-preview error:', err)
-      return { success: false, error: String(err) }
+      const raw = err instanceof Error ? err.message : String(err)
+      return { success: false, error: diskBusyMessage(raw) ?? raw }
     }
   })
 

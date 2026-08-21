@@ -47,6 +47,8 @@ describe('isDiscoveryOnlySource', () => {
     expect(isDiscoveryOnlySource('ntfs_recycle_meta')).toBe(true)
     expect(canRecoverSource('ntfs_i30', false)).toBe(false)
     expect(canRecoverSource('ntfs_i30', true)).toBe(true)
+    expect(canRecoverSource('ntfs_thumbcache', false)).toBe(true)
+    expect(sourceDisplayLabel('ntfs_thumbcache')).toContain('thumbcache')
   })
 
   it('hides carve duplicates from default recoverable list', () => {

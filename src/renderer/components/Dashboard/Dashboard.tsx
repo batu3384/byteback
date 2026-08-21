@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import DriveCard from './DriveCard'
 import SsdTrimModal from './SsdTrimModal'
-import type { DriveInfo, ResolvedVolume, ScanOptions } from '../../../shared/types'
+import type { DriveInfo, ResolvedVolume, ScanOptions, ScanState } from '../../../shared/types'
 import { SCAN_PROFILES } from '../../../shared/scan-profiles'
 import type { ScanProfile } from '../../../shared/scan-profiles'
+import { isPausedScan, scanProgressPercent } from '../../../shared/scan-session'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search } from 'lucide-react'
@@ -11,17 +12,19 @@ import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Pla
 interface DashboardProps {
   onStartScan?: (driveIndex: number, scanType: string, scanOptions?: import('../../../shared/ipc-contract').ScanOptions) => void
   onAction?: (page: any, data?: any) => void
+  onOpenPausedResults?: (state: ScanState) => void
+  onClearScanData?: () => Promise<boolean>
   scanBusy?: boolean
 }
 
-function Dashboard({ onStartScan, onAction, scanBusy }: DashboardProps): React.ReactElement {
+function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData, scanBusy }: DashboardProps): React.ReactElement {
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [activeSession, setActiveSession] = useState<any>(null)
-  const [pausedSession, setPausedSession] = useState<any>(null)
-  const [latestScan, setLatestScan] = useState<any>(null)
+  const [pausedSession, setPausedSession] = useState<ScanState | null>(null)
+  const [latestScan, setLatestScan] = useState<ScanState | null>(null)
+  const [clearBusy, setClearBusy] = useState(false)
   const [fvekHex, setFvekHex] = useState('')
   const [fvekStatus, setFvekStatus] = useState<string | null>(null)
   const [fvekShow, setFvekShow] = useState(false)
@@ -75,29 +78,44 @@ function Dashboard({ onStartScan, onAction, scanBusy }: DashboardProps): React.R
   }
 
   const checkActiveSession = async () => {
-    // CA-008 fix: query the REAL latest scan instead of hardcoded id 1.
-    if (window.api?.getLatestScanId && window.api.getScanState) {
-      try {
-        const latestId = await window.api.getLatestScanId()
-        if (latestId > 0) {
-          const state = await window.api.getScanState(latestId)
-          if (state) {
-            setLatestScan(state)
-            if (state.status === 0) {
-              setActiveSession(state)
-              setPausedSession(null)
-            } else if (state.status === 4) {
-              setPausedSession(state)
-              setActiveSession(null)
-            } else {
-              setActiveSession(null)
-              setPausedSession(null)
-            }
-          }
-        }
-      } catch (err) {
-        console.error("No active session found")
+    if (!window.api?.getLatestUsableScanId || !window.api.getScanState) return
+    try {
+      const usableId = await window.api.getLatestUsableScanId()
+      if (usableId <= 0) {
+        setLatestScan(null)
+        setPausedSession(null)
+        return
       }
+      const state = await window.api.getScanState(usableId)
+      if (!state || state.id <= 0) {
+        setLatestScan(null)
+        setPausedSession(null)
+        return
+      }
+      setLatestScan(state)
+      setPausedSession(isPausedScan(state) ? state : null)
+    } catch {
+      setPausedSession(null)
+    }
+  }
+
+  const handleClearScans = async () => {
+    if (!onClearScanData || clearBusy) return
+    const ok = window.confirm(
+      'Tüm tarama kayıtları ve bulunan dosyalar SQLite\'dan silinecek. Bu işlem geri alınamaz. Devam?',
+    )
+    if (!ok) return
+    setClearBusy(true)
+    try {
+      const cleared = await onClearScanData()
+      if (cleared) {
+        setPausedSession(null)
+        setLatestScan(null)
+      } else {
+        window.alert('Tarama kayıtları temizlenemedi. Aktif tarama varsa önce durdurun.')
+      }
+    } finally {
+      setClearBusy(false)
     }
   }
 
@@ -342,43 +360,67 @@ function Dashboard({ onStartScan, onAction, scanBusy }: DashboardProps): React.R
             <div>
               <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Yarım Kalan Tarama</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · {pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör
+                Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · %{scanProgressPercent(pausedSession)} ({pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör)
               </p>
             </div>
           </div>
-          <button
-            className="btn-primary"
-            data-testid="resume-scan-btn"
-            onClick={() => onStartScan && onStartScan(pausedSession.driveIndex, pausedSession.scanType, { resumeScanId: pausedSession.id })}
-          >
-            <Play size={16} fill="currentColor" /> Devam et
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid="view-paused-results-btn"
+              onClick={() => onOpenPausedResults?.(pausedSession)}
+            >
+              <FolderCheck size={16} /> Sonuçları gör
+            </button>
+            <button
+              className="btn-primary"
+              data-testid="resume-scan-btn"
+              onClick={() => onStartScan && onStartScan(pausedSession.driveIndex, pausedSession.scanType, { resumeScanId: pausedSession.id })}
+            >
+              <Play size={16} fill="currentColor" /> Devam et
+            </button>
+          </div>
         </div>
       )}
 
-      {activeSession && (
+      {scanBusy && (
         <div className="resume-banner glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', background: 'rgba(59, 130, 246, 0.05)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <Activity size={24} color="var(--accent-blue)" className="spinner" />
             <div>
-              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Devam Eden Tarama Bulundu</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Sürücü {activeSession.driveIndex} üzerinde {activeSession.scanType} taraması yapılıyor. ({activeSession.scannedSectors} / {activeSession.totalSectors} sektör)</p>
+              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Tarama sürüyor</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Tarama ekranından ilerlemeyi izleyebilirsiniz.</p>
             </div>
           </div>
-          <button className="btn-primary" onClick={() => onAction && onAction('scan', { driveIndex: activeSession.driveIndex, scanType: activeSession.scanType })}>
-            <Play size={16} fill="currentColor" /> Taramaya Dön
+          <button type="button" className="btn-primary" onClick={() => onAction && onAction('scan')}>
+            <Play size={16} fill="currentColor" /> Taramaya dön
           </button>
         </div>
       )}
 
-      <div className="dashboard-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '16px' }}>
+      <div className="dashboard-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '16px', gap: '12px', flexWrap: 'wrap' }}>
         <div>
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sistemdeki Sürücüler</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>Erişilebilir tüm fiziksel donanımlar</p>
         </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <button className="btn-secondary" onClick={fetchDrives} disabled={loading} style={{ display: 'flex', gap: '8px' }}>
           <RefreshCw size={16} className={loading ? 'spinner' : ''} /> Yenile
         </button>
+        {onClearScanData && (
+          <button
+            type="button"
+            className="btn-secondary"
+            data-testid="clear-scan-data-btn"
+            disabled={clearBusy || scanBusy}
+            onClick={handleClearScans}
+            style={{ display: 'flex', gap: '8px' }}
+          >
+            <RotateCw size={16} /> Tarama kayıtlarını temizle
+          </button>
+        )}
+        </div>
       </div>
 
       {loading ? (
@@ -423,8 +465,8 @@ function Dashboard({ onStartScan, onAction, scanBusy }: DashboardProps): React.R
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}><Activity size={28} color="var(--accent-blue)" /></div>
           <div>
-            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{activeSession ? '1' : '0'}</div>
-            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Aktif Görev</div>
+            <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{scanBusy ? '1' : pausedSession ? '1' : '0'}</div>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Bekleyen / aktif tarama</div>
           </div>
         </div>
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>

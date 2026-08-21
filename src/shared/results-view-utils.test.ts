@@ -22,6 +22,7 @@ describe('results-view-utils', () => {
 
   it('classifies extensions and formats size', () => {
     expect(getFileType('png')).toBe('img')
+    expect(getFileType('heic')).toBe('img')
     expect(formatSize(2048)).toBe('2.00 KB')
   })
 

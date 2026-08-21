@@ -19,6 +19,22 @@
 .header-actions {
   display: flex;
   gap: var(--space-sm);
+  align-items: center;
+}
+
+.scan-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-blue);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--text-main);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.scan-pill:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
 }
 
 .icon-btn {

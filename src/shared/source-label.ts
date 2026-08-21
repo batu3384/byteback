@@ -31,6 +31,7 @@ export function canRecoverSource(source?: string, hasRuns?: boolean): boolean {
   if (isDiscoveryOnlySource(source)) return false
   if (source === 'apfs_extent') return !!hasRuns
   if (source === 'ntfs_i30') return !!hasRuns
+  if (source === 'ntfs_thumbcache') return true
   return true
 }
 
@@ -52,6 +53,7 @@ export function sourceDisplayLabel(source?: string): string {
   if (source === 'ntfs_recycle') return 'Geri Dönüşüm Kutusu ($R)'
   if (source === 'ntfs_recycle_meta') return 'Geri Dönüşüm Kutusu ($I, yalnızca ad)'
   if (source === 'ntfs_i30') return 'NTFS $I30 slack (düşük güven)'
+  if (source === 'ntfs_thumbcache') return 'NTFS thumbcache (gömülü JPEG)'
   if (source === 'usn_journal') return 'USN zaman çizelgesi'
   if (source === 'ntfs_logfile') return 'LogFile ipucu (kurtarılamaz)'
   if (source === 'carver_duplicate') return 'Carve tekrarı (MFT ile çakışıyor)'

@@ -1,9 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
 import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
 import { scanProfileLabel } from '../../../shared/scan-profiles'
-import { etaFromMonotonicWindow, type EtaSample } from '../../../shared/scan-eta'
+import {
+  etaFromMonotonicWindow,
+  formatEtaClock,
+  scanPhaseLabel,
+  scanStepIndex,
+  type EtaSample,
+} from '../../../shared/scan-eta'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -17,6 +23,15 @@ interface ScanViewProps {
   onViewResults: () => void
 }
 
+const TYPE_CHIPS: { id: string; label: string; category: string }[] = [
+  { id: 'all', label: 'Tümü', category: '' },
+  { id: 'img', label: 'Resim', category: 'Image' },
+  { id: 'video', label: 'Video', category: 'Video' },
+  { id: 'audio', label: 'Ses', category: 'Audio' },
+  { id: 'doc', label: 'Belge', category: 'Document' },
+  { id: 'archive', label: 'Arşiv', category: 'Archive' },
+]
+
 function ScanView({
   driveIndex, scanType,
   progress, status,
@@ -24,25 +39,31 @@ function ScanView({
   onStop, onCancel, onViewResults
 }: ScanViewProps): React.ReactElement {
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pageRef = useRef(0)
   const [page, setPage] = useState(0)
+  const [typeChip, setTypeChip] = useState('all')
+  const typeChipRef = useRef(typeChip)
   const [totalFiles, setTotalFiles] = useState(0)
   const [deletedCount, setDeletedCount] = useState(0)
   const [listCount, setListCount] = useState(0)
   const [carvedCount, setCarvedCount] = useState(0)
   const [carveSignatureCount, setCarveSignatureCount] = useState<number | null>(null)
   const [filesFound, setFilesFound] = useState<any[]>([])
+  const [listLoading, setListLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const [hfsTruncated, setHfsTruncated] = useState(false)
   const limit = 50
 
   const speedHistoryRef = useRef<EtaSample[]>([])
   const emaRef = useRef(0)
+  const lastPhaseRef = useRef(progress.phase)
+  const loadGenRef = useRef(0)
   const [currentSpeed, setCurrentSpeed] = useState(0)
   const [etaSeconds, setEtaSeconds] = useState(-1)
+  const [etaStalled, setEtaStalled] = useState(false)
 
   useEffect(() => { pageRef.current = page }, [page])
+  useEffect(() => { typeChipRef.current = typeChip }, [typeChip])
 
   useEffect(() => {
     if (scanType !== 'deep' && scanType !== 'full_carve') {
@@ -56,9 +77,15 @@ function ScanView({
   }, [scanType])
 
   useEffect(() => {
+    if (lastPhaseRef.current !== progress.phase) {
+      lastPhaseRef.current = progress.phase
+      speedHistoryRef.current = []
+      emaRef.current = 0
+    }
     if (status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi') {
       setEtaSeconds(-1)
       setCurrentSpeed(0)
+      setEtaStalled(false)
       emaRef.current = 0
       speedHistoryRef.current = []
       return
@@ -68,42 +95,65 @@ function ScanView({
       progress.current,
       progress.total,
       Date.now(),
-      5000,
+      30_000,
       emaRef.current,
     )
     speedHistoryRef.current = r.history
     emaRef.current = r.speed
     setCurrentSpeed(r.speed)
     setEtaSeconds(r.etaSeconds)
-  }, [progress.current, progress.total, status])
+    setEtaStalled(r.stalled)
+  }, [progress.current, progress.total, progress.phase, status, elapsed])
+
+  const listFilter = useCallback(() => {
+    const chip = TYPE_CHIPS.find((c) => c.id === typeChipRef.current)
+    return {
+      status: 0,
+      category: chip?.category ?? '',
+      includeDuplicates: false,
+      includeDiscovery: false,
+    }
+  }, [])
+
+  const loadLivePage = useCallback(async () => {
+    if (activeScanId <= 0 || !window.api?.getFileCount || !window.api?.getFilesPage) return
+    const gen = ++loadGenRef.current
+    setListLoading(true)
+    const filter = listFilter()
+    try {
+      const [count, listed, pageData, sum] = await Promise.all([
+        window.api.getFileCount(activeScanId),
+        window.api.getFileCount(activeScanId, filter),
+        window.api.getFilesPage(activeScanId, pageRef.current * limit, limit, filter),
+        window.api.getScanSummary ? window.api.getScanSummary(activeScanId) : Promise.resolve(null),
+      ])
+      if (gen !== loadGenRef.current) return
+      setTotalFiles(typeof count === 'number' && count >= 0 ? count : 0)
+      setListCount(typeof listed === 'number' && listed >= 0 ? listed : 0)
+      setFilesFound(pageData ?? [])
+      if (sum) {
+        setDeletedCount(sum.deletedFiles ?? 0)
+        setCarvedCount(sum.carvedFiles ?? 0)
+      }
+    } catch (e) {
+      if (gen !== loadGenRef.current) return
+      console.error('Pagination error', e)
+    } finally {
+      if (gen === loadGenRef.current) setListLoading(false)
+    }
+  }, [activeScanId, listFilter])
 
   useEffect(() => {
     if (driveIndex === null || activeScanId <= 0) return
+    void loadLivePage()
+    const id = setInterval(() => { void loadLivePage() }, 3000)
+    return () => clearInterval(id)
+  }, [driveIndex, activeScanId, page, typeChip, loadLivePage])
 
-    pollRef.current = setInterval(async () => {
-      if (!window.api?.getFileCount || !window.api?.getFilesPage) return
-      try {
-        const deletedFilter = { status: 0, includeDuplicates: false, includeDiscovery: false }
-        const count = await window.api.getFileCount(activeScanId)
-        setTotalFiles(count)
-        const deletedListed = await window.api.getFileCount(activeScanId, deletedFilter)
-        setListCount(deletedListed)
-        if (window.api.getScanSummary) {
-          const sum = await window.api.getScanSummary(activeScanId)
-          setDeletedCount(sum.deletedFiles ?? 0)
-          setCarvedCount(sum.carvedFiles ?? 0)
-        }
-        const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit, deletedFilter)
-        if (pageData) setFilesFound(pageData)
-      } catch (e) {
-        console.error('Pagination error', e)
-      }
-    }, 1500)
-
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [driveIndex, activeScanId, page])
+  useEffect(() => {
+    const maxPage = listCount <= 0 ? 0 : Math.max(0, Math.ceil(listCount / limit) - 1)
+    if (page > maxPage) setPage(maxPage)
+  }, [listCount, page, limit])
 
   useEffect(() => {
     if (filesFound.some((f) => f.source === 'hfs_limit')) {
@@ -120,8 +170,8 @@ function ScanView({
       .catch(() => setHfsTruncated(false))
   }, [filesFound, activeScanId])
 
-  const formatTime = (seconds: number) => {
-    if (seconds < 0) return "--:--:--"
+  const formatElapsed = (seconds: number) => {
+    if (seconds < 0) return '—'
     const h = Math.floor(seconds / 3600)
     const m = Math.floor((seconds % 3600) / 60)
     const s = Math.floor(seconds % 60)
@@ -129,15 +179,27 @@ function ScanView({
   }
 
   const formatSpeed = (speed: number) => {
-    if (speed <= 0) return "0 Sektör/s"
-    if (speed > 1000000) return `${(speed / 1000000).toFixed(2)} M Sektör/s`
-    if (speed > 1000) return `${(speed / 1000).toFixed(2)} K Sektör/s`
-    return `${Math.floor(speed)} Sektör/s`
+    if (speed <= 0) return '—'
+    if (speed > 1000000) return `${(speed / 1000000).toFixed(2)} M sektör/s`
+    if (speed > 1000) return `${(speed / 1000).toFixed(2)} K sektör/s`
+    return `${Math.floor(speed)} sektör/s`
   }
 
-  const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
+  const percent = progress.total > 0
+    ? Math.min(100, Math.floor((progress.current / progress.total) * 100))
+    : 0
   const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
   const stopping = status === 'Durduruluyor...'
+  const step = scanStepIndex(progress.phase, scanType)
+  const remainingLabel = isFinished
+    ? formatElapsed(0)
+    : etaStalled
+      ? 'ilerleme yok'
+      : etaSeconds < 0
+        ? 'hesaplanıyor'
+        : formatEtaClock(etaSeconds)
+  const rangeStart = listCount === 0 ? 0 : page * limit + 1
+  const rangeEnd = Math.min((page + 1) * limit, listCount)
 
   return (
     <div className="scan-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
@@ -171,12 +233,12 @@ function ScanView({
           </div>
           <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Geçen Süre</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatTime(elapsed)}</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatElapsed(elapsed)}</span>
           </div>
           <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kalan Süre</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 ? 'var(--accent-blue)' : 'inherit' }}>
-              {isFinished ? '00:00:00' : (etaSeconds >= 0 ? formatTime(etaSeconds) : '...')}
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 && !etaStalled ? 'var(--accent-blue)' : 'inherit' }}>
+              {remainingLabel}
             </span>
           </div>
         </div>
@@ -189,8 +251,8 @@ function ScanView({
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
         {scanType === 'deep' || scanType === 'full_carve'
-          ? `Önce dosya sistemi metadata ($MFT vb.), sonra boş alan oyması (${carveSignatureCount != null ? carveSignatureCount.toLocaleString('tr-TR') : '…'} imza). Oymada sayı yavaş artar; metadata bitince kayıt sayısı zaten dolu olabilir. Thumbcache DB içindeki küçük önizlemeler de taranır.`
-          : 'Hızlı tarama yalnız metadata okur (silinmiş MFT/FAT kayıtları dahil). Boş alan oyması için Derin tarama kullanın.'}
+          ? `Adım ${step.step}/${step.of}: ${scanPhaseLabel(progress.phase)}. ${carveSignatureCount != null ? `${carveSignatureCount.toLocaleString('tr-TR')} imza.` : ''} Sonuçlara istediğin zaman geç — tarama arka planda sürer. %75 civarı metadata bitişi; sonrası oyma ve uzun sürebilir.`
+          : 'Hızlı tarama yalnız dosya tablosu okur. Boş alandaki foto/video için Derin tarama.'}
       </div>
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
@@ -202,23 +264,45 @@ function ScanView({
           deletedCount={deletedCount}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-          <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
+          <span>Adım {step.step}/{step.of} · {scanPhaseLabel(progress.phase)}</span>
           <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
           <span>%{percent}</span>
         </div>
         <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
+        <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          Sektör {progress.current.toLocaleString('tr-TR')} / {progress.total ? progress.total.toLocaleString('tr-TR') : '—'}
+        </div>
       </div>
 
       <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>Silinmiş dosyalar (Sayfa {page + 1})</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)', flexWrap: 'wrap', gap: '8px' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>
+            Silinmiş {rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${listCount.toLocaleString('tr-TR')}` : '0'}
+            {listLoading ? ' …' : ''}
+          </h3>
+          <div className="filter-chips" role="group" aria-label="Dosya tipi">
+            {TYPE_CHIPS.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                className="filter-chip"
+                aria-pressed={typeChip === chip.id}
+                onClick={() => {
+                  setTypeChip(chip.id)
+                  setPage(0)
+                }}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
           <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
-            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0} onClick={() => setPage(p => p - 1)}>
+            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0 || listLoading} onClick={() => setPage(p => p - 1)}>
               <ChevronLeft size={16} /> Önceki
             </button>
-            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= listCount} onClick={() => setPage(p => p + 1)}>
+            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= listCount || listLoading} onClick={() => setPage(p => p + 1)}>
               Sonraki <ChevronRight size={16} />
             </button>
           </div>
@@ -227,18 +311,23 @@ function ScanView({
           <div style={{ flex: 1, minWidth: 0 }}>
             {filesFound.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>
-                {totalFiles > 0
-                  ? `Kayıt: ${totalFiles.toLocaleString('tr-TR')} (silinmiş: ${deletedCount.toLocaleString('tr-TR')})`
-                  : 'Henüz dosya bulunamadı...'}
+                {listLoading
+                  ? 'Liste yükleniyor…'
+                  : typeChip !== 'all'
+                    ? 'Bu tipte silinmiş kayıt yok. Uzantısız dosyalar Tümü süzgecinde.'
+                    : totalFiles > 0
+                      ? `Kayıt: ${totalFiles.toLocaleString('tr-TR')} (silinmiş: ${deletedCount.toLocaleString('tr-TR')})`
+                      : 'Henüz dosya bulunamadı...'}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {filesFound.map((f, i) => {
-                  const isSelected = selectedFile && selectedFile.name === f.name && selectedFile.startSector === f.startSector
+                {filesFound.map((f) => {
+                  const rowKey = f.id ?? `${f.name}-${f.startSector}`
+                  const isSelected = selectedFile && selectedFile.id === f.id
                   return (
                     <button
                       type="button"
-                      key={i}
+                      key={rowKey}
                       onClick={() => setSelectedFile(f)}
                       aria-pressed={!!isSelected}
                       style={{
