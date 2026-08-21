@@ -2,31 +2,49 @@ import React from 'react'
 import './Sidebar.css'
 import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock, Briefcase, Shield } from 'lucide-react'
 import { APP_VERSION } from '../../../shared/app-version'
-import { hasValidScanId, isScanDependentPage } from '../../../shared/scan-required'
+import { hasValidScanId, isScanDependentPage, isDiskBusyPage } from '../../../shared/scan-required'
 
 interface SidebarProps {
   activePage: string
   activeScanId: number
+  scanBusy?: boolean
   onNavigate: (page: string) => void
 }
 
-function Sidebar({ activePage, activeScanId, onNavigate }: SidebarProps): React.ReactElement {
-  const scanReady = hasValidScanId(activeScanId)
+type MenuItem = { id: string; label: string; icon: React.ReactNode }
 
-  const menuItems = [
-    { id: 'dashboard', label: 'Ana Ekran', icon: <LayoutDashboard size={20} strokeWidth={1.5} /> },
-    { id: 'scan', label: 'Aktif Tarama', icon: <Search size={20} strokeWidth={1.5} /> },
-    { id: 'results', label: 'Kurtarma Sonuçları', icon: <FolderSearch size={20} strokeWidth={1.5} /> },
-    { id: 'search', label: 'Kelime Arama', icon: <FileSearch size={20} strokeWidth={1.5} /> },
-    { id: 'hex', label: 'Hex İnceleyici', icon: <Binary size={20} strokeWidth={1.5} /> },
-    { id: 'imager', label: 'İmaj (RAW / E01)', icon: <HardDriveDownload size={20} strokeWidth={1.5} /> },
-    { id: 'smart', label: 'S.M.A.R.T. Durumu', icon: <Activity size={20} strokeWidth={1.5} /> },
-    { id: 'shredder', label: 'Veri Yok Edici', icon: <ShieldAlert size={20} strokeWidth={1.5} /> },
-    { id: 'raid', label: 'Sanal RAID Oluştur', icon: <Database size={20} strokeWidth={1.5} /> },
-    { id: 'timeline', label: 'Olay Zaman Çizelgesi', icon: <Clock size={20} strokeWidth={1.5} /> },
-    { id: 'report', label: 'Adli Rapor (PDF)', icon: <FileText size={20} strokeWidth={1.5} /> },
-    { id: 'case', label: 'Dava / NSRL', icon: <Briefcase size={20} strokeWidth={1.5} /> },
-  ]
+const GROUPS: { title: string; items: MenuItem[] }[] = [
+  {
+    title: 'Kurtarma',
+    items: [
+      { id: 'dashboard', label: 'Ana Ekran', icon: <LayoutDashboard size={18} strokeWidth={1.5} /> },
+      { id: 'scan', label: 'Aktif Tarama', icon: <Search size={18} strokeWidth={1.5} /> },
+      { id: 'results', label: 'Sonuçlar', icon: <FolderSearch size={18} strokeWidth={1.5} /> },
+    ],
+  },
+  {
+    title: 'İnceleme',
+    items: [
+      { id: 'search', label: 'Kelime Arama', icon: <FileSearch size={18} strokeWidth={1.5} /> },
+      { id: 'hex', label: 'Hex İnceleyici', icon: <Binary size={18} strokeWidth={1.5} /> },
+      { id: 'timeline', label: 'Zaman Çizelgesi', icon: <Clock size={18} strokeWidth={1.5} /> },
+      { id: 'report', label: 'Adli Rapor', icon: <FileText size={18} strokeWidth={1.5} /> },
+    ],
+  },
+  {
+    title: 'Disk / uzman',
+    items: [
+      { id: 'imager', label: 'İmaj (RAW / E01)', icon: <HardDriveDownload size={18} strokeWidth={1.5} /> },
+      { id: 'smart', label: 'S.M.A.R.T.', icon: <Activity size={18} strokeWidth={1.5} /> },
+      { id: 'raid', label: 'Sanal RAID', icon: <Database size={18} strokeWidth={1.5} /> },
+      { id: 'case', label: 'Dava / NSRL', icon: <Briefcase size={18} strokeWidth={1.5} /> },
+      { id: 'shredder', label: 'Veri Yok Edici', icon: <ShieldAlert size={18} strokeWidth={1.5} /> },
+    ],
+  },
+]
+
+function Sidebar({ activePage, activeScanId, scanBusy, onNavigate }: SidebarProps): React.ReactElement {
+  const scanReady = hasValidScanId(activeScanId)
 
   return (
     <aside className="sidebar">
@@ -37,28 +55,37 @@ function Sidebar({ activePage, activeScanId, onNavigate }: SidebarProps): React.
         <h1>Byteback</h1>
       </div>
       <nav className="sidebar-nav" aria-label="Ana menü">
-        <ul>
-          {menuItems.map((item) => {
-            const needsScan = isScanDependentPage(item.id)
-            const disabled = needsScan && !scanReady
-            const isActive = activePage === item.id
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className={`nav-btn ${isActive ? 'active' : ''} ${disabled ? 'nav-btn-disabled' : ''}`}
-                  onClick={() => onNavigate(item.id)}
-                  disabled={disabled}
-                  aria-current={isActive ? 'page' : undefined}
-                  title={disabled ? 'Önce bir taramayı tamamlayın' : undefined}
-                >
-                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="nav-label">{item.label}</span>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
+        {GROUPS.map((group) => (
+          <div key={group.title} className="nav-group">
+            <h2 className="nav-group-title">{group.title}</h2>
+            <ul>
+              {group.items.map((item) => {
+                const needsScan = isScanDependentPage(item.id)
+                const needsIdleDisk = isDiskBusyPage(item.id)
+                const disabled = (needsScan && !scanReady) || (needsIdleDisk && !!scanBusy)
+                const isActive = activePage === item.id
+                let title: string | undefined
+                if (needsScan && !scanReady) title = 'Önce bir taramayı tamamlayın'
+                else if (needsIdleDisk && scanBusy) title = 'Tarama bitince kullanılabilir'
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className={`nav-btn ${isActive ? 'active' : ''} ${disabled ? 'nav-btn-disabled' : ''}`}
+                      onClick={() => onNavigate(item.id)}
+                      disabled={disabled}
+                      aria-current={isActive ? 'page' : undefined}
+                      title={title}
+                    >
+                      <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+                      <span className="nav-label">{item.label}</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        ))}
       </nav>
 
       <div className="sidebar-footer">

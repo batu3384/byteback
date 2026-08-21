@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTree, getFileType, formatSize } from '../renderer/components/ResultsView/results-view-utils'
+import { buildTree, getFileType, formatSize, chipToCategory } from '../renderer/components/ResultsView/results-view-utils'
 
 describe('results-view-utils', () => {
   it('buildTree nests files under directories', () => {
@@ -23,5 +23,10 @@ describe('results-view-utils', () => {
   it('classifies extensions and formats size', () => {
     expect(getFileType('png')).toBe('img')
     expect(formatSize(2048)).toBe('2.00 KB')
+  })
+
+  it('maps type chips to SQL category', () => {
+    expect(chipToCategory('img')).toBe('Image')
+    expect(chipToCategory('all')).toBe('')
   })
 })

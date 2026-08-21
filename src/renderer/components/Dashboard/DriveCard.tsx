@@ -12,6 +12,7 @@ interface DriveCardProps {
   onStartScan?: (driveIndex: number, scanType: string, scanOptions?: ScanOptions) => void
   onAction?: (page: any, data?: any) => void
   isAdmin?: boolean
+  diskBusy?: boolean
 }
 
 function formatBytes(bytes: number): string {
@@ -22,7 +23,7 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
-function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): React.ReactElement {
+function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCardProps): React.ReactElement {
   const [partitions, setPartitions] = useState<PartitionInfo[]>([])
   const [partitionIndex, setPartitionIndex] = useState(-1)
   const [isSsd, setIsSsd] = useState(drive.type === 'SSD')
@@ -31,13 +32,14 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin }: DriveCardProps): R
   const [adminNotice, setAdminNotice] = useState<string | null>(null)
 
   useEffect(() => {
+    if (diskBusy) return
     if (!window.api?.listPartitions) return
     window.api.listPartitions(drive.index).then(setPartitions).catch((e: unknown) => {
       console.warn('[DriveCard] listPartitions failed', e)
       setPartitions([])
       setAdminNotice('Bölüm tablosu okunamadı. Yönetici izni veya başka disk işlemi kontrol edin.')
     })
-  }, [drive.index])
+  }, [drive.index, diskBusy])
 
   useEffect(() => {
     if (drive.type === 'SSD') {

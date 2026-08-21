@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   canGenerateReport,
+  diskBusyMessage,
   hasValidScanId,
+  isDiskBusyPage,
+  isLiveScanStatus,
   isScanDependentPage,
   SCAN_DEPENDENT_PAGES,
 } from './scan-required'
@@ -24,5 +27,24 @@ describe('scan-required', () => {
     }
     expect(isScanDependentPage('dashboard')).toBe(false)
     expect(isScanDependentPage('hex')).toBe(false)
+  })
+
+  it('marks disk-busy pages that must wait out a live scan', () => {
+    expect(isDiskBusyPage('hex')).toBe(true)
+    expect(isDiskBusyPage('imager')).toBe(true)
+    expect(isDiskBusyPage('shredder')).toBe(true)
+    expect(isDiskBusyPage('dashboard')).toBe(false)
+  })
+
+  it('isLiveScanStatus only while a scan is in flight', () => {
+    expect(isLiveScanStatus('Tarama Sürüyor...')).toBe(true)
+    expect(isLiveScanStatus('RAID Taraması Sürüyor...')).toBe(true)
+    expect(isLiveScanStatus('Tarama Tamamlandı')).toBe(false)
+    expect(isLiveScanStatus('Bekleniyor...')).toBe(false)
+  })
+
+  it('diskBusyMessage translates native busy errors', () => {
+    expect(diskBusyMessage('Another disk operation is already running')?.includes('Tarama')).toBe(true)
+    expect(diskBusyMessage('Sektör okunamadı')).toBe('Sektör okunamadı')
   })
 })

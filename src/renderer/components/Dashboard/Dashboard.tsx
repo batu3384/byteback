@@ -11,9 +11,10 @@ import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Pla
 interface DashboardProps {
   onStartScan?: (driveIndex: number, scanType: string, scanOptions?: import('../../../shared/ipc-contract').ScanOptions) => void
   onAction?: (page: any, data?: any) => void
+  scanBusy?: boolean
 }
 
-function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElement {
+function Dashboard({ onStartScan, onAction, scanBusy }: DashboardProps): React.ReactElement {
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
@@ -405,6 +406,7 @@ function Dashboard({ onStartScan, onAction }: DashboardProps): React.ReactElemen
               onStartScan={onStartScan} 
               onAction={onAction}
               isAdmin={isAdmin ?? false}
+              diskBusy={!!scanBusy}
             />
           ))}
         </div>
