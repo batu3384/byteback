@@ -8,6 +8,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     env.SetInstanceData<BridgeData>(new BridgeData());
 
     // bridge_drives.cpp
+    exports.Set("getCarveSignatureCount", Napi::Function::New(env, GetCarveSignatureCount));
     exports.Set("getVersion", Napi::Function::New(env, GetVersion));
     exports.Set("isAdministrator", Napi::Function::New(env, IsAdministrator));
     exports.Set("listDrives", Napi::Function::New(env, ListDrives));

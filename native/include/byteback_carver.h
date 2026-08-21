@@ -47,6 +47,9 @@ public:
 
     bool loadSignatures(const std::string& jsonPath);
     size_t signatureCount() const { return signatures.size(); }
+
+    // Loads embedded + resource JSON once; safe to call from UI before scan.
+    static size_t globalSignatureCount();
     bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);
     bool scanRange(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
                    FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);

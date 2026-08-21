@@ -109,6 +109,7 @@ inline bool throwIfSharedReaderBusy(Napi::Env env, BridgeData* bdata) {
 }
 
 // bridge_drives.cpp — drives / partitions / raw reads / SMART
+Napi::Value GetCarveSignatureCount(const Napi::CallbackInfo& info);
 Napi::Value GetVersion(const Napi::CallbackInfo& info);
 Napi::Value IsAdministrator(const Napi::CallbackInfo& info);
 Napi::Value ListDrives(const Napi::CallbackInfo& info);
