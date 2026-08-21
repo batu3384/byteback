@@ -1,6 +1,7 @@
 #include "byteback_db.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
+#include <mutex>
 #include <string>
 
 namespace byteback {
@@ -13,6 +14,7 @@ std::string safe_column_text(sqlite3_stmt* stmt, int col) {
 } // namespace
 
 CaseInfo MetadataStore::getCaseInfo() {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     CaseInfo c;
     if (!db_) return c;
     const char* sql = R"(
@@ -34,6 +36,7 @@ CaseInfo MetadataStore::getCaseInfo() {
 }
 
 bool MetadataStore::setCaseInfo(const CaseInfo& info) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     if (!db_) return false;
     CaseInfo existing = getCaseInfo();
     int64_t now = static_cast<int64_t>(std::time(nullptr));

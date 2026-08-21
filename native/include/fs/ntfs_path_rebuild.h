@@ -30,6 +30,13 @@ public:
 
     bool hasRecord(uint64_t mftRecord) const;
 
+    template <typename Fn>
+    void forEachIndxOnly(Fn fn) const {
+        for (const auto& kv : entries_) {
+            if (kv.second.pathConfidence < 60) fn(kv.first, kv.second);
+        }
+    }
+
 private:
     std::unordered_map<uint64_t, MftDirEntry> entries_;
     std::unordered_map<std::string, int> logDirHints_;

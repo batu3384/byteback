@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <mutex>
 
 struct sqlite3;
 
@@ -72,6 +73,12 @@ struct CaseInfo {
     int64_t updatedAt = 0;
 };
 
+struct FileListFilter {
+    int status = -1;          // -1 all, 0 deleted, 1 allocated
+    std::string category;     // empty = all (Image, Document, ...)
+    std::string query;        // empty = no name/path search
+};
+
 class MetadataStore {
 public:
     MetadataStore();
@@ -84,8 +91,9 @@ public:
     // File records
     int64_t insertFile(int64_t scanId, const FileRecord& record);
     bool insertFilesBatch(int64_t scanId, const std::vector<FileRecord>& records);
-    std::vector<FileRecord> getFiles(int64_t scanId, int offset, int limit);
-    int64_t getFileCount(int64_t scanId);
+    std::vector<FileRecord> getFiles(int64_t scanId, int offset, int limit,
+                                     const FileListFilter& filter = {});
+    int64_t getFileCount(int64_t scanId, const FileListFilter& filter = {});
 
     // Scan state
     int64_t createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors);
@@ -105,6 +113,7 @@ public:
         int64_t videoFiles = 0;
         int64_t audioFiles = 0;
         int64_t archiveFiles = 0;
+        int64_t carvedFiles = 0;
         int64_t timelineEvents = 0;
         int64_t usnCreates = 0;
         int64_t usnDeletes = 0;
@@ -113,9 +122,11 @@ public:
     ScanSummary getScanSummary(int64_t scanId);
     std::vector<FileRecord> searchFiles(int64_t scanId, const std::string& query,
                                         int offset, int limit, bool useRegex,
-                                        const std::string& categoryFilter = "");
+                                        const std::string& categoryFilter = "",
+                                        int statusFilter = -1);
     int64_t searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
-                             const std::string& categoryFilter = "");
+                             const std::string& categoryFilter = "",
+                             int statusFilter = -1);
 
     // Content FTS — full-file windows (chunked), indexed during content search.
     bool upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text);
@@ -143,6 +154,7 @@ public:
 private:
     bool createTables();
     sqlite3* db_;
+    mutable std::recursive_mutex mu_;
 };
 
 } // namespace byteback

@@ -17,6 +17,7 @@
 #include "scan/dedup_index.h"
 #include "forensic/audit_logger.h"
 #include "forensic/nsrl_lookup.h"
+#include "util/utf8_sanitize.h"
 #include <cstdlib>
 #include <memory>
 #include <exception>
@@ -48,9 +49,9 @@ struct ScanContext {
     std::vector<byteback::FileRecord> fileBuffer;
     byteback::DedupIndex dedupIndex;
     std::mutex bufferMutex;
-    // CA-007: bad-sector sample list mirrored by the coordinator before each
-    // progress tick (written and read on the same worker thread).
     std::vector<uint64_t> badSectors;
+    uint64_t generation = 0;
+    std::atomic<uint32_t> filesPosted{0};
 };
 
 struct ImagerContext {
@@ -73,6 +74,7 @@ struct BridgeData {
     std::string auditLogPath;
     forensic::NsrlLookup nsrl;
     std::atomic<int> heavyOps{0};
+    std::atomic<uint64_t> nextScanGeneration{1};
 
     bool tryBeginHeavyOp() {
         int prev = heavyOps.fetch_add(1);
@@ -89,6 +91,14 @@ struct BridgeData {
 
     bool diskOpInProgress() const { return heavyOps.load(std::memory_order_acquire) > 0; }
 };
+
+inline bool sharedReaderBusy(const BridgeData* bdata) {
+    return bdata && bdata->diskOpInProgress();
+}
+
+inline Napi::String jsUtf8(Napi::Env env, const std::string& s) {
+    return Napi::String::New(env, byteback::utf8ForJs(s));
+}
 
 inline bool throwIfSharedReaderBusy(Napi::Env env, BridgeData* bdata) {
     if (bdata && bdata->diskOpInProgress()) {
@@ -135,8 +145,8 @@ Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info);
 Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info);
 template<typename Callback>
-void tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
-    (void)tsfn.NonBlockingCall(std::forward<Callback>(cb));
+bool tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
+    return tsfn.NonBlockingCall(std::forward<Callback>(cb)) == napi_ok;
 }
 
 Napi::Value ReconstructRaid(const Napi::CallbackInfo& info);

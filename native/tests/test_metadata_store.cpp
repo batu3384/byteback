@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstdio>
+#include <thread>
 
 using namespace byteback;
 
@@ -203,4 +204,65 @@ TEST_F(MetadataStoreTest, IntegrityChecksumRoundTrip) {
     ASSERT_GT(id, 0);
     auto loaded = store_.getFileById(id, scanId);
     EXPECT_EQ(loaded.integrityChecksum, r.integrityChecksum);
+}
+
+TEST_F(MetadataStoreTest, ConcurrentInsertAndReadDoesNotCrash) {
+    int64_t scanId = store_.createScan(0, "deep", 100);
+    ASSERT_GT(scanId, 0);
+    std::thread writer([&] {
+        for (int i = 0; i < 80; ++i) {
+            FileRecord r;
+            r.name = "n" + std::to_string(i);
+            r.status = 1;
+            r.sizeBytes = 1;
+            store_.insertFile(scanId, r);
+        }
+    });
+    std::thread reader([&] {
+        for (int i = 0; i < 80; ++i) {
+            (void)store_.getFileCount(scanId);
+            (void)store_.getFiles(scanId, 0, 10);
+        }
+    });
+    writer.join();
+    reader.join();
+    EXPECT_EQ(store_.getFileCount(scanId), 80);
+}
+
+TEST_F(MetadataStoreTest, DeletedFilterIsNotPageLocal) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+    std::vector<FileRecord> batch;
+    for (int i = 0; i < 600; ++i) {
+        FileRecord r;
+        r.name = "sys" + std::to_string(i) + ".dll";
+        r.status = 1;
+        r.category = "Executable";
+        r.sizeBytes = 10;
+        batch.push_back(r);
+    }
+    FileRecord gone;
+    gone.name = "photo.jpg";
+    gone.status = 0;
+    gone.category = "Image";
+    gone.sizeBytes = 99;
+    batch.push_back(gone);
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    FileListFilter deleted;
+    deleted.status = 0;
+    EXPECT_EQ(store_.getFileCount(scanId, deleted), 1);
+    auto page = store_.getFiles(scanId, 0, 10, deleted);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].name, "photo.jpg");
+
+    FileListFilter images;
+    images.category = "Image";
+    EXPECT_EQ(store_.getFileCount(scanId, images), 1);
+
+    FileListFilter byName;
+    byName.query = "photo";
+    byName.status = 0;
+    auto hits = store_.getFiles(scanId, 0, 10, byName);
+    ASSERT_EQ(hits.size(), 1u);
 }

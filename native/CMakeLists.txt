@@ -36,7 +36,7 @@ add_definitions(-DNAPI_VERSION=8)
 # Source files
 set(SQLITE_SOURCES third_party/sqlite3.c)
 set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
-set_source_files_properties(${SQLITE_SOURCES} PROPERTIES COMPILE_DEFINITIONS "SQLITE_ENABLE_FTS5")
+set_source_files_properties(${SQLITE_SOURCES} PROPERTIES COMPILE_DEFINITIONS "SQLITE_ENABLE_FTS5;SQLITE_THREADSAFE=1")
 
 set(SOURCES
   src/bridge/napi_bridge.cpp
@@ -180,6 +180,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_scan_coordinator.cpp
     tests/test_unallocated_map.cpp
     tests/test_ntfs_path_rebuild.cpp
+    tests/test_ntfs_recycle.cpp
     tests/test_volume_mapper.cpp
     tests/test_nsrl.cpp
     tests/test_case_info.cpp
@@ -190,6 +191,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
     tests/test_dedup_index.cpp
+    tests/test_utf8_sanitize.cpp
     tests/test_e2e_scan_recover.cpp
     tests/test_recovery_golden.cpp
     tests/bench_scan.cpp

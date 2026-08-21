@@ -3,6 +3,7 @@
 #include "fs/ntfs_util.h"
 #include "fs/ntfs_logfile.h"
 #include "fs/ntfs_path_rebuild.h"
+#include "fs/ntfs_recycle.h"
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -737,8 +738,30 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             if (byRef && tf.fr.name.empty()) tf.fr.name = logName;
             if (logMft != UINT64_MAX && tf.mftRecord == UINT64_MAX) tf.mftRecord = logMft;
         }
+    }
+
+    ntfs::applyRecycleBinRecords(tempFiles);
+
+    for (auto& tf : tempFiles) {
+        if (tf.fr.source == "ntfs_recycle_meta") continue;
         callback(tf.fr);
     }
+
+    // ponytail: $I30 slack = resident INDEX / INDX buffer tail only. Full INDX
+    // recarve of allocated index streams is a later pass if these names stay thin.
+    int64_t i30Id = 800000;
+    mftIndex.forEachIndxOnly([&](uint64_t mft, const ntfs::MftDirEntry& e) {
+        FileRecord fr{};
+        fr.id = i30Id++;
+        fr.parentId = static_cast<int64_t>(e.parentMft);
+        fr.name = e.name;
+        fr.path = mftIndex.rebuildPath(mft, e.name, e.parentMft);
+        fr.status = 0;
+        fr.source = "ntfs_i30";
+        fr.confidence = 35;
+        fr.category = categoryForName(e.name);
+        callback(fr);
+    });
 
     // ---- USN journal pass ----
     // Read the captured $UsnJrnl:$J runs and parse every v2/v3 record into a

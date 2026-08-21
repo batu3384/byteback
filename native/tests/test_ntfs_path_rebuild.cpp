@@ -19,6 +19,21 @@ TEST(NtfsPathRebuild, IndxHintFillsMissingParent) {
     EXPECT_EQ(path, "/Projects/note.txt");
 }
 
+TEST(NtfsPathRebuild, IndxOnlyHintsAreWalkable) {
+    MftIndex idx;
+    idx.putFileRecord(10, MftIndex::kRootMft, "Users", true, true);
+    idx.putIndxHint(99, 10, "gone.docx");
+    int n = 0;
+    std::string name;
+    idx.forEachIndxOnly([&](uint64_t mft, const MftDirEntry& e) {
+        ++n;
+        name = e.name;
+        EXPECT_EQ(mft, 99u);
+    });
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(name, "gone.docx");
+}
+
 TEST(NtfsPathRebuild, StopsAtRoot) {
     MftIndex idx;
     idx.putFileRecord(48, MftIndex::kRootMft, "boot.ini", false, false);

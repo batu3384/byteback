@@ -1,9 +1,11 @@
 // bridge_scan.cpp — scan lifecycle, result pages, scan state, unified
 // timeline and the audit-log reader. See bridge_common.h for the context.
 #include "bridge_common.h"
+#include "scan_progress.h"
 #include "search/content_search.h"
 #include "fs/partition_scanner.h"
 #include <atomic>
+#include <cstdio>
 
 namespace {
 Napi::Array RunsToJs(Napi::Env env, const std::vector<byteback::FileRecord::DataRun>& runs) {
@@ -17,29 +19,46 @@ Napi::Array RunsToJs(Napi::Env env, const std::vector<byteback::FileRecord::Data
     return arr;
 }
 
+byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
+    byteback::FileListFilter f;
+    if (!v.IsObject()) return f;
+    Napi::Object o = v.As<Napi::Object>();
+    if (o.Has("status") && o.Get("status").IsNumber()) {
+        f.status = o.Get("status").As<Napi::Number>().Int32Value();
+    }
+    if (o.Has("category") && o.Get("category").IsString()) {
+        f.category = o.Get("category").As<Napi::String>().Utf8Value();
+    }
+    if (o.Has("query") && o.Get("query").IsString()) {
+        f.query = o.Get("query").As<Napi::String>().Utf8Value();
+    }
+    return f;
+}
+
 Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     Napi::Object fileObj = Napi::Object::New(env);
     fileObj.Set("id", Napi::Number::New(env, static_cast<double>(fr.id)));
     fileObj.Set("parentId", Napi::Number::New(env, static_cast<double>(fr.parentId)));
-    fileObj.Set("name", Napi::String::New(env, fr.name));
-    fileObj.Set("extension", Napi::String::New(env, fr.extension));
-    fileObj.Set("path", Napi::String::New(env, fr.path));
+    fileObj.Set("name", jsUtf8(env, fr.name));
+    fileObj.Set("extension", jsUtf8(env, fr.extension));
+    fileObj.Set("path", jsUtf8(env, fr.path));
     fileObj.Set("sizeBytes", Napi::Number::New(env, static_cast<double>(fr.sizeBytes)));
     fileObj.Set("startSector", Napi::Number::New(env, static_cast<double>(fr.startSector)));
     fileObj.Set("endSector", Napi::Number::New(env, static_cast<double>(fr.endSector)));
     fileObj.Set("status", Napi::Number::New(env, fr.status));
     fileObj.Set("compressed", Napi::Boolean::New(env, fr.compressed));
     fileObj.Set("confidence", Napi::Number::New(env, fr.confidence));
-    fileObj.Set("category", Napi::String::New(env, fr.category));
-    fileObj.Set("source", Napi::String::New(env, fr.source));
+    fileObj.Set("category", jsUtf8(env, fr.category));
+    fileObj.Set("source", jsUtf8(env, fr.source));
     fileObj.Set("createdAt", Napi::Number::New(env, static_cast<double>(fr.createdAt)));
     fileObj.Set("modifiedAt", Napi::Number::New(env, static_cast<double>(fr.modifiedAt)));
     fileObj.Set("runs", RunsToJs(env, fr.runs));
     return fileObj;
 }
-} // namespace
 
-void FinalizeScanSession(BridgeData* bdata, int status) {
+constexpr uint32_t kMaxLiveFileEvents = 2048;
+
+void flushScanToDb(BridgeData* bdata, int status) {
     if (!bdata || !bdata->scanContext) return;
     auto context = bdata->scanContext;
 
@@ -56,25 +75,22 @@ void FinalizeScanSession(BridgeData* bdata, int status) {
     auto st = bdata->engine.getMetadataStore().getScanState(context->scanId);
     int dbStatus = status;
     if (status == 2 && st.totalSectors > 0 && st.scannedSectors > 0 && st.scannedSectors < st.totalSectors) {
-        dbStatus = 4; // paused / resumable checkpoint
+        dbStatus = 4;
     }
     bdata->engine.getMetadataStore().completeScan(context->scanId, dbStatus);
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "SCAN_END | scanId=" + std::to_string(context->scanId) + " | status=" + std::to_string(status));
+}
 
-    auto callback = [scanId = context->scanId, status](Napi::Env env, Napi::Function jsCallback) {
-        Napi::Object obj = Napi::Object::New(env);
-        obj.Set("type", Napi::String::New(env, "complete"));
-        obj.Set("scanId", Napi::Number::New(env, static_cast<double>(scanId)));
-        obj.Set("status", Napi::Number::New(env, status));
-        jsCallback.Call({obj});
-    };
-    tsfnPost(context->tsfn, callback);
-    context->tsfn.Release();
+void teardownScanOnJs(BridgeData* bdata, uint64_t generation) {
+    if (!bdata || !bdata->scanContext) return;
+    if (bdata->scanContext->generation != generation) return;
+    bdata->scanContext->tsfn.Release();
     bdata->scanContext.reset();
     bdata->endHeavyOp();
 }
+} // namespace
 
 Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -107,7 +123,9 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     if (!engine || info.Length() < 1) return env.Undefined();
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
-    int64_t count = engine->getMetadataStore().getFileCount(scanId);
+    byteback::FileListFilter filter;
+    if (info.Length() >= 2 && info[1].IsObject()) filter = FilterFromJs(info[1]);
+    int64_t count = engine->getMetadataStore().getFileCount(scanId, filter);
     return Napi::Number::New(env, static_cast<double>(count));
     NAPI_CATCH
 }
@@ -122,8 +140,10 @@ Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     int offset = info[1].As<Napi::Number>().Int32Value();
     int limit = info[2].As<Napi::Number>().Int32Value();
+    byteback::FileListFilter filter;
+    if (info.Length() >= 4 && info[3].IsObject()) filter = FilterFromJs(info[3]);
 
-    auto files = engine->getMetadataStore().getFiles(scanId, offset, limit);
+    auto files = engine->getMetadataStore().getFiles(scanId, offset, limit, filter);
     Napi::Array result = Napi::Array::New(env, files.size());
 
     for (size_t i = 0; i < files.size(); ++i) {
@@ -256,9 +276,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     if (!bdata) return env.Undefined();
 
     if (bdata->scanContext) {
+        const uint64_t oldGen = bdata->scanContext->generation;
         bdata->scanContext->coordinator.stopScan();
-        bdata->scanContext.reset();
-        // FinalizeScanSession already endHeavyOp() after worker join.
+        teardownScanOnJs(bdata, oldGen);
     }
 
     if (!bdata->tryBeginHeavyOp()) {
@@ -345,6 +365,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     }
 
     auto context = std::make_shared<ScanContext>();
+    context->generation = bdata->nextScanGeneration.fetch_add(1);
     bdata->scanContext = context;
 
     int driveIndex = 0;
@@ -406,7 +427,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
              : ""));
 
     context->tsfn = Napi::ThreadSafeFunction::New(
-        env, cb, "ScanCallback", 0, 1,
+        env, cb, "ScanCallback", 4096, 1,
         [](Napi::Env) {}
     );
 
@@ -450,13 +471,15 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             }
         }
 
-        auto callback = [out](Napi::Env env, Napi::Function jsCallback) {
-            Napi::Object obj = FileRecordToJs(env, out);
-            obj.Set("type", Napi::String::New(env, "file"));
-            obj.Set("size", Napi::Number::New(env, static_cast<double>(out.sizeBytes)));
-            jsCallback.Call({obj});
-        };
-        tsfnPost(context->tsfn, callback);
+        if (context->filesPosted.load() < kMaxLiveFileEvents) {
+            auto callback = [out](Napi::Env env, Napi::Function jsCallback) {
+                Napi::Object obj = FileRecordToJs(env, out);
+                obj.Set("type", Napi::String::New(env, "file"));
+                obj.Set("size", Napi::Number::New(env, static_cast<double>(out.sizeBytes)));
+                jsCallback.Call({obj});
+            };
+            if (tsfnPost(context->tsfn, callback)) context->filesPosted.fetch_add(1);
+        }
     };
 
     auto totalSectorsSet = std::make_shared<std::atomic<bool>>(false);
@@ -473,11 +496,13 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
         *lastProgress = now;
 
-        auto callback = [current, total, bad = context->badSectors](Napi::Env env, Napi::Function jsCallback) {
+        auto callback = [current, total, phase = std::string(byteback::g_scanPhase ? byteback::g_scanPhase : "metadata"),
+                         bad = context->badSectors](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));
             obj.Set("current", Napi::Number::New(env, static_cast<double>(current)));
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
+            obj.Set("phase", Napi::String::New(env, phase));
             Napi::Array badArr = Napi::Array::New(env, bad.size());
             for (size_t i = 0; i < bad.size(); ++i) {
                 badArr[i] = Napi::Number::New(env, static_cast<double>(bad[i]));
@@ -488,8 +513,22 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         tsfnPost(context->tsfn, callback);
     };
 
-    auto onFinished = [bdata](int status) {
-        FinalizeScanSession(bdata, status);
+    auto onFinished = [bdata, context](int status) {
+        flushScanToDb(bdata, status);
+        const uint64_t gen = context->generation;
+        const int64_t scanId = context->scanId;
+        auto callback = [bdata, scanId, status, gen](Napi::Env env, Napi::Function jsCallback) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("type", Napi::String::New(env, "complete"));
+            obj.Set("scanId", Napi::Number::New(env, static_cast<double>(scanId)));
+            obj.Set("status", Napi::Number::New(env, status));
+            jsCallback.Call({obj});
+            teardownScanOnJs(bdata, gen);
+        };
+        if (!tsfnPost(context->tsfn, callback)) {
+            std::fprintf(stderr, "[byteback] scan complete event dropped (queue full) scanId=%lld\n",
+                         static_cast<long long>(scanId));
+        }
     };
 
     const int64_t checkpointScanId = context->scanId;
@@ -522,8 +561,12 @@ Napi::Value SearchFiles(const Napi::CallbackInfo& info) {
     if (info.Length() >= 6 && info[5].IsString()) {
         categoryFilter = info[5].As<Napi::String>().Utf8Value();
     }
+    int statusFilter = -1;
+    if (info.Length() >= 7 && info[6].IsNumber()) {
+        statusFilter = info[6].As<Napi::Number>().Int32Value();
+    }
 
-    auto files = engine->getMetadataStore().searchFiles(scanId, query, offset, limit, useRegex, categoryFilter);
+    auto files = engine->getMetadataStore().searchFiles(scanId, query, offset, limit, useRegex, categoryFilter, statusFilter);
     Napi::Array result = Napi::Array::New(env, files.size());
     for (size_t i = 0; i < files.size(); ++i) {
         result[i] = FileRecordToJs(env, files[i]);
@@ -621,7 +664,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     auto context = std::make_shared<ContentSearchContext>();
     context->holdsHeavyOp = true;
     bdata->contentSearchContext = context;
-    context->tsfn = Napi::ThreadSafeFunction::New(env, cb, "ContentSearchCallback", 0, 1,
+    context->tsfn = Napi::ThreadSafeFunction::New(env, cb, "ContentSearchCallback", 4096, 1,
                                                   [](Napi::Env) {});
 
     auto onMatch = [context](const byteback::FileRecord& fr) {
@@ -653,18 +696,21 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     };
 
     auto onFinished = [context, bdata](int status) {
-        auto callback = [status](Napi::Env env, Napi::Function jsCallback) {
+        auto callback = [context, bdata, status](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "complete"));
             obj.Set("status", Napi::Number::New(env, status));
             jsCallback.Call({obj});
+            context->tsfn.Release();
+            if (bdata && bdata->contentSearchContext == context) {
+                if (context->holdsHeavyOp) {
+                    bdata->endHeavyOp();
+                    context->holdsHeavyOp = false;
+                }
+                bdata->contentSearchContext.reset();
+            }
         };
         tsfnPost(context->tsfn, callback);
-        context->tsfn.Release();
-        if (context->holdsHeavyOp && bdata) {
-            bdata->endHeavyOp();
-            context->holdsHeavyOp = false;
-        }
     };
 
     context->coordinator.startSearch(bdata->engine.getMetadataStore(), driveIndex, bdata->raid,
@@ -707,6 +753,7 @@ Napi::Value GetScanSummary(const Napi::CallbackInfo& info) {
     obj.Set("videoFiles", Napi::Number::New(env, static_cast<double>(summary.videoFiles)));
     obj.Set("audioFiles", Napi::Number::New(env, static_cast<double>(summary.audioFiles)));
     obj.Set("archiveFiles", Napi::Number::New(env, static_cast<double>(summary.archiveFiles)));
+    obj.Set("carvedFiles", Napi::Number::New(env, static_cast<double>(summary.carvedFiles)));
     obj.Set("timelineEvents", Napi::Number::New(env, static_cast<double>(summary.timelineEvents)));
     obj.Set("usnCreates", Napi::Number::New(env, static_cast<double>(summary.usnCreates)));
     obj.Set("usnDeletes", Napi::Number::New(env, static_cast<double>(summary.usnDeletes)));
