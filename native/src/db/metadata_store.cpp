@@ -13,8 +13,9 @@ namespace byteback {
 namespace {
 const char* kDiscoverySourcesSql =
     "'apfs_container','apfs_volume','apfs_file','bitlocker_detect','bitlocker_fve',"
-    "'vss_unbound','vss_bind','vss_snapshot','hfs_limit','usn_journal',"
-    "'ntfs_logfile','ntfs_logfile_restart','ntfs_recycle_meta'";
+    "'vss_unbound','vss_bind','vss_snapshot','hfs_limit','hfs_vh','hfs_catalog',"
+    "'usn_journal','ntfs_logfile','ntfs_logfile_restart','ntfs_recycle_meta',"
+    "'ntfs_i30','Folder','refs_volume'";
 
 void appendListFilter(std::string& sql, const FileListFilter& f, const char* prefix) {
     if (f.status >= 0) {
@@ -483,7 +484,8 @@ int64_t MetadataStore::reclaimOrphanRunningScans() {
 
     const char* completeSql =
         "UPDATE scans SET status = 1, updated_at = ? "
-        "WHERE status = 0 AND total_sectors > 0 AND scanned_sectors >= total_sectors";
+        "WHERE status = 0 AND total_sectors > 0 AND scanned_sectors >= total_sectors "
+        "AND (scan_type = 'quick' OR metadata_complete = 1)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, completeSql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_int64(stmt, 1, now);
@@ -778,7 +780,7 @@ int64_t MetadataStore::getTimelineEventCount(int64_t scanId, const std::string& 
 
 MetadataStore::ScanSummary MetadataStore::getScanSummary(int64_t scanId) {
     std::lock_guard<std::recursive_mutex> lock(mu_);
-    const char* sql = R"(
+    std::string sql = R"(
         SELECT COUNT(*),
                SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Image' THEN 1 ELSE 0 END),
@@ -787,11 +789,12 @@ MetadataStore::ScanSummary MetadataStore::getScanSummary(int64_t scanId) {
                SUM(CASE WHEN category = 'Audio' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Archive' THEN 1 ELSE 0 END),
                SUM(CASE WHEN source LIKE 'carver%' THEN 1 ELSE 0 END)
-        FROM files WHERE scan_id = ?
-    )";
+        FROM files WHERE scan_id = ? AND source NOT IN ()";
+    sql += kDiscoverySourcesSql;
+    sql += ")";
     ScanSummary summary;
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return summary;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return summary;
     sqlite3_bind_int64(stmt, 1, scanId);
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         summary.totalFiles = sqlite3_column_int64(stmt, 0);
@@ -1006,7 +1009,17 @@ int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query
     }
 
     auto page = searchFiles(scanId, query, 0, 10000, useRegex, filter);
-    return static_cast<int64_t>(page.size());
+    if (static_cast<int64_t>(page.size()) < 10000) {
+        return static_cast<int64_t>(page.size());
+    }
+    // ponytail: regex / non-FTS path — exact count via paginated scan (cap 500k rows).
+    int64_t total = static_cast<int64_t>(page.size());
+    for (int offset = 10000; offset < 500000; offset += 10000) {
+        auto more = searchFiles(scanId, query, offset, 10000, useRegex, filter);
+        total += static_cast<int64_t>(more.size());
+        if (more.size() < 10000) break;
+    }
+    return total;
 }
 
 FileRecord MetadataStore::getFileById(int64_t fileId, int64_t scanId) {

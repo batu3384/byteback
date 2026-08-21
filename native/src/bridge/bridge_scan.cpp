@@ -6,6 +6,7 @@
 #include "fs/partition_scanner.h"
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 Napi::Array RunsToJs(Napi::Env env, const std::vector<byteback::FileRecord::DataRun>& runs) {
@@ -67,29 +68,42 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
 
 constexpr uint32_t kMaxLiveFileEvents = 0;
 
+bool flushFileBufferLocked(byteback::Engine* engine, ScanContext* context) {
+    if (!engine || !context || context->fileBuffer.empty()) return true;
+    if (!engine->getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer)) {
+        std::fprintf(stderr, "[byteback] insertFilesBatch failed scanId=%lld count=%zu\n",
+                     static_cast<long long>(context->scanId), context->fileBuffer.size());
+        context->dbFlushFailed.store(true);
+        return false;
+    }
+    context->fileBuffer.clear();
+    return true;
+}
+
 void flushScanToDb(BridgeData* bdata, int status) {
     if (!bdata || !bdata->scanContext) return;
     auto context = bdata->scanContext;
 
     {
         std::lock_guard<std::mutex> lock(context->bufferMutex);
-        if (!context->fileBuffer.empty()) {
-            bdata->engine.getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer);
-            context->fileBuffer.clear();
+        if (!flushFileBufferLocked(&bdata->engine, context.get())) {
+            status = 3;
         }
     }
 
-    bdata->engine.getMetadataStore().updateScanProgress(
-        context->scanId, bdata->engine.getMetadataStore().getScanState(context->scanId).scannedSectors);
+    const uint64_t scanned = context->lastScannedSectors.load(std::memory_order_relaxed);
+    bdata->engine.getMetadataStore().updateScanProgress(context->scanId, scanned);
     auto st = bdata->engine.getMetadataStore().getScanState(context->scanId);
     int dbStatus = status;
-    if (status == 2 && st.totalSectors > 0 && st.scannedSectors > 0 && st.scannedSectors < st.totalSectors) {
+    if (context->dbFlushFailed.load(std::memory_order_relaxed)) {
+        dbStatus = 3;
+    } else if (status == 2 && st.totalSectors > 0 && scanned > 0 && scanned < st.totalSectors) {
         dbStatus = 4;
     }
     bdata->engine.getMetadataStore().completeScan(context->scanId, dbStatus);
 
     forensic::AuditLogger::GetInstance().LogEvent(
-        "SCAN_END | scanId=" + std::to_string(context->scanId) + " | status=" + std::to_string(status));
+        "SCAN_END | scanId=" + std::to_string(context->scanId) + " | status=" + std::to_string(dbStatus));
 }
 
 void teardownScanOnJs(BridgeData* bdata, uint64_t generation) {
@@ -187,6 +201,8 @@ Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     obj.Set("recoveredFiles", Napi::Number::New(env, static_cast<double>(state.recoveredFiles)));
     obj.Set("metadataComplete", Napi::Boolean::New(env, state.metadataComplete));
     obj.Set("carveResumeSector", Napi::Number::New(env, static_cast<double>(state.carveResumeSector)));
+    obj.Set("startedAt", Napi::Number::New(env, static_cast<double>(state.startedAt)));
+    obj.Set("updatedAt", Napi::Number::New(env, static_cast<double>(state.updatedAt)));
     return obj;
     NAPI_CATCH
 }
@@ -380,13 +396,6 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 Napi::Error::New(env, "Quick scan cannot resume; start a new scan").ThrowAsJavaScriptException();
                 return env.Undefined();
             }
-            if ((st.scanType == "deep" || st.scanType == "full_carve") && !st.metadataComplete) {
-                bdata->endHeavyOp();
-                Napi::Error::New(env,
-                                 "Cannot resume during metadata phase; stop and start a new scan")
-                    .ThrowAsJavaScriptException();
-                return env.Undefined();
-            }
             target.resumeAtSector = st.scannedSectors;
             target.metadataComplete = st.metadataComplete;
             target.carveResumeSector = st.carveResumeSector;
@@ -505,8 +514,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             std::lock_guard<std::mutex> lock(context->bufferMutex);
             context->fileBuffer.push_back(out);
             if (context->fileBuffer.size() >= 500) {
-                engine->getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer);
-                context->fileBuffer.clear();
+                if (!flushFileBufferLocked(engine, context.get())) {
+                    context->coordinator.requestStop();
+                }
             }
         }
 
@@ -521,10 +531,13 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
     };
 
+    const int64_t checkpointScanId = context->scanId;
     auto totalSectorsSet = std::make_shared<std::atomic<bool>>(false);
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
     auto lastDbProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
-    auto onProgress = [context, lastProgress, lastDbProgress, engine = &bdata->engine, totalSectorsSet](uint64_t current, uint64_t total) {
+    auto lastMetaCheckpoint = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+    auto onProgress = [context, lastProgress, lastDbProgress, lastMetaCheckpoint, engine = &bdata->engine, checkpointScanId, totalSectorsSet](uint64_t current, uint64_t total) {
+        context->lastScannedSectors.store(current, std::memory_order_relaxed);
         if (total > 0 && !totalSectorsSet->exchange(true)) {
             engine->getMetadataStore().setScanTotalSectors(context->scanId, total);
         }
@@ -533,6 +546,13 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastDbProgress).count() >= 500) {
             engine->getMetadataStore().updateScanProgress(context->scanId, current);
             *lastDbProgress = now;
+            const char* phasePtr = byteback::g_scanPhase.load(std::memory_order_relaxed);
+            if (phasePtr && std::strcmp(phasePtr, "metadata") == 0 &&
+                (current == total ||
+                 std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastMetaCheckpoint).count() >= 2000)) {
+                engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, false, current);
+                *lastMetaCheckpoint = now;
+            }
         }
 
         if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 250) {
@@ -559,6 +579,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     };
 
     auto onFinished = [bdata, context](int status) {
+        if (context->dbFlushFailed.load(std::memory_order_relaxed)) {
+            status = 3;
+        }
         flushScanToDb(bdata, status);
         const uint64_t gen = context->generation;
         const int64_t scanId = context->scanId;
@@ -576,7 +599,6 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
     };
 
-    const int64_t checkpointScanId = context->scanId;
     byteback::ScanCheckpointCallback onCheckpoint =
         [engine = &bdata->engine, checkpointScanId](bool metadataComplete, uint64_t carveResume) {
             engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, metadataComplete, carveResume);

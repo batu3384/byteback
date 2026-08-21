@@ -52,8 +52,10 @@ bool isDiscoveryOnlySource(const std::string& source) {
            source == "apfs_file" || source == "bitlocker_detect" ||
            source == "bitlocker_fve" || source == "vss_unbound" ||
            source == "vss_bind" || source == "vss_snapshot" ||
-           source == "hfs_limit" || source == "usn_journal" ||
-           source == "ntfs_logfile" || source == "ntfs_logfile_restart" ||
+           source == "hfs_limit" || source == "hfs_vh" || source == "hfs_catalog" ||
+           source == "usn_journal" || source == "ntfs_logfile" ||
+           source == "ntfs_logfile_restart" || source == "ntfs_i30" ||
+           source == "Folder" || source == "refs_volume" ||
            source == "carver_duplicate";
 }
 
@@ -231,8 +233,10 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                 finishRecoverWrite(result, writeLen, md5ctx.finalHex(), record);
                 return result;
             }
-            // Decompression failed: fall through to raw recovery so the user
-            // still gets SOMETHING, flagged by a lower confidence upstream.
+            outFile.close();
+            result.error = "NTFS LZNT1 decompression failed";
+            result.success = false;
+            return result;
         }
         // Above the cap: fall through to raw write (documented limitation).
     }
