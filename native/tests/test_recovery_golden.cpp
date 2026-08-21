@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -52,7 +53,13 @@ GoldenStats runGoldenPipeline(DiskReader& reader, MetadataStore& store, const st
     RecoveryEngine engine;
     for (const auto& rec : hits) {
         auto res = engine.recoverFile(reader, rec, dest);
-        if (res.success) ++stats.recovered;
+        if (res.success) {
+            ++stats.recovered;
+        } else {
+            std::fprintf(stderr, "[golden] recover fail name=%s source=%s err=%s val=%d %s\n",
+                         rec.name.c_str(), rec.source.c_str(), res.error.c_str(),
+                         res.validationScore, res.validationError.c_str());
+        }
     }
     return stats;
 }

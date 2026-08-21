@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include "carver/file_validators.h"
 
 namespace byteback::testfix {
 
@@ -104,14 +105,42 @@ inline std::vector<uint8_t> buildMbrDiskWithFatPartition(const std::vector<uint8
     return disk;
 }
 
+// Contiguous valid minimal PNG (SIG + IHDR + IEND). Carve fixtures must
+// survive post-recovery structural validation (score >= 60) — SIG+IEND with
+// zero-filled middle fails IHDR checks and correctly marks recover as failed.
+inline std::vector<uint8_t> buildMinimalValidPng() {
+    std::vector<uint8_t> png;
+    const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    png.insert(png.end(), sig, sig + sizeof(sig));
+
+    auto appendBe32 = [](std::vector<uint8_t>& v, uint32_t x) {
+        v.push_back(static_cast<uint8_t>((x >> 24) & 0xFF));
+        v.push_back(static_cast<uint8_t>((x >> 16) & 0xFF));
+        v.push_back(static_cast<uint8_t>((x >> 8) & 0xFF));
+        v.push_back(static_cast<uint8_t>(x & 0xFF));
+    };
+
+    // IHDR: length 13, type IHDR, 13 zero payload bytes, CRC(type+data)
+    appendBe32(png, 13);
+    const size_t ihdrTypeOff = png.size();
+    const uint8_t ihdrType[] = {'I', 'H', 'D', 'R'};
+    png.insert(png.end(), ihdrType, ihdrType + 4);
+    png.insert(png.end(), 13, 0x00);
+    appendBe32(png, carver::crc32(png.data() + ihdrTypeOff, 4 + 13));
+
+    // IEND: length 0, type IEND, CRC(type) = 0xAE426082
+    appendBe32(png, 0);
+    const uint8_t iend[] = {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
+    png.insert(png.end(), iend, iend + sizeof(iend));
+    return png;
+}
+
 inline std::vector<uint8_t> buildPngCarveDisk() {
     std::vector<uint8_t> img(64 * 1024, 0);
-    // PNG signature + minimal IHDR chunk + IEND
-    const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-    std::memcpy(img.data() + 4096, sig, sizeof(sig));
-    const uint8_t iend[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-                            0xAE, 0x42, 0x60, 0x82};
-    std::memcpy(img.data() + 8192 - sizeof(iend), iend, sizeof(iend));
+    const auto png = buildMinimalValidPng();
+    constexpr size_t kOff = 4096;
+    if (kOff + png.size() > img.size()) return img;
+    std::memcpy(img.data() + kOff, png.data(), png.size());
     return img;
 }
 
