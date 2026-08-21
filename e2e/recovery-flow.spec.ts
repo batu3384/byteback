@@ -14,7 +14,7 @@ test.describe('Recovery flow UI', () => {
       const win = await app.firstWindow()
       await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
 
-      const resultsBtn = win.getByRole('button', { name: /Kurtarma Sonuçları/i })
+      const resultsBtn = win.getByTestId('nav-results')
       await expect(resultsBtn).toBeDisabled()
       await resultsBtn.click({ force: true })
       await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')
