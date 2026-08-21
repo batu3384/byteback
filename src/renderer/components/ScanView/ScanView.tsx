@@ -189,7 +189,17 @@ function ScanView({
     ? Math.min(100, Math.floor((progress.current / progress.total) * 100))
     : 0
   const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
+  const isPaused = status.includes('Duraklatıldı')
+  const isFailed = status.includes('Başarısız') || status.includes('kullanılamıyor')
+  const isTerminal = isFinished || isPaused || isFailed
   const stopping = status === 'Durduruluyor...'
+  const scanTitle = isFinished
+    ? 'Tarama tamamlandı'
+    : isPaused
+      ? 'Tarama duraklatıldı'
+      : isFailed
+        ? 'Tarama başarısız'
+        : `Sürücü ${driveIndex === -1 ? 'RAID' : driveIndex} taranıyor`
   const step = scanStepIndex(progress.phase, scanType)
   const remainingLabel = isFinished
     ? formatElapsed(0)
@@ -215,7 +225,7 @@ function ScanView({
           </div>
           <div>
             <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>
-              Sürücü {driveIndex === -1 ? 'RAID' : driveIndex} taranıyor
+              {scanTitle}
             </h2>
             <p style={{ color: 'var(--text-muted)' }}>
               {scanProfileLabel(scanType)} • {status}
@@ -384,17 +394,17 @@ function ScanView({
       </div>
 
       <div className="scan-actions" style={{ display: 'flex', gap: 'var(--space-md)', justifyContent: 'flex-end', marginTop: 'var(--space-md)' }}>
-        {!isFinished && !stopping && (
+        {!isTerminal && !stopping && (
           <button className="btn-danger" onClick={onStop} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Square size={16} fill="currentColor" /> Taramayı Durdur
           </button>
         )}
-        {isFinished && (
+        {(isFinished || isPaused) && (
           <button className="btn-primary" onClick={onViewResults}>
             Sonuçları Görüntüle
           </button>
         )}
-        {isFinished && (
+        {isTerminal && (
           <button className="btn-secondary" onClick={onCancel}>Ana ekran</button>
         )}
         {stopping && (

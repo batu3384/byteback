@@ -78,6 +78,14 @@ function ImagerView(): React.ReactElement {
 
   const beginImaging = () => {
     setFormError(null)
+    if (!window.api?.startImaging) {
+      setFormError('İmaj API\'si kullanılamıyor. Uygulamayı masaüstü modunda çalıştırın.')
+      return
+    }
+    if (selectedDrive === '' || selectedDrive === undefined) {
+      setFormError('Sürücü seçin.')
+      return
+    }
     setImaging(true)
     setStatus('İmaj Alınıyor...')
     setProgress({ current: 0, total: 0 })
@@ -89,6 +97,9 @@ function ImagerView(): React.ReactElement {
 
     if (window.api && window.api.startImaging) {
       window.api.startImaging(Number(selectedDrive), destPath, format)
+    } else {
+      setImaging(false)
+      if (timerRef.current) clearInterval(timerRef.current)
     }
   }
 

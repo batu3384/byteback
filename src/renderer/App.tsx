@@ -28,10 +28,11 @@ function App(): React.ReactElement {
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
   
   // Global Scan State (Persists across tab changes)
-  const [scanProgress, setScanProgress] = useState({ current: 0, total: 100, badSectors: [] as number[], phase: 'metadata' })
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, badSectors: [] as number[], phase: 'metadata' })
   const [scanStatus, setScanStatus] = useState('Bekleniyor...')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
+  const [scanRowState, setScanRowState] = useState<ScanState | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
   const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[] } | null>(null)
   
@@ -42,6 +43,7 @@ function App(): React.ReactElement {
 
   const hydrateFromScanState = useCallback((state: ScanState) => {
     setActiveScanId(state.id)
+    setScanRowState(state)
     setSelectedDrive(state.driveIndex)
     setScanConfig({ driveIndex: state.driveIndex, scanType: state.scanType })
     setScanProgress({
@@ -147,7 +149,7 @@ function App(): React.ReactElement {
     setScanConfig({ driveIndex, scanType })
 
     if (!isResume) {
-      setScanProgress({ current: 0, total: 100, badSectors: [], phase: 'metadata' })
+      setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
       setScanElapsed(0)
     } else if (window.api?.getScanState && scanOptions?.resumeScanId) {
       window.api.getScanState(scanOptions.resumeScanId)
@@ -181,7 +183,7 @@ function App(): React.ReactElement {
     }
     setSelectedDrive(-1)
     setScanConfig({ driveIndex: -1, scanType })
-    setScanProgress({ current: 0, total: 100, badSectors: [], phase: 'metadata' })
+    setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
     setScanStatus('RAID Taraması Sürüyor...')
     setScanElapsed(0)
     setActivePage('scan')
@@ -212,7 +214,8 @@ function App(): React.ReactElement {
     const ok = await window.api.resetScanDatabase()
     if (ok) {
       setActiveScanId(-1)
-      setScanProgress({ current: 0, total: 100, badSectors: [], phase: 'metadata' })
+      setScanRowState(null)
+      setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
       setScanStatus('Bekleniyor...')
       setScanElapsed(0)
       setScanConfig({ driveIndex: null, scanType: 'quick' })
@@ -279,7 +282,7 @@ function App(): React.ReactElement {
       case 'timeline':
         return <TimelineView scanId={activeScanId} />
       case 'report':
-        return <ReportGenerator scanId={activeScanId} scanElapsed={scanElapsed} />
+        return <ReportGenerator scanId={activeScanId} scanElapsed={scanElapsed} scanState={scanRowState} />
       case 'hex':
         return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} scanBusy={scanBusy} />
       case 'smart':
@@ -312,7 +315,7 @@ function App(): React.ReactElement {
         <Header
           title={activePage}
           scanBusy={scanBusy}
-          scanPercent={scanProgress.total > 0 ? Math.min(100, Math.floor((scanProgress.current / scanProgress.total) * 100)) : 0}
+          scanPercent={scanProgress.total > 0 ? Math.min(100, Math.floor((scanProgress.current / scanProgress.total) * 100)) : undefined}
           onOpenScan={() => setActivePage('scan')}
         />
         <main className="app-content">

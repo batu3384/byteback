@@ -309,31 +309,42 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     setSelectedFiles(newSel)
   }
 
-  const exportCsv = () => {
-    const rows = filteredFiles.map((f) => {
-      const raw: FileRecord | undefined = recordById.get(f.id) ?? sourceFiles.find((x) => x.id === f.id)
-      return {
-        name: f.name,
-        sizeBytes: raw?.sizeBytes ?? '',
-        category: raw?.category ?? '',
-        confidence: raw?.confidence ?? '',
-        status: raw?.status ?? '',
-        path: raw?.path ?? '',
-        source: raw?.source ?? f.sourceLabel ?? '',
-        startSector: raw?.startSector ?? '',
-        createdAt: raw?.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
-        modifiedAt: raw?.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
+  const exportCsv = async () => {
+    if (effectiveScanId <= 0 || !window.api?.getFilesPage || !window.api?.getFileCount) return
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates)
+    try {
+      const total = await window.api.getFileCount(effectiveScanId, listFilter)
+      const batch = 1000
+      const allRecords: FileRecord[] = []
+      for (let off = 0; off < total; off += batch) {
+        const chunk = await window.api.getFilesPage(effectiveScanId, off, batch, listFilter)
+        allRecords.push(...(chunk ?? []))
+        if ((chunk?.length ?? 0) < batch) break
       }
-    })
-    const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
-    const csv = [header.join(';'), ...rows.map((r) => header.map((h) => csvCell((r as any)[h])).join(';'))].join('\r\n')
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `byteback-sonuclar-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+      const rows = allRecords.map((raw) => ({
+        name: raw.name,
+        sizeBytes: raw.sizeBytes ?? '',
+        category: raw.category ?? '',
+        confidence: raw.confidence ?? '',
+        status: raw.status ?? '',
+        path: raw.path ?? '',
+        source: raw.source ?? '',
+        startSector: raw.startSector ?? '',
+        createdAt: raw.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
+        modifiedAt: raw.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
+      }))
+      const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
+      const csv = [header.join(';'), ...rows.map((r) => header.map((h) => csvCell((r as any)[h])).join(';'))].join('\r\n')
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `byteback-sonuclar-${total}-kayit-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      window.alert('CSV dışa aktarım başarısız.')
+    }
   }
 
   const toggleAll = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -553,6 +564,11 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''}>
+          {viewMode === 'tree' && totalCount > PAGE_SIZE && (
+            <p style={{ padding: '8px 0', color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
+              Ağaç görünümü yalnızca bu sayfadaki {filteredFiles.length} kaydı gösterir ({totalCount.toLocaleString('tr-TR')} toplam). Tam liste için düz görünüm veya CSV dışa aktarım kullanın.
+            </p>
+          )}
           {viewMode === 'tree' ? (
           <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
             {filteredFiles.length === 0 ? (

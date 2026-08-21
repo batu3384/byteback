@@ -63,6 +63,8 @@ export interface ScanState {
   recoveredFiles?: number
   metadataComplete?: boolean
   carveResumeSector?: number
+  startedAt?: number
+  updatedAt?: number
 }
 
 export interface RecoverResult {

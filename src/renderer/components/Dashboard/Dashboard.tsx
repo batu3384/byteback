@@ -361,6 +361,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Yarım Kalan Tarama</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · %{scanProgressPercent(pausedSession)} ({pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör)
+                {!pausedSession.metadataComplete && pausedSession.scanType !== 'quick' ? ' · metadata aşamasından devam edilecek' : ''}
               </p>
             </div>
           </div>

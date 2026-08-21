@@ -205,16 +205,18 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           <div style={{ display: 'flex', gap: '12px' }}>
             <button 
               className="btn-secondary" 
+              disabled={diskBusy}
               onClick={() => onAction && onAction('hex', { driveIndex: drive.index, sectorSize: drive.sectorSize })}
-              title="Sektörleri Hex formatında incele"
+              title={diskBusy ? 'Tarama bitene kadar hex kapalı' : 'Sektörleri Hex formatında incele'}
               style={{ flex: 1, fontSize: '0.85rem', padding: '8px', display: 'flex', justifyContent: 'center', gap: '6px' }}
             >
               <Binary size={16} /> Hex İncele
             </button>
             <button 
               className="btn-secondary" 
+              disabled={diskBusy}
               onClick={() => onAction && onAction('smart', { driveIndex: drive.index })}
-              title="S.M.A.R.T Sağlık Durumu"
+              title={diskBusy ? 'Tarama bitene kadar SMART kapalı' : 'S.M.A.R.T Sağlık Durumu'}
               style={{ flex: 1, fontSize: '0.85rem', padding: '8px', display: 'flex', justifyContent: 'center', gap: '6px' }}
             >
               <Activity size={16} /> Sağlık Analizi

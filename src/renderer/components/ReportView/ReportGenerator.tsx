@@ -10,6 +10,7 @@ import InlineAlert from '../InlineAlert';
 interface ReportGeneratorProps {
   scanId: number;
   scanElapsed: number;
+  scanState?: import('../../../shared/ipc-contract').ScanState | null;
 }
 
 /** Compute the real SHA-256 of the report content via the Web Crypto API. */
@@ -21,7 +22,7 @@ async function sha256Hex(text: string): Promise<string> {
     .join('');
 }
 
-const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }) => {
+const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, scanState }) => {
   const [generating, setGenerating] = useState(false);
   const [reportHtml, setReportHtml] = useState<string | null>(null);
   const [reportHash, setReportHash] = useState<string>('');
@@ -32,7 +33,28 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed }
 
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
-  const reportAllowed = canGenerateReport(scanId);
+  const [rowState, setRowState] = useState<import('../../../shared/ipc-contract').ScanState | null>(scanState ?? null)
+
+  const reportAllowed = canGenerateReport(scanId, rowState ?? scanState ?? undefined)
+  const reportElapsedSec = (() => {
+    const st = rowState ?? scanState
+    if (st?.startedAt && st.updatedAt && st.updatedAt >= st.startedAt) {
+      return st.updatedAt - st.startedAt
+    }
+    return scanElapsed
+  })()
+
+  useEffect(() => {
+    setRowState(scanState ?? null)
+  }, [scanState])
+
+  useEffect(() => {
+    if (scanId > 0 && window.api?.getScanState) {
+      window.api.getScanState(scanId).then(setRowState).catch(() => setRowState(null))
+    } else {
+      setRowState(null)
+    }
+  }, [scanId])
 
   useEffect(() => {
     if (scanId > 0 && window.api?.getScanSummary) {
@@ -125,7 +147,7 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
   <tr><td>Bulunan Toplam Dosya</td><td>${totalFiles}</td></tr>
   <tr><td>Silinmiş / unallocated (status=0)</td><td>${summary?.deletedFiles ?? 0}</td></tr>
   <tr><td>Allocated / in-use (status=1)</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
-  <tr><td>Tarama Süresi</td><td>${scanElapsed} sn</td></tr>
+      <tr><td>Tarama Süresi</td><td>${reportElapsedSec} sn</td></tr>
   <tr><td>USN Zaman Çizelgesi Olayları</td><td>${summary?.timelineEvents ?? 0}</td></tr>
   <tr><td>USN Oluşturma / Silme / Yeniden Adlandırma</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
 </table>
@@ -253,7 +275,8 @@ ${body}
             <ShieldCheck size={24} color="var(--accent-blue)" />
             <div>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Gözetim Zinciri</h4>
-              <p style={{ fontWeight: 500 }}>Salt-Okunur Erişim</p>
+              <p style={{ fontWeight: 500 }}>Bütünlük Doğrulaması</p>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Rapor gövdesi SHA-256 ile özetlenir; PDF dışa aktarımında dosya paylaşım bayrakları uygulanır.</p>
             </div>
           </div>
 
