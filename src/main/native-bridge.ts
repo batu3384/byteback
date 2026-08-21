@@ -66,6 +66,7 @@ interface BytebackEngine {
     callback?: (data: unknown) => void,
   ): number
   stopScan(): void
+  isScanActive(): boolean
   startImaging(
     driveIndex: number,
     destPath: string,

@@ -80,8 +80,8 @@ bool flushFileBufferLocked(byteback::Engine* engine, ScanContext* context) {
     return true;
 }
 
-void flushScanToDb(BridgeData* bdata, int status) {
-    if (!bdata || !bdata->scanContext) return;
+int flushScanToDb(BridgeData* bdata, int status) {
+    if (!bdata || !bdata->scanContext) return status;
     auto context = bdata->scanContext;
 
     {
@@ -104,6 +104,38 @@ void flushScanToDb(BridgeData* bdata, int status) {
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "SCAN_END | scanId=" + std::to_string(context->scanId) + " | status=" + std::to_string(dbStatus));
+    return dbStatus;
+}
+
+void teardownScanOnJs(BridgeData* bdata, uint64_t generation);
+
+void deliverScanComplete(BridgeData* bdata, ScanContext* context, int64_t scanId, int dbStatus, uint64_t gen) {
+    if (!bdata || !context) return;
+    auto callback = [bdata, scanId, dbStatus, gen](Napi::Env env, Napi::Function jsCallback) {
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("type", Napi::String::New(env, "complete"));
+        obj.Set("scanId", Napi::Number::New(env, static_cast<double>(scanId)));
+        obj.Set("status", Napi::Number::New(env, dbStatus));
+        jsCallback.Call({obj});
+        teardownScanOnJs(bdata, gen);
+    };
+    if (tsfnPost(context->tsfn, callback)) return;
+    std::fprintf(stderr, "[byteback] scan complete queue full, blocking scanId=%lld\n",
+                 static_cast<long long>(scanId));
+    if (context->tsfn.BlockingCall(callback) == napi_ok) return;
+    std::fprintf(stderr, "[byteback] scan complete delivery failed scanId=%lld, forcing teardown\n",
+                 static_cast<long long>(scanId));
+    auto forceComplete = [bdata, scanId, dbStatus, gen](Napi::Env env, Napi::Function jsCallback) {
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("type", Napi::String::New(env, "complete"));
+        obj.Set("scanId", Napi::Number::New(env, static_cast<double>(scanId)));
+        obj.Set("status", Napi::Number::New(env, dbStatus));
+        jsCallback.Call({obj});
+        teardownScanOnJs(bdata, gen);
+    };
+    if (context->tsfn.BlockingCall(forceComplete) != napi_ok) {
+        bdata->endHeavyOp();
+    }
 }
 
 void teardownScanOnJs(BridgeData* bdata, uint64_t generation) {
@@ -236,6 +268,9 @@ Napi::Value ResetScanDatabase(const Napi::CallbackInfo& info) {
         Napi::Error::New(env, "Cannot reset while a scan is running").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+    const int64_t lastScanId = bdata->engine.getMetadataStore().getLatestScanId();
+    forensic::AuditLogger::GetInstance().LogEvent(
+        "SCAN_DB_RESET | lastScanId=" + std::to_string(lastScanId));
     return Napi::Boolean::New(env, bdata->engine.getMetadataStore().clearAllScanData());
     NAPI_CATCH
 }
@@ -316,6 +351,14 @@ Napi::Value StopScan(const Napi::CallbackInfo& info) {
         bdata->scanContext->coordinator.requestStop();
     }
     return env.Undefined();
+    NAPI_CATCH
+}
+
+Napi::Value IsScanActive(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    return Napi::Boolean::New(env, bdata && bdata->scanContext != nullptr);
     NAPI_CATCH
 }
 
@@ -550,7 +593,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             if (phasePtr && std::strcmp(phasePtr, "metadata") == 0 &&
                 (current == total ||
                  std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastMetaCheckpoint).count() >= 2000)) {
-                engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, false, current);
+                // Metadata progress lives in scanned_sectors; carveResumeSector is carve-only.
+                engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, false, 0);
                 *lastMetaCheckpoint = now;
             }
         }
@@ -582,21 +626,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         if (context->dbFlushFailed.load(std::memory_order_relaxed)) {
             status = 3;
         }
-        flushScanToDb(bdata, status);
-        const uint64_t gen = context->generation;
-        const int64_t scanId = context->scanId;
-        auto callback = [bdata, scanId, status, gen](Napi::Env env, Napi::Function jsCallback) {
-            Napi::Object obj = Napi::Object::New(env);
-            obj.Set("type", Napi::String::New(env, "complete"));
-            obj.Set("scanId", Napi::Number::New(env, static_cast<double>(scanId)));
-            obj.Set("status", Napi::Number::New(env, status));
-            jsCallback.Call({obj});
-            teardownScanOnJs(bdata, gen);
-        };
-        if (!tsfnPost(context->tsfn, callback)) {
-            std::fprintf(stderr, "[byteback] scan complete event dropped (queue full) scanId=%lld\n",
-                         static_cast<long long>(scanId));
-        }
+        const int dbStatus = flushScanToDb(bdata, status);
+        deliverScanComplete(bdata, context.get(), context->scanId, dbStatus, context->generation);
     };
 
     byteback::ScanCheckpointCallback onCheckpoint =

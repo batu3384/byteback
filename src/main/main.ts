@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, powerMonitor } from 'electron'
 import { join } from 'path'
-import { registerIpcHandlers } from './ipc-handlers'
+import { registerIpcHandlers, broadcastScanComplete } from './ipc-handlers'
 import { getEngine } from './native-bridge'
 import {
   appendSessionLog,
@@ -97,8 +97,31 @@ app.whenReady().then(() => {
     } catch (e) {
       appendSessionLog('SCAN_FAIL', `os_sleep_stop ${e instanceof Error ? e.message : String(e)}`)
     }
+    setTimeout(() => {
+      if (!isScanLive()) return
+      try {
+        const engine = getEngine()
+        if (engine.isScanActive()) return
+        const scanId = engine.getLatestUsableScanId()
+        broadcastScanComplete(scanId > 0 ? scanId : -1, 4, 'os_sleep_fallback')
+      } catch {
+        broadcastScanComplete(-1, 4, 'os_sleep_fallback')
+      }
+    }, 6000)
   })
-  powerMonitor.on('resume', () => appendSessionLog('OS_WAKE'))
+  powerMonitor.on('resume', () => {
+    appendSessionLog('OS_WAKE')
+    if (!isScanLive()) return
+    try {
+      const engine = getEngine()
+      if (!engine.isScanActive()) {
+        const scanId = engine.getLatestUsableScanId()
+        broadcastScanComplete(scanId > 0 ? scanId : -1, 4, 'os_wake_sync')
+      }
+    } catch {
+      /* native unavailable */
+    }
+  })
   powerMonitor.on('shutdown', () => appendSessionLog('OS_SHUTDOWN'))
   powerMonitor.on('lock-screen', () => appendSessionLog('OS_LOCK'))
 })
