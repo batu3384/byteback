@@ -13,11 +13,10 @@ test('scan-dependent sidebar items disabled without completed scan', async () =>
     const win = await app.firstWindow()
     await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
 
-    const reportBtn = win.getByRole('button', { name: /Adli Rapor/i })
-    await expect(reportBtn).toBeDisabled()
-
-    const resultsBtn = win.getByRole('button', { name: /Kurtarma Sonuçları/i })
-    await expect(resultsBtn).toBeDisabled()
+    await expect(win.getByTestId('nav-report')).toBeDisabled()
+    await expect(win.getByTestId('nav-results')).toBeDisabled()
+    await expect(win.getByTestId('nav-search')).toBeDisabled()
+    await expect(win.getByTestId('nav-timeline')).toBeDisabled()
   } finally {
     await app.close()
   }
@@ -31,7 +30,7 @@ test('scan-dependent nav stays on dashboard when report is forced', async () => 
     const win = await app.firstWindow()
     await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
 
-    const reportBtn = win.getByRole('button', { name: /Adli Rapor/i })
+    const reportBtn = win.getByTestId('nav-report')
     await expect(reportBtn).toBeDisabled()
     await reportBtn.click({ force: true })
     await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')

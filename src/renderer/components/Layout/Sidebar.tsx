@@ -71,6 +71,7 @@ function Sidebar({ activePage, activeScanId, scanBusy, onNavigate }: SidebarProp
                   <li key={item.id}>
                     <button
                       type="button"
+                      data-testid={`nav-${item.id}`}
                       className={`nav-btn ${isActive ? 'active' : ''} ${disabled ? 'nav-btn-disabled' : ''}`}
                       onClick={() => onNavigate(item.id)}
                       disabled={disabled}

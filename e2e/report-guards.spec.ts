@@ -13,8 +13,7 @@ test('report generate button disabled without scan', async () => {
     const win = await app.firstWindow()
     await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
 
-    const reportBtn = win.getByRole('button', { name: /Adli Rapor/i })
-    await expect(reportBtn).toBeDisabled()
+    await expect(win.getByTestId('nav-report')).toBeDisabled()
   } finally {
     await app.close()
   }
