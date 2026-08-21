@@ -404,7 +404,11 @@ void runDeepScan(DiskReader& reader,
     };
     runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, unallocCarve,
                  target.carveResumeSector);
-    onProgress(totalSectors, totalSectors);
+    if (unallocCarve) {
+        onProgress(totalSectors, totalSectors);
+    } else {
+        onProgress(metaBudget, totalSectors);
+    }
 }
 
 void runFullCarveScan(DiskReader& reader,
@@ -444,7 +448,11 @@ void runFullCarveScan(DiskReader& reader,
     };
     runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
                  target.carveResumeSector);
-    onProgress(totalSectors, totalSectors);
+    if (fullCarveTotal > 0) {
+        onProgress(totalSectors, totalSectors);
+    } else {
+        onProgress(metaBudget, totalSectors);
+    }
 }
 
 ScanCoordinator::ScanCoordinator() : isRunning(false) {}

@@ -79,7 +79,7 @@ struct FileListFilter {
     std::string query;        // empty = no name/path search
     std::string sourceLike;   // empty = all; e.g. "carver%"
     bool includeDuplicates = true;
-    bool includeDiscovery = true;
+    bool includeDiscovery = false;
 };
 
 class MetadataStore {

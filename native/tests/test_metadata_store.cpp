@@ -319,9 +319,17 @@ TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksPaused) {
     EXPECT_EQ(store_.reclaimOrphanRunningScans(), 0);
 }
 
+TEST_F(MetadataStoreTest, ReclaimOrphanDeepWithoutMetadataStaysPaused) {
+    int64_t deep = store_.createScan(0, "deep", 100);
+    ASSERT_TRUE(store_.updateScanProgress(deep, 100));
+    EXPECT_EQ(store_.reclaimOrphanRunningScans(), 1);
+    EXPECT_EQ(store_.getScanState(deep).status, 4);
+}
+
 TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksCompleteWhenFull) {
     int64_t full = store_.createScan(0, "deep", 100);
     ASSERT_TRUE(store_.updateScanProgress(full, 100));
+    ASSERT_TRUE(store_.updateScanCheckpoint(full, true, 0));
     EXPECT_EQ(store_.reclaimOrphanRunningScans(), 1);
     EXPECT_EQ(store_.getScanState(full).status, 1);
 }

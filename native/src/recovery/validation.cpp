@@ -91,6 +91,7 @@ void applyPostRecoveryValidation(RecoveryResult& result, const FileRecord& recor
     result.validationScore = validateCarvedBuffer(ext, buf.data(), n);
     if (result.validationScore < 60) {
         result.validationError = "structure validation failed";
+        result.success = false;
     }
 }
 
