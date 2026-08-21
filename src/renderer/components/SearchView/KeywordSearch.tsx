@@ -25,6 +25,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   const [searchContent, setSearchContent] = useState(false);
   const [category, setCategory] = useState('');
   const [regexError, setRegexError] = useState('');
+  const [searchError, setSearchError] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const cleanupRef = useRef<(() => void)[]>([]);
 
@@ -54,6 +55,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     setSearching(true);
     setSearchDone(false);
     setRegexError('');
+    setSearchError('');
     setResults([]);
     setProgress({ current: 0, total: 0 });
 
@@ -121,13 +123,13 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         category || undefined,
       );
       if (res.error) {
-        setRegexError(`Arama hatası: ${res.error}`);
+        setSearchError(`Arama hatası: ${res.error}`);
         setResults([]);
       } else {
         setResults(res.rows);
       }
     } catch {
-      setRegexError('Arama sırasında beklenmeyen bir hata oluştu.');
+      setSearchError('Arama sırasında beklenmeyen bir hata oluştu.');
       setResults([]);
     }
     setSearching(false);
@@ -232,7 +234,13 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
           </div>
         )}
 
-        {searchDone && results.length === 0 && (
+        {searchError && (
+          <div role="alert" style={{ margin: '16px 24px', padding: '12px 16px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239,68,68,0.08)', color: 'var(--text-main)' }}>
+            {searchError}
+          </div>
+        )}
+
+        {searchDone && !searchError && !regexError && results.length === 0 && (
           <div className="empty-state" style={{ margin: 'auto', textAlign: 'center' }}>
             <AlertCircle size={48} color="var(--warning-yellow)" style={{ margin: '0 auto 16px' }} />
             <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>"<strong>{query}</strong>" için sonuç bulunamadı</p>

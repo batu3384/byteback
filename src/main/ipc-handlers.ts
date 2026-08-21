@@ -10,6 +10,13 @@ import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from
 
 let dbReady = false
 let dbInitError: string | null = null
+let activeScanToken = 0
+
+function assertDbReady(): void {
+  if (!dbReady) {
+    throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor')
+  }
+}
 
 export function registerIpcHandlers(): void {
   const allowlistPath = join(app.getPath('userData'), 'allowed-image-dest.json')
@@ -26,13 +33,16 @@ export function registerIpcHandlers(): void {
     appendSessionLog('DB_OPEN', `ok=${ok ? 1 : 0} path=${dbPath}`)
     if (ok) {
       try {
-        const latestId = engine.getLatestScanId()
-        if (latestId > 0) {
-          const st = engine.getScanState(latestId)
+        const usableId = engine.getLatestUsableScanId()
+        if (usableId > 0) {
+          const st = engine.getScanState(usableId)
           appendSessionLog(
             'SCAN_STATUS',
-            `scanId=${latestId} status=${st.status} ${st.scannedSectors}/${st.totalSectors} type=${st.scanType}`,
+            `scanId=${usableId} status=${st.status} ${st.scannedSectors}/${st.totalSectors} type=${st.scanType}`,
           )
+          if (st.status === 4) {
+            appendSessionLog('SCAN_ORPHAN', `scanId=${usableId} paused_on_startup`)
+          }
         }
       } catch (e) {
         appendSessionLog('DB_OPEN', `latest_scan_failed ${e instanceof Error ? e.message : String(e)}`)
@@ -91,7 +101,8 @@ export function registerIpcHandlers(): void {
     }
     try {
       const engine = getEngine()
-      
+      const token = ++activeScanToken
+
       const callback = (data: any) => {
         if (data.type === 'progress') {
           appendProgressLog(data.current, data.total, data.phase)
@@ -104,6 +115,7 @@ export function registerIpcHandlers(): void {
         } else if (data.type === 'file') {
           event.sender.send('scan-file-found', data)
         } else if (data.type === 'complete') {
+          if (token !== activeScanToken) return
           setScanLive(false)
           const st = Number(data.status)
           appendSessionLog(
@@ -139,13 +151,12 @@ export function registerIpcHandlers(): void {
   
   ipcMain.on('stop-scan', () => {
     try {
-      const engine = getEngine()
-      engine.stopScan()
-      setScanLive(false)
-      appendSessionLog('SCAN_STOP', 'user')
-      console.log('[IPC] stop-scan')
+      getEngine().stopScan()
+      appendSessionLog('SCAN_STOP', 'user_request')
+      console.log('[IPC] stop-scan requested')
     } catch (err) {
       console.error('[IPC] stop-scan error:', err)
+      appendSessionLog('SCAN_FAIL', `stop_scan ${err instanceof Error ? err.message : String(err)}`)
     }
   })
 
@@ -205,10 +216,22 @@ export function registerIpcHandlers(): void {
     callNative('get-smart-status', () => getEngine().getSmartStatus(driveIndex))
   )
 
-  ipcMain.handle('read-hex-data', (_event, driveIndex, offset, size) => {
+  ipcMain.handle('read-hex-data', (_event, driveIndex: number, offset: number, size: number) => {
     try {
+      assertDbReady()
+      if (!Number.isFinite(driveIndex) || driveIndex < 0) {
+        return { data: null, error: 'Geçersiz sürücü indeksi' }
+      }
+      if (!Number.isFinite(offset) || offset < 0) {
+        return { data: null, error: 'Geçersiz sektör ofseti' }
+      }
+      const maxBytes = 65536
+      const reqSize = Number.isFinite(size) ? Math.floor(size) : 0
+      if (reqSize <= 0 || reqSize > maxBytes) {
+        return { data: null, error: `Okuma boyutu 1–${maxBytes} bayt arasında olmalı` }
+      }
       const engine = getEngine()
-      const res = engine.readSectors(driveIndex, offset, size)
+      const res = engine.readSectors(driveIndex, offset, reqSize)
       const bytes = hexDataOrNull(res)
       if (bytes) return { data: bytes }
       const raw = res.error || 'Sektör okunamadı'
@@ -260,13 +283,15 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('get-file-count', (_event, scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) =>
-    callNative('get-file-count', () => getEngine().getFileCount(scanId, filter))
-  )
+  ipcMain.handle('get-file-count', (_event, scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
+    assertDbReady()
+    return callNative('get-file-count', () => getEngine().getFileCount(scanId, filter))
+  })
 
-  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) =>
-    callNative('get-files-page', () => getEngine().getFilesPage(scanId, offset, limit, filter))
-  )
+  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
+    assertDbReady()
+    return callNative('get-files-page', () => getEngine().getFilesPage(scanId, offset, limit, filter))
+  })
 
   ipcMain.handle('get-latest-scan-id', () =>
     callNative('get-latest-scan-id', () => getEngine().getLatestScanId())

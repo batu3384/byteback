@@ -1,5 +1,8 @@
 /** Pages and actions that require a completed scan persisted in SQLite. */
 
+import { isCompleteScan, isUsableScan, SCAN_STATUS } from './scan-session'
+import type { ScanState } from './ipc-contract'
+
 export const SCAN_DEPENDENT_PAGES = ['results', 'search', 'timeline', 'report'] as const
 export const DISK_BUSY_PAGES = ['hex', 'imager', 'shredder'] as const
 
@@ -19,8 +22,16 @@ export function hasValidScanId(scanId: number): boolean {
   return typeof scanId === 'number' && scanId > 0
 }
 
-export function canGenerateReport(scanId: number): boolean {
-  return hasValidScanId(scanId)
+export function hasUsableScanSession(scanId: number, state?: ScanState | null): boolean {
+  if (!hasValidScanId(scanId)) return false
+  if (state && state.id === scanId) return isUsableScan(state)
+  return true
+}
+
+export function canGenerateReport(scanId: number, state?: ScanState | null): boolean {
+  if (!hasValidScanId(scanId)) return false
+  if (state && state.id === scanId) return isCompleteScan(state)
+  return false
 }
 
 export function isLiveScanStatus(status: string): boolean {
@@ -37,3 +48,5 @@ export function diskBusyMessage(raw?: string): string | undefined {
   }
   return raw
 }
+
+export { SCAN_STATUS }

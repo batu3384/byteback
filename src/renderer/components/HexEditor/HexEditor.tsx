@@ -110,6 +110,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
         </div>
       )}
 
+      {!readFailed && (
       <div className="entropy-indicator glass-panel" style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
         <span style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-main)', width: '120px' }}>Sektör Entropisi:</span>
         <div style={{ flex: 1, height: '6px', background: 'var(--panel-border)', borderRadius: '3px', overflow: 'hidden' }}>
@@ -122,6 +123,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
           {currentEntropy > 7.0 ? '(Şifreli / Sıkıştırılmış)' : '(Düz Metin / Yapısal)'}
         </span>
       </div>
+      )}
 
       {/* Data Template Engine */}
       {data.length >= 512 && data[0] === 0x46 && data[1] === 0x49 && data[2] === 0x4C && data[3] === 0x45 && (
@@ -151,6 +153,10 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
           <div className="loading-state" style={{ padding: '40px', textAlign: 'center' }}>
             <Search size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
             <p>Sektör verisi okunuyor...</p>
+          </div>
+        ) : readFailed || data.length === 0 ? (
+          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+            Sektör verisi gösterilemiyor.
           </div>
         ) : (
           <div className="hex-grid" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>

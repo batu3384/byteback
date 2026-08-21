@@ -16,8 +16,9 @@ describe('scan-required', () => {
     expect(hasValidScanId(-1)).toBe(false)
   })
 
-  it('canGenerateReport requires valid scan id', () => {
-    expect(canGenerateReport(42)).toBe(true)
+  it('canGenerateReport requires completed scan', () => {
+    expect(canGenerateReport(42, { id: 42, driveIndex: 0, scanType: 'deep', totalSectors: 1, scannedSectors: 1, status: 1 })).toBe(true)
+    expect(canGenerateReport(42, { id: 42, driveIndex: 0, scanType: 'deep', totalSectors: 1, scannedSectors: 1, status: 4 })).toBe(false)
     expect(canGenerateReport(0)).toBe(false)
   })
 

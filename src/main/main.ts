@@ -93,11 +93,10 @@ app.whenReady().then(() => {
     if (!isScanLive()) return
     try {
       getEngine().stopScan()
-      appendSessionLog('SCAN_STOP', 'os_sleep')
+      appendSessionLog('SCAN_STOP', 'os_sleep_request')
     } catch (e) {
-      appendSessionLog('SCAN_STOP', `os_sleep_failed ${e instanceof Error ? e.message : String(e)}`)
+      appendSessionLog('SCAN_FAIL', `os_sleep_stop ${e instanceof Error ? e.message : String(e)}`)
     }
-    setScanLive(false)
   })
   powerMonitor.on('resume', () => appendSessionLog('OS_WAKE'))
   powerMonitor.on('shutdown', () => appendSessionLog('OS_SHUTDOWN'))
