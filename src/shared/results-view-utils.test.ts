@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTree, getFileType, formatSize, chipToCategory } from '../renderer/components/ResultsView/results-view-utils'
+import { buildTree, getFileType, formatSize, chipToCategory, toSqlListFilter } from '../renderer/components/ResultsView/results-view-utils'
 
 describe('results-view-utils', () => {
   it('buildTree nests files under directories', () => {
@@ -28,5 +28,19 @@ describe('results-view-utils', () => {
   it('maps type chips to SQL category', () => {
     expect(chipToCategory('img')).toBe('Image')
     expect(chipToCategory('all')).toBe('')
+  })
+
+  it('maps status chips to SQL list filter', () => {
+    expect(toSqlListFilter('carved', 'all', '', false)).toEqual({
+      status: -1,
+      category: '',
+      query: '',
+      sourceLike: 'carver%',
+      includeDuplicates: false,
+      includeDiscovery: false,
+    })
+    expect(toSqlListFilter('deleted', 'img', 'x', true).status).toBe(0)
+    expect(toSqlListFilter('deleted', 'img', 'x', true).category).toBe('Image')
+    expect(toSqlListFilter('deleted', 'img', 'x', true).includeDuplicates).toBe(true)
   })
 })

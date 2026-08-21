@@ -77,6 +77,9 @@ struct FileListFilter {
     int status = -1;          // -1 all, 0 deleted, 1 allocated
     std::string category;     // empty = all (Image, Document, ...)
     std::string query;        // empty = no name/path search
+    std::string sourceLike;   // empty = all; e.g. "carver%"
+    bool includeDuplicates = true;
+    bool includeDiscovery = true;
 };
 
 class MetadataStore {
@@ -124,9 +127,14 @@ public:
                                         int offset, int limit, bool useRegex,
                                         const std::string& categoryFilter = "",
                                         int statusFilter = -1);
+    std::vector<FileRecord> searchFiles(int64_t scanId, const std::string& query,
+                                        int offset, int limit, bool useRegex,
+                                        const FileListFilter& filter);
     int64_t searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
                              const std::string& categoryFilter = "",
                              int statusFilter = -1);
+    int64_t searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
+                             const FileListFilter& filter);
 
     // Content FTS — full-file windows (chunked), indexed during content search.
     bool upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text);

@@ -29,6 +29,8 @@ function ScanView({
   const [page, setPage] = useState(0)
   const [totalFiles, setTotalFiles] = useState(0)
   const [deletedCount, setDeletedCount] = useState(0)
+  const [listCount, setListCount] = useState(0)
+  const [carvedCount, setCarvedCount] = useState(0)
   const [filesFound, setFilesFound] = useState<any[]>([])
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const [hfsTruncated, setHfsTruncated] = useState(false)
@@ -69,13 +71,17 @@ function ScanView({
     pollRef.current = setInterval(async () => {
       if (!window.api?.getFileCount || !window.api?.getFilesPage) return
       try {
+        const deletedFilter = { status: 0, includeDuplicates: false, includeDiscovery: false }
         const count = await window.api.getFileCount(activeScanId)
         setTotalFiles(count)
+        const deletedListed = await window.api.getFileCount(activeScanId, deletedFilter)
+        setListCount(deletedListed)
         if (window.api.getScanSummary) {
           const sum = await window.api.getScanSummary(activeScanId)
           setDeletedCount(sum.deletedFiles ?? 0)
+          setCarvedCount(sum.carvedFiles ?? 0)
         }
-        const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit)
+        const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit, deletedFilter)
         if (pageData) setFilesFound(pageData)
       } catch (e) {
         console.error('Pagination error', e)
@@ -148,6 +154,7 @@ function ScanView({
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString('tr-TR')}</span>
             <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
               silinmiş {deletedCount.toLocaleString('tr-TR')}
+              {carvedCount > 0 ? ` · oyulmuş ${carvedCount.toLocaleString('tr-TR')}` : ''}
             </span>
           </div>
           <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
@@ -194,12 +201,12 @@ function ScanView({
 
       <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>Bulunan Dosyalar (Sayfa {page + 1})</h3>
+          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>Silinmiş dosyalar (Sayfa {page + 1})</h3>
           <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
             <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0} onClick={() => setPage(p => p - 1)}>
               <ChevronLeft size={16} /> Önceki
             </button>
-            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= totalFiles} onClick={() => setPage(p => p + 1)}>
+            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= listCount} onClick={() => setPage(p => p + 1)}>
               Sonraki <ChevronRight size={16} />
             </button>
           </div>

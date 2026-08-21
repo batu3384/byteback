@@ -82,8 +82,10 @@ void scanVssVolumeFilesystem(DiskReader& volumeReader, const VssSnapshotInfo& sn
 
     auto tagAndEmit = [&](const FileRecord& fr, const char* source) {
         if (isRunning && !(*isRunning)) return;
+        // Progress ticks go through onFileFound so coordinator MonotonicMeter
+        // owns the bar. File LCN is not scan order.
         if (fr.id == -1 && fr.name.empty()) {
-            onProgress(fr.startSector, totalSectors);
+            onFileFound(fr);
             return;
         }
         FileRecord tagged = fr;
@@ -97,8 +99,9 @@ void scanVssVolumeFilesystem(DiskReader& volumeReader, const VssSnapshotInfo& sn
             if (tagged.modifiedAt == 0) tagged.modifiedAt = snapTime;
         }
         onFileFound(tagged);
-        onProgress(tagged.startSector, totalSectors);
     };
+    (void)onProgress;
+    (void)totalSectors;
 
     VolumeFsKind kind = probeVolumeAt(volumeReader, 0, sectorSize);
     switch (kind) {

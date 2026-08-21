@@ -101,16 +101,30 @@ void runQuickScan(DiskReader& reader,
     MonotonicMeter meter;
     uint64_t workUnits = 0;
     const uint64_t progressTotal = totalSectors > 0 ? totalSectors : 1;
-    const uint64_t estimated = std::max<uint64_t>(1, progressTotal / 8);
+
+    auto emitProgress = [&](uint64_t done, uint64_t estimated) {
+        uint64_t mapped = mapWorkToBudget(done, estimated, progressTotal);
+        if (done > 0 && mapped == 0) mapped = 1;
+        onProgress(meter.tick(mapped), progressTotal);
+    };
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
         FileRecord out = fr;
         tagRaidScanSource(out, reader);
         const bool progressOnly = out.id == -1 && out.name.empty();
-        if (!progressOnly && (!out.name.empty() || out.id != -1)) onFileFound(out);
-        ++workUnits;
-        onProgress(meter.tick(mapWorkToBudget(workUnits, estimated, progressTotal)), progressTotal);
+        if (progressOnly) {
+            if (out.sizeBytes > 0) {
+                emitProgress(out.startSector, out.sizeBytes);
+            } else {
+                ++workUnits;
+                emitProgress(workUnits, std::max<uint64_t>(workUnits, 64));
+            }
+        } else {
+            if (!out.name.empty() || out.id != -1) onFileFound(out);
+            ++workUnits;
+            emitProgress(workUnits, std::max<uint64_t>(workUnits, 64));
+        }
         syncBadSectors(reader, badSectorOut);
     };
 
@@ -225,7 +239,11 @@ void runQuickScan(DiskReader& reader,
 
 #ifdef _WIN32
     if (!bounds.active()) {
-        scanVssSnapshotsBound(reader, callbackWrapper, onProgress, isRunning);
+        scanVssSnapshotsBound(reader, callbackWrapper,
+            [&](uint64_t current, uint64_t) {
+                onProgress(meter.tick(std::min(current, progressTotal)), progressTotal);
+            },
+            isRunning);
     }
 #endif
 

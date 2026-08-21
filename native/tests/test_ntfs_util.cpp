@@ -183,3 +183,59 @@ TEST(NtfsBoot, ParsesMftLcnAndRecordSize) {
     EXPECT_EQ(lcn, 1u);
     EXPECT_EQ(rec, 1024u);
 }
+
+static void appendFileNameIndexEntry(std::vector<uint8_t>& buf, uint64_t childMft,
+                                     uint64_t parentMft, const char* name, bool last) {
+    const size_t nameLen = std::strlen(name);
+    const uint16_t keyLen = static_cast<uint16_t>(66 + nameLen * 2);
+    const uint16_t entryLen = static_cast<uint16_t>(16 + keyLen);
+    const size_t start = buf.size();
+    buf.resize(start + entryLen, 0);
+    auto w64 = [&](size_t off, uint64_t v) {
+        for (int i = 0; i < 8; ++i) buf[off + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
+    };
+    auto w16 = [&](size_t off, uint16_t v) {
+        buf[off] = static_cast<uint8_t>(v & 0xFF);
+        buf[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    };
+    w64(start, childMft);
+    w16(start + 8, entryLen);
+    w16(start + 10, keyLen);
+    w16(start + 12, last ? 0x02 : 0);
+    w64(start + 16, parentMft);
+    buf[start + 16 + 64] = static_cast<uint8_t>(nameLen);
+    buf[start + 16 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i) {
+        buf[start + 16 + 66 + i * 2] = static_cast<uint8_t>(name[i]);
+    }
+}
+
+TEST(IndexRoot, SlackNameSurvivesAfterUsedWindow) {
+    std::vector<uint8_t> root(32, 0);
+    root[0] = 0x30;
+    auto w32 = [&](size_t off, uint32_t v) {
+        root[off] = static_cast<uint8_t>(v & 0xFF);
+        root[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        root[off + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+        root[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    };
+    w32(16, 16);
+    appendFileNameIndexEntry(root, 7, 5, "live.txt", false);
+    const size_t lastAt = root.size();
+    root.resize(lastAt + 16, 0);
+    root[lastAt + 8] = 16;
+    root[lastAt + 12] = 0x02;
+    const uint32_t usedEnd = static_cast<uint32_t>(root.size() - 16);
+    appendFileNameIndexEntry(root, 3, 5, "gone.txt", false);
+    w32(20, usedEnd);
+    w32(24, static_cast<uint32_t>(root.size() - 16));
+
+    auto hints = byteback::ntfs::parseIndexRoot(root.data(), root.size());
+    bool live = false, slack = false;
+    for (const auto& h : hints) {
+        if (h.name == "live.txt" && !h.fromSlack) live = true;
+        if (h.name == "gone.txt" && h.fromSlack) slack = true;
+    }
+    EXPECT_TRUE(live);
+    EXPECT_TRUE(slack);
+}

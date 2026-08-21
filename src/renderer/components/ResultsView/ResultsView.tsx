@@ -11,7 +11,7 @@ import {
   getFileType,
   formatSize,
   buildTree,
-  chipToCategory,
+  toSqlListFilter,
   type MappedFile,
   type TreeNode,
 } from './results-view-utils'
@@ -25,7 +25,7 @@ interface ResultsViewProps {
 const PAGE_SIZE = 500
 
 function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
-  const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated'>('deleted')
+  const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated' | 'carved'>('deleted')
   const [typeFilter, setTypeFilter] = useState('all')
   const [nameInput, setNameInput] = useState('')
   const [nameQuery, setNameQuery] = useState('')
@@ -74,11 +74,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const loadPage = useCallback(async (scan: number, pageIndex: number) => {
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
     setLoading(true)
-    const listFilter = {
-      status: statusFilter === 'deleted' ? 0 : statusFilter === 'allocated' ? 1 : -1,
-      category: chipToCategory(typeFilter),
-      query: nameQuery,
-    }
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates)
     try {
       const [count, pageData, sum] = await Promise.all([
         window.api.getFileCount(scan, listFilter),
@@ -102,7 +98,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, typeFilter, nameQuery])
+  }, [statusFilter, typeFilter, nameQuery, showDuplicates])
 
   useEffect(() => {
     const t = setTimeout(() => setNameQuery(nameInput.trim()), 300)
@@ -112,7 +108,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   useEffect(() => {
     setPage(0)
     setSelectedFiles(new Set())
-  }, [statusFilter, typeFilter, nameQuery])
+  }, [statusFilter, typeFilter, nameQuery, showDuplicates])
 
   useEffect(() => {
     if (effectiveScanId > 0) {
@@ -141,7 +137,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       .catch(() => setHfsTruncated(false))
   }, [effectiveScanId, dbFiles, filesFound])
 
-  const sourceFiles: FileRecord[] = (effectiveScanId > 0
+  const sourceFiles: FileRecord[] = effectiveScanId > 0
     ? dbFiles
     : filesFound.map((f, i) => ({
         id: typeof f.id === 'number' ? f.id : i,
@@ -157,7 +153,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         modifiedAt: f.modifiedAt,
         runs: f.runs,
         source: f.source,
-      }))).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
+      })).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
 
   const handleRecover = async () => {
     if (effectiveScanId <= 0) {
@@ -500,6 +496,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           />
           <button className={`btn-secondary ${statusFilter === 'deleted' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'deleted' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('deleted')} data-testid="filter-deleted">Yalnız silinmiş</button>
           <button className={`btn-secondary ${statusFilter === 'allocated' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'allocated' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('allocated')}>Tahsisli</button>
+          <button className={`btn-secondary ${statusFilter === 'carved' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'carved' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('carved')} data-testid="filter-carved">Oyulmuş</button>
           <button className={`btn-secondary ${statusFilter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('all')}>Tümü</button>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px', fontSize: '13px' }}>
             <input type="checkbox" checked={showDuplicates} onChange={(e) => setShowDuplicates(e.target.checked)} data-testid="show-duplicates" />

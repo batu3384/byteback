@@ -11,6 +11,47 @@
 namespace byteback {
 
 namespace {
+const char* kDiscoverySourcesSql =
+    "'apfs_container','apfs_volume','apfs_file','bitlocker_detect','bitlocker_fve',"
+    "'vss_unbound','vss_bind','vss_snapshot','hfs_limit','usn_journal',"
+    "'ntfs_logfile','ntfs_logfile_restart','ntfs_recycle_meta'";
+
+void appendListFilter(std::string& sql, const FileListFilter& f, const char* prefix) {
+    if (f.status >= 0) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "status = ?";
+    }
+    if (!f.category.empty()) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "category = ?";
+    }
+    if (!f.sourceLike.empty()) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "source LIKE ?";
+    }
+    if (!f.includeDuplicates) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "source != 'carver_duplicate'";
+    }
+    if (!f.includeDiscovery) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "source NOT IN (";
+        sql += kDiscoverySourcesSql;
+        sql += ")";
+    }
+}
+
+void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
+    if (f.status >= 0) sqlite3_bind_int(stmt, bind++, f.status);
+    if (!f.category.empty()) sqlite3_bind_text(stmt, bind++, f.category.c_str(), -1, SQLITE_TRANSIENT);
+    if (!f.sourceLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceLike.c_str(), -1, SQLITE_TRANSIENT);
+}
+
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
@@ -225,6 +266,7 @@ bool MetadataStore::createTables() {
         CREATE INDEX IF NOT EXISTS idx_timeline_type ON timeline_events(event_type);
 
         CREATE INDEX IF NOT EXISTS idx_files_scan_id ON files(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_files_scan_status ON files(scan_id, status);
         CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension);
         CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
         CREATE INDEX IF NOT EXISTS idx_files_confidence ON files(confidence);
@@ -435,7 +477,7 @@ bool MetadataStore::completeScan(int64_t scanId, int status) {
 
 std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int limit, const FileListFilter& filter) {
     if (!filter.query.empty()) {
-        return searchFiles(scanId, filter.query, offset, limit, false, filter.category, filter.status);
+        return searchFiles(scanId, filter.query, offset, limit, false, filter);
     }
     std::lock_guard<std::recursive_mutex> lock(mu_);
     std::string sql = R"(
@@ -444,8 +486,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
                created_at, modified_at, runs_json, resident_blob, integrity_checksum
         FROM files WHERE scan_id = ?
     )";
-    if (filter.status >= 0) sql += " AND status = ?";
-    if (!filter.category.empty()) sql += " AND category = ?";
+    appendListFilter(sql, filter, "");
     sql += " ORDER BY id LIMIT ? OFFSET ?";
 
     std::vector<FileRecord> records;
@@ -456,8 +497,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
     }
     int bind = 1;
     sqlite3_bind_int64(stmt, bind++, scanId);
-    if (filter.status >= 0) sqlite3_bind_int(stmt, bind++, filter.status);
-    if (!filter.category.empty()) sqlite3_bind_text(stmt, bind++, filter.category.c_str(), -1, SQLITE_TRANSIENT);
+    bindListFilter(stmt, bind, filter);
     sqlite3_bind_int(stmt, bind++, limit);
     sqlite3_bind_int(stmt, bind++, offset);
 
@@ -488,12 +528,11 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
 
 int64_t MetadataStore::getFileCount(int64_t scanId, const FileListFilter& filter) {
     if (!filter.query.empty()) {
-        return searchFilesCount(scanId, filter.query, false, filter.category, filter.status);
+        return searchFilesCount(scanId, filter.query, false, filter);
     }
     std::lock_guard<std::recursive_mutex> lock(mu_);
     std::string sql = "SELECT COUNT(*) FROM files WHERE scan_id = ?";
-    if (filter.status >= 0) sql += " AND status = ?";
-    if (!filter.category.empty()) sql += " AND category = ?";
+    appendListFilter(sql, filter, "");
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(db_));
@@ -501,8 +540,7 @@ int64_t MetadataStore::getFileCount(int64_t scanId, const FileListFilter& filter
     }
     int bind = 1;
     sqlite3_bind_int64(stmt, bind++, scanId);
-    if (filter.status >= 0) sqlite3_bind_int(stmt, bind++, filter.status);
-    if (!filter.category.empty()) sqlite3_bind_text(stmt, bind++, filter.category.c_str(), -1, SQLITE_TRANSIENT);
+    bindListFilter(stmt, bind, filter);
     int64_t count = 0;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         count = sqlite3_column_int64(stmt, 0);
@@ -745,6 +783,15 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
                                                    int offset, int limit, bool useRegex,
                                                    const std::string& categoryFilter,
                                                    int statusFilter) {
+    FileListFilter filter;
+    filter.category = categoryFilter;
+    filter.status = statusFilter;
+    return searchFiles(scanId, query, offset, limit, useRegex, filter);
+}
+
+std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::string& query,
+                                                   int offset, int limit, bool useRegex,
+                                                   const FileListFilter& filter) {
     std::lock_guard<std::recursive_mutex> lock(mu_);
     std::vector<FileRecord> records;
     if (query.empty() || limit <= 0) return records;
@@ -766,21 +813,18 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
             FROM files f
             INNER JOIN files_fts fts ON f.id = fts.rowid
             WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
-              AND (? = '' OR f.category = ?)
-              AND (? < 0 OR f.status = ?)
-            ORDER BY f.id LIMIT ? OFFSET ?
         )";
+        appendListFilter(sql, filter, "f.");
+        sql += " ORDER BY f.id LIMIT ? OFFSET ?";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, scanId);
-            sqlite3_bind_int64(stmt, 2, scanId);
-            sqlite3_bind_text(stmt, 3, match.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 4, categoryFilter.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 5, categoryFilter.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 6, statusFilter);
-            sqlite3_bind_int(stmt, 7, statusFilter);
-            sqlite3_bind_int(stmt, 8, limit);
-            sqlite3_bind_int(stmt, 9, offset);
+            int bind = 1;
+            sqlite3_bind_int64(stmt, bind++, scanId);
+            sqlite3_bind_int64(stmt, bind++, scanId);
+            sqlite3_bind_text(stmt, bind++, match.c_str(), -1, SQLITE_TRANSIENT);
+            bindListFilter(stmt, bind, filter);
+            sqlite3_bind_int(stmt, bind++, limit);
+            sqlite3_bind_int(stmt, bind++, offset);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 records.push_back(rowToFileRecord(stmt));
             }
@@ -788,11 +832,10 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
             if (!records.empty()) return records;
         }
 
-        std::string likeSql = std::string(baseSql) +
-            " AND (? = '' OR category = ?) "
-            " AND (? < 0 OR status = ?) "
-            " AND (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(path) LIKE LOWER(?) ESCAPE '\\') "
-            "ORDER BY id LIMIT ? OFFSET ?";
+        std::string likeSql = std::string(baseSql);
+        appendListFilter(likeSql, filter, "");
+        likeSql += " AND (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(path) LIKE LOWER(?) ESCAPE '\\') "
+                   "ORDER BY id LIMIT ? OFFSET ?";
         std::string pattern = "%";
         for (char c : query) {
             if (c == '%' || c == '_' || c == '\\') pattern += '\\';
@@ -800,15 +843,13 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
         }
         pattern += '%';
         if (sqlite3_prepare_v2(db_, likeSql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return records;
-        sqlite3_bind_int64(stmt, 1, scanId);
-        sqlite3_bind_text(stmt, 2, categoryFilter.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 3, categoryFilter.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 4, statusFilter);
-        sqlite3_bind_int(stmt, 5, statusFilter);
-        sqlite3_bind_text(stmt, 6, pattern.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 7, pattern.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 8, limit);
-        sqlite3_bind_int(stmt, 9, offset);
+        int bind = 1;
+        sqlite3_bind_int64(stmt, bind++, scanId);
+        bindListFilter(stmt, bind, filter);
+        sqlite3_bind_text(stmt, bind++, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, bind++, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, bind++, limit);
+        sqlite3_bind_int(stmt, bind++, offset);
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             records.push_back(rowToFileRecord(stmt));
         }
@@ -823,14 +864,14 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
         return records;
     }
 
-    std::string sql = std::string(baseSql) + " AND (? = '' OR category = ?) AND (? < 0 OR status = ?) ORDER BY id";
+    std::string sql = std::string(baseSql);
+    appendListFilter(sql, filter, "");
+    sql += " ORDER BY id";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return records;
-    sqlite3_bind_int64(stmt, 1, scanId);
-    sqlite3_bind_text(stmt, 2, categoryFilter.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, categoryFilter.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 4, statusFilter);
-    sqlite3_bind_int(stmt, 5, statusFilter);
+    int bind = 1;
+    sqlite3_bind_int64(stmt, bind++, scanId);
+    bindListFilter(stmt, bind, filter);
 
     int skipped = 0;
     int scanned = 0;
@@ -854,34 +895,39 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
 int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
                                         const std::string& categoryFilter,
                                         int statusFilter) {
+    FileListFilter filter;
+    filter.category = categoryFilter;
+    filter.status = statusFilter;
+    return searchFilesCount(scanId, query, useRegex, filter);
+}
+
+int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query, bool useRegex,
+                                        const FileListFilter& filter) {
     std::lock_guard<std::recursive_mutex> lock(mu_);
     if (query.empty()) return 0;
 
     if (!useRegex) {
         std::string match = buildFtsMatch(query);
-        const char* sql = R"(
+        std::string sql = R"(
             SELECT COUNT(*) FROM files f
             INNER JOIN files_fts fts ON f.id = fts.rowid
             WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
-              AND (? = '' OR f.category = ?)
-              AND (? < 0 OR f.status = ?)
         )";
+        appendListFilter(sql, filter, "f.");
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
-        sqlite3_bind_int64(stmt, 1, scanId);
-        sqlite3_bind_int64(stmt, 2, scanId);
-        sqlite3_bind_text(stmt, 3, match.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 4, categoryFilter.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 5, categoryFilter.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 6, statusFilter);
-        sqlite3_bind_int(stmt, 7, statusFilter);
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return 0;
+        int bind = 1;
+        sqlite3_bind_int64(stmt, bind++, scanId);
+        sqlite3_bind_int64(stmt, bind++, scanId);
+        sqlite3_bind_text(stmt, bind++, match.c_str(), -1, SQLITE_TRANSIENT);
+        bindListFilter(stmt, bind, filter);
         int64_t n = 0;
         if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
         sqlite3_finalize(stmt);
         if (n > 0) return n;
     }
 
-    auto page = searchFiles(scanId, query, 0, 10000, useRegex, categoryFilter, statusFilter);
+    auto page = searchFiles(scanId, query, 0, 10000, useRegex, filter);
     return static_cast<int64_t>(page.size());
 }
 

@@ -49,3 +49,17 @@ TEST(NtfsRecycle, PairsIRRecords) {
     EXPECT_EQ(files[1].fr.sizeBytes, 2048u);
     EXPECT_EQ(files[0].fr.source, "ntfs_recycle_meta");
 }
+
+TEST(NtfsRecycle, SkipsPairingWhenIFileHasNoResidentBytes) {
+    struct Wrap { FileRecord fr; };
+    std::vector<Wrap> files(2);
+    files[0].fr.name = "$Iabc123.txt";
+    files[0].fr.source = "ntfs_mft";
+    files[1].fr.name = "$Rabc123.txt";
+    files[1].fr.source = "ntfs_mft";
+    files[1].fr.status = 0;
+    applyRecycleBinRecords(files);
+    EXPECT_EQ(files[1].fr.name, "$Rabc123.txt");
+    EXPECT_EQ(files[1].fr.source, "ntfs_mft");
+    EXPECT_EQ(files[0].fr.source, "ntfs_mft");
+}

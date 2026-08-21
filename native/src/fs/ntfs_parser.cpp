@@ -10,7 +10,7 @@
 #include <vector>
 #include <future>
 #include <unordered_map>
-#include <algorithm>
+#include <unordered_set>
 #include <algorithm>
 
 namespace byteback {
@@ -32,28 +32,6 @@ struct MFT_RecordHeader {
     uint32_t allocatedSize;
     uint64_t baseRecordReference;
     uint16_t nextAttributeId;
-};
-
-struct INDX_Header {
-    char signature[4]; // "INDX"
-    uint16_t updateSequenceOffset;
-    uint16_t updateSequenceSize;
-    uint64_t logFileSequenceNumber;
-    uint64_t vcn;
-    uint32_t indexEntryOffset; // Relative to 0x18
-    uint32_t indexEntriesSize;
-    uint32_t allocatedSize;
-    uint8_t nonLeafNode;
-    uint8_t padding[3];
-};
-
-struct INDX_Entry {
-    uint64_t fileReference;
-    uint16_t entryLength;
-    uint16_t streamLength;
-    uint16_t flags; // 0x01 = sub-node, 0x02 = last entry
-    uint16_t padding;
-    // stream data follows (typically NTFS_FileNameAttribute)
 };
 
 struct NTFS_AttributeHeader {
@@ -321,7 +299,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     };
 
     auto ingestRecord = [&](TempFile&& tf) {
-        if (tf.mftRecord != UINT64_MAX) {
+        if (tf.mftRecord != UINT64_MAX && tf.fr.source != "ntfs_ads") {
             auto it = dedupByMft.find(tf.mftRecord);
             if (it != dedupByMft.end()) {
                 if (tf.fr.confidence <= tempFiles[it->second].fr.confidence) return;
@@ -332,6 +310,13 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         }
         tempFiles.push_back(std::move(tf));
     };
+
+    std::vector<ntfs::IndexNameHint> i30Hints;
+    uint64_t mftBytes = 0;
+    for (const auto& br : mftByteRanges) mftBytes += br.countBytes;
+    const uint64_t estimatedMftRecords = std::max<uint64_t>(1,
+        mftRecordBytes > 0 ? mftBytes / mftRecordBytes : 1);
+    uint64_t recordsProcessed = 0;
 
     struct ScanPass { std::vector<ScanRange> ranges; bool orphan; };
     std::vector<ScanPass> passes;
@@ -572,6 +557,19 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                         }
                     }
 
+                    if (attr->type == ntfs::ATTR_INDEX_ROOT && attr->nonResidentFlag == 0) {
+                        if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <= recordSize) {
+                            auto* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(
+                                recBase + attrOffset + sizeof(NTFS_AttributeHeader));
+                            const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                            const size_t valLen = resAttr->valueLength;
+                            if (valLen > 0 && valOff + valLen <= recordSize) {
+                                auto hints = ntfs::parseIndexRoot(recBase + valOff, valLen);
+                                i30Hints.insert(i30Hints.end(), hints.begin(), hints.end());
+                            }
+                        }
+                    }
+
                     if (attr->length < sizeof(NTFS_AttributeHeader)) break; // Corrupt attribute, prevent infinite loop
                     attrOffset += attr->length;
                 }
@@ -650,73 +648,21 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     adsTf.mftRecord = mftRec;
                     ingestRecord(std::move(adsTf));
                 }
-            }
-            // Look for "INDX" signature
-            else if (std::strncmp(header->signature, "INDX", 4) == 0 && i + sizeof(INDX_Header) <= res.bytesRead) {
-                INDX_Header* indxHdr = reinterpret_cast<INDX_Header*>(currentBuf->data() + i);
-                uint32_t entriesOffset = 0x18 + indxHdr->indexEntryOffset;
-                uint32_t entriesSize = indxHdr->indexEntriesSize;
-                
-                uint32_t recordSize = 4096; // typical INDX buffer size
-                if (i + recordSize > res.bytesRead) recordSize = res.bytesRead - i;
-                
-                if (entriesOffset < recordSize && entriesOffset + entriesSize <= recordSize) {
-                    // Walk the live index entries first (entriesSize window),
-                    // then keep scanning into the INDX slack — NTFS does not
-                    // zero the tail after a delete, so deleted directory
-                    // entries often survive there. We validate each candidate
-                    // (plausible lengths, name in bounds) and skip rather than
-                    // stop on a bad one so one corrupt slot cannot hide the
-                    // remaining slack. The scan ends at the buffer boundary.
-                    uint32_t offset = entriesOffset;
-                    uint32_t scanLimit = recordSize;
-                    while (offset + sizeof(INDX_Entry) <= scanLimit) {
-                        INDX_Entry* entry = reinterpret_cast<INDX_Entry*>(currentBuf->data() + i + offset);
 
-                        // A zeroed or nonsensical slot in the slack is skipped,
-                        // not treated as end-of-index, so trailing slack is
-                        // still examined.
-                        if (entry->entryLength < 16) {
-                            offset += 8; // advance by the minimum entry stride
-                            continue;
-                        }
-                        if (offset + entry->entryLength > scanLimit) {
-                            offset += 8;
-                            continue;
-                        }
-
-                        if (entry->streamLength >= sizeof(NTFS_FileNameAttribute) && offset + 16 + sizeof(NTFS_FileNameAttribute) <= scanLimit) {
-                            NTFS_FileNameAttribute* fnAttr = reinterpret_cast<NTFS_FileNameAttribute*>(currentBuf->data() + i + offset + 16);
-
-                            uint64_t childMftId = entry->fileReference & 0x0000FFFFFFFFFFFFULL;
-                            uint64_t parentMftId = fnAttr->parentDirectory & 0x0000FFFFFFFFFFFFULL;
-
-                            size_t nameStructOffset = offset + 16;
-                            size_t totalNameBytes = fnAttr->nameLength * 2;
-
-                            if (fnAttr->nameLength > 0 && fnAttr->nameLength < 255 && nameStructOffset + offsetof(NTFS_FileNameAttribute, name) + totalNameBytes <= offset + entry->entryLength) {
-                                size_t available = (offset + entry->entryLength) - nameStructOffset;
-                                std::string decoded = decodeNtfsName(fnAttr, available);
-                                if (!decoded.empty()) {
-                                    mftIndex.putIndxHint(childMftId, parentMftId, decoded);
-                                }
-                            }
-                        }
-                        offset += entry->entryLength;
-                    }
+                if (!pass.orphan) {
+                    ++recordsProcessed;
+                    FileRecord progressTick{};
+                    progressTick.id = -1;
+                    progressTick.startSector = recordsProcessed;
+                    progressTick.sizeBytes = estimatedMftRecords;
+                    callback(progressTick);
                 }
             }
         }
-        
-        // Report progress at the end of each chunk
-        FileRecord progressTick;
-        progressTick.id = -1; // Special ID for progress tick
-        progressTick.startSector = sector + chunkSectors;
-        callback(progressTick);
     }
     }
     }
-    
+
     // Post-processing: reconstruct full paths from MFT index + LogFile hints
     NtfsLogHintCollector logHints;
     scanNtfsLogFileHints(reader, partitionOffsetBytes,
@@ -747,21 +693,28 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         callback(tf.fr);
     }
 
-    // ponytail: $I30 slack = resident INDEX / INDX buffer tail only. Full INDX
-    // recarve of allocated index streams is a later pass if these names stay thin.
+    // ponytail: resident $INDEX_ROOT only. Slack names stay off the MFT map so
+    // reuse cannot overwrite the live FILE name. Full $INDEX_ALLOCATION recarve later.
+    std::unordered_set<std::string> i30Seen;
     int64_t i30Id = 800000;
-    mftIndex.forEachIndxOnly([&](uint64_t mft, const ntfs::MftDirEntry& e) {
+    for (const auto& h : i30Hints) {
+        if (h.name.empty() || h.childMft == 0) continue;
+        const bool unseen = !mftIndex.hasRecord(h.childMft);
+        const bool reuse = !unseen && mftIndex.recordName(h.childMft) != h.name;
+        if (!unseen && !reuse) continue;
+        const std::string key = std::to_string(h.childMft) + "\n" + h.name;
+        if (!i30Seen.insert(key).second) continue;
         FileRecord fr{};
         fr.id = i30Id++;
-        fr.parentId = static_cast<int64_t>(e.parentMft);
-        fr.name = e.name;
-        fr.path = mftIndex.rebuildPath(mft, e.name, e.parentMft);
+        fr.parentId = static_cast<int64_t>(h.parentMft);
+        fr.name = h.name;
+        fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
         fr.status = 0;
         fr.source = "ntfs_i30";
         fr.confidence = 35;
-        fr.category = categoryForName(e.name);
+        fr.category = categoryForName(h.name);
         callback(fr);
-    });
+    }
 
     // ---- USN journal pass ----
     // Read the captured $UsnJrnl:$J runs and parse every v2/v3 record into a

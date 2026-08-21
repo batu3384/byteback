@@ -105,6 +105,19 @@ TEST(VssScan, TagsNtfsFilesAsVssNtfs) {
     EXPECT_TRUE(pathPrefixed);
 }
 
+TEST(VssScan, VolumeWalkDoesNotEmitRawLcnProgress) {
+    auto img = buildNtfsMftCarveDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    VssSnapshotInfo snap;
+    snap.index = 1;
+    std::atomic<bool> running{true};
+    size_t rawProgress = 0;
+    scanVssVolumeFilesystem(reader, snap, [](const FileRecord&) {},
+                            [&](uint64_t, uint64_t) { ++rawProgress; }, &running);
+    EXPECT_EQ(rawProgress, 0u);
+}
+
 TEST(VssScan, DevicePathFromTaggedPath) {
     FileRecord rec;
     rec.source = "vss_ntfs";

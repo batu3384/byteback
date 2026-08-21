@@ -29,6 +29,7 @@ public:
                             uint64_t parentMft) const;
 
     bool hasRecord(uint64_t mftRecord) const;
+    std::string recordName(uint64_t mftRecord) const;
 
     template <typename Fn>
     void forEachIndxOnly(Fn fn) const {

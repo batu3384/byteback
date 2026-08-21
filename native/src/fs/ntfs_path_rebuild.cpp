@@ -44,6 +44,11 @@ bool MftIndex::hasRecord(uint64_t mftRecord) const {
     return entries_.find(mftRecord) != entries_.end();
 }
 
+std::string MftIndex::recordName(uint64_t mftRecord) const {
+    const MftDirEntry* e = lookup(mftRecord);
+    return e ? e->name : std::string();
+}
+
 std::string MftIndex::rebuildPath(uint64_t /*mftRecord*/, const std::string& fileName,
                                   uint64_t parentMft) const {
     if (fileName.empty()) return "/";
