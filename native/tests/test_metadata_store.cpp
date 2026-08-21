@@ -307,3 +307,41 @@ TEST_F(MetadataStoreTest, CarvedFilterAndDuplicateToggle) {
     withDup.includeDuplicates = true;
     EXPECT_EQ(store_.getFileCount(scanId, withDup), 2);
 }
+
+TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksPaused) {
+    int64_t running = store_.createScan(0, "deep", 1000);
+    int64_t done = store_.createScan(1, "quick", 100);
+    ASSERT_TRUE(store_.completeScan(done, 1));
+    EXPECT_EQ(store_.getScanState(running).status, 0);
+    EXPECT_EQ(store_.reclaimOrphanRunningScans(), 1);
+    EXPECT_EQ(store_.getScanState(running).status, 4);
+    EXPECT_EQ(store_.getScanState(done).status, 1);
+    EXPECT_EQ(store_.reclaimOrphanRunningScans(), 0);
+}
+
+TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksCompleteWhenFull) {
+    int64_t full = store_.createScan(0, "deep", 100);
+    ASSERT_TRUE(store_.updateScanProgress(full, 100));
+    EXPECT_EQ(store_.reclaimOrphanRunningScans(), 1);
+    EXPECT_EQ(store_.getScanState(full).status, 1);
+}
+
+TEST_F(MetadataStoreTest, ClearAllScanDataRemovesScans) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord f;
+    f.name = "a.txt";
+    f.path = "/a.txt";
+    ASSERT_TRUE(store_.insertFile(scanId, f));
+    ASSERT_TRUE(store_.clearAllScanData());
+    EXPECT_EQ(store_.getLatestScanId(), -1);
+    EXPECT_EQ(store_.getLatestUsableScanId(), -1);
+    EXPECT_EQ(store_.getFileCount(scanId), 0);
+}
+
+TEST_F(MetadataStoreTest, GetLatestUsableScanIdPrefersPausedOrComplete) {
+    int64_t failed = store_.createScan(0, "quick", 10);
+    ASSERT_TRUE(store_.completeScan(failed, 3));
+    int64_t paused = store_.createScan(1, "deep", 100);
+    ASSERT_TRUE(store_.completeScan(paused, 4));
+    EXPECT_EQ(store_.getLatestUsableScanId(), paused);
+}

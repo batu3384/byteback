@@ -114,11 +114,6 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
 
     if (!destReady(result, destDir)) return result;
 
-    if (!reader.isOpen() && !reader.hasRaidBackend()) {
-        result.error = "Disk is not open";
-        return result;
-    }
-
     if (isDiscoveryOnlySource(record.source)) {
         result.error = "discovery-only record; no recoverable data";
         return result;
@@ -144,6 +139,11 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         result.md5Hash = md5ctx.finalHex();
         if (onProgress) onProgress(n, n);
         applyPostRecoveryValidation(result, record);
+        return result;
+    }
+
+    if (!reader.isOpen() && !reader.hasRaidBackend()) {
+        result.error = "Disk is not open";
         return result;
     }
 

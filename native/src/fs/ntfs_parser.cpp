@@ -135,8 +135,8 @@ std::string categoryForName(const std::string& name) {
         }
         return false;
     };
-    if (in("jpg,jpeg,png,gif,bmp,tiff,webp,heic,svg,raf,jp2,cr3")) return "Image";
-    if (in("mp4,avi,mkv,mov,flv,wmv,mpg,mpeg,3gp,webm")) return "Video";
+    if (in("jpg,jpeg,png,gif,bmp,tiff,webp,heic,heif,avif,svg,raf,jp2,cr3")) return "Image";
+    if (in("mp4,avi,mkv,mov,flv,wmv,mpg,mpeg,3gp,webm,m4v")) return "Video";
     if (in("mp3,wav,flac,ogg,aac,wma,m4a,opus")) return "Audio";
     if (in("doc,docx,pdf,txt,xls,xlsx,ppt,pptx,rtf,odt")) return "Document";
     if (in("zip,rar,7z,gz,tar,iso,cab")) return "Archive";
@@ -694,7 +694,9 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         if (tf.fr.source == "ntfs_recycle_meta") continue;
         callback(tf.fr);
         if (isRunning && !(*isRunning)) break;
-        ntfs::emitThumbcacheThumbnails(reader, tf.fr, thumbcacheId, callback, isRunning);
+        if (tf.fr.status == 0) {
+            ntfs::emitThumbcacheThumbnails(reader, tf.fr, thumbcacheId, callback, isRunning);
+        }
     }
 
     // ponytail: resident $INDEX_ROOT only. Slack names stay off the MFT map so

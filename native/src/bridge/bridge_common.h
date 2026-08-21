@@ -127,6 +127,8 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info);
 Napi::Value GetFilesPage(const Napi::CallbackInfo& info);
 Napi::Value GetScanState(const Napi::CallbackInfo& info);
 Napi::Value GetLatestScanId(const Napi::CallbackInfo& info);
+Napi::Value GetLatestUsableScanId(const Napi::CallbackInfo& info);
+Napi::Value ResetScanDatabase(const Napi::CallbackInfo& info);
 Napi::Value GetTimelineEvents(const Napi::CallbackInfo& info);
 Napi::Value GetAuditLog(const Napi::CallbackInfo& info);
 Napi::Value SearchFiles(const Napi::CallbackInfo& info);

@@ -65,7 +65,7 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     return fileObj;
 }
 
-constexpr uint32_t kMaxLiveFileEvents = 2048;
+constexpr uint32_t kMaxLiveFileEvents = 0;
 
 void flushScanToDb(BridgeData* bdata, int status) {
     if (!bdata || !bdata->scanContext) return;
@@ -119,6 +119,11 @@ Napi::Value InitDatabase(const Napi::CallbackInfo& info) {
         forensic::AuditLogger::GetInstance().Initialize(auditPath);
         forensic::AuditLogger::GetInstance().LogEvent("SESSION_START | database=" + dbPath);
         if (bdata) bdata->auditLogPath = auditPath;
+        const int64_t orphans = engine->getMetadataStore().reclaimOrphanRunningScans();
+        if (orphans > 0) {
+            forensic::AuditLogger::GetInstance().LogEvent(
+                "SCAN_ORPHAN | count=" + std::to_string(orphans) + " | marked paused");
+        }
     }
     return Napi::Boolean::New(env, ok);
     NAPI_CATCH
@@ -180,6 +185,8 @@ Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     obj.Set("scannedSectors", Napi::Number::New(env, static_cast<double>(state.scannedSectors)));
     obj.Set("status", Napi::Number::New(env, state.status));
     obj.Set("recoveredFiles", Napi::Number::New(env, static_cast<double>(state.recoveredFiles)));
+    obj.Set("metadataComplete", Napi::Boolean::New(env, state.metadataComplete));
+    obj.Set("carveResumeSector", Napi::Number::New(env, static_cast<double>(state.carveResumeSector)));
     return obj;
     NAPI_CATCH
 }
@@ -191,6 +198,29 @@ Napi::Value GetLatestScanId(const Napi::CallbackInfo& info) {
     if (!bdata) return Napi::Number::New(env, -1);
     return Napi::Number::New(env, static_cast<double>(
         bdata->engine.getMetadataStore().getLatestScanId()));
+    NAPI_CATCH
+}
+
+Napi::Value GetLatestUsableScanId(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return Napi::Number::New(env, -1);
+    return Napi::Number::New(env, static_cast<double>(
+        bdata->engine.getMetadataStore().getLatestUsableScanId()));
+    NAPI_CATCH
+}
+
+Napi::Value ResetScanDatabase(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) return Napi::Boolean::New(env, false);
+    if (bdata->scanContext) {
+        Napi::Error::New(env, "Cannot reset while a scan is running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return Napi::Boolean::New(env, bdata->engine.getMetadataStore().clearAllScanData());
     NAPI_CATCH
 }
 
@@ -493,19 +523,25 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
     auto totalSectorsSet = std::make_shared<std::atomic<bool>>(false);
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
-    auto onProgress = [context, lastProgress, engine = &bdata->engine, totalSectorsSet](uint64_t current, uint64_t total) {
+    auto lastDbProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+    auto onProgress = [context, lastProgress, lastDbProgress, engine = &bdata->engine, totalSectorsSet](uint64_t current, uint64_t total) {
         if (total > 0 && !totalSectorsSet->exchange(true)) {
             engine->getMetadataStore().setScanTotalSectors(context->scanId, total);
         }
-        engine->getMetadataStore().updateScanProgress(context->scanId, current);
-
         auto now = std::chrono::steady_clock::now();
-        if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 100) {
+        if (current == total ||
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastDbProgress).count() >= 500) {
+            engine->getMetadataStore().updateScanProgress(context->scanId, current);
+            *lastDbProgress = now;
+        }
+
+        if (current != total && std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastProgress).count() < 250) {
             return;
         }
         *lastProgress = now;
 
-        auto callback = [current, total, phase = std::string(byteback::g_scanPhase ? byteback::g_scanPhase : "metadata"),
+        const char* phasePtr = byteback::g_scanPhase.load(std::memory_order_relaxed);
+        auto callback = [current, total, phase = std::string(phasePtr ? phasePtr : "metadata"),
                          bad = context->badSectors](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));

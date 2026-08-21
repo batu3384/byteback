@@ -24,6 +24,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getFilesPage", Napi::Function::New(env, GetFilesPage));
     exports.Set("getScanState", Napi::Function::New(env, GetScanState));
     exports.Set("getLatestScanId", Napi::Function::New(env, GetLatestScanId));
+    exports.Set("getLatestUsableScanId", Napi::Function::New(env, GetLatestUsableScanId));
+    exports.Set("resetScanDatabase", Napi::Function::New(env, ResetScanDatabase));
     exports.Set("getTimelineEvents", Napi::Function::New(env, GetTimelineEvents));
     exports.Set("getAuditLog", Napi::Function::New(env, GetAuditLog));
     exports.Set("searchFiles", Napi::Function::New(env, SearchFiles));

@@ -475,6 +475,33 @@ bool MetadataStore::completeScan(int64_t scanId, int status) {
     return rc == SQLITE_DONE;
 }
 
+int64_t MetadataStore::reclaimOrphanRunningScans() {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_) return 0;
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    int64_t changed = 0;
+
+    const char* completeSql =
+        "UPDATE scans SET status = 1, updated_at = ? "
+        "WHERE status = 0 AND total_sectors > 0 AND scanned_sectors >= total_sectors";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, completeSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, now);
+        sqlite3_step(stmt);
+        changed += sqlite3_changes(db_);
+        sqlite3_finalize(stmt);
+    }
+
+    const char* pauseSql = "UPDATE scans SET status = 4, updated_at = ? WHERE status = 0";
+    if (sqlite3_prepare_v2(db_, pauseSql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, now);
+        sqlite3_step(stmt);
+        changed += sqlite3_changes(db_);
+        sqlite3_finalize(stmt);
+    }
+    return changed;
+}
+
 std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int limit, const FileListFilter& filter) {
     if (!filter.query.empty()) {
         return searchFiles(scanId, filter.query, offset, limit, false, filter);
@@ -596,6 +623,57 @@ int64_t MetadataStore::getLatestScanId() {
     if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return id;
+}
+
+int64_t MetadataStore::getLatestUsableScanId() {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    const char* sql =
+        "SELECT id FROM scans WHERE status IN (1, 4) ORDER BY id DESC LIMIT 1";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    int64_t id = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+bool MetadataStore::clearAllScanData() {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_) return false;
+
+    auto execIgnore = [this](const char* sql) {
+        char* err = nullptr;
+        sqlite3_exec(db_, sql, nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+    };
+
+    execIgnore("DROP TRIGGER IF EXISTS files_fts_ai");
+    execIgnore("DROP TRIGGER IF EXISTS files_fts_ad");
+    execIgnore("DROP TRIGGER IF EXISTS files_fts_au");
+    execIgnore("DROP TABLE IF EXISTS files_fts");
+    execIgnore("DROP TABLE IF EXISTS content_fts");
+    execIgnore("DROP TABLE IF EXISTS content_chunk_fts");
+
+    const char* core[] = {
+        "DELETE FROM files",
+        "DELETE FROM timeline_events",
+        "DELETE FROM scans",
+        nullptr,
+    };
+    for (const char** p = core; *p; ++p) {
+        char* err = nullptr;
+        if (sqlite3_exec(db_, *p, nullptr, nullptr, &err) != SQLITE_OK) {
+            if (err) {
+                fprintf(stderr, "clearAllScanData: %s\n", err);
+                sqlite3_free(err);
+            }
+            return false;
+        }
+    }
+
+    if (!ensureFtsIndex(db_) || !ensureContentFtsIndex(db_)) return false;
+    sqlite3_exec(db_, "VACUUM", nullptr, nullptr, nullptr);
+    return true;
 }
 
 bool MetadataStore::incrementRecovered(int64_t scanId) {
