@@ -18,6 +18,15 @@ function assertDbReady(): void {
   }
 }
 
+/** Notify renderer and clear main scan-live when native complete IPC may not arrive. */
+export function broadcastScanComplete(scanId: number, status: number, reason: string): void {
+  setScanLive(false)
+  appendSessionLog('SCAN_STOP', reason)
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('scan-complete', { scanId, status })
+  }
+}
+
 export function registerIpcHandlers(): void {
   const allowlistPath = join(app.getPath('userData'), 'allowed-image-dest.json')
   const allowedImageDest = loadAllowedImageDest(allowlistPath)

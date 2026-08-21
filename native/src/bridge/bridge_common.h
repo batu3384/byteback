@@ -125,6 +125,7 @@ Napi::Value ListVolumeLetters(const Napi::CallbackInfo& info);
 Napi::Value InitDatabase(const Napi::CallbackInfo& info);
 Napi::Value StartScan(const Napi::CallbackInfo& info);
 Napi::Value StopScan(const Napi::CallbackInfo& info);
+Napi::Value IsScanActive(const Napi::CallbackInfo& info);
 Napi::Value GetFileCount(const Napi::CallbackInfo& info);
 Napi::Value GetFilesPage(const Napi::CallbackInfo& info);
 Napi::Value GetScanState(const Napi::CallbackInfo& info);

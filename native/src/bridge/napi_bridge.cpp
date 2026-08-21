@@ -35,6 +35,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getScanSummary", Napi::Function::New(env, GetScanSummary));
     exports.Set("startScan", Napi::Function::New(env, StartScan));
     exports.Set("stopScan", Napi::Function::New(env, StopScan));
+    exports.Set("isScanActive", Napi::Function::New(env, IsScanActive));
 
     // bridge_imager.cpp
     exports.Set("startImaging", Napi::Function::New(env, StartImaging));

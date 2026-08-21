@@ -319,6 +319,16 @@ TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksPaused) {
     EXPECT_EQ(store_.reclaimOrphanRunningScans(), 0);
 }
 
+TEST_F(MetadataStoreTest, MetadataCheckpointDoesNotPolluteCarveResume) {
+    int64_t scanId = store_.createScan(0, "deep", 10'000);
+    ASSERT_TRUE(store_.updateScanProgress(scanId, 5000));
+    ASSERT_TRUE(store_.updateScanCheckpoint(scanId, false, 0));
+    auto st = store_.getScanState(scanId);
+    EXPECT_FALSE(st.metadataComplete);
+    EXPECT_EQ(st.carveResumeSector, 0u);
+    EXPECT_EQ(st.scannedSectors, 5000u);
+}
+
 TEST_F(MetadataStoreTest, ReclaimOrphanDeepWithoutMetadataStaysPaused) {
     int64_t deep = store_.createScan(0, "deep", 100);
     ASSERT_TRUE(store_.updateScanProgress(deep, 100));

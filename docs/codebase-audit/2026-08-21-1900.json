@@ -1,0 +1,18 @@
+{
+  "date": "2026-08-21T19:00:00+03:00",
+  "scope": "origin/main..HEAD",
+  "commits": 4,
+  "method": ["bugbot", "security-review", "manual-verification"],
+  "vitest": "65/65",
+  "verdict": "PASS",
+  "resolved_in_commit": "pending",
+  "previous_audit_resolved": 13,
+  "previous_audit_partial": 2,
+  "new_findings": [
+    {"id": "NF-001", "severity": "high", "layer": "algorithm", "file": "native/src/bridge/bridge_scan.cpp", "line": 553, "title": "Metadata checkpoint overwrites carveResumeSector with mapped progress"},
+    {"id": "NF-002", "severity": "high", "layer": "system", "file": "native/src/bridge/bridge_scan.cpp", "line": 592, "title": "Complete IPC emits coordinator status not dbStatus (UI paused vs cancelled mismatch)"},
+    {"id": "NF-003", "severity": "medium", "layer": "system", "file": "src/main/main.ts", "line": 91, "title": "OS sleep stopScan without setScanLive(false) fallback"},
+    {"id": "NF-004", "severity": "medium", "layer": "system", "file": "native/src/bridge/bridge_scan.cpp", "line": 596, "title": "tsfnPost complete drop leaves heavyOps and scanLive stuck"},
+    {"id": "NF-005", "severity": "medium", "layer": "security", "file": "native/src/bridge/bridge_scan.cpp", "line": 0, "title": "resetScanDatabase/clearAllScanData not logged to hash-chained audit"}
+  ]
+}
