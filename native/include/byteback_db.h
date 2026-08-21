@@ -106,6 +106,8 @@ public:
     bool updateScanCheckpoint(int64_t scanId, bool metadataComplete, uint64_t carveResumeSector);
     bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);
+    // Previous process died with status=Running. Mark those rows paused so UI can resume.
+    int64_t reclaimOrphanRunningScans();
     ScanState getScanState(int64_t scanId);
 
     struct ScanSummary {
@@ -148,6 +150,9 @@ public:
 
     // CA-008: real session + recovery bookkeeping.
     int64_t getLatestScanId();
+    /** Latest scan with status complete (1) or paused (4); -1 if none. */
+    int64_t getLatestUsableScanId();
+    bool clearAllScanData();
     bool incrementRecovered(int64_t scanId);
 
     // Unified timeline (USN journal and other event sources)

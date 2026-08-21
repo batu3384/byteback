@@ -224,6 +224,15 @@ TEST(ScanProgress, MeterDoesNotRewind) {
     EXPECT_EQ(meter.tick(12), 12u);
 }
 
+TEST(ScanProgress, MapWorkDoesNotOverflowOnMultiTbDisk) {
+    const uint64_t sectors = 8ull << 30; // 4 TiB at 512-byte sectors
+    const uint64_t half = mapWorkToBudget(sectors / 2, sectors, sectors);
+    EXPECT_GT(half, sectors / 4);
+    EXPECT_LT(half, sectors);
+    const uint64_t metaBudget = sectors * 3 / 4;
+    EXPECT_EQ(mulDivU64(sectors / 2, metaBudget, sectors), sectors * 3 / 8);
+}
+
 TEST(ScanCoordinator, QuickScanProgressNeverDecreasesOnJumpingRuns) {
     auto img = byteback::testfix::buildNtfsJumpingDataRunsVolume();
     DiskReader reader;

@@ -182,6 +182,24 @@ TEST_F(RecoveryEngineTest, CarverEmptyRunsStillRecover) {
     EXPECT_TRUE(result.success);
 }
 
+TEST_F(RecoveryEngineTest, RecoversResidentPayloadWithoutOpeningDisk) {
+    DiskReader reader;
+
+    FileRecord rec;
+    rec.name = "resident.txt";
+    rec.sizeBytes = 5;
+    rec.source = "ntfs_mft";
+    rec.residentData = {'h', 'e', 'l', 'l', 'o'};
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    EXPECT_EQ(result.bytesRecovered, 5u);
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(in)), {});
+    EXPECT_EQ(content, "hello");
+}
+
 TEST_F(RecoveryEngineTest, RecoversResidentPayloadWithoutRuns) {
     DiskReader reader;
     reader.attachMemoryVolume(std::vector<uint8_t>(512, 0x00));

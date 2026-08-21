@@ -373,12 +373,14 @@ public:
                 return;
             }
             byteback::DiskReader reader;
-            if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
-                result_.success = false;
-                result_.error = err;
-                return;
+            if (rec.residentData.empty()) {
+                if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                    result_.success = false;
+                    result_.error = err;
+                    return;
+                }
+                byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
             }
-            byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
             byteback::RecoveryEngine recovery;
             result_ = recovery.recoverFile(reader, rec, destDir_);
             if (byteback::countsAsRecovered(result_) && scanId_ > 0) {
@@ -492,14 +494,16 @@ public:
                     continue;
                 }
                 byteback::DiskReader reader;
-                if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
-                    one.success = false;
-                    one.error = err;
-                    summary_.results.push_back(one);
-                    ++summary_.failed;
-                    continue;
+                if (rec.residentData.empty()) {
+                    if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                        one.success = false;
+                        one.error = err;
+                        summary_.results.push_back(one);
+                        ++summary_.failed;
+                        continue;
+                    }
+                    byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
                 }
-                byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
                 one = recovery.recoverFile(reader, rec, destDir_);
                 summary_.results.push_back(one);
                 if (byteback::countsAsRecovered(one)) {
@@ -595,7 +599,6 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
     }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return env.Undefined();
-    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     int64_t scanId = info[1].As<Napi::Number>().Int64Value();
@@ -610,6 +613,26 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
         return out;
     }
 
+    auto previewToJs = [&](const byteback::FilePreviewResult& preview) {
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("success", Napi::Boolean::New(env, preview.success));
+        out.Set("error", Napi::String::New(env, preview.error));
+        out.Set("kind", Napi::String::New(env, preview.kind));
+        if (preview.success && !preview.data.empty()) {
+            out.Set("data", Napi::Buffer<uint8_t>::Copy(env, preview.data.data(), preview.data.size()));
+        } else {
+            out.Set("data", env.Null());
+        }
+        return out;
+    };
+
+    if (!rec.residentData.empty()) {
+        byteback::DiskReader unused;
+        return previewToJs(byteback::readFilePreview(unused, rec));
+    }
+
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
+
     byteback::DiskReader reader;
     if (!byteback::bindReaderForRecord(reader, rec, driveIndex, bdata->raid, err)) {
         Napi::Object out = Napi::Object::New(env);
@@ -619,16 +642,6 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
     }
     byteback::applyBoundFvek(reader, bdata->engine.getDiskReader(), rec);
 
-    byteback::FilePreviewResult preview = byteback::readFilePreview(reader, rec);
-    Napi::Object out = Napi::Object::New(env);
-    out.Set("success", Napi::Boolean::New(env, preview.success));
-    out.Set("error", Napi::String::New(env, preview.error));
-    out.Set("kind", Napi::String::New(env, preview.kind));
-    if (preview.success && !preview.data.empty()) {
-        out.Set("data", Napi::Buffer<uint8_t>::Copy(env, preview.data.data(), preview.data.size()));
-    } else {
-        out.Set("data", env.Null());
-    }
-    return out;
+    return previewToJs(byteback::readFilePreview(reader, rec));
     NAPI_CATCH
 }

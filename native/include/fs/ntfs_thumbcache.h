@@ -21,23 +21,28 @@ inline bool isThumbcacheDbName(const std::string& name) {
 }
 
 inline void emitEmbeddedJpegs(const uint8_t* data, size_t n, const FileRecord& parent, int64_t& nextId,
-                                const std::function<void(const FileRecord&)>& callback) {
-    if (!data || n < 4) return;
+                                const std::function<void(const FileRecord&)>& callback, size_t maxHits = 24) {
+    if (!data || n < 4 || maxHits == 0) return;
     size_t i = 0;
-    while (i + 3 < n) {
+    size_t hits = 0;
+    while (i + 3 < n && hits < maxHits) {
         if (data[i] != 0xFF || data[i + 1] != 0xD8 || data[i + 2] != 0xFF) {
             ++i;
             continue;
         }
+        bool foundEoi = false;
         size_t j = i + 3;
         while (j + 1 < n) {
             if (data[j] == 0xFF && data[j + 1] == 0xD9) {
                 j += 2;
+                foundEoi = true;
                 break;
             }
             ++j;
         }
-        if (j <= i + 3 || j > n) {
+        const size_t blobLen = j > i ? j - i : 0;
+        // ponytail: thumbs are small; missing EOI or >512 KiB is a false SOI, not a file.
+        if (!foundEoi || blobLen < 4 || blobLen > (512u * 1024u) || j > n) {
             ++i;
             continue;
         }
@@ -48,13 +53,14 @@ inline void emitEmbeddedJpegs(const uint8_t* data, size_t n, const FileRecord& p
         fr.extension = ".jpg";
         if (!parent.path.empty()) fr.path = parent.path + "\\" + fr.name;
         else fr.path = fr.name;
-        fr.sizeBytes = static_cast<uint64_t>(j - i);
+        fr.residentData.assign(data + i, data + j);
+        fr.sizeBytes = fr.residentData.size();
         fr.status = 0;
         fr.source = "ntfs_thumbcache";
         fr.confidence = 42;
         fr.category = "Image";
-        if (parent.startSector) fr.startSector = parent.startSector;
         callback(fr);
+        ++hits;
         i = j;
     }
 }
@@ -123,8 +129,9 @@ inline void emitThumbcacheThumbnails(DiskReader& reader, const FileRecord& paren
                                      const std::function<void(const FileRecord&)>& callback,
                                      std::atomic<bool>* isRunning) {
     if (!isThumbcacheDbName(parent.name)) return;
-  // ponytail: 128 MiB cap — enough for thumbcache_256.db prefix on typical volumes.
-    constexpr uint64_t kCap = 128u << 20;
+    if (parent.status == 1) return;
+    // ponytail: 2 MiB prefix — live thumbcache_*.db is hundreds of MiB; full walk stalls metadata.
+    constexpr uint64_t kCap = 2u << 20;
     std::vector<uint8_t> buf;
     if (!readRecordPrefix(reader, parent, kCap, buf, isRunning)) return;
     emitEmbeddedJpegs(buf.data(), buf.size(), parent, nextId, callback);
