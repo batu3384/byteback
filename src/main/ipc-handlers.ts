@@ -2,6 +2,7 @@ import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { getEngine } from './native-bridge'
 import { hexDataOrNull } from '../shared/hex-read'
+import { diskBusyMessage } from '../shared/scan-required'
 import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { callNative } from './ipc-native'
@@ -163,7 +164,8 @@ export function registerIpcHandlers(): void {
       const res = engine.readSectors(driveIndex, offset, size)
       const bytes = hexDataOrNull(res)
       if (bytes) return { data: bytes }
-      const msg = res.error || 'Sektör okunamadı'
+      const raw = res.error || 'Sektör okunamadı'
+      const msg = diskBusyMessage(raw) ?? raw
       console.warn('[IPC] read-hex-data failed:', msg)
       return { data: null, error: msg }
     } catch (err) {
@@ -211,12 +213,12 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('get-file-count', (_event, scanId: number) =>
-    callNative('get-file-count', () => getEngine().getFileCount(scanId))
+  ipcMain.handle('get-file-count', (_event, scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) =>
+    callNative('get-file-count', () => getEngine().getFileCount(scanId, filter))
   )
 
-  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number) =>
-    callNative('get-files-page', () => getEngine().getFilesPage(scanId, offset, limit))
+  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) =>
+    callNative('get-files-page', () => getEngine().getFilesPage(scanId, offset, limit, filter))
   )
 
   ipcMain.handle('get-latest-scan-id', () =>

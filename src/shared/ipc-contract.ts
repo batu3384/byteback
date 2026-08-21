@@ -89,13 +89,25 @@ export interface ScanSummary {
   videoFiles: number
   audioFiles: number
   archiveFiles: number
+  carvedFiles?: number
   timelineEvents?: number
   usnCreates?: number
   usnDeletes?: number
   usnRenames?: number
 }
 
-export type ProgressCallback = (data: { current: number; total: number; badSectors?: number[] }) => void
+export interface FileListFilter {
+  status?: number
+  category?: string
+  query?: string
+}
+
+export type ProgressCallback = (data: {
+  current: number
+  total: number
+  badSectors?: number[]
+  phase?: string
+}) => void
 export type ScanCompleteCallback = (data: { scanId: number; status: number }) => void
 export type FileFoundCallback = (data: FileRecord & { type?: string; size?: number }) => void
 

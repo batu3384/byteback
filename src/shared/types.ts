@@ -6,6 +6,7 @@ export type {
   SmartStatus,
   ScanState,
   ScanSummary,
+  FileListFilter,
   RecoverResult,
   FilePreviewResult,
   RaidAssemblyResult,
@@ -31,6 +32,7 @@ import type {
   SmartStatus,
   ScanState,
   ScanSummary,
+  FileListFilter,
   RecoverResult,
   FilePreviewResult,
   RaidAssemblyResult,
@@ -74,8 +76,8 @@ declare global {
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>
 
-      getFileCount: (scanId: number) => Promise<number>
-      getFilesPage: (scanId: number, offset: number, limit: number) => Promise<FileRecord[]>
+      getFileCount: (scanId: number, filter?: FileListFilter) => Promise<number>
+      getFilesPage: (scanId: number, offset: number, limit: number, filter?: FileListFilter) => Promise<FileRecord[]>
       searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<SearchFilesResult>
       searchFileContent: (scanId: number, query: string, offset: number, limit: number) => Promise<SearchFilesResult>
       startContentSearch: (scanId: number, query: string) => Promise<IpcOkResult>

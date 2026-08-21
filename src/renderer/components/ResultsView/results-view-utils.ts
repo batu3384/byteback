@@ -44,6 +44,15 @@ export function getFileType(ext: string): string {
   return 'other'
 }
 
+export function chipToCategory(chip: string): string {
+  if (chip === 'img') return 'Image'
+  if (chip === 'doc') return 'Document'
+  if (chip === 'video') return 'Video'
+  if (chip === 'audio') return 'Audio'
+  if (chip === 'archive') return 'Archive'
+  return ''
+}
+
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'

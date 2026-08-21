@@ -43,6 +43,10 @@ describe('isDiscoveryOnlySource', () => {
 
   it('labels logfile-verified MFT', () => {
     expect(sourceDisplayLabel('ntfs_mft_logfile')).toBe('NTFS MFT (LogFile doğrulandı)')
+    expect(sourceDisplayLabel('ntfs_recycle')).toContain('Geri Dönüşüm')
+    expect(isDiscoveryOnlySource('ntfs_recycle_meta')).toBe(true)
+    expect(canRecoverSource('ntfs_i30', false)).toBe(false)
+    expect(canRecoverSource('ntfs_i30', true)).toBe(true)
   })
 
   it('hides carve duplicates from default recoverable list', () => {

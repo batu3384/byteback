@@ -11,6 +11,7 @@ import {
   getFileType,
   formatSize,
   buildTree,
+  chipToCategory,
   type MappedFile,
   type TreeNode,
 } from './results-view-utils'
@@ -24,7 +25,11 @@ interface ResultsViewProps {
 const PAGE_SIZE = 500
 
 function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
-  const [filter, setFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated'>('deleted')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [nameInput, setNameInput] = useState('')
+  const [nameQuery, setNameQuery] = useState('')
+  const [summary, setSummary] = useState({ totalFiles: 0, deletedFiles: 0, carvedFiles: 0 })
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
@@ -69,13 +74,26 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
   const loadPage = useCallback(async (scan: number, pageIndex: number) => {
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
     setLoading(true)
+    const listFilter = {
+      status: statusFilter === 'deleted' ? 0 : statusFilter === 'allocated' ? 1 : -1,
+      category: chipToCategory(typeFilter),
+      query: nameQuery,
+    }
     try {
-      const [count, pageData] = await Promise.all([
-        window.api.getFileCount(scan),
-        window.api.getFilesPage(scan, pageIndex * PAGE_SIZE, PAGE_SIZE),
+      const [count, pageData, sum] = await Promise.all([
+        window.api.getFileCount(scan, listFilter),
+        window.api.getFilesPage(scan, pageIndex * PAGE_SIZE, PAGE_SIZE, listFilter),
+        window.api.getScanSummary ? window.api.getScanSummary(scan) : Promise.resolve(null),
       ])
       setTotalCount(count)
       setDbFiles(pageData)
+      if (sum) {
+        setSummary({
+          totalFiles: sum.totalFiles ?? 0,
+          deletedFiles: sum.deletedFiles ?? 0,
+          carvedFiles: sum.carvedFiles ?? 0,
+        })
+      }
       setRecordById(prev => {
         const next = new Map(prev)
         for (const f of pageData) next.set(f.id, f)
@@ -84,7 +102,17 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [statusFilter, typeFilter, nameQuery])
+
+  useEffect(() => {
+    const t = setTimeout(() => setNameQuery(nameInput.trim()), 300)
+    return () => clearTimeout(t)
+  }, [nameInput])
+
+  useEffect(() => {
+    setPage(0)
+    setSelectedFiles(new Set())
+  }, [statusFilter, typeFilter, nameQuery])
 
   useEffect(() => {
     if (effectiveScanId > 0) {
@@ -315,11 +343,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     sourceLabel: sourceDisplayLabel(f.source),
   }))
 
-  const filteredFiles = mappedFiles.filter(f => {
-    if (filter === 'deleted') return f.rawStatus === 0
-    return filter === 'all' || f.type === filter
-  })
-
+  const filteredFiles = mappedFiles
   const treeRoot = buildTree(filteredFiles)
 
   const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode[] => {
@@ -390,10 +414,18 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         <div className="results-info">
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kurtarma Sonuçları</h2>
           <p style={{ color: 'var(--text-muted)' }}>
-            Taranan disk üzerinde tespit edilen {displayTotal.toLocaleString('tr-TR')} dosya
+            Bu süzgeçte {displayTotal.toLocaleString('tr-TR')} dosya
             {effectiveScanId > 0 && totalPages > 1 ? ` — sayfa ${page + 1}/${totalPages}` : ''}
             {loading ? ' (yükleniyor...)' : ''}
           </p>
+          {effectiveScanId > 0 && (
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
+              Silinmiş {summary.deletedFiles.toLocaleString('tr-TR')}
+              {' · '}Tahsisli {Math.max(0, summary.totalFiles - summary.deletedFiles).toLocaleString('tr-TR')}
+              {' · '}Oyulmuş {(summary.carvedFiles ?? 0).toLocaleString('tr-TR')}
+              {' · '}Toplam {summary.totalFiles.toLocaleString('tr-TR')}
+            </p>
+          )}
         </div>
         <div className="results-actions" style={{ display: 'flex', gap: '12px' }}>
           <button
@@ -458,17 +490,27 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             {viewMode === 'tree' ? <List size={16} /> : <ListTree size={16} />}
             {viewMode === 'tree' ? 'Liste' : 'Ağaç'}
           </button>
-          <button className={`btn-secondary ${filter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('all')}>Tümü</button>
-          <button className={`btn-secondary ${filter === 'deleted' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'deleted' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('deleted')} data-testid="filter-deleted">Yalnız silinmiş</button>
+          <input
+            type="search"
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            placeholder="Ada göre ara"
+            aria-label="Dosya adı ara"
+            style={{ padding: '6px 12px', minWidth: '180px', background: 'transparent', border: '1px solid var(--panel-border)', borderRadius: '6px', color: 'inherit' }}
+          />
+          <button className={`btn-secondary ${statusFilter === 'deleted' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'deleted' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('deleted')} data-testid="filter-deleted">Yalnız silinmiş</button>
+          <button className={`btn-secondary ${statusFilter === 'allocated' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'allocated' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('allocated')}>Tahsisli</button>
+          <button className={`btn-secondary ${statusFilter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: statusFilter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setStatusFilter('all')}>Tümü</button>
           <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px', fontSize: '13px' }}>
             <input type="checkbox" checked={showDuplicates} onChange={(e) => setShowDuplicates(e.target.checked)} data-testid="show-duplicates" />
             Tekrarları göster
           </label>
-          <button className={`btn-secondary ${filter === 'img' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'img' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('img')}>Resimler</button>
-          <button className={`btn-secondary ${filter === 'doc' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'doc' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('doc')}>Belgeler</button>
-          <button className={`btn-secondary ${filter === 'video' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'video' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('video')}>Videolar</button>
-          <button className={`btn-secondary ${filter === 'audio' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'audio' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('audio')}>Ses</button>
-          <button className={`btn-secondary ${filter === 'archive' ? 'active' : ''}`} style={{ padding: '6px 16px', background: filter === 'archive' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setFilter('archive')}>Arşivler</button>
+          <button className={`btn-secondary ${typeFilter === 'all' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'all' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('all')}>Tür: hepsi</button>
+          <button className={`btn-secondary ${typeFilter === 'img' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'img' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('img')}>Resimler</button>
+          <button className={`btn-secondary ${typeFilter === 'doc' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'doc' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('doc')}>Belgeler</button>
+          <button className={`btn-secondary ${typeFilter === 'video' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'video' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('video')}>Videolar</button>
+          <button className={`btn-secondary ${typeFilter === 'audio' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'audio' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('audio')}>Ses</button>
+          <button className={`btn-secondary ${typeFilter === 'archive' ? 'active' : ''}`} style={{ padding: '6px 16px', background: typeFilter === 'archive' ? 'var(--panel-border)' : 'transparent' }} onClick={() => setTypeFilter('archive')}>Arşivler</button>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''}>

@@ -6,12 +6,13 @@ import { calculateEntropy, classifyEntropy } from '../../../shared/entropy'
 interface HexEditorProps {
   driveIndex?: number | null
   sectorSize?: number
+  scanBusy?: boolean
 }
 
 // Static cache to preserve sector across unmounts
 let globalSectorCache = 0;
 
-function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.ReactElement {
+function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): React.ReactElement {
   const [sector, setSector] = useState(globalSectorCache)
   const [data, setData] = useState<number[]>([])
   const [readFailed, setReadFailed] = useState(false)
@@ -25,6 +26,12 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
 
   const fetchSector = async (secIndex: number) => {
     if (driveIndex === undefined || driveIndex === null) return
+    if (scanBusy) {
+      setReadFailed(true)
+      setReadError('Tarama sürüyor. Hex okuma tarama bitince.')
+      setData([])
+      return
+    }
     setLoading(true)
     try {
       const offset = secIndex * sectorSize
@@ -53,7 +60,7 @@ function HexEditor({ driveIndex, sectorSize = 512 }: HexEditorProps): React.Reac
     if (driveIndex !== undefined && driveIndex !== null) {
       fetchSector(sector)
     }
-  }, [driveIndex, sector])
+  }, [driveIndex, sector, scanBusy])
 
   const currentEntropy = calculateEntropy(data);
   const entropyRatio = (currentEntropy / 8) * 100;

@@ -15,7 +15,7 @@ import TimelineView from './components/TimelineView/TimelineView'
 import CaseView from './components/CaseView/CaseView'
 import ScanRequiredPanel from './components/ScanRequiredPanel'
 import InlineAlert from './components/InlineAlert'
-import { hasValidScanId, isScanDependentPage } from '../shared/scan-required'
+import { hasValidScanId, isLiveScanStatus, isScanDependentPage, isDiskBusyPage } from '../shared/scan-required'
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline' | 'case'
 
@@ -26,14 +26,16 @@ function App(): React.ReactElement {
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
   
   // Global Scan State (Persists across tab changes)
-  const [filesFound, setFilesFound] = useState<any[]>([])
-  const [scanProgress, setScanProgress] = useState({ current: 0, total: 100, badSectors: [] as number[] })
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 100, badSectors: [] as number[], phase: 'metadata' })
   const [scanStatus, setScanStatus] = useState('Bekleniyor...')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
   const [dbError, setDbError] = useState<string | null>(null)
   
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const activeScanIdRef = useRef(activeScanId)
+  activeScanIdRef.current = activeScanId
+  const scanBusy = isLiveScanStatus(scanStatus)
 
   useEffect(() => {
     window.api?.getDbStatus?.()
@@ -53,17 +55,22 @@ function App(): React.ReactElement {
     
     // Setup Global IPC Listeners ONLY ONCE
     let cleanupProgress: (() => void) | undefined
-    let cleanupFileFound: (() => void) | undefined
     let cleanupComplete: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
-      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number, badSectors?: number[] }) => {
-        setScanProgress({ current: data.current, total: data.total, badSectors: data.badSectors ?? [] })
+      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number, badSectors?: number[], phase?: string }) => {
+        setScanProgress({
+          current: data.current,
+          total: data.total,
+          badSectors: data.badSectors ?? [],
+          phase: data.phase ?? 'metadata',
+        })
       })
     }
 
     if (window.api && window.api.onScanComplete) {
       cleanupComplete = window.api.onScanComplete(({ scanId, status }) => {
+        if (scanId > 0 && activeScanIdRef.current > 0 && scanId !== activeScanIdRef.current) return
         if (scanId > 0) setActiveScanId(scanId)
         if (status === 1) setScanStatus('Tarama Tamamlandı')
         else if (status === 2) setScanStatus('Tarama İptal Edildi')
@@ -74,39 +81,11 @@ function App(): React.ReactElement {
       })
     }
 
-    if (window.api && window.api.onScanFileFound) {
-      // Live file-found stream from the scan engine. We de-duplicate by file id
-      // (the engine emits a record per discovered file) and cap the in-memory
-      // buffer to avoid unbounded growth during huge scans; ScanView/ResultsView
-      // continue to paginate authoritative data from the SQLite store, this list
-      // is for instant UI feedback during scanning.
-      cleanupFileFound = window.api.onScanFileFound((data) => {
-        setFilesFound(prev => {
-          if (prev.length >= 5000) {
-            if (data.source === 'hfs_limit' && !prev.some(f => f.source === 'hfs_limit')) {
-              return [...prev.slice(0, 4999), data]
-            }
-            return prev
-          }
-          if (typeof data.id === 'number' && data.id >= 0) {
-            const idx = prev.findIndex(f => f.id === data.id)
-            if (idx >= 0) {
-              const next = [...prev]
-              next[idx] = { ...prev[idx], ...data }
-              return next
-            }
-          }
-          return [...prev, data]
-        })
-      })
-    }
-
     return () => {
       if (cleanupProgress) cleanupProgress()
-      if (cleanupFileFound) cleanupFileFound()
       if (cleanupComplete) cleanupComplete()
     }
-  }, []);
+  }, [])
 
   const failScan = (message: string) => {
     setScanStatus(message)
@@ -133,8 +112,7 @@ function App(): React.ReactElement {
     setScanConfig({ driveIndex, scanType })
 
     if (!isResume) {
-      setFilesFound([])
-      setScanProgress({ current: 0, total: 100, badSectors: [] })
+      setScanProgress({ current: 0, total: 100, badSectors: [], phase: 'metadata' })
       setScanElapsed(0)
     }
     setScanStatus(isResume ? 'Tarama Devam Ediyor...' : 'Tarama Sürüyor...')
@@ -164,8 +142,7 @@ function App(): React.ReactElement {
     }
     setSelectedDrive(-1)
     setScanConfig({ driveIndex: -1, scanType })
-    setFilesFound([])
-    setScanProgress({ current: 0, total: 100, badSectors: [] })
+    setScanProgress({ current: 0, total: 100, badSectors: [], phase: 'metadata' })
     setScanStatus('RAID Taraması Sürüyor...')
     setScanElapsed(0)
     setActivePage('scan')
@@ -198,11 +175,13 @@ function App(): React.ReactElement {
       if (data.sectorSize) setSelectedDriveSectorSize(data.sectorSize)
     }
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
+    if (isDiskBusyPage(page) && scanBusy) return
     setActivePage(page)
   }
 
   const handleNavigate = (page: string) => {
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
+    if (isDiskBusyPage(page) && scanBusy) return
     setActivePage(page as Page)
   }
 
@@ -213,13 +192,11 @@ function App(): React.ReactElement {
 
     switch (activePage) {
       case 'dashboard': 
-        return <Dashboard onStartScan={handleStartScan} onAction={handleAction} />
+        return <Dashboard onStartScan={handleStartScan} onAction={handleAction} scanBusy={scanBusy} />
       case 'scan':
         return <ScanView 
                  driveIndex={scanConfig.driveIndex} 
                  scanType={scanConfig.scanType} 
-                 filesFound={filesFound}
-                 setFilesFound={setFilesFound}
                  progress={scanProgress}
                  status={scanStatus}
                  elapsed={scanElapsed}
@@ -229,7 +206,7 @@ function App(): React.ReactElement {
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
-        return <ResultsView filesFound={filesFound} driveIndex={scanConfig.driveIndex} scanId={activeScanId} />
+        return <ResultsView filesFound={[]} driveIndex={scanConfig.driveIndex} scanId={activeScanId} />
       case 'search':
         return <KeywordSearch scanId={activeScanId} />
       case 'timeline':
@@ -237,7 +214,7 @@ function App(): React.ReactElement {
       case 'report':
         return <ReportGenerator scanId={activeScanId} scanElapsed={scanElapsed} />
       case 'hex':
-        return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} />
+        return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} scanBusy={scanBusy} />
       case 'smart':
         return <SmartView driveIndex={selectedDrive} />
       case 'imager':
@@ -249,19 +226,24 @@ function App(): React.ReactElement {
       case 'case':
         return <CaseView />
       default: 
-        return <Dashboard onStartScan={handleStartScan} onAction={handleAction} />
+        return <Dashboard onStartScan={handleStartScan} onAction={handleAction} scanBusy={scanBusy} />
     }
   }
 
   return (
     <div className="app-layout">
-      <Sidebar activePage={activePage} activeScanId={activeScanId} onNavigate={handleNavigate} />
+      <Sidebar activePage={activePage} activeScanId={activeScanId} scanBusy={scanBusy} onNavigate={handleNavigate} />
       <div className="app-main">
         <Header title={activePage} />
         <main className="app-content">
           {dbError && (
             <InlineAlert variant="error" title="Veritabanı kullanılamıyor">
               Tarama, kurtarma ve rapor SQLite&apos;a bağlıdır. Hata: {dbError}. Uygulamayı yeniden başlatın.
+            </InlineAlert>
+          )}
+          {scanBusy && (
+            <InlineAlert variant="warning" title="Tarama sürüyor">
+              Disk okuma (hex, bölüm tablosu) tarama bitene kadar kapalı. Scan ekranında kalın.
             </InlineAlert>
           )}
           {renderPage()}

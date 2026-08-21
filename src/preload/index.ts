@@ -42,8 +42,8 @@ contextBridge.exposeInMainWorld('api', {
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
   readHexData: (driveIndex: number, offset: number, size: number) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size),
 
-  getFileCount: (scanId: number) => ipcRenderer.invoke('get-file-count', scanId),
-  getFilesPage: (scanId: number, offset: number, limit: number) => ipcRenderer.invoke('get-files-page', scanId, offset, limit),
+  getFileCount: (scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-file-count', scanId, filter),
+  getFilesPage: (scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-files-page', scanId, offset, limit, filter),
   searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) =>
     ipcRenderer.invoke('search-files', scanId, query, offset, limit, useRegex, category),
   searchFileContent: (scanId: number, query: string, offset: number, limit: number) =>

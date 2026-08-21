@@ -3,13 +3,12 @@ import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
 import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
 import { scanProfileLabel } from '../../../shared/scan-profiles'
+import { etaFromMonotonicWindow, type EtaSample } from '../../../shared/scan-eta'
 
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
-  filesFound: any[]
-  setFilesFound: React.Dispatch<React.SetStateAction<any[]>>
-  progress: { current: number, total: number }
+  progress: { current: number; total: number; phase?: string }
   status: string
   elapsed: number
   activeScanId: number
@@ -18,107 +17,75 @@ interface ScanViewProps {
   onViewResults: () => void
 }
 
-function ScanView({ 
-  driveIndex, scanType, 
-  filesFound, setFilesFound,
+function ScanView({
+  driveIndex, scanType,
   progress, status,
   elapsed, activeScanId,
-  onStop, onCancel, onViewResults 
+  onStop, onCancel, onViewResults
 }: ScanViewProps): React.ReactElement {
-  
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const pageRef = useRef(0)
   const [page, setPage] = useState(0)
   const [totalFiles, setTotalFiles] = useState(0)
+  const [deletedCount, setDeletedCount] = useState(0)
+  const [filesFound, setFilesFound] = useState<any[]>([])
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const [hfsTruncated, setHfsTruncated] = useState(false)
   const limit = 50
 
-  // Sliding Window ETA
-  const speedHistoryRef = useRef<{ timestamp: number; sector: number }[]>([])
-  const [currentSpeed, setCurrentSpeed] = useState<number>(0) // Sectors per second
-  const [etaSeconds, setEtaSeconds] = useState<number>(-1)
+  const speedHistoryRef = useRef<EtaSample[]>([])
+  const emaRef = useRef(0)
+  const [currentSpeed, setCurrentSpeed] = useState(0)
+  const [etaSeconds, setEtaSeconds] = useState(-1)
 
-  // Keep pageRef in sync
   useEffect(() => { pageRef.current = page }, [page])
 
-  // ETA Calculation Effect
   useEffect(() => {
     if (status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi') {
       setEtaSeconds(-1)
       setCurrentSpeed(0)
+      emaRef.current = 0
+      speedHistoryRef.current = []
       return
     }
+    const r = etaFromMonotonicWindow(
+      speedHistoryRef.current,
+      progress.current,
+      progress.total,
+      Date.now(),
+      5000,
+      emaRef.current,
+    )
+    speedHistoryRef.current = r.history
+    emaRef.current = r.speed
+    setCurrentSpeed(r.speed)
+    setEtaSeconds(r.etaSeconds)
+  }, [progress.current, progress.total, status])
 
-    const now = Date.now()
-    const history = speedHistoryRef.current
-    
-    // Add current progress
-    history.push({ timestamp: now, sector: progress.current })
-
-    // Remove entries older than 5 seconds
-    while (history.length > 0 && now - history[0].timestamp > 5000) {
-      history.shift()
-    }
-
-    if (history.length > 1) {
-      const first = history[0]
-      const last = history[history.length - 1]
-      const timeDiffSeconds = (last.timestamp - first.timestamp) / 1000
-      
-      if (timeDiffSeconds > 0) {
-        const sectorDiff = last.sector - first.sector
-        const speed = sectorDiff / timeDiffSeconds
-        setCurrentSpeed(speed)
-        
-        if (speed > 0 && progress.total > progress.current) {
-          const remainingSectors = progress.total - progress.current
-          setEtaSeconds(remainingSectors / speed)
-        } else {
-          setEtaSeconds(-1)
-        }
-      }
-    }
-  }, [progress.current, status])
-
-  // DB polling for paginated results
   useEffect(() => {
     if (driveIndex === null || activeScanId <= 0) return
 
     pollRef.current = setInterval(async () => {
-      if (window.api && window.api.getFileCount && window.api.getFilesPage) {
-        try {
-          const count = await window.api.getFileCount(activeScanId)
-          setTotalFiles(count)
-          
-          const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit)
-          if (pageData) {
-            setFilesFound(prev => {
-              const byId = new Map<number, any>()
-              let limitHit: any = null
-              for (const f of prev) {
-                if (typeof f.id === 'number' && f.id >= 0) byId.set(f.id, f)
-                else if (f.source === 'hfs_limit') limitHit = f
-              }
-              for (const f of pageData) {
-                byId.set(f.id, f)
-                if (f.source === 'hfs_limit') limitHit = null
-              }
-              const next = Array.from(byId.values()).sort((a, b) => a.id - b.id)
-              if (limitHit && !next.some(f => f.source === 'hfs_limit')) next.push(limitHit)
-              return next
-            })
-          }
-        } catch (e) {
-          console.error("Pagination error", e)
+      if (!window.api?.getFileCount || !window.api?.getFilesPage) return
+      try {
+        const count = await window.api.getFileCount(activeScanId)
+        setTotalFiles(count)
+        if (window.api.getScanSummary) {
+          const sum = await window.api.getScanSummary(activeScanId)
+          setDeletedCount(sum.deletedFiles ?? 0)
         }
+        const pageData = await window.api.getFilesPage(activeScanId, pageRef.current * limit, limit)
+        if (pageData) setFilesFound(pageData)
+      } catch (e) {
+        console.error('Pagination error', e)
       }
     }, 1500)
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [driveIndex, activeScanId, setFilesFound, page])
+  }, [driveIndex, activeScanId, page])
 
   useEffect(() => {
     if (filesFound.some((f) => f.source === 'hfs_limit')) {
@@ -177,8 +144,11 @@ function ScanView({
         </div>
         <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
           <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bulunan</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString()}</span>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kayıt</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString('tr-TR')}</span>
+            <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+              silinmiş {deletedCount.toLocaleString('tr-TR')}
+            </span>
           </div>
           <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Geçen Süre</span>
@@ -199,19 +169,18 @@ function ScanView({
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        VSS: volume serial + boyut ile bağlanır; kurtarma shadow copy aygıtından okur. APFS: nx_fs_oid + ilk 256 blok + omap yaprak paddr (katalog adı keşif, extent kurtarılabilir). BitLocker: FVE etiket; FVEK veya parola ile AES-XTS çözülür; TPM/startup-key yok. Derin imza: CPU Aho-Corasick, GPU PFAC yok. E01 çok segment. PhysicalDrive imhası Yok Edici’de.
+        {scanType === 'deep' || scanType === 'full_carve'
+          ? 'Önce dosya sistemi metadata ($MFT vb.), sonra boş alan oyması. Oymada sayı yavaş artar; metadata bitince kayıt sayısı zaten dolu olabilir.'
+          : 'Hızlı tarama yalnız metadata okur (silinmiş MFT/FAT kayıtları dahil). Boş alan oyması için Derin tarama kullanın.'}
       </div>
-      {filesFound.length >= 5000 && (
-        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          Canlı liste 5000 kayıt tavanında. Tam envanter SQLite sayfasındadır.
-        </div>
-      )}
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
         <DiskMapVisualizer
           totalSectors={progress.total}
           currentSector={progress.current}
-          badSectors={(progress as any).badSectors ?? []}
+          phase={progress.phase}
+          filesFound={totalFiles}
+          deletedCount={deletedCount}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
           <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
@@ -238,7 +207,11 @@ function ScanView({
         <div style={{ padding: 'var(--space-md)', overflowY: 'auto', flex: 1, display: 'flex', gap: 'var(--space-md)' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             {filesFound.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>Henüz dosya bulunamadı...</div>
+              <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>
+                {totalFiles > 0
+                  ? `Kayıt: ${totalFiles.toLocaleString('tr-TR')} (silinmiş: ${deletedCount.toLocaleString('tr-TR')})`
+                  : 'Henüz dosya bulunamadı...'}
+              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {filesFound.map((f, i) => {

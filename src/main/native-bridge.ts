@@ -37,8 +37,8 @@ interface BytebackEngine {
   resolveVolume(letter: string): ResolvedVolume | null
   listVolumeLetters(): string[]
   initDatabase(path: string): boolean
-  getFileCount(scanId: number): number
-  getFilesPage(scanId: number, offset: number, limit: number): FileRecord[]
+  getFileCount(scanId: number, filter?: import('../shared/ipc-contract').FileListFilter): number
+  getFilesPage(scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter): FileRecord[]
   searchFiles(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string): FileRecord[]
   searchFileContent(scanId: number, query: string, offset: number, limit: number): FileRecord[]
   startContentSearch(scanId: number, query: string, callback: (data: any) => void): boolean
