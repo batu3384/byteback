@@ -260,8 +260,13 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
         for (const auto& r : fr.runs) end = std::max(end, r.startSector + r.sectorCount);
         fr.endSector = end;
     }
-    fr.status = 1;
-    fr.confidence = 85;
+    if (fr.runs.empty() && dataFork.logicalSize > 0) {
+        fr.status = 0;
+        fr.confidence = 30;
+    } else {
+        fr.status = 1;
+        fr.confidence = 85;
+    }
     fr.category = "File";
     fr.source = "hfs_catalog";
     fr.createdAt = 0;

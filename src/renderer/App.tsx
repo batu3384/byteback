@@ -279,7 +279,7 @@ function App(): React.ReactElement {
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
-        return <ResultsView filesFound={[]} driveIndex={scanConfig.driveIndex} scanId={activeScanId} />
+        return <ResultsView filesFound={[]} driveIndex={scanConfig.driveIndex} scanId={activeScanId} scanBusy={scanBusy} />
       case 'search':
         return <KeywordSearch scanId={activeScanId} />
       case 'timeline':

@@ -118,6 +118,49 @@ std::vector<uint8_t> buildExFatWithGappedDeletedSet() {
     return img;
 }
 
+std::vector<uint8_t> buildExFatPartialDeletedChain() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t fatOff = 24;
+    constexpr uint32_t heapOff = 25;
+    constexpr uint32_t totalSectors = 64;
+    std::vector<uint8_t> img(totalSectors * ss, 0);
+
+    std::memcpy(img.data() + 3, "EXFAT   ", 8);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+    img[108] = 9;
+    img[109] = 0;
+    img[110] = 1;
+    writeLe32(img, 80, fatOff);
+    writeLe32(img, 84, 1);
+    writeLe32(img, 88, heapOff);
+    writeLe32(img, 92, 8);
+    writeLe32(img, 96, 2);
+
+    writeLe32(img, fatOff * ss + 8, 0xFFFFFFFF);
+    writeLe32(img, fatOff * ss + 12, 0xFFFFFFFF);
+    writeLe32(img, fatOff * ss + 3 * 4, 0xFFFFFFFF); // cluster 3 EOC — single cluster chain
+
+    const uint16_t chk = 0xCAFE;
+    size_t de = heapOff * ss;
+    img[de] = 0x05; // deleted file set
+    img[de + 1] = 2;
+    writeLe16(img, de + 2, chk);
+
+    de += 32;
+    img[de] = 0x45; // deleted stream (no in-use bit)
+    writeLe16(img, de + 2, chk);
+    writeLe32(img, de + 20, 3);
+    writeLe64(img, de + 32, 50000); // logical size >> one cluster
+
+    de += 32;
+    img[de] = 0xC1;
+    writeLe16(img, de + 2, chk);
+    static const uint8_t name[] = {'B',0,'I',0,'G',0,'.',0,'D',0,'A',0,'T',0};
+    std::memcpy(img.data() + de + 4, name, sizeof(name));
+    return img;
+}
+
 } // namespace
 
 TEST(FatParser, ExFatToleratesGappedEntrySet) {
@@ -132,4 +175,20 @@ TEST(FatParser, ExFatToleratesGappedEntrySet) {
         if (fr.name == "LOST.DAT") found = true;
     }, &running));
     EXPECT_TRUE(found);
+}
+
+TEST(FatParser, ExFatPartialDeletedChainCapsConfidence) {
+    auto img = buildExFatPartialDeletedChain();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord hit{};
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "BIG.DAT") hit = fr;
+    }, &running));
+    EXPECT_EQ(hit.status, 0);
+    EXPECT_LE(hit.confidence, 35);
+    EXPECT_GT(hit.sizeBytes, hit.runs.size() ? hit.runs[0].sectorCount * 512 : 0u);
 }

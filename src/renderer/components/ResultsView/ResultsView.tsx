@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye } from 'lucide-react'
-import type { FileRecord, FilePreviewResult } from '../../../shared/ipc-contract'
+import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
-import { isDestOnScannedDrive } from '../../../shared/recover-dest-guard'
+import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
 import {
   qualityHint,
@@ -19,15 +19,18 @@ import {
   type TreeNode,
 } from './results-view-utils'
 
+const INACTIVE_RAID: RaidState = { active: false, capacity: 0, numDisks: 0, level: -1, memberDriveIndices: [] }
+
 interface ResultsViewProps {
   filesFound: any[]
   driveIndex: number | null
   scanId?: number
+  scanBusy?: boolean
 }
 
 const PAGE_SIZE = 500
 
-function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): React.ReactElement {
+function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewProps): React.ReactElement {
   const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated' | 'carved'>('deleted')
   const [typeFilter, setTypeFilter] = useState('all')
   const [nameInput, setNameInput] = useState('')
@@ -57,7 +60,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       setPreview({ success: false, error: 'Önizleme için tarama kimliği gerekli.' })
       return
     }
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
     if (effectiveDrive < 0 && !raidState.active) {
       setPreview({ success: false, error: 'Önizleme için sürücü veya RAID gerekli.' })
@@ -173,12 +176,16 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       })).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
 
   const handleRecover = async () => {
+    if (scanBusy) {
+      setRecoverReport('Tarama sürerken kurtarma yapılamaz. Tarama bitince tekrar dene.')
+      return
+    }
     if (effectiveScanId <= 0) {
       setRecoverReport('Kurtarma yalnız tarama veritabanındaki kayıtlardan yapılır. Tarama bitsin, sonra sonuç listesinden seçin.')
       return
     }
     if (selectedFiles.size === 0) return
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : { active: false }
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
     if (effectiveDrive < 0 && !raidState.active) {
       setRecoverReport('Kurtarma için bir sürücü veya aktif RAID dizisi gerekli.')
@@ -203,6 +210,22 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     ) {
       const proceed = window.confirm(
         'Hedef klasör taradığın fiziksel sürücüde. Kurtarma silinen verinin üzerine yazabilir.\n\nBaşka bir disk seçmen önerilir. Yine de devam edilsin mi?',
+      )
+      if (!proceed) {
+        setIsRecovering(false)
+        return
+      }
+    } else if (
+      raidState.active &&
+      window.api.resolveVolume &&
+      (await isDestOnRaidMemberDrive(
+        destDir,
+        raidState.memberDriveIndices ?? [],
+        (letter) => window.api.resolveVolume(letter),
+      ))
+    ) {
+      const proceed = window.confirm(
+        'Hedef klasör RAID dizisinin üye disklerinden birinde. Kurtarma silinen verinin üzerine yazabilir.\n\nBaşka bir disk seçmen önerilir. Yine de devam edilsin mi?',
       )
       if (!proceed) {
         setIsRecovering(false)
@@ -246,13 +269,26 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       else validatedBad++
     }
 
-    const noteResult = (res: { success?: boolean; zeroFilled?: boolean; error?: string; validationScore?: number }, id: number) => {
+    const noteResult = async (res: { success?: boolean; zeroFilled?: boolean; error?: string; validationScore?: number; validationError?: string; md5Hash?: string; destPath?: string }, id: number) => {
       if (res.success) successCount++
       else {
         failedCount++
         if (res.error) errors.push(`#${id}: ${res.error}`)
       }
       if (res.zeroFilled) zeroFilledCount++
+      if (res.validationError) errors.push(`#${id} doğrulama: ${res.validationError}`)
+      if (res.md5Hash) {
+        let nsrlLine = `#${id} MD5: ${res.md5Hash}`
+        if (window.api.lookupNsrl) {
+          try {
+            const known = await window.api.lookupNsrl(res.md5Hash)
+            if (known) nsrlLine += ' (NSRL: bilinen hash)'
+          } catch {
+            /* NSRL lookup optional */
+          }
+        }
+        errors.push(nsrlLine)
+      }
       noteValidation(res)
     }
 
@@ -264,13 +300,11 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           destDir,
           effectiveScanId,
         )
-        successCount = res.succeeded
-        failedCount = res.failed
-        zeroFilledCount = (res.results ?? []).filter((r) => r.zeroFilled).length
         if (res.error) errors.push(diskBusyMessage(res.error) ?? res.error)
-        for (const r of res.results ?? []) {
-          if (!r.success && r.error) errors.push(diskBusyMessage(r.error) ?? r.error)
-          noteValidation(r)
+        for (let i = 0; i < (res.results ?? []).length; ++i) {
+          const r = res.results![i]!
+          const fid = fileIds[i] ?? 0
+          await noteResult(r, fid)
         }
       } catch (e) {
         failedCount = fileIds.length
@@ -286,7 +320,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             destDir,
             effectiveScanId,
           )
-          noteResult(res, fileId)
+          await noteResult(res, fileId)
         } catch {
           failedCount++
           errors.push(`#${fileId}: istisna`)
@@ -491,7 +525,8 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
             className="btn-primary" 
             style={{ display: 'flex', gap: '8px', opacity: selectedFiles.size === 0 ? 0.5 : 1, cursor: selectedFiles.size === 0 ? 'not-allowed' : 'pointer' }}
             onClick={handleRecover}
-            disabled={selectedFiles.size === 0 || isRecovering}
+            disabled={selectedFiles.size === 0 || isRecovering || !!scanBusy}
+            title={scanBusy ? 'Tarama bitene kadar kurtarma kapalı' : undefined}
           >
             <ShieldCheck size={16} /> 
             {isRecovering ? 'Kurtarılıyor...' : `Seçilenleri Kurtar (${selectedFiles.size})`}

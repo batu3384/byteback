@@ -136,6 +136,7 @@ export interface RaidState {
   capacity: number
   numDisks: number
   level: number
+  memberDriveIndices?: number[]
 }
 
 export interface BatchRecoverResult {

@@ -342,3 +342,18 @@ TEST(ScanCoordinator, QuickScanMetadataProgressHasMidTicks) {
     EXPECT_TRUE(midPositive) << "metadata current stayed at 0 until complete";
     EXPECT_GE(distinct, 2u);
 }
+
+TEST(ScanCoordinator, CarveUnallocatedOnlySkipsWhenNoBitmap) {
+    std::vector<uint8_t> disk(512 * 32, 0);
+    std::memcpy(disk.data() + 1024, "H+  ", 4);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    size_t carved = 0;
+    std::atomic<bool> running{true};
+    runCarveScan(reader, [&](const FileRecord&) { ++carved; },
+                 [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+
+    EXPECT_EQ(carved, 0u);
+    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve_skipped");
+}

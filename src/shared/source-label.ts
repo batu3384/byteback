@@ -56,6 +56,7 @@ export function sourceDisplayLabel(source?: string): string {
   if (source === 'bitlocker_detect') return 'BitLocker (anahtar yok, şifre kırma yok)'
   if (source === 'bitlocker_fve') return 'BitLocker FVE (kayıt decrypt değil)'
   if (source === 'ntfs_mft_logfile') return 'NTFS MFT (LogFile doğrulandı)'
+  if (source === 'ntfs_mft_usn') return 'NTFS MFT (USN silme doğrulandı)'
   if (source === 'ntfs_recycle') return 'Geri Dönüşüm Kutusu ($R)'
   if (source === 'ntfs_recycle_meta') return 'Geri Dönüşüm Kutusu ($I, yalnızca ad)'
   if (source === 'ntfs_i30') return 'NTFS $I30 slack (yalnızca ad, kurtarılamaz)'

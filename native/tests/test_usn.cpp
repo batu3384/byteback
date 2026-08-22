@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 using byteback::ntfs::parseUsnRecord;
@@ -69,7 +70,26 @@ std::vector<uint8_t> buildValidRecord() {
     }
     return rec;
 }
-} // namespace
+
+TEST(Usn, HarvestDeleteRefFromJournalChunk) {
+    auto rec = buildValidRecord();
+    rec[40] = USN_REASON_FILE_DELETE & 0xFF;
+    rec[41] = (USN_REASON_FILE_DELETE >> 8) & 0xFF;
+    std::unordered_set<uint64_t> refs;
+    byteback::ntfs::harvestUsnDeletedMftRefs(rec.data(), rec.size(), refs);
+    EXPECT_TRUE(refs.count(1234u));
+}
+
+TEST(Usn, ApplyMftDeleteBoostSetsSource) {
+    byteback::FileRecord fr;
+    fr.status = 0;
+    fr.source = "ntfs_mft";
+    fr.confidence = 40;
+    const std::unordered_set<uint64_t> refs = {7};
+    byteback::ntfs::applyUsnMftDeleteBoost(fr, 7, refs);
+    EXPECT_EQ(fr.source, "ntfs_mft_usn");
+    EXPECT_GE(fr.confidence, 55);
+}
 
 TEST(Usn, ParsesValidV2Record) {
     auto rec = buildValidRecord();
@@ -121,3 +141,5 @@ TEST(Usn, NullInputRejected) {
     UsnRecord out;
     EXPECT_FALSE(parseUsnRecord(nullptr, 100, out));
 }
+
+} // namespace

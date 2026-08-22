@@ -92,3 +92,25 @@ TEST(DedupIndex, LoadFromRecordsHydratesResumeDedup) {
     EXPECT_TRUE(idx.markDuplicate(carve));
     EXPECT_EQ(carve.source, "carver_duplicate");
 }
+
+TEST(DedupIndex, MarksOverlappingCarveAgainstPriorCarve) {
+    DedupIndex idx;
+    FileRecord first;
+    first.source = "carver";
+    first.startSector = 300;
+    first.endSector = 310;
+    first.sizeBytes = 5120;
+    first.confidence = 80;
+    first.name = "carved_a.jpg";
+    EXPECT_FALSE(idx.markDuplicate(first));
+
+    FileRecord second;
+    second.source = "carver";
+    second.startSector = 305;
+    second.endSector = 315;
+    second.sizeBytes = 5120;
+    second.confidence = 75;
+    second.name = "carved_b.jpg";
+    EXPECT_TRUE(idx.markDuplicate(second));
+    EXPECT_EQ(second.source, "carver_duplicate");
+}

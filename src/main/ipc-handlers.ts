@@ -589,6 +589,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number) => {
     try {
+      assertDbReady()
+      if (!destDir || !destDir.trim()) {
+        return { success: false, error: 'Hedef klasör seçilmedi' }
+      }
       const parsed = parseRecoverIds(scanId, fileId)
       if (!parsed.ok) return { success: false, error: parsed.error }
       const engine = getEngine()
@@ -602,6 +606,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number) => {
     try {
+      assertDbReady()
+      if (!destDir || !destDir.trim()) {
+        return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: 'Hedef klasör seçilmedi' }
+      }
       const parsed = parseRecoverIdList(scanId, fileIds)
       if (!parsed.ok) return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: parsed.error }
       const engine = getEngine()

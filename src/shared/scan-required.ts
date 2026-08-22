@@ -46,7 +46,7 @@ export function isLiveScanStatus(status: string): boolean {
 export function diskBusyMessage(raw?: string): string | undefined {
   if (!raw) return undefined
   if (raw.includes('Another disk operation is already running')) {
-    return 'Hex, imaj, imha ve diskten önizleme tarama bitene kadar kapalı. Sonuç listesine geçebilirsin.'
+    return 'Hex, imaj, imha, önizleme ve kurtarma tarama bitene kadar kapalı. Sonuç listesine geçebilirsin.'
   }
   return raw
 }

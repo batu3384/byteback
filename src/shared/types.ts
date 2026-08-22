@@ -104,7 +104,7 @@ declare global {
       setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
-      getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }>
+      getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[]; memberDriveIndices?: number[] }>
 
       recoverFile: (
         driveIndex: number,

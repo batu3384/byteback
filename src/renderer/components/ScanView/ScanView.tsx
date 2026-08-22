@@ -260,7 +260,9 @@ function ScanView({
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        {scanType === 'carve_only'
+        {progress.phase === 'carve_skipped'
+          ? 'Oyma atlandı — bu dosya sistemi için boş alan haritası yok (APFS/HFS/ReFS). Tam disk carve veya carve_only profilini dene.'
+          : scanType === 'carve_only'
           ? `Adım ${step.step}/${step.of}: ${scanPhaseLabel(progress.phase)}. ${carveSignatureCount != null ? `${carveSignatureCount.toLocaleString('tr-TR')} imza.` : ''} Dosya sistemi atlandı — yalnız imza carve. Sonuçlara istediğin zaman geç.`
           : scanType === 'deep' || scanType === 'full_carve'
           ? `Adım ${step.step}/${step.of}: ${scanPhaseLabel(progress.phase)}. ${carveSignatureCount != null ? `${carveSignatureCount.toLocaleString('tr-TR')} imza.` : ''} Sonuçlara istediğin zaman geç — tarama arka planda sürer. %75 civarı metadata bitişi; sonrası oyma ve uzun sürebilir.`
