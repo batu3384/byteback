@@ -29,9 +29,13 @@ private:
     static bool isCarveSource(const std::string& source);
     static bool sectorsOverlap(uint64_t aStart, uint64_t aEnd, uint64_t bStart, uint64_t bEnd);
     static uint64_t overlapSectorCount(uint64_t aStart, uint64_t aEnd, uint64_t bStart, uint64_t bEnd);
+    void ensureCarveSorted();
+    bool overlapsExistingCarve(const FileRecord& fr);
 
     mutable bool sorted_ = true;
+    mutable bool carveSorted_ = true;
     std::vector<Entry> entries_;
+    std::vector<Entry> carveEntries_;
 };
 
 } // namespace byteback

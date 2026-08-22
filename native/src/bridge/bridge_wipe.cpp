@@ -4,6 +4,7 @@
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_unlock.h"
 #include "recovery/preview_reader.h"
+#include "forensic/audit_logger.h"
 #include <filesystem>
 
 namespace {
@@ -320,6 +321,7 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
             return fail("RAID probe read failed — member disks may be unreadable");
         }
         bdata->raid = std::move(raid);
+        bdata->raidMemberDrives = drives;
 
         uint64_t cap = bdata->raid->capacity();
         out.Set("success", Napi::Boolean::New(env, true));
@@ -385,6 +387,12 @@ public:
             result_ = recovery.recoverFile(reader, rec, destDir_);
             if (byteback::countsAsRecovered(result_) && scanId_ > 0) {
                 engine_->getMetadataStore().incrementRecovered(scanId_);
+            }
+            if (result_.success && !result_.destPath.empty()) {
+                forensic::AuditLogger::GetInstance().LogEvent(
+                    "RECOVER | scan=" + std::to_string(scanId_) + " file=" + std::to_string(fileId_) +
+                    " dest=" + result_.destPath + " bytes=" + std::to_string(result_.bytesRecovered) +
+                    (result_.md5Hash.empty() ? "" : " md5=" + result_.md5Hash));
             }
         } catch (const std::exception& e) {
             result_.success = false;
@@ -452,6 +460,7 @@ Napi::Value GetRaidState(const Napi::CallbackInfo& info) {
         out.Set("numDisks", Napi::Number::New(env, 0));
         out.Set("level", Napi::Number::New(env, -1));
         out.Set("failedDisks", Napi::Array::New(env, 0));
+        out.Set("memberDriveIndices", Napi::Array::New(env, 0));
         return out;
     }
     out.Set("active", Napi::Boolean::New(env, true));
@@ -465,6 +474,11 @@ Napi::Value GetRaidState(const Napi::CallbackInfo& info) {
     Napi::Array arr = Napi::Array::New(env, failed.size());
     for (size_t i = 0; i < failed.size(); ++i) arr[i] = Napi::Number::New(env, failed[i]);
     out.Set("failedDisks", arr);
+    Napi::Array members = Napi::Array::New(env, bdata->raidMemberDrives.size());
+    for (size_t i = 0; i < bdata->raidMemberDrives.size(); ++i) {
+        members[i] = Napi::Number::New(env, bdata->raidMemberDrives[i]);
+    }
+    out.Set("memberDriveIndices", members);
     return out;
     NAPI_CATCH
 }
@@ -511,6 +525,12 @@ public:
                     if (scanId_ > 0) engine_->getMetadataStore().incrementRecovered(scanId_);
                 } else {
                     ++summary_.failed;
+                }
+                if (one.success && !one.destPath.empty()) {
+                    forensic::AuditLogger::GetInstance().LogEvent(
+                        "RECOVER | scan=" + std::to_string(scanId_) + " file=" + std::to_string(id) +
+                        " dest=" + one.destPath + " bytes=" + std::to_string(one.bytesRecovered) +
+                        (one.md5Hash.empty() ? "" : " md5=" + one.md5Hash));
                 }
             }
         } catch (const std::exception& e) {

@@ -104,6 +104,34 @@ void writeCatalogFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uint32
     writeBe16(node + offTable + 2, recEnd);
 }
 
+void writeCatalogFileLeafNoExtents(std::vector<uint8_t>& img, uint32_t blockIndex, uint32_t fileId,
+                                   uint64_t logicalSize, uint32_t blockSize = 4096) {
+    const size_t off = blockOffset(blockIndex, blockSize);
+    if (img.size() < off + blockSize) img.resize(off + blockSize, 0);
+    uint8_t* node = img.data() + off;
+    node[0] = 0xFF;
+    writeBe16(node + 4, 1);
+    const uint16_t recStart = 14;
+    uint8_t* rec = node + recStart;
+    const uint8_t nameUtf16[] = {
+        0x00, 'g', 0x00, 'o', 0x00, 'n', 0x00, 'e', 0x00, '.', 0x00, 'd', 0x00, 'a', 0x00, 't',
+    };
+    const uint16_t nameBytes = sizeof(nameUtf16);
+    const uint16_t keyLen = static_cast<uint16_t>(4 + 2 + nameBytes);
+    writeBe16(rec, keyLen);
+    writeBe32(rec + 2, 2);
+    writeBe16(rec + 6, nameBytes);
+    std::memcpy(rec + 8, nameUtf16, nameBytes);
+    uint8_t* val = rec + 2 + keyLen;
+    writeBe16(val, 2);
+    writeBe32(val + 8, fileId);
+    writeBe64(val + 0x50, logicalSize);
+    const uint16_t recEnd = static_cast<uint16_t>(recStart + 2 + keyLen + 0xA0);
+    const size_t offTable = blockSize - 4;
+    writeBe16(node + offTable, recStart);
+    writeBe16(node + offTable + 2, recEnd);
+}
+
 } // namespace
 
 TEST(ApfsContainer, WalkFindsEmbeddedVolume) {
@@ -153,6 +181,28 @@ TEST(HfsCatalog, OverflowExtentsMergedIntoRuns) {
         if (r.startSector == (40 * bs) / 512) hasOverflow = true;
     }
     EXPECT_TRUE(hasOverflow);
+}
+
+TEST(HfsCatalog, EmptyRunsMarkedDeletedWithLowConfidence) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(64 * bs, 0);
+    writeHfsVolumeHeader(img, 4, 5, bs);
+    writeCatalogFileLeafNoExtents(img, 4, 200, 8192, bs);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord hit{};
+    std::atomic<bool> running{true};
+    scanHfsPlusCatalog(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.name == "gone.dat") hit = fr;
+    }, &running);
+
+    EXPECT_EQ(hit.name, "gone.dat");
+    EXPECT_EQ(hit.status, 0);
+    EXPECT_EQ(hit.confidence, 30);
+    EXPECT_TRUE(hit.runs.empty());
+    EXPECT_GT(hit.sizeBytes, 0u);
 }
 
 void writeCatalogTwoFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uint32_t blockSize = 4096) {

@@ -288,6 +288,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     // Data runs of $Extend\$UsnJrnl:$J captured while carving (see the ADS
     // emit below). Populated only when the journal attribute survives.
     std::vector<FileRecord::DataRun> usnJournalRuns;
+    std::vector<std::vector<uint8_t>> usnJournalInline;
 
     auto mftRecFromAbsByte = [&](uint64_t absByte) -> uint64_t {
         uint64_t acc = 0;
@@ -638,9 +639,13 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     // $UsnJrnl's journal data lives in an ADS named ":$J".
                     // Capture its runs so the post-pass can parse USN records
                     // into timeline events.
-                    if (ads.streamName == "$J" && !ads.runs.empty()) {
-                        usnJournalRuns.insert(usnJournalRuns.end(),
-                                              ads.runs.begin(), ads.runs.end());
+                    if (ads.streamName == "$J") {
+                        if (!ads.runs.empty()) {
+                            usnJournalRuns.insert(usnJournalRuns.end(),
+                                                  ads.runs.begin(), ads.runs.end());
+                        } else if (!ads.residentData.empty()) {
+                            usnJournalInline.push_back(ads.residentData);
+                        }
                     }
 
                     TempFile adsTf;
@@ -672,6 +677,32 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                          },
                          isRunning, &logHints);
 
+    std::unordered_set<uint64_t> usnDeletedRefs;
+    if (!usnJournalRuns.empty() || !usnJournalInline.empty()) {
+        const uint32_t kUsnChunk = 1u << 20;
+        std::vector<uint8_t> buf(kUsnChunk);
+        for (const auto& run : usnJournalRuns) {
+            if (isRunning && !(*isRunning)) break;
+            if (run.startSector == UINT64_MAX) continue;
+            uint64_t runBytes = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+            uint64_t pos = 0;
+            while (pos < runBytes) {
+                if (isRunning && !(*isRunning)) break;
+                uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(kUsnChunk, runBytes - pos));
+                if (!reader.readSectors(run.startSector * sectorSize + pos, take, buf.data()).success) {
+                    pos += take;
+                    continue;
+                }
+                ntfs::harvestUsnDeletedMftRefs(buf.data(), take, usnDeletedRefs);
+                pos += take;
+            }
+        }
+        for (const auto& blob : usnJournalInline) {
+            if (isRunning && !(*isRunning)) break;
+            ntfs::harvestUsnDeletedMftRefs(blob.data(), blob.size(), usnDeletedRefs);
+        }
+    }
+
     for (auto& tf : tempFiles) {
         tf.fr.path = mftIndex.rebuildPath(tf.mftRecord, tf.fr.name, tf.parentId);
         uint64_t logMft = UINT64_MAX;
@@ -684,6 +715,10 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             if (tf.fr.source == "ntfs_mft") tf.fr.source = "ntfs_mft_logfile";
             if (byRef && tf.fr.name.empty()) tf.fr.name = logName;
             if (logMft != UINT64_MAX && tf.mftRecord == UINT64_MAX) tf.mftRecord = logMft;
+        }
+        if (tf.mftRecord != UINT64_MAX && tf.fr.status == 0 &&
+            usnDeletedRefs.count(tf.mftRecord)) {
+            ntfs::applyUsnMftDeleteBoost(tf.fr, tf.mftRecord, usnDeletedRefs);
         }
     }
 

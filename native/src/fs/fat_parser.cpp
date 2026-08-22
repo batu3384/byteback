@@ -137,6 +137,20 @@ std::vector<FileRecord::DataRun> buildRunsFromChain(
     }
     return runs;
 }
+
+uint64_t fatRunBytes(const std::vector<FileRecord::DataRun>& runs, uint32_t bytesPerSector) {
+    uint64_t n = 0;
+    for (const auto& r : runs) n += r.sectorCount * bytesPerSector;
+    return n;
+}
+
+void applyFatDeletedChainHint(FileRecord& fr, uint64_t fileSize, uint32_t bytesPerSector, bool deleted) {
+    if (!deleted || fileSize == 0) return;
+    const uint64_t covered = fatRunBytes(fr.runs, bytesPerSector);
+    if (covered + bytesPerSector < fileSize) {
+        fr.confidence = std::min(fr.confidence, 35);
+    }
+}
 } // namespace
 
 FATParser::FATParser() {}
@@ -314,6 +328,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                     : runs16.front().startSector;
                 fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
                 fr.runs = std::move(runs16);
+                applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                 fr.path = "/";
                 fr.status = status;
                 fr.confidence = confidence;
@@ -415,6 +430,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                             : runs32.front().startSector;
                         fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
                         fr.runs = std::move(runs32);
+                        applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                         fr.path = "/";
                         fr.status = status;
                         fr.confidence = confidence;
@@ -516,10 +532,8 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
             fr.runs = std::move(runsex);
             fr.path = currentPath;
             fr.status = pending.inUse ? 1 : 0;
-            // Deleted sets: the FAT chain is cleared on delete, so recovery
-            // assumes the data was contiguous from the first cluster — score
-            // it accordingly.
             fr.confidence = pending.inUse ? 100 : 70;
+            applyFatDeletedChainHint(fr, pending.dataLength, bytesPerSector, !pending.inUse);
             fr.category = "Unknown";
             fr.source = "exfat";
             fr.createdAt = pending.created;

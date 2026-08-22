@@ -318,3 +318,22 @@ TEST_F(RecoveryEngineTest, RejectsUnsafeDestDir) {
     auto result = engine.recoverCarvedFile(reader, rec, dest_ + "/../evil");
     EXPECT_FALSE(result.success);
 }
+
+TEST_F(RecoveryEngineTest, MetadataPartialRecoveryFailsValidation) {
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512, "PART", 4);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "deleted.doc";
+    rec.sizeBytes = 4096;
+    rec.status = 0;
+    rec.source = "fat";
+    rec.runs = {{1, 1}};
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.validationError.empty());
+}

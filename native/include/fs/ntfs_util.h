@@ -9,7 +9,9 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
+#include "byteback_db.h"
 
 namespace byteback {
 namespace ntfs {
@@ -349,11 +351,45 @@ inline bool parseUsnRecord(const uint8_t* data, size_t available, UsnRecord& out
     return true;
 }
 
+// Scan a $J journal chunk for DELETE events; inserts lower 48 bits of MFT ref.
+inline void harvestUsnDeletedMftRefs(const uint8_t* data, size_t len,
+                                     std::unordered_set<uint64_t>& out) {
+    if (!data || len < 64) return;
+    size_t off = 0;
+    while (off + 64 <= len) {
+        UsnRecord usn;
+        if (!parseUsnRecord(data + off, len - off, usn)) {
+            off += 8;
+            continue;
+        }
+        const uint32_t recLen =
+            static_cast<uint32_t>(data[off]) |
+            (static_cast<uint32_t>(data[off + 1]) << 8) |
+            (static_cast<uint32_t>(data[off + 2]) << 16) |
+            (static_cast<uint32_t>(data[off + 3]) << 24);
+        if (recLen < 64) break;
+        if (usn.reasonFlags & USN_REASON_FILE_DELETE) {
+            out.insert(usn.fileReference & 0x0000FFFFFFFFFFFFULL);
+        }
+        off += recLen;
+    }
+}
+
+// Cross-check deleted MFT rows against harvested USN DELETE refs.
+inline void applyUsnMftDeleteBoost(FileRecord& fr, uint64_t mftRecord,
+                                   const std::unordered_set<uint64_t>& deletedRefs) {
+    if (mftRecord == UINT64_MAX || fr.status != 0) return;
+    if (!deletedRefs.count(mftRecord)) return;
+    fr.confidence = std::min(100, fr.confidence + 15);
+    if (fr.source == "ntfs_mft" || fr.source == "ntfs_mft_logfile") {
+        fr.source = "ntfs_mft_usn";
+    }
+}
+
 // Score an MFT-sourced file record for the Results UI. Allocated records
 // start at 100 (minus USA damage). Deleted records start lower and gain
 // confidence only when recoverable payload survives (data runs or resident
-// bytes). ponytail: no cross-check with USN yet — Phase 1b can boost when
-// a matching USN DELETE exists for the same MFT ref.
+// bytes). USN DELETE cross-check can boost deleted rows via applyUsnMftDeleteBoost.
 inline int scoreMftConfidence(bool inUse, bool usaOk, bool isDirectory,
                               uint64_t sizeBytes, bool hasDataRuns,
                               bool hasResidentPayload) {

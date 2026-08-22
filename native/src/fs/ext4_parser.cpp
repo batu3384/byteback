@@ -186,6 +186,72 @@ struct InodeMeta {
 } // namespace
 
 // Walk an extent tree rooted in i_block[] and append physical runs to `runs`.
+static void collectLegacyBlockRuns(DiskReader& reader, const uint32_t* i_block,
+                                   uint32_t blockSize, uint32_t sectorSize,
+                                   uint64_t volumeOffsetBytes, uint64_t fileSize,
+                                   std::vector<FileRecord::DataRun>& runs) {
+    if (!i_block || blockSize == 0) return;
+    const uint32_t ptrsPerBlock = blockSize / 4;
+    const uint64_t sectorsPerBlock = blockSize / sectorSize;
+    uint64_t bytesMapped = 0;
+
+    auto addBlock = [&](uint32_t blockNum) -> bool {
+        if (blockNum == 0) return false;
+        if (fileSize > 0 && bytesMapped >= fileSize) return false;
+        FileRecord::DataRun run;
+        run.startSector = (volumeOffsetBytes + static_cast<uint64_t>(blockNum) * blockSize) / sectorSize;
+        run.sectorCount = sectorsPerBlock;
+        runs.push_back(run);
+        bytesMapped += blockSize;
+        return true;
+    };
+
+    auto readBlockPtrs = [&](uint32_t blockNum, auto&& visitor) {
+        if (blockNum == 0 || ptrsPerBlock == 0) return;
+        std::vector<uint8_t> buf(blockSize);
+        const uint64_t off = volumeOffsetBytes + static_cast<uint64_t>(blockNum) * blockSize;
+        if (!reader.readSectors(off, blockSize, buf.data()).success) return;
+        for (uint32_t i = 0; i < ptrsPerBlock; ++i) {
+            const uint32_t ptr = buf[i * 4] | (buf[i * 4 + 1] << 8) | (buf[i * 4 + 2] << 16) |
+                                 (buf[i * 4 + 3] << 24);
+            if (ptr == 0) break;
+            if (!visitor(ptr)) break;
+        }
+    };
+
+    for (int i = 0; i < 12; ++i) {
+        if (!addBlock(i_block[i])) break;
+    }
+    if (fileSize > 0 && bytesMapped >= fileSize) return;
+
+    if (i_block[12] != 0) {
+        readBlockPtrs(i_block[12], [&](uint32_t ptr) { return addBlock(ptr); });
+    }
+    if (fileSize > 0 && bytesMapped >= fileSize) return;
+
+    if (i_block[13] != 0) {
+        readBlockPtrs(i_block[13], [&](uint32_t indirect) {
+            if (indirect == 0) return false;
+            readBlockPtrs(indirect, [&](uint32_t ptr) { return addBlock(ptr); });
+            return fileSize == 0 || bytesMapped < fileSize;
+        });
+    }
+    if (fileSize > 0 && bytesMapped >= fileSize) return;
+
+    if (i_block[14] != 0) {
+        readBlockPtrs(i_block[14], [&](uint32_t indirect1) {
+            if (indirect1 == 0) return false;
+            readBlockPtrs(indirect1, [&](uint32_t indirect2) {
+                if (indirect2 == 0) return false;
+                readBlockPtrs(indirect2, [&](uint32_t ptr) { return addBlock(ptr); });
+                return fileSize == 0 || bytesMapped < fileSize;
+            });
+            return fileSize == 0 || bytesMapped < fileSize;
+        });
+    }
+}
+
+// Walk an extent tree rooted in i_block[] and append physical runs to `runs`.
 // depth>0 nodes are read from disk recursively (bounded to prevent cycles on
 // corrupt trees). Physical runs are converted to sector units.
 static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
@@ -352,12 +418,8 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
                                       block_size, sectorSize, volumeOffsetBytes, meta.runs, 5);
                 } else if (inode->i_block[0] != 0) {
-                    // Legacy direct-block mapping: only the first direct block
-                    // is mapped (indirect blocks are not followed yet).
-                    FileRecord::DataRun run;
-                    run.startSector = (volumeOffsetBytes + static_cast<uint64_t>(inode->i_block[0]) * block_size) / sectorSize;
-                    run.sectorCount = std::min((uint64_t)block_size / sectorSize, (file_size + sectorSize - 1) / sectorSize);
-                    meta.runs.push_back(run);
+                    collectLegacyBlockRuns(reader, inode->i_block, block_size, sectorSize,
+                                           volumeOffsetBytes, file_size, meta.runs);
                 }
 
                 if (is_directory && !meta.runs.empty()) {

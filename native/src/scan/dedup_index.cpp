@@ -5,7 +5,9 @@ namespace byteback {
 
 void DedupIndex::clear() {
     entries_.clear();
+    carveEntries_.clear();
     sorted_ = true;
+    carveSorted_ = true;
 }
 
 bool DedupIndex::isMetadataSource(const std::string& source) {
@@ -49,7 +51,21 @@ void DedupIndex::observe(const FileRecord& fr) {
 }
 
 void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
-    for (const auto& fr : records) observe(fr);
+    for (const auto& fr : records) {
+        if (isCarveSource(fr.source)) {
+            Entry e;
+            e.startSector = fr.startSector;
+            e.endSector = fr.endSector > 0 ? fr.endSector : fr.startSector;
+            e.sizeBytes = fr.sizeBytes;
+            e.confidence = fr.confidence;
+            e.path = fr.path;
+            e.name = fr.name;
+            carveEntries_.push_back(std::move(e));
+            carveSorted_ = false;
+        } else {
+            observe(fr);
+        }
+    }
     ensureSorted();
 }
 
@@ -60,9 +76,42 @@ void DedupIndex::ensureSorted() {
     sorted_ = true;
 }
 
+void DedupIndex::ensureCarveSorted() {
+    if (carveSorted_) return;
+    std::sort(carveEntries_.begin(), carveEntries_.end(),
+              [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
+    carveSorted_ = true;
+}
+
+bool DedupIndex::overlapsExistingCarve(const FileRecord& fr) {
+    ensureCarveSorted();
+    uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
+    uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
+
+    auto it = std::lower_bound(
+        carveEntries_.begin(), carveEntries_.end(), fr.startSector,
+        [](const Entry& e, uint64_t sector) { return e.endSector < sector; });
+
+    for (; it != carveEntries_.end(); ++it) {
+        if (it->startSector > carveEnd) break;
+        if (!sectorsOverlap(it->startSector, it->endSector, fr.startSector, carveEnd)) continue;
+        uint64_t overlap = overlapSectorCount(it->startSector, it->endSector, fr.startSector, carveEnd);
+        uint64_t priorSpan = it->endSector >= it->startSector ? (it->endSector - it->startSector + 1) : 1;
+        const uint64_t minSpan = std::max<uint64_t>(1, std::min(carveSpan, priorSpan));
+        if (overlap * 2 >= minSpan) return true;
+    }
+    return false;
+}
+
 bool DedupIndex::markDuplicate(FileRecord& fr) {
     if (!isCarveSource(fr.source)) return false;
     ensureSorted();
+    if (overlapsExistingCarve(fr)) {
+        fr.source = "carver_duplicate";
+        fr.path = "/dup_of/carve";
+        fr.confidence = std::min(fr.confidence, 30);
+        return true;
+    }
 
     uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
     uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
@@ -86,6 +135,16 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
         fr.confidence = std::min(fr.confidence, 35);
         return true;
     }
+
+    Entry tracked;
+    tracked.startSector = fr.startSector;
+    tracked.endSector = fr.endSector > 0 ? fr.endSector : fr.startSector;
+    tracked.sizeBytes = fr.sizeBytes;
+    tracked.confidence = fr.confidence;
+    tracked.path = fr.path;
+    tracked.name = fr.name;
+    carveEntries_.push_back(std::move(tracked));
+    carveSorted_ = false;
     return false;
 }
 

@@ -73,6 +73,7 @@ struct BridgeData {
     std::shared_ptr<ImagerContext> imagerContext;
     std::shared_ptr<ContentSearchContext> contentSearchContext;
     std::shared_ptr<byteback::VirtualRaid> raid;
+    std::vector<int> raidMemberDrives;
     std::string auditLogPath;
     forensic::NsrlLookup nsrl;
     std::atomic<int> heavyOps{0};

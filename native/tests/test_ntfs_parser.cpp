@@ -1,6 +1,7 @@
 #include "byteback_fs.h"
 #include "byteback_io.h"
 #include "fixtures/volume_fixtures.h"
+#include "fs/ntfs_util.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstring>
