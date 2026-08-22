@@ -38,6 +38,9 @@ describe('scan-eta', () => {
   it('formats unknown ETA as dash', () => {
     expect(formatEtaClock(-1)).toBe('—')
     expect(scanPhaseLabel('carve')).toContain('Oyma')
+    expect(scanPhaseLabel('carve_skipped')).toContain('atlandı')
+    expect(scanPhaseLabel('metadata')).toContain('Metadata')
+    expect(scanStepIndex('carve_skipped', 'deep')).toEqual({ step: 2, of: 2 })
   })
 
   it('uses a single step for quick scan and two for deep carve', () => {
@@ -45,5 +48,7 @@ describe('scan-eta', () => {
     expect(scanStepIndex('metadata', 'deep')).toEqual({ step: 1, of: 2 })
     expect(scanStepIndex('carve', 'deep')).toEqual({ step: 2, of: 2 })
     expect(scanStepIndex('carve', 'full_carve')).toEqual({ step: 2, of: 2 })
+    expect(scanStepIndex('carve_only', 'carve_only')).toEqual({ step: 1, of: 1 })
+    expect(scanPhaseLabel('carve_only')).toContain('dosya sistemi atlandı')
   })
 })

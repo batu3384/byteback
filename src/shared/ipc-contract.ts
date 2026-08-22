@@ -82,6 +82,10 @@ export interface FilePreviewResult {
   success: boolean
   error?: string
   kind?: 'image' | 'text' | 'pdf' | 'binary' | string
+  /** Sniffed MIME from native (e.g. image/jpeg). Empty/omitted when unknown. */
+  mime?: string
+  /** Structural hint when preview cannot render (e.g. H.264 IDR without decoder). */
+  note?: string
   data?: Uint8Array | null
 }
 
@@ -105,6 +109,8 @@ export interface FileListFilter {
   category?: string
   query?: string
   sourceLike?: string
+  /** Exclude sources matching LIKE (e.g. carver% from "deleted" metadata view). */
+  sourceNotLike?: string
   includeDuplicates?: boolean
   includeDiscovery?: boolean
 }

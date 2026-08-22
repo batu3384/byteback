@@ -5,12 +5,14 @@ import type { FileRecord, FilePreviewResult } from '../../../shared/ipc-contract
 import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
+import { isDestOnScannedDrive } from '../../../shared/recover-dest-guard'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
 import {
   qualityHint,
-  getExtension,
-  getFileType,
+  resolveFileTypeChip,
   formatSize,
+  formatFsTimestamp,
+  statusDisplayLabel,
   buildTree,
   toSqlListFilter,
   type MappedFile,
@@ -194,6 +196,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       setIsRecovering(false)
       return
     }
+    if (
+      effectiveDrive >= 0 &&
+      window.api.resolveVolume &&
+      (await isDestOnScannedDrive(destDir, effectiveDrive, (letter) => window.api.resolveVolume(letter)))
+    ) {
+      const proceed = window.confirm(
+        'Hedef klasör taradığın fiziksel sürücüde. Kurtarma silinen verinin üzerine yazabilir.\n\nBaşka bir disk seçmen önerilir. Yine de devam edilsin mi?',
+      )
+      if (!proceed) {
+        setIsRecovering(false)
+        return
+      }
+    }
 
     const filesToRecover: FileRecord[] = []
     const skipped: string[] = []
@@ -281,13 +296,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
 
     setIsRecovering(false)
     const skipLine = skipped.length ? `\nAtlanan keşif kaydı: ${skipped.length}` : ''
+    const padWarn =
+      zeroFilledCount > 0
+        ? `\nUyarı: ${zeroFilledCount} dosya eksik/sıfır-pad okuma ile yazıldı — içerik eksik olabilir, önizlemeyi kontrol et.`
+        : ''
     const validationLine =
       validatedOk + validatedBad > 0
-        ? `\nDoğrulama (carve): Tam ${validatedOk}, Bozuk ${validatedBad}`
+        ? `\nDoğrulama (carve): Tam ${validatedOk}, Bozuk ${validatedBad}${
+            validatedBad > 0 ? ' — bozuk skorlu dosyalar kurtarma başarısız sayılır' : ''
+          }`
         : ''
     const errLine = errors.length ? `\nHatalar:\n${errors.slice(0, 8).join('\n')}` : ''
     setRecoverReport(
-      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${validationLine}${errLine}`,
+      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${padWarn}${validationLine}${errLine}`,
     )
   }
 
@@ -330,8 +351,8 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
         path: raw.path ?? '',
         source: raw.source ?? '',
         startSector: raw.startSector ?? '',
-        createdAt: raw.createdAt ? new Date(raw.createdAt * 1000).toISOString() : '',
-        modifiedAt: raw.modifiedAt ? new Date(raw.modifiedAt * 1000).toISOString() : '',
+        createdAt: raw.createdAt && raw.createdAt > 0 ? new Date(raw.createdAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
+        modifiedAt: raw.modifiedAt && raw.modifiedAt > 0 ? new Date(raw.modifiedAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
       }))
       const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
       const csv = [header.join(';'), ...rows.map((r) => header.map((h) => csvCell((r as any)[h])).join(';'))].join('\r\n')
@@ -362,9 +383,11 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
     rawStatus: f.status ?? 0,
     size: formatSize(f.sizeBytes || 0),
     path: typeof f.path === 'string' && f.path ? f.path : '—',
-    status: f.status === 1 ? 'Allocated / in-use' : 'Silinmiş / unallocated',
-    type: getFileType(getExtension(f.name)),
+    status: statusDisplayLabel(f.status, f.source),
+    type: resolveFileTypeChip(f),
     sourceLabel: sourceDisplayLabel(f.source),
+    dateLabel: formatFsTimestamp(f.modifiedAt || f.createdAt, f.source),
+    qualityLabel: qualityHint(f),
   }))
 
   const filteredFiles = mappedFiles
@@ -445,7 +468,7 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
           {effectiveScanId > 0 && (
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
               Silinmiş {summary.deletedFiles.toLocaleString('tr-TR')}
-              {' · '}Tahsisli {Math.max(0, summary.totalFiles - summary.deletedFiles).toLocaleString('tr-TR')}
+              {' · '}Tahsisli {Math.max(0, summary.totalFiles - summary.deletedFiles - (summary.carvedFiles ?? 0)).toLocaleString('tr-TR')}
               {' · '}Oyulmuş {(summary.carvedFiles ?? 0).toLocaleString('tr-TR')}
               {' · '}Toplam {summary.totalFiles.toLocaleString('tr-TR')}
             </p>
@@ -477,7 +500,19 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
       </div>
 
       {recoverReport && (
-        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)', whiteSpace: 'pre-wrap' }}>
+        <div
+          className="glass-panel"
+          role={/Başarısız: [1-9]|Uyarı:|Bozuk [1-9]/.test(recoverReport) ? 'alert' : 'status'}
+          style={{
+            padding: '16px 24px',
+            borderLeft: `4px solid ${
+              /Başarısız: [1-9]|Uyarı:|Bozuk [1-9]/.test(recoverReport)
+                ? 'var(--alert-red)'
+                : 'var(--accent-blue)'
+            }`,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
           {recoverReport}
         </div>
       )}
@@ -586,25 +621,33 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                 </th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Dosya Adı</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Boyut</th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Konum</th>
+                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Değiştirilme</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kaynak</th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kalite</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Durum</th>
               </tr>
             </thead>
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     {loading ? 'Yükleniyor…' : 'Bu süzgeçte dosya yok.'}
                   </td>
                 </tr>
               ) : (
                 filteredFiles.map((f) => {
-                  const raw = recordById.get(f.id) ?? sourceFiles.find((x) => x.id === f.id)
-                  const kalite = qualityHint(raw)
+                  const titleParts = [f.path !== '—' ? `Konum: ${f.path}` : null, f.qualityLabel !== '—' ? `Kalite: ${f.qualityLabel}` : null]
+                    .filter(Boolean)
+                    .join(' · ')
                   return (
-                  <tr key={f.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent' }}>
+                  <tr
+                    key={f.id}
+                    title={titleParts || undefined}
+                    onDoubleClick={() => {
+                      setSelectedFiles(new Set([f.id]))
+                      void loadPreview(f.id)
+                    }}
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
+                  >
                     <td style={{ padding: '12px' }}>
                       <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} />
                     </td>
@@ -613,17 +656,18 @@ function ResultsView({ filesFound, driveIndex, scanId }: ResultsViewProps): Reac
                       {f.name}
                     </td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.size}</td>
-                    <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.path}</td>
+                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{f.dateLabel}</td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
-                    <td style={{ padding: '12px', fontSize: '0.8rem', color: kalite === 'Zayıf' ? 'var(--alert-red)' : kalite === 'Şüpheli' ? 'var(--warning-yellow)' : 'var(--text-muted)' }}>
-                      {kalite}
-                    </td>
                     <td style={{ padding: '12px' }}>
                       <span style={{ 
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                        background: f.status.startsWith('Silinmiş') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
-                        color: f.status.startsWith('Silinmiş') ? 'var(--success-green)' : 'var(--warning-yellow)',
-                        border: `1px solid ${f.status.startsWith('Silinmiş') ? 'var(--success-green)' : 'var(--warning-yellow)'}`
+                        background: f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş')
+                          ? 'rgba(16, 185, 129, 0.1)'
+                          : 'rgba(245, 158, 11, 0.1)',
+                        color: f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş')
+                          ? 'var(--success-green)'
+                          : 'var(--warning-yellow)',
+                        border: `1px solid ${f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş') ? 'var(--success-green)' : 'var(--warning-yellow)'}`
                       }}>
                         {f.status}
                       </span>

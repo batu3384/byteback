@@ -61,9 +61,11 @@ function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px', marginBottom: 0 }}>
               Seçilen mod: <strong>{profile.label}</strong> — {profile.detail}
             </p>
-            {scanType === 'full_carve' && (
+            {(scanType === 'full_carve' || scanType === 'carve_only') && (
               <p style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem', marginTop: '8px', marginBottom: 0 }}>
-                Tam disk carve tüm sektörleri tarar; SSD üzerinde çok uzun sürebilir.
+                {scanType === 'carve_only'
+                  ? 'Yalnızca carve dosya sistemi okumaz; SSD üzerinde çok uzun sürebilir.'
+                  : 'Tam disk carve tüm sektörleri tarar; SSD üzerinde çok uzun sürebilir.'}
               </p>
             )}
           </div>

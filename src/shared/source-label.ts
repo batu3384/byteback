@@ -1,4 +1,5 @@
 const DISCOVERY_ONLY = new Set([
+  // Keep in sync with native/include/scan/discovery_sources.h (isDiscoverySourceName).
   'apfs_container',
   'apfs_volume',
   'apfs_file',
@@ -8,10 +9,15 @@ const DISCOVERY_ONLY = new Set([
   'vss_bind',
   'vss_snapshot',
   'hfs_limit',
+  'hfs_vh',
+  'hfs_catalog',
   'usn_journal',
   'ntfs_logfile',
   'ntfs_logfile_restart',
   'ntfs_recycle_meta',
+  'ntfs_i30',
+  'Folder',
+  'refs_volume',
 ])
 
 export function isDuplicateSource(source?: string): boolean {
@@ -29,8 +35,8 @@ export function isRecoverableListSource(source?: string): boolean {
 
 export function canRecoverSource(source?: string, hasRuns?: boolean): boolean {
   if (isDiscoveryOnlySource(source)) return false
+  if (isDuplicateSource(source)) return false
   if (source === 'apfs_extent') return !!hasRuns
-  if (source === 'ntfs_i30') return !!hasRuns
   if (source === 'ntfs_thumbcache') return true
   return true
 }
@@ -52,7 +58,7 @@ export function sourceDisplayLabel(source?: string): string {
   if (source === 'ntfs_mft_logfile') return 'NTFS MFT (LogFile doğrulandı)'
   if (source === 'ntfs_recycle') return 'Geri Dönüşüm Kutusu ($R)'
   if (source === 'ntfs_recycle_meta') return 'Geri Dönüşüm Kutusu ($I, yalnızca ad)'
-  if (source === 'ntfs_i30') return 'NTFS $I30 slack (düşük güven)'
+  if (source === 'ntfs_i30') return 'NTFS $I30 slack (yalnızca ad, kurtarılamaz)'
   if (source === 'ntfs_thumbcache') return 'NTFS thumbcache (gömülü JPEG)'
   if (source === 'usn_journal') return 'USN zaman çizelgesi'
   if (source === 'ntfs_logfile') return 'LogFile ipucu (kurtarılamaz)'

@@ -46,7 +46,8 @@ describe('isDiscoveryOnlySource', () => {
     expect(sourceDisplayLabel('ntfs_recycle')).toContain('Geri Dönüşüm')
     expect(isDiscoveryOnlySource('ntfs_recycle_meta')).toBe(true)
     expect(canRecoverSource('ntfs_i30', false)).toBe(false)
-    expect(canRecoverSource('ntfs_i30', true)).toBe(true)
+    expect(canRecoverSource('ntfs_i30', true)).toBe(false)
+    expect(isDiscoveryOnlySource('ntfs_i30')).toBe(true)
     expect(canRecoverSource('ntfs_thumbcache', false)).toBe(true)
     expect(sourceDisplayLabel('ntfs_thumbcache')).toContain('thumbcache')
   })
@@ -55,5 +56,20 @@ describe('isDiscoveryOnlySource', () => {
     expect(isDuplicateSource('carver_duplicate')).toBe(true)
     expect(isRecoverableListSource('carver_duplicate')).toBe(false)
     expect(isRecoverableListSource('carver')).toBe(true)
+  })
+
+  it('lists the same discovery sources native expects', () => {
+    // Mirrors native/include/scan/discovery_sources.h — fail loudly on drift.
+    const expected = [
+      'apfs_container', 'apfs_volume', 'apfs_file',
+      'bitlocker_detect', 'bitlocker_fve',
+      'vss_unbound', 'vss_bind', 'vss_snapshot',
+      'hfs_limit', 'hfs_vh', 'hfs_catalog',
+      'usn_journal', 'ntfs_logfile', 'ntfs_logfile_restart', 'ntfs_recycle_meta',
+      'ntfs_i30', 'Folder', 'refs_volume',
+    ]
+    for (const s of expected) expect(isDiscoveryOnlySource(s)).toBe(true)
+    expect(isDiscoveryOnlySource('carver_duplicate')).toBe(false) // duplicate gate separate in TS
+    expect(isDuplicateSource('carver_duplicate')).toBe(true)
   })
 })
