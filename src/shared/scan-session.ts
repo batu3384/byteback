@@ -26,6 +26,12 @@ export function scanProgressPercent(state: ScanState): number {
   return Math.min(100, Math.floor((state.scannedSectors / state.totalSectors) * 100))
 }
 
-export function scanPhaseFromState(state: ScanState): 'metadata' | 'carve' {
+export function scanPhaseFromState(state: ScanState): 'metadata' | 'carve' | 'carve_only' {
+  if (state.scanType === 'carve_only') return 'carve_only'
   return state.metadataComplete ? 'carve' : 'metadata'
+}
+
+export function scanShowsMetadataResume(state: ScanState): boolean {
+  if (state.scanType === 'quick' || state.scanType === 'carve_only') return false
+  return !state.metadataComplete
 }

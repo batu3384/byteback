@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import type { DriveInfo, PartitionInfo, ScanOptions } from '../../../shared/types'
 import type { ScanProfile } from '../../../shared/scan-profiles'
-import { SCAN_PROFILES } from '../../../shared/scan-profiles'
+import { SCAN_PROFILES, scanNeedsSsdDeepAck } from '../../../shared/scan-profiles'
 import SsdTrimModal from './SsdTrimModal'
 import InlineAlert from '../InlineAlert'
 import './DriveCard.css'
@@ -72,7 +72,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
       setAdminNotice('Sektör düzeyinde tarama başlatmak için uygulamayı Yönetici olarak çalıştırmalısınız.')
       return
     }
-    if (isSsd) {
+    if (isSsd && scanNeedsSsdDeepAck(scanType)) {
       setPendingScan(scanType)
       setShowTrimModal(true)
       return
@@ -84,7 +84,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
     setShowTrimModal(false)
     if (pendingScan) {
       const extra =
-        pendingScan === 'deep' || pendingScan === 'full_carve'
+        pendingScan && scanNeedsSsdDeepAck(pendingScan)
           ? { allowSsdDeepScan: true }
           : undefined
       launchScan(pendingScan, extra)
@@ -174,6 +174,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           <button 
             className="btn-primary" 
             type="button"
+            disabled={!isAdmin || diskBusy}
             data-testid="scan-mode-quick"
             title={SCAN_PROFILES.quick.detail}
             onClick={() => requestScan('quick')}
@@ -184,6 +185,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           <button 
             className="btn-secondary"
             type="button"
+            disabled={!isAdmin || diskBusy}
             data-testid="scan-mode-deep"
             title={SCAN_PROFILES.deep.detail}
             onClick={() => requestScan('deep')}
@@ -194,6 +196,18 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           <button 
             className="btn-secondary"
             type="button"
+            disabled={!isAdmin || diskBusy}
+            data-testid="scan-mode-carve-only"
+            title={SCAN_PROFILES.carve_only.detail}
+            onClick={() => requestScan('carve_only')}
+            style={{ padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px', borderColor: 'var(--warning-yellow)' }}
+          >
+            <Binary size={16} /> {SCAN_PROFILES.carve_only.label}
+          </button>
+          <button 
+            className="btn-secondary"
+            type="button"
+            disabled={!isAdmin || diskBusy}
             data-testid="scan-mode-full-carve"
             title={SCAN_PROFILES.full_carve.detail}
             onClick={() => requestScan('full_carve')}

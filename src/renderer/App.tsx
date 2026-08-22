@@ -114,7 +114,10 @@ function App(): React.ReactElement {
         else if (status === 4) setScanStatus('Tarama Duraklatıldı — devam edilebilir')
         else setScanStatus('Tarama Başarısız')
         if (timerRef.current) clearInterval(timerRef.current)
-        setScanProgress(prev => ({ ...prev, current: prev.total > 0 ? prev.total : prev.current }))
+        // Only completed scans fill the bar; cancel/fail/pause keep honest position.
+        if (status === 1) {
+          setScanProgress(prev => ({ ...prev, current: prev.total > 0 ? prev.total : prev.current }))
+        }
       })
     }
 

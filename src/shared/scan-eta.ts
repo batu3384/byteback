@@ -63,10 +63,15 @@ export function formatEtaClock(seconds: number): string {
 }
 
 export function scanPhaseLabel(phase?: string): string {
-  return phase === 'carve' ? 'Oyma — boş alan imza taraması' : 'Metadata — dosya tablosu'
+  if (phase === 'carve') return 'Oyma — boş alan imza taraması'
+  if (phase === 'carve_skipped') return 'Oyma atlandı — boş alan haritası yok'
+  if (phase === 'carve_only') return 'İmza carve — dosya sistemi atlandı'
+  return 'Metadata — dosya tablosu'
 }
 
 export function scanStepIndex(phase?: string, scanType?: string): { step: number; of: number } {
+  if (scanType === 'carve_only') return { step: 1, of: 1 }
   if (scanType !== 'deep' && scanType !== 'full_carve') return { step: 1, of: 1 }
-  return { step: phase === 'carve' ? 2 : 1, of: 2 }
+  if (phase === 'carve' || phase === 'carve_skipped') return { step: 2, of: 2 }
+  return { step: 1, of: 2 }
 }

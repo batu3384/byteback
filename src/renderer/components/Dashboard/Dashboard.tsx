@@ -2,12 +2,12 @@ import React, { useEffect, useState } from 'react'
 import DriveCard from './DriveCard'
 import SsdTrimModal from './SsdTrimModal'
 import type { DriveInfo, ResolvedVolume, ScanOptions, ScanState } from '../../../shared/types'
-import { SCAN_PROFILES } from '../../../shared/scan-profiles'
+import { SCAN_PROFILES, scanNeedsSsdDeepAck } from '../../../shared/scan-profiles'
 import type { ScanProfile } from '../../../shared/scan-profiles'
-import { isPausedScan, scanProgressPercent } from '../../../shared/scan-session'
+import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../../../shared/scan-session'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
-import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search } from 'lucide-react'
+import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
 
 interface DashboardProps {
   onStartScan?: (driveIndex: number, scanType: string, scanOptions?: import('../../../shared/ipc-contract').ScanOptions) => void
@@ -147,6 +147,29 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       partitionSizeInSectors: resolved.sizeSectors,
       ...extra,
     })
+  }
+
+  const requestVolumeScan = async (scanType: ScanProfile) => {
+    if (!isAdmin) {
+      setVolumeResolveStatus('Yönetici izni gerekli.')
+      return
+    }
+    if (!window.api?.resolveVolume || !onStartScan) {
+      setVolumeResolveStatus('API yok')
+      return
+    }
+    const resolved = await window.api.resolveVolume(volumeLetter) as ResolvedVolume | null
+    if (!resolved) {
+      setVolumeResolveStatus(`${volumeLetter} çözülemedi (erişim veya harf hatalı)`)
+      return
+    }
+    const needsTrim = scanNeedsSsdDeepAck(scanType)
+    if (needsTrim && driveIsSsd(resolved.driveIndex)) {
+      setPendingVolumeScan({ resolved, scanType })
+      setVolumeTrimOpen(true)
+      return
+    }
+    startVolumeScan(resolved, scanType, needsTrim ? { allowSsdDeepScan: true } : undefined)
   }
 
   return (
@@ -323,31 +346,44 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           </select>
           <button
             type="button"
+            className="btn-secondary"
+            disabled={!isAdmin}
+            data-testid="volume-scan-quick"
+            title={SCAN_PROFILES.quick.detail}
+            onClick={() => void requestVolumeScan('quick')}
+          >
+            {SCAN_PROFILES.quick.label}
+          </button>
+          <button
+            type="button"
             className="btn-primary"
             disabled={!isAdmin}
-            onClick={async () => {
-              if (!isAdmin) {
-                setVolumeResolveStatus('Yönetici izni gerekli.')
-                return
-              }
-              if (!window.api?.resolveVolume || !onStartScan) {
-                setVolumeResolveStatus('API yok')
-                return
-              }
-              const resolved = await window.api.resolveVolume(volumeLetter) as ResolvedVolume | null
-              if (!resolved) {
-                setVolumeResolveStatus(`${volumeLetter} çözülemedi (erişim veya harf hatalı)`)
-                return
-              }
-              if (driveIsSsd(resolved.driveIndex)) {
-                setPendingVolumeScan({ resolved, scanType: 'deep' })
-                setVolumeTrimOpen(true)
-                return
-              }
-              startVolumeScan(resolved, 'deep')
-            }}
+            data-testid="volume-scan-deep"
+            title={SCAN_PROFILES.deep.detail}
+            onClick={() => void requestVolumeScan('deep')}
           >
-            <Search size={16} /> {volumeLetter} derin tara
+            <Search size={16} /> {SCAN_PROFILES.deep.label}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!isAdmin}
+            data-testid="volume-scan-carve-only"
+            title={SCAN_PROFILES.carve_only.detail}
+            onClick={() => void requestVolumeScan('carve_only')}
+          >
+            {SCAN_PROFILES.carve_only.label}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!isAdmin}
+            data-testid="volume-scan-full-carve"
+            title={SCAN_PROFILES.full_carve.detail}
+            onClick={() => void requestVolumeScan('full_carve')}
+            style={{ borderColor: 'var(--warning-yellow)' }}
+          >
+            <AlertTriangle size={14} /> {SCAN_PROFILES.full_carve.label}
           </button>
         </div>
         {volumeResolveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{volumeResolveStatus}</span>}
@@ -361,7 +397,10 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Yarım Kalan Tarama</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                 Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · %{scanProgressPercent(pausedSession)} ({pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör)
-                {!pausedSession.metadataComplete && pausedSession.scanType !== 'quick' ? ' · metadata aşamasından devam edilecek' : ''}
+                {!scanShowsMetadataResume(pausedSession) ? '' : ' · metadata aşamasından devam edilecek'}
+                {pausedSession.metadataComplete && (pausedSession.carveResumeSector ?? 0) > 0
+                  ? ` · oyma @ sektör ${pausedSession.carveResumeSector!.toLocaleString('tr-TR')}`
+                  : ''}
               </p>
             </div>
           </div>
@@ -377,7 +416,14 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             <button
               className="btn-primary"
               data-testid="resume-scan-btn"
-              onClick={() => onStartScan && onStartScan(pausedSession.driveIndex, pausedSession.scanType, { resumeScanId: pausedSession.id })}
+              onClick={() => {
+                if (!onStartScan) return
+                const extra: ScanOptions = { resumeScanId: pausedSession.id }
+                if (scanNeedsSsdDeepAck(pausedSession.scanType) && driveIsSsd(pausedSession.driveIndex)) {
+                  extra.allowSsdDeepScan = true
+                }
+                onStartScan(pausedSession.driveIndex, pausedSession.scanType, extra)
+              }}
             >
               <Play size={16} fill="currentColor" /> Devam et
             </button>

@@ -10,6 +10,8 @@ export type MappedFile = {
   type: string
   status: string
   sourceLabel: string
+  dateLabel: string
+  qualityLabel: string
 }
 
 export type TreeNode = {
@@ -21,13 +23,25 @@ export type TreeNode = {
 
 export function qualityHint(raw?: FileRecord): string {
   if (!raw) return '—'
+  const c = raw.confidence ?? 0
   if (raw.source === 'carver' || raw.source === 'carver_bgc') {
-    const c = raw.confidence ?? 0
     if (c >= 85) return 'Muhtemelen tam'
     if (c >= 60) return 'Şüpheli'
     return 'Zayıf'
   }
+  if (c > 0) {
+    if (c >= 85) return 'Yüksek güven'
+    if (c >= 60) return 'Orta güven'
+    return 'Düşük güven'
+  }
   return '—'
+}
+
+/** Honest status: carve ≠ metadata-deleted. */
+export function statusDisplayLabel(status?: number, source?: string): string {
+  if (source?.startsWith('carver')) return 'Oyulmuş (imza)'
+  if (status === 1) return 'Tahsisli / kullanımda'
+  return 'Silinmiş / unallocated'
 }
 
 export function getExtension(filename: string): string {
@@ -42,6 +56,34 @@ export function getFileType(ext: string): string {
   if (['mp3', 'wav', 'flac', 'ogg', 'aac'].includes(ext)) return 'audio'
   if (['zip', 'rar', '7z', 'gz', 'tar', 'iso'].includes(ext)) return 'archive'
   return 'other'
+}
+
+/** Prefer DB category / extension over filename alone. */
+export function resolveFileTypeChip(record: {
+  name: string
+  category?: string
+  extension?: string
+}): string {
+  const cat = (record.category || '').toLowerCase()
+  if (cat === 'image') return 'img'
+  if (cat === 'document') return 'doc'
+  if (cat === 'video') return 'video'
+  if (cat === 'audio') return 'audio'
+  if (cat === 'archive' || cat === 'container') return 'archive'
+  const ext = (record.extension || getExtension(record.name)).replace(/^\./, '').toLowerCase()
+  return getFileType(ext)
+}
+
+/** MFT timestamps; carve uses EXIF in modifiedAt when present; else honest placeholder. */
+export function formatFsTimestamp(unixSec?: number, source?: string): string {
+  if (!unixSec || unixSec <= 0) {
+    if (source?.startsWith('carver')) return 'FS tarihi yok'
+    return '—'
+  }
+  if (source?.startsWith('carver')) {
+    return `EXIF · ${new Date(unixSec * 1000).toLocaleString('tr-TR')}`
+  }
+  return new Date(unixSec * 1000).toLocaleString('tr-TR')
 }
 
 export function chipToCategory(chip: string): string {
@@ -65,6 +107,7 @@ export function toSqlListFilter(
   category: string
   query: string
   sourceLike: string
+  sourceNotLike: string
   includeDuplicates: boolean
   includeDiscovery: boolean
 } {
@@ -72,11 +115,13 @@ export function toSqlListFilter(
     category: chipToCategory(typeChip),
     query,
     sourceLike: '',
+    sourceNotLike: '',
     includeDuplicates: showDuplicates,
     includeDiscovery: false,
   }
   if (statusChip === 'carved') return { ...base, status: -1, sourceLike: 'carver%' }
-  if (statusChip === 'deleted') return { ...base, status: 0 }
+  // Metadata deleted only — carve lives under "Oyulmuş" (DiskDrill/Recuva style split).
+  if (statusChip === 'deleted') return { ...base, status: 0, sourceNotLike: 'carver%' }
   if (statusChip === 'allocated') return { ...base, status: 1 }
   return { ...base, status: -1 }
 }
@@ -94,7 +139,12 @@ export function buildTree(filteredFiles: MappedFile[]): TreeNode {
     const raw = (f.rawPath || f.name).replace(/\\/g, '/').replace(/^\/+/, '')
     const parts = raw.split('/').filter(Boolean)
     let node = root
-    const dirParts = parts.length > 1 && parts[parts.length - 1] === f.name ? parts.slice(0, -1) : parts
+    // Bare filename must stay a file at root — never a fake directory node.
+    let dirParts: string[]
+    if (parts.length === 0) dirParts = []
+    else if (parts[parts.length - 1] === f.name) dirParts = parts.slice(0, -1)
+    else if (parts.length === 1) dirParts = []
+    else dirParts = parts
     for (const part of dirParts) {
       if (!node.dirs.has(part)) {
         node.dirs.set(part, { name: part, path: (node.path ? node.path + '/' : '') + part, dirs: new Map(), files: [] })
