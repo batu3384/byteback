@@ -284,6 +284,35 @@ TEST(ScanCoordinator, DeepResumeProgressNeverRewinds) {
     EXPECT_EQ(last, total);
 }
 
+TEST(ScanCoordinator, CarveOnlyResumeProgressNeverRewinds) {
+    auto img = byteback::testfix::buildPngCarveDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    const uint64_t total = reader.getDiskSize() / reader.getSectorSize();
+    ScanTarget target;
+    target.metadataComplete = true;
+    target.carveResumeSector = 0;
+    target.resumeAtSector = total / 4;
+
+    uint64_t last = 0;
+    bool decreased = false;
+    size_t ticks = 0;
+    std::atomic<bool> running{true};
+    runCarveOnlyScan(reader, [](const FileRecord&) {},
+                     [&](uint64_t current, uint64_t) {
+                         ++ticks;
+                         if (ticks == 1) EXPECT_GE(current, target.resumeAtSector);
+                         if (current < last) decreased = true;
+                         last = current;
+                     },
+                     &running, nullptr, {}, target);
+
+    EXPECT_GT(ticks, 0u);
+    EXPECT_FALSE(decreased) << "carve_only resume should not rewind progress";
+    EXPECT_EQ(last, total);
+}
+
 TEST(ScanCoordinator, QuickScanMetadataProgressHasMidTicks) {
     auto img = byteback::testfix::buildNtfsJumpingDataRunsVolume();
     DiskReader reader;

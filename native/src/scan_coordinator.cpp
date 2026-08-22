@@ -310,7 +310,10 @@ void runCarveScan(DiskReader& reader,
 
     g_scanPhase.store("carve", std::memory_order_relaxed);
     std::vector<SectorRange> carveRanges = prepareCarveRanges(reader, bounds, unallocatedOnly);
-    if (carveRanges.empty()) return;
+    if (carveRanges.empty()) {
+        g_scanPhase.store("carve_skipped", std::memory_order_relaxed);
+        return;
+    }
 
     uint64_t totalCarveSectors = totalSectorCount(carveRanges);
     const uint64_t progressTotal = totalCarveSectors > 0 ? totalCarveSectors : 1;
@@ -473,6 +476,33 @@ void runFullCarveScan(DiskReader& reader,
     }
 }
 
+void runCarveOnlyScan(DiskReader& reader,
+                      FileSystemParser::FileRecordCallback onFileFound,
+                      ProgressCallback onProgress,
+                      std::atomic<bool>* isRunning,
+                      std::vector<uint64_t>* badSectorOut,
+                      ScanBounds bounds,
+                      ScanTarget target,
+                      ScanCheckpointCallback onCheckpoint) {
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
+    uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
+
+    g_scanPhase.store("carve_only", std::memory_order_relaxed);
+    MonotonicMeter overall;
+    if (target.resumeAtSector > 0) overall.tick(std::min(totalSectors, target.resumeAtSector));
+
+    auto carveProgress = [&](uint64_t current, uint64_t total) {
+        uint64_t denom = total > 0 ? total : 1;
+        const uint64_t capped = std::min(current, denom);
+        onProgress(overall.tick(mulDivU64(capped, totalSectors, denom)), totalSectors);
+        if (onCheckpoint) onCheckpoint(true, current);
+    };
+    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
+                 target.carveResumeSector);
+    onProgress(overall.tick(totalSectors), totalSectors);
+}
+
 ScanCoordinator::ScanCoordinator() : isRunning(false) {}
 
 ScanCoordinator::~ScanCoordinator() {
@@ -563,13 +593,18 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
             } else if (scanType == "full_carve") {
                 runFullCarveScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
                 status = isRunning ? 1 : 2;
+            } else if (scanType == "carve_only") {
+                runCarveOnlyScan(reader, onFileFound, onProgress, &isRunning, badSectorOut, bounds, target, onCheckpoint);
+                status = isRunning ? 1 : 2;
             } else {
                 status = 3;
             }
 
-            if (status != 3) {
+            if (status == 1) {
                 syncBadSectors(reader, badSectorOut);
                 onProgress(totalSectors, totalSectors);
+            } else if (status != 3) {
+                syncBadSectors(reader, badSectorOut);
             }
         }
     } catch (const std::exception& e) {

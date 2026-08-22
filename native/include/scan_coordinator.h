@@ -80,6 +80,16 @@ void runFullCarveScan(DiskReader& reader,
                       ScanTarget target = {},
                       ScanCheckpointCallback onCheckpoint = nullptr);
 
+// Signature carve only — skips filesystem metadata (PhotoRec-style).
+void runCarveOnlyScan(DiskReader& reader,
+                      FileSystemParser::FileRecordCallback onFileFound,
+                      ScanProgressCallback onProgress,
+                      std::atomic<bool>* isRunning,
+                      std::vector<uint64_t>* badSectorOut = nullptr,
+                      ScanBounds bounds = {},
+                      ScanTarget target = {},
+                      ScanCheckpointCallback onCheckpoint = nullptr);
+
 // Prefix file sources with raid_ when scanning through VirtualRaid.
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader);
 

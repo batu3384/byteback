@@ -142,6 +142,32 @@ inline int validatePng(const uint8_t* data, size_t size) {
     return checkedChunks > 0 ? 70 : 40; // truncated but structurally sound
 }
 
+// ---- BMP ----
+// BM + bfSize/bfOffBits + DIB header size. Two-byte "BM" alone is too weak —
+// reject unless the BITMAPFILEHEADER fields look plausible.
+inline int validateBmp(const uint8_t* data, size_t size) {
+    if (size < 14 || data[0] != 'B' || data[1] != 'M') return 0;
+    auto le32 = [](const uint8_t* p) -> uint32_t {
+        return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+    };
+    const uint32_t bfSize = le32(data + 2);
+    const uint32_t bfOffBits = le32(data + 10);
+    if (bfOffBits < 14 || bfOffBits > 1024 * 1024) return 5;
+    if (bfSize > 0 && bfSize < bfOffBits) return 5;
+    if (size < 18) return 25;
+    const uint32_t dib = le32(data + 14);
+    if (dib != 12 && dib != 40 && dib != 108 && dib != 124) return 10;
+    if (size >= 26 && dib >= 40) {
+        const int32_t w = static_cast<int32_t>(le32(data + 18));
+        const int32_t h = static_cast<int32_t>(le32(data + 22));
+        if (w == 0 || h == 0) return 20;
+        if (w < -65535 || w > 65535 || h < -65535 || h > 65535) return 15;
+    }
+    if (bfSize > 0 && bfSize <= size) return 90;
+    return 70;
+}
+
 // ---- ZIP / DOCX / XLSX / ODT / EPUB / JAR ----
 // All share the PK container. We look for the End Of Central Directory record
 // (PK\x05\x06), which only a well-formed ZIP archive contains, and at least

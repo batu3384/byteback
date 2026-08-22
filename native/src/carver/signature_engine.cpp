@@ -3,6 +3,7 @@
 #include "carver/file_validators.h"
 #include "carver/structural_parsers.h"
 #include "carver/content_classifier.h"
+#include "carver/embedded_metadata.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -18,9 +19,8 @@ namespace byteback {
 
 namespace {
 // Dispatch a carved buffer to the right Fast Object Validator based on the
-// signature's extension. Returns the validator's [0,100] confidence, or a
-// neutral 90 if no structural validator exists for this type (so unknown
-// types keep their header/footer score instead of being penalised).
+// signature's extension. Returns the validator's [0,100] confidence, or 55
+// when no structural validator exists (header/footer alone is not certainty).
 int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) {
     using namespace byteback::carver;
     if (ext == "jpg" || ext == "jpeg") return validateJpeg(data, size);
@@ -31,12 +31,13 @@ int dispatchValidator(const std::string& ext, const uint8_t* data, size_t size) 
     if (ext == "pdf")                   return validatePdf(data, size);
     if (ext == "gz" || ext == "gzip" || ext == "tgz") return validateGzip(data, size);
     if (ext == "riff")                  return validateRiff(data, size);
+    if (ext == "bmp")                   return validateBmp(data, size);
     if (ext == "ts")                    return validateMpegTs(data, size);
     if (ext == "sqlite" || ext == "db") return carver::validateSqlite(data, size);
     if (ext == "mp4" || ext == "mov" || ext == "m4v" || ext == "m4a" ||
         ext == "qt" || ext == "3gp" || ext == "heic" || ext == "heif" ||
         ext == "avif" || ext == "cr3")   return carver::validateMp4(data, size);
-    return 90; // no structural validator — trust the header/footer match
+    return 55; // no structural validator — header/footer only, not "almost certain"
 }
 
 bool isZipFamilyExt(const std::string& ext) {
@@ -62,6 +63,79 @@ void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size
     if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
     if (!pr.extension.empty()) effExt = pr.extension;
     if (pr.confidence > confidence) confidence = pr.confidence;
+}
+
+// Weak BM magic: drop clear FPs; demote shaky hits to .bin.
+bool refineBmpCarve(const uint8_t* data, size_t size, std::string& filename,
+                    std::string& effExt, uint64_t& actualSize, int& confidence) {
+    if (effExt != "bmp") return true;
+    const int score = (data && size) ? carver::validateBmp(data, size) : 0;
+    confidence = score;
+    if (score < 50) return false;
+    if (data && size >= 6) {
+        const uint32_t bfSize = static_cast<uint32_t>(data[2]) | (static_cast<uint32_t>(data[3]) << 8) |
+                                (static_cast<uint32_t>(data[4]) << 16) | (static_cast<uint32_t>(data[5]) << 24);
+        if (bfSize >= 14 && bfSize <= actualSize) actualSize = bfSize;
+    }
+    if (score < 70) {
+        const auto dot = filename.find_last_of('.');
+        if (dot != std::string::npos) filename = filename.substr(0, dot) + ".bin";
+        else filename += ".bin";
+        effExt = "bin";
+    }
+    return true;
+}
+
+// Carve records store EXIF in modifiedAt; UI labels as EXIF not FS date.
+void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reader,
+                    uint64_t startOff, uint64_t fileSize, const uint8_t* cached, size_t cachedLen) {
+    if (effExt != "jpg" && effExt != "jpeg") return;
+    int64_t t = 0;
+    if (cached && cachedLen > 0) {
+        t = carver::extractJpegExifUnix(cached, std::min(cachedLen, size_t{65536}));
+    }
+    if (t <= 0 && fileSize > 0) {
+        uint32_t ss = reader.getSectorSize();
+        if (ss == 0) ss = 512;
+        uint32_t want = static_cast<uint32_t>(std::min<uint64_t>(fileSize, 65536));
+        want = ((want + ss - 1) / ss) * ss;
+        if (want == 0) want = 512;
+        std::vector<uint8_t> head(want);
+        if (reader.readSectors(startOff, want, head.data()).success) {
+            t = carver::extractJpegExifUnix(head.data(), std::min(static_cast<size_t>(want), static_cast<size_t>(fileSize)));
+        }
+    }
+    if (t > 0) fr.modifiedAt = t;
+}
+
+// Expire / disk-end carves without a footer match: validate before emit.
+bool refineExpiredCarve(const FileSignature& sig, const uint8_t* data, size_t probeSize,
+                        std::string& filename, std::string& effExt, uint64_t& actualSize,
+                        int& confidence) {
+    if (!refineBmpCarve(data, probeSize, filename, effExt, actualSize, confidence)) return false;
+
+    const int vScore = (data && probeSize) ? dispatchValidator(effExt, data, probeSize) : 0;
+    if (vScore > 0) confidence = vScore;
+    else if (sig.footer.empty()) confidence = 55; // ponytail: header-only ceiling, not 70
+
+    applyStructuralRefinement(effExt, data, probeSize, actualSize, effExt, confidence);
+
+    if (effExt == "riff" && data && probeSize >= 12) {
+        if (const char* sub = carver::detectRiffSubtype(data, probeSize)) {
+            effExt = sub;
+            const int rs = dispatchValidator(effExt, data, probeSize);
+            if (rs > confidence) confidence = rs;
+        }
+    }
+
+    if (!data || probeSize == 0) return false;
+
+    if (sig.footer.empty()) {
+        if (vScore > 0 && vScore < 50) return false;
+    } else if (vScore > 0 && vScore < 45) {
+        return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -127,6 +201,7 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("JPEG Image", ".jpg", "Image", {0xFF, 0xD8, 0xFF}, {0xFF, 0xD9}, 256 * 1024 * 1024);
     addSig("PNG Image", ".png", "Image", {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}, 256 * 1024 * 1024);
     addSig("GIF Image", ".gif", "Image", {0x47, 0x49, 0x46, 0x38}, {0x00, 0x3B}, 64 * 1024 * 1024);
+    // BM alone is too weak; expire-path validateBmp rejects / demotes FPs.
     addSig("BMP Image", ".bmp", "Image", {0x42, 0x4D}, {}, 50 * 1024 * 1024);
     addSig("TIFF Image (LE)", ".tiff", "Image", {0x49, 0x49, 0x2A, 0x00}, {}, 100 * 1024 * 1024);
     addSig("TIFF Image (BE)", ".tiff", "Image", {0x4D, 0x4D, 0x00, 0x2A}, {}, 100 * 1024 * 1024);
@@ -760,6 +835,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 fr.source = "carver_bgc";
                                 fr.createdAt = 0;
                                 fr.modifiedAt = 0;
+                                stampCarveExif(fr, effExtBgc, reader, it->startOffset, fr.sizeBytes, nullptr, 0);
 
                                 emit(fr);
 
@@ -782,6 +858,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             fr.source = "carver";
                             fr.createdAt = 0;
                             fr.modifiedAt = 0;
+                            stampCarveExif(fr, effExt, reader, it->startOffset, actualSize, nullptr, 0);
                             
                             emit(fr);
                             
@@ -803,16 +880,27 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 const auto& sig = signatures[it->sigId];
                 std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
                 uint64_t actualSize = sig.maxSize;
-                int confidence = 70;
+                int confidence = sig.footer.empty() ? 55 : 70;
                 uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(sig.maxSize, 1u << 20));
                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
                 std::vector<uint8_t> probeBuf;
                 if (probe > 0) {
                     probeBuf.resize(probe);
                     if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
-                        applyStructuralRefinement(effExt, probeBuf.data(), probeBuf.size(),
-                                                  actualSize, effExt, confidence);
+                        std::string name = it->filename;
+                        if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt,
+                                                actualSize, confidence)) {
+                            it = activeCarves.erase(it);
+                            continue;
+                        }
+                        it->filename = name;
+                    } else {
+                        it = activeCarves.erase(it);
+                        continue;
                     }
+                } else {
+                    it = activeCarves.erase(it);
+                    continue;
                 }
 
                 FileRecord fr;
@@ -831,6 +919,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 fr.source = "carver";
                 fr.createdAt = 0;
                 fr.modifiedAt = 0;
+                stampCarveExif(fr, effExt, reader, it->startOffset, actualSize,
+                               probeBuf.empty() ? nullptr : probeBuf.data(), probeBuf.size());
                 
                 emit(fr);
                 
@@ -852,22 +942,24 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         const auto& sig = signatures[ac.sigId];
         uint64_t actualSize = std::min(sig.maxSize, endOfDiskOffset > ac.startOffset ? endOfDiskOffset - ac.startOffset : 0);
         std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
-        int confidence = 70;
+        int confidence = sig.footer.empty() ? 55 : 70;
         uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
         probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
         std::vector<uint8_t> probeBuf;
-        if (probe > 0) {
-            probeBuf.resize(probe);
-            if (reader.readSectors(ac.startOffset, probe, probeBuf.data()).success) {
-                applyStructuralRefinement(effExt, probeBuf.data(), probeBuf.size(),
-                                          actualSize, effExt, confidence);
-            }
+        if (probe == 0) continue;
+        probeBuf.resize(probe);
+        if (!reader.readSectors(ac.startOffset, probe, probeBuf.data()).success) continue;
+
+        std::string name = ac.filename;
+        if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt, actualSize,
+                                confidence)) {
+            continue;
         }
 
         FileRecord fr;
         fr.id = 0;
         fr.parentId = 0;
-        fr.name = ac.filename;
+        fr.name = name;
         fr.extension = effExt;
         fr.path = "/recovered_raw/" + fr.name;
         fr.sizeBytes = actualSize;
@@ -875,12 +967,11 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         fr.endSector = ac.startSector + (actualSize + sectorSize - 1) / sectorSize;
         fr.status = 0;
         fr.confidence = confidence;
-        fr.category = refineCarveCategory(probeBuf.empty() ? nullptr : probeBuf.data(), probeBuf.size(),
-                                        effExt, sig.category);
+        fr.category = refineCarveCategory(probeBuf.data(), probeBuf.size(), effExt, sig.category);
         fr.source = "carver";
         fr.createdAt = 0;
         fr.modifiedAt = 0;
-        
+        stampCarveExif(fr, effExt, reader, ac.startOffset, actualSize, probeBuf.data(), probeBuf.size());
         emit(fr);
     }
 

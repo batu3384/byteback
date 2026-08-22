@@ -6,6 +6,7 @@
 #include "fs/ntfs_util.h"
 #include "fs/vss_scanner.h"
 #include "fs/virtual_raid.h"
+#include "scan/discovery_sources.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -47,16 +48,9 @@ void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::strin
 
 } // namespace
 
+// Exported API (byteback_recovery.h) — body shares discovery_sources.h list.
 bool isDiscoveryOnlySource(const std::string& source) {
-    return source == "apfs_volume" || source == "apfs_container" ||
-           source == "apfs_file" || source == "bitlocker_detect" ||
-           source == "bitlocker_fve" || source == "vss_unbound" ||
-           source == "vss_bind" || source == "vss_snapshot" ||
-           source == "hfs_limit" || source == "hfs_vh" || source == "hfs_catalog" ||
-           source == "usn_journal" || source == "ntfs_logfile" ||
-           source == "ntfs_logfile_restart" || source == "ntfs_i30" ||
-           source == "Folder" || source == "refs_volume" ||
-           source == "carver_duplicate";
+    return isDiscoverySourceName(source);
 }
 
 bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,

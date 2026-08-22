@@ -303,9 +303,18 @@ TEST_F(MetadataStoreTest, CarvedFilterAndDuplicateToggle) {
     ASSERT_EQ(page.size(), 1u);
     EXPECT_EQ(page[0].source, "carver");
 
+    FileListFilter deletedMetaOnly = deleted;
+    deletedMetaOnly.sourceNotLike = "carver%";
+    EXPECT_EQ(store_.getFileCount(scanId, deletedMetaOnly), 1);
+
     FileListFilter withDup = carvedOnly;
     withDup.includeDuplicates = true;
     EXPECT_EQ(store_.getFileCount(scanId, withDup), 2);
+
+    auto summary = store_.getScanSummary(scanId);
+    EXPECT_EQ(summary.deletedFiles, 1); // metadata deleted only — carve excluded
+    EXPECT_EQ(summary.carvedFiles, 1);  // carver only; duplicate not counted as unique carve
+    EXPECT_EQ(summary.totalFiles, 3);   // mft + carve + dup; discovery hidden
 }
 
 TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksPaused) {

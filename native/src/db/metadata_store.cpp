@@ -1,5 +1,6 @@
 #include "byteback_db.h"
 #include "db/runs_codec.h"
+#include "scan/discovery_sources.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
@@ -11,11 +12,6 @@
 namespace byteback {
 
 namespace {
-const char* kDiscoverySourcesSql =
-    "'apfs_container','apfs_volume','apfs_file','bitlocker_detect','bitlocker_fve',"
-    "'vss_unbound','vss_bind','vss_snapshot','hfs_limit','hfs_vh','hfs_catalog',"
-    "'usn_journal','ntfs_logfile','ntfs_logfile_restart','ntfs_recycle_meta',"
-    "'ntfs_i30','Folder','refs_volume'";
 
 void appendListFilter(std::string& sql, const FileListFilter& f, const char* prefix) {
     if (f.status >= 0) {
@@ -33,6 +29,11 @@ void appendListFilter(std::string& sql, const FileListFilter& f, const char* pre
         sql += prefix;
         sql += "source LIKE ?";
     }
+    if (!f.sourceNotLike.empty()) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "source NOT LIKE ?";
+    }
     if (!f.includeDuplicates) {
         sql += " AND ";
         sql += prefix;
@@ -42,7 +43,7 @@ void appendListFilter(std::string& sql, const FileListFilter& f, const char* pre
         sql += " AND ";
         sql += prefix;
         sql += "source NOT IN (";
-        sql += kDiscoverySourcesSql;
+        sql += discoverySourcesSqlInList();
         sql += ")";
     }
 }
@@ -51,6 +52,7 @@ void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
     if (f.status >= 0) sqlite3_bind_int(stmt, bind++, f.status);
     if (!f.category.empty()) sqlite3_bind_text(stmt, bind++, f.category.c_str(), -1, SQLITE_TRANSIENT);
     if (!f.sourceLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceLike.c_str(), -1, SQLITE_TRANSIENT);
+    if (!f.sourceNotLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceNotLike.c_str(), -1, SQLITE_TRANSIENT);
 }
 
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
@@ -782,15 +784,15 @@ MetadataStore::ScanSummary MetadataStore::getScanSummary(int64_t scanId) {
     std::lock_guard<std::recursive_mutex> lock(mu_);
     std::string sql = R"(
         SELECT COUNT(*),
-               SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status = 0 AND source NOT LIKE 'carver%' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Image' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Document' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Video' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Audio' THEN 1 ELSE 0 END),
                SUM(CASE WHEN category = 'Archive' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN source LIKE 'carver%' THEN 1 ELSE 0 END)
+               SUM(CASE WHEN source IN ('carver','carver_bgc') THEN 1 ELSE 0 END)
         FROM files WHERE scan_id = ? AND source NOT IN ()";
-    sql += kDiscoverySourcesSql;
+    sql += discoverySourcesSqlInList();
     sql += ")";
     ScanSummary summary;
     sqlite3_stmt* stmt = nullptr;
