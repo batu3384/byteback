@@ -192,6 +192,8 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
     tests/test_dedup_index.cpp
+    tests/test_discovery_sources.cpp
+    tests/test_embedded_metadata.cpp
     tests/test_utf8_sanitize.cpp
     tests/test_e2e_scan_recover.cpp
     tests/test_recovery_golden.cpp

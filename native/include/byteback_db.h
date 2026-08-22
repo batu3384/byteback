@@ -50,7 +50,7 @@ struct TimelineEvent {
 struct ScanState {
     int64_t id;
     int driveIndex;
-    std::string scanType;   // "quick", "deep", "full_carve"
+    std::string scanType;   // "quick", "deep", "full_carve", "carve_only"
     uint64_t totalSectors;
     uint64_t scannedSectors;
     int status;             // 0=Running, 1=Complete, 2=Stopped, 3=Failed, 4=Paused(resumable)
@@ -78,6 +78,7 @@ struct FileListFilter {
     std::string category;     // empty = all (Image, Document, ...)
     std::string query;        // empty = no name/path search
     std::string sourceLike;   // empty = all; e.g. "carver%"
+    std::string sourceNotLike; // empty = all; e.g. "carver%" excludes carve from deleted view
     bool includeDuplicates = true;
     bool includeDiscovery = false;
 };

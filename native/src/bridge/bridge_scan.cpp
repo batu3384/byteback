@@ -36,6 +36,9 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     if (o.Has("sourceLike") && o.Get("sourceLike").IsString()) {
         f.sourceLike = o.Get("sourceLike").As<Napi::String>().Utf8Value();
     }
+    if (o.Has("sourceNotLike") && o.Get("sourceNotLike").IsString()) {
+        f.sourceNotLike = o.Get("sourceNotLike").As<Napi::String>().Utf8Value();
+    }
     if (o.Has("includeDuplicates") && o.Get("includeDuplicates").IsBoolean()) {
         f.includeDuplicates = o.Get("includeDuplicates").As<Napi::Boolean>().Value();
     }
@@ -402,6 +405,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     std::string scanType = info[1].As<Napi::String>().Utf8Value();
     Napi::Function cb;
     byteback::ScanTarget target;
+    if (scanType == "carve_only") {
+        target.metadataComplete = true;
+    }
     int64_t resumeScanId = -1;
     bool allowSsdDeepScan = false;
 
@@ -461,6 +467,9 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 target.partitionSizeSectors = st.partitionSizeSectors;
             }
         }
+        if (scanType == "carve_only") {
+            target.metadataComplete = true;
+        }
     } else if (info[2].IsFunction()) {
         cb = info[2].As<Napi::Function>();
     } else {
@@ -485,7 +494,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         try { driveIndex = std::stoi(drivePath); } catch(...) {}
     }
 
-    if ((scanType == "deep" || scanType == "full_carve") && !allowSsdDeepScan && driveIndex >= 0 && drivePath != "raid") {
+    if ((scanType == "deep" || scanType == "full_carve" || scanType == "carve_only") && !allowSsdDeepScan && driveIndex >= 0 && drivePath != "raid") {
         byteback::SmartMonitor smart;
         byteback::SmartStatus st = smart.getSmartStatus(driveIndex);
         if (st.isValid && st.isSsd) {

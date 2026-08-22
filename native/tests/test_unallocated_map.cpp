@@ -95,28 +95,26 @@ TEST(UnallocatedMap, UnknownFsUnallocatedOnlySkipsCarve) {
     EXPECT_EQ(carved, 0u);
 }
 
-TEST(UnallocatedMap, FullCarveFindsPngInAllocatedCluster) {
-    auto fatVol = byteback::testfix::buildFat16Volume();
-    const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-    const uint8_t iend[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-                              0xAE, 0x42, 0x60, 0x82};
-    std::memcpy(fatVol.data() + 34 * 512, pngSig, sizeof(pngSig));
-    std::memcpy(fatVol.data() + 34 * 512 + 512 - sizeof(iend), iend, sizeof(iend));
+TEST(UnallocatedMap, FullCarveFindsPngOnRawDisk) {
+    // Unknown FS + unallocatedOnly=false scans the whole partition (see UnknownFsUnallocatedOnlySkipsCarve).
+    std::vector<uint8_t> disk(512 * 128, 0);
+    const auto png = byteback::testfix::buildMinimalValidPng();
+    std::memcpy(disk.data() + 64 * 512, png.data(), png.size());
 
     DiskReader reader;
-    reader.attachMemoryVolume(std::move(fatVol));
+    reader.attachMemoryVolume(std::move(disk));
 
     std::vector<std::string> sources;
     std::atomic<bool> running{true};
-    runFullCarveScan(reader, [&](const FileRecord& fr) {
+    runCarveScan(reader, [&](const FileRecord& fr) {
         if (fr.id != -1 && !fr.source.empty()) sources.push_back(fr.source);
-    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, false);
 
-    bool carvedAlloc = false;
+    bool carved = false;
     for (const auto& s : sources) {
-        if (s == "carver" || s == "carver_bgc") carvedAlloc = true;
+        if (s == "carver" || s == "carver_bgc") carved = true;
     }
-    EXPECT_TRUE(carvedAlloc);
+    EXPECT_TRUE(carved);
 }
 
 TEST(UnallocatedMap, ExFatExcludesAllocatedCluster) {

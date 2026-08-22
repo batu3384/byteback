@@ -78,8 +78,9 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
         uint64_t metaSpan = it->endSector >= it->startSector ? (it->endSector - it->startSector + 1) : 1;
         const uint64_t minSpan = std::max<uint64_t>(1, std::min(carveSpan, metaSpan));
         if (overlap * 2 < minSpan) continue;
-        if (it->confidence + 5 < fr.confidence) continue;
-
+        // Metadata wins on substantial sector overlap. Carve confidence can be
+        // inflated (header-only / weak validators) and must not keep a second
+        // "file" that is the same payload as an MFT/FAT hit.
         fr.source = "carver_duplicate";
         fr.path = "/dup_of" + (it->path.empty() ? it->name : it->path);
         fr.confidence = std::min(fr.confidence, 35);

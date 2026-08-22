@@ -618,6 +618,8 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
         out.Set("success", Napi::Boolean::New(env, preview.success));
         out.Set("error", Napi::String::New(env, preview.error));
         out.Set("kind", Napi::String::New(env, preview.kind));
+        out.Set("mime", Napi::String::New(env, preview.mime));
+        out.Set("note", Napi::String::New(env, preview.note));
         if (preview.success && !preview.data.empty()) {
             out.Set("data", Napi::Buffer<uint8_t>::Copy(env, preview.data.data(), preview.data.size()));
         } else {
