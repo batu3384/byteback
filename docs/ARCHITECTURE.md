@@ -60,8 +60,11 @@ decrypt, no GPU PFAC, APFS recursive omap btree not full snapshot, quick NTFS
 
 ## Runtime assets
 
-- `resources/signatures.json` — optional user signature overlay; engine falls
-  back to ~114 built-in signatures.
+- `resources/signatures-extended.json`, `resources/signatures-supplement.json` —
+  curated extension signatures loaded over the ~89 embedded/ftyp set (150 total
+  after the text-magic/duplicate cleanup). `resources/signatures.json` was
+  removed: it duplicated the embedded set. A user overlay can still be passed
+  explicitly via `loadSignatures(jsonPath)`.
 - `<userData>/byteback.db` — scan metadata (WAL).
 - `<userData>/byteback.db.audit.log` — SHA-256 hash-chained audit log; reports
   embed recent chain entries.

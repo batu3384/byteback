@@ -47,6 +47,7 @@ public:
 
     bool loadSignatures(const std::string& jsonPath);
     size_t signatureCount() const { return signatures.size(); }
+    const std::vector<FileSignature>& getSignatures() const { return signatures; }
 
     // Loads embedded + resource JSON once; safe to call from UI before scan.
     static size_t globalSignatureCount();
