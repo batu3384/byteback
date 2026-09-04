@@ -65,6 +65,8 @@ bool applyBoundedTargetedParse(const std::string& ext, DiskReader& reader, uint6
         pr = carver::parseMkvBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
     } else if (ext == "ogg") {
         pr = carver::parseOggBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
+    } else if (ext == "mp3") {
+        pr = carver::parseMp3Bounded(probe, probeSize, carveStartOffset, maxSize, readAt);
     } else {
         return false;
     }
@@ -85,6 +87,7 @@ void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size
     else if (ext == "ts") pr = carver::parseMpegTs(data, size);
     else if (ext == "7z") pr = carver::parseSevenZip(data, size);
     else if (ext == "cab") pr = carver::parseCab(data, size);
+    else if (ext == "mp3") pr = carver::parseMp3Bounded(data, size, 0, size, nullptr);
     else return;
 
     if (!pr.valid) return;
@@ -803,7 +806,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             std::string effName = it->filename;
                             if (isZipFamilyExt(effExt) || effExt == "sqlite" || effExt == "db" ||
                                 isMp4FamilyExt(effExt) || effExt == "mkv" || effExt == "webm" ||
-                                effExt == "ogg") {
+                                effExt == "ogg" || effExt == "mp3") {
                                 // One shared probe read; bounded formats also fetch
                                 // headers beyond it via targeted reads.
                                 uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));

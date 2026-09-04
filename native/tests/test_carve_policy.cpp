@@ -311,6 +311,71 @@ TEST(CarvePolicy, UnfinalizedMdatSizeZeroIsDroppedNotTruncated) {
     EXPECT_EQ(records, 0);
 }
 
+// MP3: ID3v2 + a consistent MPEG1 L3 frame chain bounds the file exactly
+// (PhotoRec-style frame walk). Before this parser MP3 was dormant under the
+// bounded-emission policy.
+TEST(CarvePolicy, Mp3FrameWalkBoundsTheCarve) {
+    std::vector<uint8_t> disk(64 * 1024, 0);
+    size_t off = 0;
+    // ID3v2 header: 'ID3', ver 3, rev 0, flags 0, syncsafe size 100.
+    disk[off++] = 'I'; disk[off++] = 'D'; disk[off++] = '3';
+    disk[off++] = 3; disk[off++] = 0; disk[off++] = 0;
+    disk[off++] = 0; disk[off++] = 0; disk[off++] = 0; disk[off++] = 100;
+    off += 100; // tag payload
+    const size_t framesStart = off;
+
+    // MPEG1 Layer III, 128 kbps, 44.1 kHz, no padding: header FF FB 90 00,
+    // frame length = 144*128000/44100 = 417 bytes.
+    auto frame = [&](uint8_t lastByte) {
+        disk[off] = 0xFF; disk[off + 1] = 0xFB; disk[off + 2] = 0x90; disk[off + 3] = lastByte;
+        for (uint32_t i = 4; i < 417; ++i) disk[off + i] = 0x7F;
+        off += 417;
+    };
+    for (int i = 0; i < 40; ++i) frame(0x00);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mp3") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, off);
+    EXPECT_GE(found[0].confidence, 80);
+}
+
+// Four consecutive plausible-looking headers, then garbage: below the frame
+// floor the candidate must stay dormant (cheap fake-sync attack).
+TEST(CarvePolicy, Mp3ShortFrameChainStaysDormant) {
+    std::vector<uint8_t> disk(64 * 1024, 0);
+    disk[0] = 'I'; disk[1] = 'D'; disk[2] = '3';
+    disk[6] = 0; disk[7] = 0; disk[8] = 0; disk[9] = 0; // empty tag
+    size_t off = 10;
+    for (int i = 0; i < 6; ++i) {
+        disk[off] = 0xFF; disk[off + 1] = 0xFB; disk[off + 2] = 0x90; disk[off + 3] = 0;
+        off += 417;
+    }
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    int records = 0;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mp3") != std::string::npos) ++records;
+    }, &running));
+    EXPECT_EQ(records, 0);
+}
+
 namespace {
 std::vector<uint8_t> minimalJpeg() {
     return {0xFF,0xD8,0xFF,0xDB, 0x00,0x03,0x00, 0xFF,0xDA,0x00,0x02,
