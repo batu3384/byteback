@@ -6,6 +6,8 @@ namespace byteback {
 void DedupIndex::clear() {
     entries_.clear();
     carveEntries_.clear();
+    metaPrefixMaxEnd_.clear();
+    carvePrefixMaxEnd_.clear();
     sorted_ = true;
     carveSorted_ = true;
 }
@@ -73,6 +75,12 @@ void DedupIndex::ensureSorted() {
     if (sorted_) return;
     std::sort(entries_.begin(), entries_.end(),
               [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
+    metaPrefixMaxEnd_.resize(entries_.size());
+    uint64_t runningMax = 0;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        runningMax = std::max(runningMax, entries_[i].endSector);
+        metaPrefixMaxEnd_[i] = runningMax;
+    }
     sorted_ = true;
 }
 
@@ -80,27 +88,49 @@ void DedupIndex::ensureCarveSorted() {
     if (carveSorted_) return;
     std::sort(carveEntries_.begin(), carveEntries_.end(),
               [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
+    carvePrefixMaxEnd_.resize(carveEntries_.size());
+    uint64_t runningMax = 0;
+    for (size_t i = 0; i < carveEntries_.size(); ++i) {
+        runningMax = std::max(runningMax, carveEntries_[i].endSector);
+        carvePrefixMaxEnd_[i] = runningMax;
+    }
     carveSorted_ = true;
+}
+
+// First entry satisfying overlap*2 >= min(span) against [frStart, frEnd], or
+// nullptr. `entries` must be sorted by startSector with a matching prefixMaxEnd.
+const DedupIndex::Entry* DedupIndex::findOverlap(const std::vector<Entry>& entries,
+                                                 const std::vector<uint64_t>& prefixMaxEnd,
+                                                 uint64_t frStart, uint64_t frEnd, uint64_t frSpan) {
+    if (entries.empty() || prefixMaxEnd.size() != entries.size()) return nullptr;
+
+    // Candidates all live in [0, hi]: startSector <= frEnd.
+    auto hiIt = std::upper_bound(entries.begin(), entries.end(), frEnd,
+                                 [](uint64_t v, const Entry& e) { return v < e.startSector; });
+    const int hi = static_cast<int>(hiIt - entries.begin()) - 1;
+    if (hi < 0) return nullptr;
+    if (prefixMaxEnd[hi] < frStart) return nullptr; // nothing reaches back to the query
+
+    // Entries before j0 all have endSector < frStart (prefixMaxEnd is
+    // monotone), so they cannot overlap; scan only [j0, hi].
+    auto j0It = std::lower_bound(prefixMaxEnd.begin(), prefixMaxEnd.begin() + hi + 1, frStart);
+    for (int idx = static_cast<int>(j0It - prefixMaxEnd.begin()); idx <= hi; ++idx) {
+        const Entry& e = entries[idx];
+        if (e.endSector < frStart) continue;
+        if (!sectorsOverlap(e.startSector, e.endSector, frStart, frEnd)) continue;
+        const uint64_t overlap = overlapSectorCount(e.startSector, e.endSector, frStart, frEnd);
+        const uint64_t priorSpan = e.endSector >= e.startSector ? (e.endSector - e.startSector + 1) : 1;
+        const uint64_t minSpan = std::max<uint64_t>(1, std::min(frSpan, priorSpan));
+        if (overlap * 2 >= minSpan) return &e;
+    }
+    return nullptr;
 }
 
 bool DedupIndex::overlapsExistingCarve(const FileRecord& fr) {
     ensureCarveSorted();
-    uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
-    uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
-
-    auto it = std::lower_bound(
-        carveEntries_.begin(), carveEntries_.end(), fr.startSector,
-        [](const Entry& e, uint64_t sector) { return e.endSector < sector; });
-
-    for (; it != carveEntries_.end(); ++it) {
-        if (it->startSector > carveEnd) break;
-        if (!sectorsOverlap(it->startSector, it->endSector, fr.startSector, carveEnd)) continue;
-        uint64_t overlap = overlapSectorCount(it->startSector, it->endSector, fr.startSector, carveEnd);
-        uint64_t priorSpan = it->endSector >= it->startSector ? (it->endSector - it->startSector + 1) : 1;
-        const uint64_t minSpan = std::max<uint64_t>(1, std::min(carveSpan, priorSpan));
-        if (overlap * 2 >= minSpan) return true;
-    }
-    return false;
+    const uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
+    const uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
+    return findOverlap(carveEntries_, carvePrefixMaxEnd_, fr.startSector, carveEnd, carveSpan) != nullptr;
 }
 
 bool DedupIndex::markDuplicate(FileRecord& fr) {
@@ -113,25 +143,15 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
         return true;
     }
 
-    uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
-    uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
-
-    auto it = std::lower_bound(
-        entries_.begin(), entries_.end(), fr.startSector,
-        [](const Entry& e, uint64_t sector) { return e.endSector < sector; });
-
-    for (; it != entries_.end(); ++it) {
-        if (it->startSector > carveEnd) break;
-        if (!sectorsOverlap(it->startSector, it->endSector, fr.startSector, carveEnd)) continue;
-        uint64_t overlap = overlapSectorCount(it->startSector, it->endSector, fr.startSector, carveEnd);
-        uint64_t metaSpan = it->endSector >= it->startSector ? (it->endSector - it->startSector + 1) : 1;
-        const uint64_t minSpan = std::max<uint64_t>(1, std::min(carveSpan, metaSpan));
-        if (overlap * 2 < minSpan) continue;
+    const uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
+    const uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
+    const Entry* meta = findOverlap(entries_, metaPrefixMaxEnd_, fr.startSector, carveEnd, carveSpan);
+    if (meta) {
         // Metadata wins on substantial sector overlap. Carve confidence can be
         // inflated (header-only / weak validators) and must not keep a second
         // "file" that is the same payload as an MFT/FAT hit.
         fr.source = "carver_duplicate";
-        fr.path = "/dup_of" + (it->path.empty() ? it->name : it->path);
+        fr.path = "/dup_of" + (meta->path.empty() ? meta->name : meta->path);
         fr.confidence = std::min(fr.confidence, 35);
         return true;
     }

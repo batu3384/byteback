@@ -3,6 +3,48 @@
 
 using namespace byteback;
 
+namespace {
+FileRecord makeRec(const char* source, uint64_t start, uint64_t end) {
+    FileRecord r;
+    r.source = source;
+    r.startSector = start;
+    r.endSector = end;
+    r.confidence = 80;
+    r.name = "rec";
+    return r;
+}
+} // namespace
+
+// CA-009 regression: the old query lower_bound'ed a startSector-sorted vector
+// with an endSector comparator. With a long-span entry early in the vector the
+// binary search could land past it and a carve living inside its span leaked
+// through as a "new" file.
+TEST(DedupIndex, LongSpanEntryIsFoundByMismatchedOrderQuery) {
+    DedupIndex idx;
+    idx.observe(makeRec("ntfs_mft", 0, 10));
+    FileRecord longSpan = makeRec("ntfs_mft", 20, 200000);
+    longSpan.path = "/Users/big.mov";
+    longSpan.name = "big.mov";
+    idx.observe(longSpan);
+    idx.observe(makeRec("ntfs_mft", 30, 40));
+    idx.observe(makeRec("ntfs_mft", 50, 60));
+
+    FileRecord carve = makeRec("carver", 100, 110); // inside the long span
+    EXPECT_TRUE(idx.markDuplicate(carve));
+    EXPECT_EQ(carve.source, "carver_duplicate");
+    EXPECT_EQ(carve.path, "/dup_of/Users/big.mov");
+}
+
+TEST(DedupIndex, CarverDuplicateMarksOverlappingCarveOfCarve) {
+    DedupIndex idx;
+    FileRecord first = makeRec("carver", 20, 200000);
+    EXPECT_FALSE(idx.markDuplicate(first)); // registers the span
+
+    FileRecord second = makeRec("carver", 100, 110); // inside the first span
+    EXPECT_TRUE(idx.markDuplicate(second));
+    EXPECT_EQ(second.source, "carver_duplicate");
+}
+
 TEST(DedupIndex, MarksOverlappingCarveAsDuplicate) {
     DedupIndex idx;
     FileRecord mft;
