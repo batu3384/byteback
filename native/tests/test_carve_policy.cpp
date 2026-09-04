@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 
 using namespace byteback;
@@ -119,6 +120,43 @@ TEST(CarvePolicy, BoundedSizeParsersUnitCheck) {
     pr = byteback::carver::parseCab(cab, sizeof(cab));
     ASSERT_TRUE(pr.valid);
     EXPECT_EQ(pr.size, 512u);
+}
+
+// CA-007: reads past the range end fail on physical/image backends, which
+// used to silently skip the last partial chunk of every range. A file living
+// in the tail chunk must still be carved.
+TEST(CarvePolicy, TailChunkPastEndStillScanned) {
+    const auto path = (std::filesystem::temp_directory_path() / "byteback_tail_chunk.raw");
+    // 5 MiB + 1.5 KiB: the second 4MiB chunk is partial.
+    std::vector<uint8_t> img(5u * 1024 * 1024 + 512 * 3, 0);
+    const size_t off = img.size() - 512;
+    static const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static const uint8_t iend[] = {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
+    std::memcpy(img.data() + off, sig, sizeof(sig));
+    std::memcpy(img.data() + off + 492, iend, sizeof(iend));
+
+    {
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+    }
+
+    DiskReader reader;
+    std::string err;
+    ASSERT_TRUE(reader.attachRawFile(path.string(), &err)) << err;
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("png") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, 492u + sizeof(iend));
+    reader.detachImageBackend(); // release the file lock before removal
+    std::filesystem::remove(path);
 }
 
 namespace {
