@@ -134,6 +134,27 @@ TEST(Bgc, TinySpanReturnsSizeMax) {
     EXPECT_FALSE(bifragmentedGapCarve(disk.data(), disk.size(), 0, 3, 32, validateJpeg).found);
 }
 
+// CA-021: the bi-fragmented search must respect the attempt budget like the
+// tri-fragmented one — an exhaustive search over a large span can otherwise
+// run for hours inside the scan thread.
+TEST(Bgc, BifragmentedHonorsAttemptBudget) {
+    // Junk span: no gap ever validates, so the search exhausts its budget.
+    std::vector<uint8_t> disk(64 * 1024, 0x42);
+    BgcResult r = bifragmentedGapCarve(disk.data(), disk.size(),
+                                       0, disk.size(),
+                                       /*maxGap=*/1024, validateJpeg, /*step=*/1,
+                                       /*attemptBudget=*/100);
+    EXPECT_FALSE(r.found);
+    // Budget respected: a counter validator proves the cap.
+    std::atomic<int> calls{0}; // validator runs on this thread; atomic only to silence lints
+    auto counting = [&](const uint8_t*, size_t) {
+        ++calls;
+        return 0;
+    };
+    bifragmentedGapCarve(disk.data(), disk.size(), 0, disk.size(), 1024, counting, 1, 100);
+    EXPECT_LE(calls.load(), 100);
+}
+
 TEST(Bgc, HonorsMaxGapAbove64KiB) {
     auto s = buildSplitJpeg(/*splitAt=*/8, /*gapLen=*/10);
     BgcResult r = bifragmentedGapCarve(s.disk.data(), s.disk.size(),

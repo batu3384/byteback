@@ -58,6 +58,9 @@ public:
     // ponytail: test hook; 0 = auto (hardware, max 4)
     void setCarveWorkerCount(unsigned count) { carveWorkers_ = count; }
 
+    // ponytail: per-scan BGC budget test hook
+    void setBgcBudget(int budget) { bgcBudget_ = budget; }
+
 private:
     bool scanRangeSingle(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
                          FileSystemParser::FileRecordCallback callback,
@@ -109,7 +112,8 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t headerOffset, size_t footerOffset,
                                size_t maxGapBytes,
                                const std::function<int(const uint8_t*, size_t)>& validator,
-                               size_t stepBytes = 1);
+                               size_t stepBytes = 1,
+                               size_t attemptBudget = 8192);
 
 // ponytail: max two internal gaps (three fragments), bounded attempt budget.
 BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,

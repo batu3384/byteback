@@ -14,7 +14,7 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t headerOffset, size_t footerOffset,
                                size_t maxGapBytes,
                                const std::function<int(const uint8_t*, size_t)>& validator,
-                               size_t stepBytes) {
+                               size_t stepBytes, size_t attemptBudget) {
     BgcResult out;
     if (!disk || !validator || headerOffset >= diskSize || footerOffset <= headerOffset)
         return out;
@@ -34,11 +34,15 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
     std::vector<uint8_t> reassembled;
     reassembled.reserve(span);
 
-    // Step the gap start on `stepBytes` boundaries (fragment 1 length is a
-    // multiple of the allocation unit), and the gap length likewise.
-    for (size_t gapStart = headerOffset + stepBytes; gapStart < footerOffset; gapStart += stepBytes) {
+    // CA-021: bounded attempts, like the tri-fragmented variant. Span 16MB at
+    // 512B steps is ~10^8 reassemblies without a budget — minutes-to-hours
+    // inside the scan thread for one junk candidate.
+    size_t attempts = 0;
+    for (size_t gapStart = headerOffset + stepBytes; gapStart < footerOffset && attempts < attemptBudget;
+         gapStart += stepBytes) {
         size_t localStart = gapStart - headerOffset;
         for (size_t gapLen = stepBytes; gapLen <= gapLimit && gapStart + gapLen <= footerOffset; gapLen += stepBytes) {
+            if (++attempts >= attemptBudget) return out;
             // Reassemble: [headerOffset, gapStart) ++ [gapStart+gapLen, footerOffset)
             reassembled.clear();
             reassembled.insert(reassembled.end(),
