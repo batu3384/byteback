@@ -237,6 +237,33 @@ TEST(CarvePolicy, OggPageWalkBoundsTheCarve) {
     EXPECT_EQ(found[0].sizeBytes, off);
 }
 
+// Unfinalized recording (mdat size 0, "extends to end of file"): the classic
+// power-loss dashcam/phone case. No discoverable end -> the bounded-emission
+// policy must DROP it, never emit a 24-byte phantom.
+TEST(CarvePolicy, UnfinalizedMdatSizeZeroIsDroppedNotTruncated) {
+    std::vector<uint8_t> disk(3u * 1024 * 1024, 0);
+    // ftyp box (size 24) + mdat box with size=0 and 2MB of real payload.
+    disk[0] = 0; disk[1] = 0; disk[2] = 0; disk[3] = 24;
+    std::memcpy(disk.data() + 4, "ftypisom", 8);
+    std::memset(disk.data() + 24, 0, 4); // size = 0
+    std::memcpy(disk.data() + 28, "mdat", 4);
+    std::memset(disk.data() + 32, 0xAB, 2u * 1024 * 1024);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    int records = 0;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mp4") != std::string::npos) ++records;
+    }, &running));
+
+    EXPECT_EQ(records, 0);
+}
+
 namespace {
 std::vector<uint8_t> minimalJpeg() {
     return {0xFF,0xD8,0xFF,0xDB, 0x00,0x03,0x00, 0xFF,0xDA,0x00,0x02,

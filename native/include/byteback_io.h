@@ -72,13 +72,27 @@ public:
         const uint64_t alignedStart = (byteOffset / ss) * ss;
         const uint32_t skip = static_cast<uint32_t>(byteOffset - alignedStart);
         if (skip == 0 && sizeBytes % ss == 0) return readSectors(byteOffset, sizeBytes, buffer);
-        const uint32_t alignedSize = ((skip + sizeBytes + ss - 1) / ss) * ss;
+        // N1: 64-bit math — 32-bit rounding overflowed for sizes near 4GB.
+        const uint64_t aligned64 = ((static_cast<uint64_t>(skip) + sizeBytes + ss - 1) / ss) * ss;
+        if (aligned64 > UINT32_MAX) {
+            ReadResult res;
+            res.error = "readBytes: size too large";
+            return res;
+        }
+        const uint32_t alignedSize = static_cast<uint32_t>(aligned64);
         std::vector<uint8_t> scratch(alignedSize);
         ReadResult res = readSectors(alignedStart, alignedSize, scratch.data());
         if (res.bytesRead > skip) {
             const uint64_t avail = std::min<uint64_t>(res.bytesRead - skip, sizeBytes);
             std::memcpy(buffer, scratch.data() + skip, static_cast<size_t>(avail));
             res.bytesRead = avail;
+        } else if (res.success || res.bytesRead > 0) {
+            // W1: the aligned read succeeded partially but ended before the
+            // requested offset — the caller's buffer must NOT keep stale bytes
+            // from a previous read (recovery would write them as clean data).
+            res.success = false;
+            res.bytesRead = 0;
+            if (res.error.empty()) res.error = "read ended before requested offset";
         }
         return res;
     }

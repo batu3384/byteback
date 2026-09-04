@@ -241,9 +241,23 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     }
 
     // Walk through each data run and read the clusters
+    bool firstRun = true;
     for (const auto& run : record.runs) {
         if (isRunning && !(*isRunning)) break;
         if (bytesWritten >= totalBytes) break;
+
+        // BGC/carve records: the file truly starts startByteOffset bytes into
+        // the first run — skip them or the stitched file that validated at
+        // scan time recovers with sector-floor garbage in front.
+        uint64_t runOffsetBytes = run.startSector * sectorSize;
+        uint64_t runSizeBytes = run.sectorCount * sectorSize;
+        if (firstRun && record.startByteOffset > 0 && run.startSector != UINT64_MAX) {
+            const uint64_t skip = std::min<uint64_t>(record.startByteOffset, runSizeBytes);
+            runOffsetBytes += skip;
+            runSizeBytes -= skip;
+        }
+        firstRun = false;
+        uint64_t runBytesRead = 0;
 
         // Sparse run sentinel (set by the NTFS parser for runs with no
         // physical clusters). NTFS sparse files and compressed-unit gaps read
@@ -265,10 +279,6 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             }
             continue;
         }
-
-        uint64_t runOffsetBytes = run.startSector * sectorSize;
-        uint64_t runSizeBytes = run.sectorCount * sectorSize;
-        uint64_t runBytesRead = 0;
 
         while (runBytesRead < runSizeBytes && bytesWritten < totalBytes) {
             if (isRunning && !(*isRunning)) break;

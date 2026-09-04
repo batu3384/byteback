@@ -123,6 +123,7 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
 
         uint64_t atomSize = readBe32(hdr);
         const char* type = reinterpret_cast<const char*>(hdr + 4);
+        const bool isMdat = std::memcmp(type, "mdat", 4) == 0;
         uint64_t headerSize = 8;
         if (atomSize == 1) {
             if (inProbe >= 16) {
@@ -133,10 +134,20 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
             atomSize = readBe64(hdr + 8);
             headerSize = 16;
         }
-        if (atomSize == 0) break; // "extends to end of file": slack after carve — stop
+        if (atomSize == 0) {
+            // Size 0 = "extends to end of file" — legal in unfinalized
+            // recordings (power-loss dashcam/phone clips: mdat size 0). Only
+            // a KNOWN payload type extends the file to the bound; a zero size
+            // on an unknown type is slack after a complete file (zeros), and
+            // must keep the walk end at the last complete box.
+            if (isMdat || std::memcmp(type, "moov", 4) == 0) {
+                walkEnd = limit;
+                off = limit;
+            }
+            break;
+        }
         if (atomSize < headerSize) break;
 
-        const bool isMdat = std::memcmp(type, "mdat", 4) == 0;
         if (std::memcmp(type, "ftyp", 4) == 0) hasFtyp = true;
         else if (std::memcmp(type, "moov", 4) == 0) hasMoov = true;
         else if (isMdat) hasMdat = true;

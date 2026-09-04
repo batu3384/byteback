@@ -523,13 +523,17 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     }
     context->dedupIndex.clear();
     if (resumeScanId > 0) {
+        // N4: accumulate ALL records, then one loadFromRecords — per-page calls
+        // re-sorted the growing metadata vector each time (O(pages × n log n)).
+        std::vector<byteback::FileRecord> all;
         constexpr int kHydratePage = 1000;
         for (int off = 0;; off += kHydratePage) {
             auto batch = bdata->engine.getMetadataStore().getFiles(context->scanId, off, kHydratePage);
             if (batch.empty()) break;
-            context->dedupIndex.loadFromRecords(batch);
+            all.insert(all.end(), batch.begin(), batch.end());
             if (static_cast<int>(batch.size()) < kHydratePage) break;
         }
+        context->dedupIndex.loadFromRecords(all);
     }
 
     forensic::AuditLogger::GetInstance().LogEvent(
