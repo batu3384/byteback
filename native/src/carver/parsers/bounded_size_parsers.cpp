@@ -305,5 +305,151 @@ StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
     return r;
 }
 
+namespace {
+
+// MPEG audio frame header tables (ISO/IEC 11172-3 / 13818-3).
+struct Mp3FrameInfo {
+    uint32_t frameLen;
+    uint8_t version;  // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+    uint8_t layer;    // 3=L1... 1=L3
+    uint8_t sampIdx;
+};
+
+// Returns false unless the 4 bytes are a plausible MPEG audio frame header.
+bool parseMp3Header(const uint8_t* h, Mp3FrameInfo& out) {
+    if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) return false; // sync
+    const uint8_t version = (h[1] >> 3) & 3;
+    const uint8_t layer = (h[1] >> 1) & 3;
+    if (version == 1 || layer == 0) return false; // reserved
+    const uint8_t bitrateIdx = h[2] >> 4;
+    const uint8_t sampIdx = (h[2] >> 2) & 3;
+    const uint8_t padding = (h[2] >> 1) & 1;
+    if (bitrateIdx == 0 || bitrateIdx == 15 || sampIdx == 3) return false;
+
+    static const uint16_t kSampling[4][4] = {
+        {11025, 12000, 8000, 0},  // MPEG2.5
+        {0, 0, 0, 0},             // reserved
+        {22050, 24000, 16000, 0}, // MPEG2
+        {44100, 48000, 32000, 0}, // MPEG1
+    };
+    // kbps tables; idx 0 and 15 are invalid.
+    static const uint16_t kBitrateMpeg1[4][16] = {
+        {}, // reserved layer
+        {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0},  // L3
+        {0,32,48,56,64,80,96,112,128,160,192,224,256,320,384,0}, // L2
+        {0,32,64,96,128,160,192,224,256,288,320,352,384,416,448,0}, // L1
+    };
+    static const uint16_t kBitrateMpeg2[4][16] = {
+        {}, // reserved
+        {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0},      // L3
+        {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0},      // L2
+        {0,32,48,56,64,80,96,112,128,144,160,176,192,224,256,0}, // L1
+    };
+    const uint16_t bitrate = (version == 3) ? kBitrateMpeg1[layer][bitrateIdx]
+                                            : kBitrateMpeg2[layer][bitrateIdx];
+    const uint16_t sampling = kSampling[version][sampIdx];
+    if (bitrate == 0 || sampling == 0) return false;
+
+    // Samples per frame via the standard length formulas:
+    //   L1: (12*bit*1000/samp + pad) * 4
+    //   L2 (all): 144*bit*1000/samp + pad ; L3 MPEG1: 144..., MPEG2/2.5: 72...
+    uint64_t n;
+    if (layer == 3) { // Layer I
+        n = 12ull * bitrate * 1000 / sampling;
+        out.frameLen = static_cast<uint32_t>(n + padding) * 4;
+    } else {
+        n = (layer == 2 || version == 3) ? 144ull : 72ull;
+        out.frameLen = static_cast<uint32_t>(n * bitrate * 1000 / sampling + padding);
+    }
+    out.version = version;
+    out.layer = layer;
+    out.sampIdx = sampIdx;
+    if (out.frameLen < 24 || out.frameLen > 2048) return false;
+    return true;
+}
+
+} // namespace
+
+StructuralParseResult parseMp3Bounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt) {
+    StructuralParseResult r;
+    if (!probe || probeSize < 16) return r;
+    uint64_t budget = kFetchBudget;
+
+    uint64_t off = 0;
+    // Skip ID3v2: 'ID3' + ver/rev + flags + 4 syncsafe size bytes (+footer).
+    uint8_t hdr[10];
+    if (probe[0] == 'I' && probe[1] == 'D' && probe[2] == '3' && probeSize >= 10) {
+        std::memcpy(hdr, probe, 10);
+        const uint64_t tagSize = (static_cast<uint64_t>(hdr[6] & 0x7F) << 21) |
+                                 (static_cast<uint64_t>(hdr[7] & 0x7F) << 14) |
+                                 (static_cast<uint64_t>(hdr[8] & 0x7F) << 7) |
+                                 static_cast<uint64_t>(hdr[9] & 0x7F);
+        off = 10 + tagSize + ((hdr[5] & 0x10) ? 10 : 0);
+        if (off + 4 > maxBytes) return r;
+        // Reload bytes at the frame start if the tag ran past the probe.
+        uint8_t tmp[4];
+        if (off + 4 <= probeSize) {
+            std::memcpy(tmp, probe + off, 4);
+        } else if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                            probeAbsOffset + off, 4, tmp)) {
+            return r;
+        }
+        if (tmp[0] != 0xFF || (tmp[1] & 0xE0) != 0xE0) return r;
+    }
+
+    // Require a consistent run before accepting the walk.
+    Mp3FrameInfo first{};
+    uint64_t pos = off;
+    int consistent = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (pos + 4 > maxBytes) break;
+        uint8_t h[4];
+        if (pos + 4 <= probeSize) {
+            std::memcpy(h, probe + pos, 4);
+        } else if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                            probeAbsOffset + pos, 4, h)) {
+            break;
+        }
+        Mp3FrameInfo fi{};
+        if (!parseMp3Header(h, fi)) break;
+        if (consistent == 0) first = fi;
+        else if (fi.version != first.version || fi.layer != first.layer ||
+                 fi.sampIdx != first.sampIdx) break;
+        pos += fi.frameLen;
+        ++consistent;
+    }
+    if (consistent < 4) return r;
+
+    // Walk the rest of the stream.
+    int frames = consistent;
+    while (pos + 4 <= maxBytes) {
+        uint8_t h[4];
+        if (pos + 4 <= probeSize) {
+            std::memcpy(h, probe + pos, 4);
+        } else if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                            probeAbsOffset + pos, 4, h)) {
+            break;
+        }
+        Mp3FrameInfo fi{};
+        if (!parseMp3Header(h, fi) || fi.version != first.version ||
+            fi.layer != first.layer || fi.sampIdx != first.sampIdx ||
+            fi.frameLen > maxBytes - pos) {
+            break;
+        }
+        pos += fi.frameLen;
+        ++frames;
+    }
+
+    // ~20 frames at 128 kbps is ~0.6 s of audio — below that, a chain of
+    // coincidental headers is too cheap for an attacker to be worth keeping.
+    if (frames < 20 || pos < 4) return r;
+    r.valid = true;
+    r.size = pos;
+    r.confidence = 85;
+    return r;
+}
+
 } // namespace carver
 } // namespace byteback

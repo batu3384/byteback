@@ -46,6 +46,13 @@ StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
                                       uint64_t probeAbsOffset, uint64_t maxBytes,
                                       const BoxHeaderReader& readAt);
 
+// MP3: skip ID3v2, then walk MPEG audio frame headers (sync + version/layer/
+// bitrate/sampling tables) until an invalid frame. Requires a consistent
+// run before accepting; a lone 4-byte sync is not evidence.
+StructuralParseResult parseMp3Bounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt);
+
 // OGG page CRC-32 (poly 0x04c11db7, init 0, unreflected). Exposed so tests
 // can build valid pages; parseOggBounded rejects pages whose checksum
 // (computed with the field zeroed) does not match.
