@@ -817,6 +817,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 }
                                 if (!probeBuf.empty()) {
                                     // CA-018/CA-022: targeted reads beat the 1MB probe clamp.
+                                    // NB: maxSize==actualSize here on purpose — the footer already
+                                    // fixed the exact size; the walk may only refine within it.
                                     if (!applyBoundedTargetedParse(effExt, reader, it->startOffset,
                                                                    probeBuf.data(), probeBuf.size(),
                                                                    actualSize, actualSize, confidence)) {
