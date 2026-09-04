@@ -225,9 +225,8 @@ TEST(PreviewReader, Mp4MdatIdrHint) {
     FilePreviewResult preview = readFilePreview(reader, rec);
     EXPECT_TRUE(preview.success) << preview.error;
     EXPECT_EQ(preview.kind, "binary");
-    EXPECT_FALSE(preview.note.empty());
-    EXPECT_NE(preview.note.find("IDR"), std::string::npos) << preview.note;
-    EXPECT_NE(preview.note.find("decode yok"), std::string::npos);
+    // CA-052: notes are machine codes; the renderer localizes them.
+    EXPECT_NE(preview.note.find("video.h264.idr_frame"), std::string::npos) << preview.note;
 }
 
 TEST(PreviewReader, MkvEmbeddedJpegFrame) {

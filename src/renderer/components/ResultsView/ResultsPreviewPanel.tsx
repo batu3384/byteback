@@ -3,6 +3,7 @@ import type { FilePreviewResult, FileRecord } from '../../../shared/ipc-contract
 import { formatPreviewHex, previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
 import { extractJpegExifUnix, extractPdfInfo, sniffMediaContainer } from '../../../shared/embedded-metadata'
 import { formatFsTimestamp, getExtension } from './results-view-utils'
+import { localizeNote } from '../../i18n'
 
 interface ResultsPreviewPanelProps {
   preview: FilePreviewResult | null
@@ -78,7 +79,7 @@ export default function ResultsPreviewPanel({
             {typeMetaLine(preview, previewRecord)} · {preview.data?.length ?? 0} bayt
             {(preview.data?.length ?? 0) >= 64 * 1024 ? ' · ilk 64 KB' : ''}
             {embeddedDate ? ` · ${embeddedDate}` : ''}
-            {preview.note ? ` · ${preview.note}` : ''}
+            {preview.note ? ` · ${localizeNote(preview.note)}` : ''}
           </p>
           {previewImgUrl ? (
             <img
@@ -111,11 +112,11 @@ export default function ResultsPreviewPanel({
           ) : preview.kind === 'binary' && (preview.note || mediaHint) ? (
             <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
               {preview.note ? (
-                <p style={{ margin: mediaHint && !preview.note.includes('FFmpeg') ? '0 0 8px' : 0 }}>
-                  {preview.note.includes('FFmpeg ilk kare') ? (
-                    <span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{preview.note}</span>
+                <p style={{ margin: mediaHint && !preview.note.includes('video.ffmpeg.first_frame') ? '0 0 8px' : 0 }}>
+                  {preview.note.startsWith('video.ffmpeg.first_frame') ? (
+                    <span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{localizeNote(preview.note)}</span>
                   ) : (
-                    preview.note
+                    localizeNote(preview.note)
                   )}
                 </p>
               ) : null}

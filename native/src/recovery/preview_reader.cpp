@@ -394,16 +394,21 @@ bool sniffMp4MdatAvc(const uint8_t* data, size_t size, Mp4AvcHint& hint) {
     return false;
 }
 
+// CA-052: machine note codes — the renderer localizes them (i18n "note.*"
+// keys); the detail tail stays numeric and locale-independent.
 std::string formatMp4AvcNote(const Mp4AvcHint& hint) {
     if (!hint.hasIdr && !hint.hasSps) return {};
-    std::string note = "H.264";
-    if (hint.hasIdr) note += " · IDR kare @ +" + std::to_string(hint.idrOff);
+    std::string detail;
+    if (hint.hasIdr) detail += "@ +" + std::to_string(hint.idrOff);
     if (hint.width > 0 && hint.height > 0) {
-        note += " · " + std::to_string(hint.width) + "×" + std::to_string(hint.height) + " (SPS)";
+        if (!detail.empty()) detail += " ";
+        detail += std::to_string(hint.width) + "x" + std::to_string(hint.height);
     } else if (hint.hasSps) {
-        note += " · SPS bulundu";
+        if (!detail.empty()) detail += " ";
+        detail += "SPS";
     }
-    note += " · decode yok";
+    std::string note = hint.hasIdr ? "video.h264.idr_frame" : "video.h264.sps_only";
+    if (!detail.empty()) note += ":" + detail;
     return note;
 }
 
@@ -491,13 +496,13 @@ bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePrevi
 
     const std::string ffmpeg = resolveFfmpegExe();
     if (!ffmpegReachable(ffmpeg)) {
-        setVideoPreviewNote(out, "Video · FFmpeg bulunamadı (PATH veya BYTEBACK_FFMPEG)");
+        setVideoPreviewNote(out, "video.ffmpeg.missing");
         return false;
     }
 
     std::vector<uint8_t> buf;
     if (!readRecordPrefix(reader, record, buf, kFfmpegProbeMaxBytes) || buf.size() < 32) {
-        setVideoPreviewNote(out, "Video · okuma başarısız");
+        setVideoPreviewNote(out, "video.read_failed");
         return false;
     }
 
@@ -520,7 +525,7 @@ bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePrevi
     {
         std::ofstream ofs(inPath, std::ios::binary);
         if (!ofs) {
-            setVideoPreviewNote(out, "Video · geçici dosya yazılamadı");
+            setVideoPreviewNote(out, "video.temp_write_failed");
             return false;
         }
         ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
@@ -536,25 +541,25 @@ bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePrevi
         outPath.string(),
     }, 10000);
     if (!ok) {
-        setVideoPreviewNote(out, "Video · FFmpeg ilk kare başarısız");
+        setVideoPreviewNote(out, "video.ffmpeg.frame_failed");
         return false;
     }
 
     std::ifstream ifs(outPath, std::ios::binary);
     if (!ifs) {
-        setVideoPreviewNote(out, "Video · FFmpeg çıktısı okunamadı");
+        setVideoPreviewNote(out, "video.ffmpeg.output_unreadable");
         return false;
     }
     std::vector<uint8_t> jpeg((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     if (jpeg.size() < 4 || byteback::carver::validateJpeg(jpeg.data(), jpeg.size()) < 50) {
-        setVideoPreviewNote(out, "Video · FFmpeg geçersiz JPEG üretti");
+        setVideoPreviewNote(out, "video.ffmpeg.invalid_jpeg");
         return false;
     }
 
     out.data = std::move(jpeg);
     out.kind = "image";
     out.mime = "image/jpeg";
-    out.note = "FFmpeg ilk kare";
+    out.note = "video.ffmpeg.first_frame";
     return true;
 }
 #endif
@@ -637,7 +642,7 @@ FilePreviewResult readFilePreview(DiskReader& reader, const FileRecord& record) 
     if (out.kind != "image") tryFfmpegVideoFrame(reader, record, out);
 #else
     if (out.kind != "image" && isVideoRecord(record) && out.note.empty()) {
-        out.note = "Video · FFmpeg önizleme yalnızca Windows'ta";
+        out.note = "video.ffmpeg.windows_only";
     }
 #endif
     return out;

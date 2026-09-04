@@ -7,6 +7,7 @@ import type { ScanProfile } from '../../../shared/scan-profiles'
 import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../../../shared/scan-session'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
+import { localizeNote } from '../../i18n'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
 
 interface DashboardProps {
@@ -319,7 +320,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
                 return
               }
               const err = await window.api.setBitLockerRecoveryPassword(recoveryDrive, recoveryPassword)
-              setRecoveryStatus(err ? err : 'FVEK motor okumasına uygulandı')
+              setRecoveryStatus(err ? localizeNote(err) : 'FVEK motor okumasına uygulandı')
             }}
           >
             Kurtarmadan aç

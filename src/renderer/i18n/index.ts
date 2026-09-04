@@ -161,6 +161,37 @@ const STRINGS: Record<string, Entry> = {
   'results.pageLabel': { tr: 'Sayfa', en: 'Page' },
   'results.noPreview': { tr: 'önizlenemedi', en: 'no preview' },
   'results.noImages': { tr: 'Bu sayfada resim yok. Galeri yalnızca geçerli sayfadaki resimleri gösterir.', en: 'No images on this page. The gallery only shows images on the current page.' },
+
+  // CA-052: native machine note/error codes -> localized text. Detail tails
+  // (offsets, dimensions) after the first ':' stay numeric.
+  'note.video.ffmpeg.missing': { tr: 'Video · FFmpeg bulunamadı (PATH veya BYTEBACK_FFMPEG)', en: 'Video · FFmpeg not found (PATH or BYTEBACK_FFMPEG)' },
+  'note.video.read_failed': { tr: 'Video · okuma başarısız', en: 'Video · read failed' },
+  'note.video.temp_write_failed': { tr: 'Video · geçici dosya yazılamadı', en: 'Video · temp file write failed' },
+  'note.video.ffmpeg.frame_failed': { tr: 'Video · FFmpeg ilk kare çıkarılamadı', en: 'Video · FFmpeg first-frame extraction failed' },
+  'note.video.ffmpeg.output_unreadable': { tr: 'Video · FFmpeg çıktısı okunamadı', en: 'Video · FFmpeg output unreadable' },
+  'note.video.ffmpeg.invalid_jpeg': { tr: 'Video · FFmpeg geçersiz JPEG üretti', en: 'Video · FFmpeg produced an invalid JPEG' },
+  'note.video.ffmpeg.windows_only': { tr: 'Video · FFmpeg önizleme yalnızca Windows\'ta', en: 'Video · FFmpeg preview is Windows-only' },
+  'note.video.ffmpeg.first_frame': { tr: 'FFmpeg ilk kare', en: 'FFmpeg first frame' },
+  'note.video.h264.idr_frame': { tr: 'Video · H.264 IDR kare {detail} · decode yok', en: 'Video · H.264 IDR frame {detail} · no decoder' },
+  'note.video.h264.sps_only': { tr: 'Video · H.264 SPS {detail} · decode yok', en: 'Video · H.264 SPS {detail} · no decoder' },
+  'note.bitlocker.tpm_key_only': { tr: 'Yalnız TPM + başlangıç-anahtarı koruyucusu — parola/kurtarma yolu yok', en: 'TPM + startup-key protectors only — no password/recovery path' },
+  'note.bitlocker.tpm_only': { tr: 'Yalnız TPM koruyucusu — parola/kurtarma yolu yok', en: 'TPM protector only — no password/recovery path' },
+  'note.bitlocker.bek_only': { tr: 'Yalnız .BEK başlangıç-anahtarı koruyucusu — parola/kurtarma yolu yok', en: 'Startup-key (.BEK) protector only — no password/recovery path' },
+  'note.bitlocker.protector_unsupported': { tr: 'TPM/başlangıç-anahtarı/parola koruyucusu desteklenmiyor', en: 'TPM/startup-key/password protector unsupported' },
+}
+
+/**
+ * Localize a native machine note ("code" or "code:numeric detail").
+ * Unknown or legacy text passes through unchanged.
+ */
+export function localizeNote(note?: string | null): string {
+  if (!note) return ''
+  const sep = note.indexOf(':')
+  const code = sep === -1 ? note : note.slice(0, sep)
+  const entry = STRINGS['note.' + code]
+  if (!entry) return note
+  const detail = sep === -1 ? '' : note.slice(sep + 1)
+  return entry[lang].replace('{detail}', detail)
 }
 
 export function t(key: string): string {
