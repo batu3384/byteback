@@ -99,6 +99,7 @@ set(SOURCES
   src/recovery/path_util.cpp
   src/recovery/validation.cpp
   src/recovery/preview_reader.cpp
+  src/recovery/process_util.cpp
   ${SQLITE_SOURCES}
 )
 
@@ -191,6 +192,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_signature_coverage.cpp
     tests/test_signature_hygiene.cpp
     tests/test_carve_policy.cpp
+    tests/test_process_util.cpp
     tests/test_ntfs_thumbcache.cpp
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
@@ -228,6 +230,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/recovery/path_util.cpp
     src/recovery/validation.cpp
     src/recovery/preview_reader.cpp
+    src/recovery/process_util.cpp
     src/recovery/recovery_engine.cpp
     src/db/metadata_store.cpp
     src/db/metadata_store_case.cpp

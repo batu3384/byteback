@@ -1,6 +1,7 @@
 #include "recovery/preview_reader.h"
 #include "byteback_memory.h"
 #include "carver/file_validators.h"
+#include "recovery/process_util.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -474,13 +475,9 @@ std::string resolveFfmpegExe() {
 }
 
 bool ffmpegReachable(const std::string& exe) {
-    namespace fs = std::filesystem;
-    if (exe.find('/') != std::string::npos || exe.find('\\') != std::string::npos) {
-        std::error_code ec;
-        return fs::exists(exe, ec);
-    }
-    const std::string cmd = "where \"" + exe + "\" >nul 2>nul";
-    return std::system(cmd.c_str()) == 0;
+    // CA-039: SearchPathW / attribute check — the old `where` shell probe
+    // interpolated the exe name into a cmd.exe command line.
+    return !resolveOnPath(exe).empty();
 }
 
 void setVideoPreviewNote(FilePreviewResult& out, const char* msg) {
@@ -529,10 +526,16 @@ bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePrevi
         ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     }
 
-    const std::string cmd = "\"" + ffmpeg + "\" -hide_banner -loglevel error -y -i \"" + inPath.string() +
-                            "\" -frames:v 1 -q:v 3 \"" + outPath.string() + "\" 2>nul";
-    const int rc = std::system(cmd.c_str());
-    if (rc != 0) {
+    // CA-039: CreateProcessW argv — no cmd.exe, so a crafted BYTEBACK_FFMPEG
+    // value or temp path can never break out of quoting; 10s timeout kills a
+    // hung decoder instead of freezing the preview IPC.
+    const bool ok = runProcess(ffmpeg, {
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", inPath.string(),
+        "-frames:v", "1", "-q:v", "3",
+        outPath.string(),
+    }, 10000);
+    if (!ok) {
         setVideoPreviewNote(out, "Video · FFmpeg ilk kare başarısız");
         return false;
     }
