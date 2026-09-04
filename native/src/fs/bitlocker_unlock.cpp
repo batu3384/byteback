@@ -263,10 +263,11 @@ std::string unsupportedProtectorHint(const std::vector<uint8_t>& meta) {
         }
         pos += esize;
     }
-    if (tpm && startup) return "TPM + startup-key protectors only — parola/recovery yok";
-    if (tpm) return "TPM protector only — parola/recovery yok";
-    if (startup) return "startup-key (.BEK) protector only — parola/recovery yok";
-    return "TPM/startup-key/password unsupported";
+    // CA-052: machine codes — the renderer localizes them (i18n "note.*").
+    if (tpm && startup) return "bitlocker.tpm_key_only";
+    if (tpm) return "bitlocker.tpm_only";
+    if (startup) return "bitlocker.bek_only";
+    return "bitlocker.protector_unsupported";
 }
 
 bool deriveKeyFromPassword(const std::string& passwordUtf8, const ProtectorMaterial& material,
