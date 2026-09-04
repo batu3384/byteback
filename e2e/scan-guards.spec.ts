@@ -1,12 +1,10 @@
 import { test, expect, _electron as electron } from '@playwright/test'
-import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 const root = path.join(__dirname, '..')
 const mainJs = path.join(root, 'out', 'main', 'main.js')
 
 test('scan-dependent sidebar items disabled without completed scan', async () => {
-  test.skip(!existsSync(mainJs), 'out/main/main.js missing — npm run build first')
 
   const app = await electron.launch({ args: [mainJs], cwd: root })
   try {
@@ -23,7 +21,6 @@ test('scan-dependent sidebar items disabled without completed scan', async () =>
 })
 
 test('scan-dependent nav stays on dashboard when report is forced', async () => {
-  test.skip(!existsSync(mainJs), 'out/main/main.js missing — npm run build first')
 
   const app = await electron.launch({ args: [mainJs], cwd: root })
   try {

@@ -78,8 +78,8 @@ describe('results-view-utils', () => {
   })
 
   it('surfaces MFT confidence in quality hint', () => {
-    const mft: FileRecord = { id: 1, name: 'a', confidence: 40, source: 'ntfs_mft' }
-    const carve: FileRecord = { id: 2, name: 'b', confidence: 90, source: 'carver' }
+    const mft: FileRecord = { id: 1, name: 'a', confidence: 40, source: 'ntfs_mft', sizeBytes: 0, status: 0 }
+    const carve: FileRecord = { id: 2, name: 'b', confidence: 90, source: 'carver', sizeBytes: 0, status: 0 }
     expect(qualityHint(mft)).toBe('Düşük güven')
     expect(qualityHint(carve)).toBe('Muhtemelen tam')
   })
