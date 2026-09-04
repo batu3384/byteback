@@ -1,20 +1,21 @@
 import React, { useEffect, useState } from 'react'
 import './Header.css'
 import { Sun, Moon } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
-const pageTitles: Record<string, string> = {
-  dashboard: 'Ana Ekran',
-  scan: 'Aktif Tarama',
-  results: 'Kurtarma Sonuçları',
-  hex: 'Hex İnceleyici',
-  imager: 'İmaj (RAW / E01)',
-  smart: 'S.M.A.R.T. Durumu',
-  search: 'Kelime Arama',
-  report: 'Adli Rapor',
-  shredder: 'Veri Yok Edici',
-  raid: 'Sanal RAID Oluştur',
-  timeline: 'Olay Zaman Çizelgesi',
-  case: 'Dava / NSRL',
+const pageTitleKeys: Record<string, string> = {
+  dashboard: 'title.dashboard',
+  scan: 'title.scan',
+  results: 'title.results',
+  hex: 'title.hex',
+  imager: 'title.imager',
+  smart: 'title.smart',
+  search: 'title.search',
+  report: 'title.report',
+  shredder: 'title.shredder',
+  raid: 'title.raid',
+  timeline: 'title.timeline',
+  case: 'title.case',
 }
 
 interface HeaderProps {
@@ -25,6 +26,7 @@ interface HeaderProps {
 }
 
 function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): React.ReactElement {
+  const { t, lang, setLang } = useI18n()
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     (localStorage.getItem('byteback-theme') as 'dark' | 'light') || 'dark'
   )
@@ -37,19 +39,28 @@ function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): Reac
   return (
     <header className="app-header">
       <div className="header-title">
-        <h2>{pageTitles[title] || title.toUpperCase()}</h2>
+        <h2>{pageTitleKeys[title] ? t(pageTitleKeys[title]) : title.toUpperCase()}</h2>
       </div>
       <div className="header-actions">
         {scanBusy && onOpenScan && title !== 'scan' && (
           <button type="button" className="scan-pill" onClick={onOpenScan}>
-            Tarama sürüyor{typeof scanPercent === 'number' ? ` · %${scanPercent}` : ''}
+            {t('header.scanRunning')}{typeof scanPercent === 'number' ? ` · %${scanPercent}` : ''}
           </button>
         )}
         <button
           className="icon-btn"
           type="button"
-          aria-label={theme === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
-          title={theme === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
+          aria-label={t('header.toEnglish')}
+          title={t('header.toEnglish')}
+          onClick={() => setLang(lang === 'tr' ? 'en' : 'tr')}
+        >
+          <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{lang === 'tr' ? 'EN' : 'TR'}</span>
+        </button>
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label={theme === 'dark' ? t('header.toLightTheme') : t('header.toDarkTheme')}
+          title={theme === 'dark' ? t('header.toLightTheme') : t('header.toDarkTheme')}
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         >
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
