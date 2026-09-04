@@ -34,6 +34,23 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
                                           uint64_t probeAbsOffset, uint64_t maxBytes,
                                           const BoxHeaderReader& readAt);
 
+// Matroska/WebM: EBML header + Segment vint size bounds the file exactly
+// from the first few dozen bytes. Unknown-size Segments are unboundable.
+StructuralParseResult parseMkvBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt);
+
+// OGG: walk 27-byte page headers (via readAt beyond the probe) until the EOS
+// flag or a broken capture — the walk end bounds the file.
+StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt);
+
+// OGG page CRC-32 (poly 0x04c11db7, init 0, unreflected). Exposed so tests
+// can build valid pages; parseOggBounded rejects pages whose checksum
+// (computed with the field zeroed) does not match.
+uint32_t oggCrc32(const uint8_t* data, size_t len);
+
 // TIFF family (incl. CR2): IFD0 chain walk; StripOffsets+StripByteCounts
 // bound the exact file end. Invalid or unbounded -> not carveable.
 StructuralParseResult parseTiff(const uint8_t* data, size_t size);

@@ -50,7 +50,8 @@ TEST(CarvePolicy, FooterlessMagicWithoutParserEmitsNothing) {
     put(600000, {0x49, 0x44, 0x33, 0x03});     // MP3 ID3
 
     const ScanResult r = runScan(disk);
-    EXPECT_EQ(r.records, 0);
+    EXPECT_EQ(r.records, 0)
+        << (r.files.empty() ? std::string() : r.files[0].extension + " @" + std::to_string(r.files[0].startSector));
 }
 
 TEST(CarvePolicy, RiffDeclaredSizeBoundsTheCarve) {
@@ -158,6 +159,82 @@ TEST(CarvePolicy, TailChunkPastEndStillScanned) {
     EXPECT_EQ(found[0].sizeBytes, 492u + sizeof(iend));
     reader.detachImageBackend(); // release the file lock before removal
     std::filesystem::remove(path);
+}
+
+// Matroska Segment vint bounds the file exactly — MKV/WebM were dormant
+// (never emitted) before a bounded parser existed.
+TEST(CarvePolicy, MkvSegmentVintBoundsTheCarve) {
+    // EBML header: ID(4) + size vint 0x88 (8 bytes) + 8 bytes = 13 bytes.
+    // Segment at offset 13: ID 18538067 + 2-byte vint 0x43E8 (=1000).
+    std::vector<uint8_t> disk(8192, 0);
+    disk[0] = 0x1A; disk[1] = 0x45; disk[2] = 0xDF; disk[3] = 0xA3;
+    disk[4] = 0x88;
+    for (int i = 5; i < 13; ++i) disk[i] = 0x42; // 8 bytes of header payload
+    disk[13] = 0x18; disk[14] = 0x53; disk[15] = 0x80; disk[16] = 0x67;
+    disk[17] = 0x43; disk[18] = 0xE8; // vint: 1000
+    const uint64_t kTotal = 19ull + 1000;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mkv") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, kTotal);
+    EXPECT_GE(found[0].confidence, 75);
+}
+
+TEST(CarvePolicy, OggPageWalkBoundsTheCarve) {
+    // Two CRC-valid pages: page1 27+1+100 (BOS), page2 27+1+50 (EOS).
+    auto oggCrc = [](const std::vector<uint8_t>& d) {
+        uint32_t crc = 0;
+        for (uint8_t byte : d) {
+            crc ^= static_cast<uint32_t>(byte) << 24;
+            for (int b = 0; b < 8; ++b) {
+                crc = (crc & 0x80000000u) ? ((crc << 1) ^ 0x04c11db7u) : (crc << 1);
+            }
+        }
+        return crc;
+    };
+
+    std::vector<uint8_t> disk(8192, 0);
+    size_t off = 0;
+    auto page = [&](uint8_t flags, uint8_t lacing) {
+        std::vector<uint8_t> p(27 + 1 + lacing, 0);
+        p[0] = 'O'; p[1] = 'g'; p[2] = 'g'; p[3] = 'S';
+        p[4] = 0;        // version
+        p[5] = flags;    // 0x02 BOS / 0x04 EOS
+        p[26] = 1;       // one segment
+        p[27] = lacing;
+        const uint32_t crc = oggCrc(p);
+        for (int i = 0; i < 4; ++i) p[22 + i] = static_cast<uint8_t>((crc >> (8 * i)) & 0xFF);
+        std::memcpy(disk.data() + off, p.data(), p.size());
+        off += p.size();
+    };
+    page(0x02, 100);
+    page(0x04, 50);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("ogg") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, off);
 }
 
 namespace {

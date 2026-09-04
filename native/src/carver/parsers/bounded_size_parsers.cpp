@@ -7,11 +7,24 @@
 #include "carver/structural_parsers.h"
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace byteback {
 namespace carver {
 
 namespace {
+
+// Fetch `len` bytes at absolute offset `abs`, serving from the probe window
+// when possible, otherwise through the caller's readAt.
+bool fetchAt(const uint8_t* probe, size_t probeSize, uint64_t probeAbsOffset,
+             const BoxHeaderReader& readAt, uint64_t abs, uint32_t len, uint8_t* out) {
+    if (abs >= probeAbsOffset && abs + len <= probeAbsOffset + probeSize) {
+        std::memcpy(out, probe + static_cast<size_t>(abs - probeAbsOffset), len);
+        return true;
+    }
+    return readAt && readAt(abs, len, out);
+}
+
 uint16_t rd16(const uint8_t* p, bool le) {
     return le ? static_cast<uint16_t>(p[0] | (p[1] << 8))
               : static_cast<uint16_t>((p[0] << 8) | p[1]);
@@ -27,7 +40,8 @@ uint64_t rd64le(const uint8_t* p) {
     for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
     return v;
 }
-}
+
+} // namespace
 
 // TIFF: walk the IFD chain; the max StripOffsets[i]+StripByteCounts[i] is the
 // true end for non-fragmented camera files (the dominant recovery case).
@@ -157,6 +171,135 @@ StructuralParseResult parseCab(const uint8_t* data, size_t size) {
     r.valid = true;
     r.size = declared;
     r.confidence = 70;
+    return r;
+}
+
+namespace {
+
+// EBML variable-length integer: leading zero bits give the length; all value
+// bits set means "unknown size" (unboundable). Returns false on truncation.
+bool readEbmlVint(const uint8_t* p, uint32_t avail, uint64_t& value, uint32_t& len, bool& unknown) {
+    unknown = false;
+    if (avail == 0 || p[0] == 0) return false;
+    uint32_t length = 1;
+    while (length <= 8 && !(p[0] & (0x80u >> (length - 1)))) ++length;
+    if (length > 8 || length > avail) return false;
+    value = p[0] & (0xFFu >> length);
+    for (uint32_t i = 1; i < length; ++i) value = (value << 8) | p[i];
+    const uint64_t allBits = (1ull << (7 * length)) - 1;
+    unknown = (value == allBits);
+    len = length;
+    return true;
+}
+
+} // namespace
+
+// Matroska/WebM: the Segment element's vint size bounds the whole file from
+// the first ~30 bytes, so even a multi-GB movie bounds from the 1MB probe.
+StructuralParseResult parseMkvBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt) {
+    StructuralParseResult r;
+    uint8_t hdr[16];
+    if (!probe || probeSize < 8) return r;
+    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset, 12, hdr)) return r;
+    static const uint8_t kEbml[4] = {0x1A, 0x45, 0xDF, 0xA3};
+    if (std::memcmp(hdr, kEbml, 4) != 0) return r;
+
+    uint64_t hdrSize = 0;
+    uint32_t hdrLen = 0;
+    bool unknown = false;
+    if (!readEbmlVint(hdr + 4, 8, hdrSize, hdrLen, unknown) || unknown) return r;
+
+    // Segment ID follows the whole EBML header element: ID + vint + payload.
+    const uint64_t segIdOff = 4 + hdrLen + hdrSize;
+    uint8_t seg[16];
+    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset + segIdOff, 12, seg)) return r;
+    static const uint8_t kSegment[4] = {0x18, 0x53, 0x80, 0x67};
+    if (std::memcmp(seg, kSegment, 4) != 0) return r;
+
+    uint64_t segSize = 0;
+    uint32_t segLen = 0;
+    if (!readEbmlVint(seg + 4, 8, segSize, segLen, unknown) || unknown || segSize == 0) return r;
+
+    const uint64_t total = segIdOff + 4 + segLen + segSize;
+    if (total > maxBytes) return r;
+    r.valid = true;
+    r.size = total;
+    r.confidence = 80;
+    return r;
+}
+
+// OGG page CRC: poly 0x04c11db7, init 0, unreflected, no final xor.
+uint32_t oggCrc32(const uint8_t* data, size_t len) {
+    uint32_t crc = 0;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= static_cast<uint32_t>(data[i]) << 24;
+        for (int b = 0; b < 8; ++b) {
+            crc = (crc & 0x80000000u) ? ((crc << 1) ^ 0x04c11db7u) : (crc << 1);
+        }
+    }
+    return crc;
+}
+
+// OGG: walk pages until the EOS flag or a broken capture. Every page's CRC
+// is verified — junk after a magic must not validate as a "page walk".
+StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt) {
+    StructuralParseResult r;
+    if (!probe || probeSize < 27) return r;
+
+    // A page is at most 27 + 255 + 65025 bytes; one buffer serves the walk.
+    std::vector<uint8_t> page;
+    page.reserve(27 + 255 + 65025);
+    uint64_t off = 0;
+    uint64_t end = 0;
+    for (int pages = 0; pages < 1000000; ++pages) {
+        if (off + 27 > maxBytes) break;
+        uint8_t hdr[27];
+        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset + off, 27, hdr)) break;
+        if (std::memcmp(hdr, "OggS", 4) != 0) break; // slack or garbage after the stream
+        if (hdr[4] != 0) break;                      // stream structure version
+        if (hdr[5] & 0xF8) break;                    // reserved flag bits set
+        const uint32_t nseg = hdr[26];
+        if (nseg == 0) break;
+        uint64_t body = 0;
+        for (uint32_t i = 0; i < nseg; ++i) {
+            uint8_t segLen = 0;
+            if (!fetchAt(probe, probeSize, probeAbsOffset, readAt,
+                         probeAbsOffset + off + 27 + i, 1, &segLen)) break;
+            body += segLen;
+            page.push_back(segLen);
+        }
+        if (off + 27 + nseg + body > maxBytes) {
+            page.clear();
+            break;
+        }
+        // Fetch the whole page: CRC covers header + lacing + payload with the
+        // checksum field zeroed.
+        page.insert(page.begin(), hdr, hdr + 27);
+        std::memset(page.data() + 22, 0, 4);
+        const uint64_t pageLen = 27 + nseg + body;
+        if (page.size() > 27 + nseg) page.resize(pageLen); // room for payload
+        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt,
+                     probeAbsOffset + off + 27 + nseg, static_cast<uint32_t>(body),
+                     page.data() + 27 + nseg)) {
+            page.clear();
+            break;
+        }
+        if (oggCrc32(page.data(), static_cast<size_t>(pageLen)) != rd32(hdr + 22, true)) {
+            break; // checksum mismatch: not a real OGG page
+        }
+        off += pageLen;
+        end = off;
+        page.clear();
+        if (hdr[5] & 0x04) break; // EOS page: stream ends here
+    }
+    if (end < 28) return r;
+    r.valid = true;
+    r.size = end;
+    r.confidence = 80;
     return r;
 }
 
