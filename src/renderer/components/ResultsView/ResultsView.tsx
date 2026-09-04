@@ -713,9 +713,9 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           <div className="filter-row">
             <span className="filter-label">Durum</span>
             <button type="button" className="filter-chip" aria-pressed={statusFilter === 'deleted'} onClick={() => setStatusFilter('deleted')} data-testid="filter-deleted">Silinmiş</button>
-            <button type="button" className="filter-chip" aria-pressed={statusFilter === 'allocated'} onClick={() => setStatusFilter('allocated')}>Tahsisli</button>
+            <button type="button" className="filter-chip" aria-pressed={statusFilter === 'allocated'} onClick={() => setStatusFilter('allocated')} data-testid="filter-allocated">Tahsisli</button>
             <button type="button" className="filter-chip" aria-pressed={statusFilter === 'carved'} onClick={() => setStatusFilter('carved')} data-testid="filter-carved">Oyulmuş</button>
-            <button type="button" className="filter-chip" aria-pressed={statusFilter === 'all'} onClick={() => setStatusFilter('all')}>Tümü</button>
+            <button type="button" className="filter-chip" aria-pressed={statusFilter === 'all'} onClick={() => setStatusFilter('all')} data-testid="filter-all">Tümü</button>
             <label className="dup-toggle">
               <input type="checkbox" checked={showDuplicates} onChange={(e) => setShowDuplicates(e.target.checked)} data-testid="show-duplicates" />
               Tekrarlar
@@ -828,6 +828,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   return (
                   <tr
                     key={f.id}
+                    data-testid="result-row"
                     title={titleParts || undefined}
                     tabIndex={0}
                     onKeyDown={(e) => {
@@ -856,6 +857,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                         <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>
                       ) : (
                         <span
+                          data-testid={`confidence-${f.confidence ?? 0}`}
                           style={{
                             padding: '3px 8px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: 600,
                             color: tierColor,

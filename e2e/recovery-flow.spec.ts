@@ -1,37 +1,29 @@
-import { test, expect, _electron as electron } from '@playwright/test'
-import path from 'node:path'
-
-const root = path.join(__dirname, '..')
-const mainJs = path.join(root, 'out', 'main', 'main.js')
+import { test, expect } from '@playwright/test'
+import { launchApp, closeApp } from './helpers'
 
 test.describe('Recovery flow UI', () => {
   test('results page blocked until scan completes', async () => {
-
-    const app = await electron.launch({ args: [mainJs], cwd: root })
+    const launched = await launchApp()
+    const { win } = launched
     try {
-      const win = await app.firstWindow()
-      await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
-
       const resultsBtn = win.getByTestId('nav-results')
       await expect(resultsBtn).toBeDisabled()
       await resultsBtn.click({ force: true })
       await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')
       await expect(win.getByTestId('show-duplicates')).not.toBeVisible()
     } finally {
-      await app.close()
+      await closeApp(launched)
     }
   })
 
   test('paused scan banner test id when no native session', async () => {
-
-    const app = await electron.launch({ args: [mainJs], cwd: root })
+    const launched = await launchApp()
+    const { win } = launched
     try {
-      const win = await app.firstWindow()
-      await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
       // Banner only when status=4 in DB; ensure dashboard loads without crash.
       await expect(win.getByTestId('scan-profile-legend')).toBeVisible()
     } finally {
-      await app.close()
+      await closeApp(launched)
     }
   })
 })

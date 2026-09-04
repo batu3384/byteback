@@ -114,6 +114,8 @@ interface BytebackEngine {
   lookupNsrl(md5Hex: string): boolean
   getNsrlStats(): { count: number; path: string }
   setSignaturesDir(dir: string): boolean
+  /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
+  seedScanFixture(files: Array<Record<string, unknown>>): number
 }
 
 let engine: BytebackEngine | null = null

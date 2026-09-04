@@ -69,6 +69,8 @@ declare global {
       onScanFileFound: (callback: FileFoundCallback) => () => void
       onScanComplete: (callback: ScanCompleteCallback) => () => void
       removeAllScanListeners: () => void
+      /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
+      seedScanFixture: (files: Array<Record<string, unknown>>) => Promise<number>
 
       startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') => void
       stopImaging: () => void
