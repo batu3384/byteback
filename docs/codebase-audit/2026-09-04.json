@@ -3,6 +3,14 @@
   "workspace": "C:\\Users\\Batuhan\\Desktop\\byteback",
   "mode": "static",
   "verdict": "BLOCK",
+  "verdict_after_fix_pass": "CONCERNS",
+  "fix_pass": {
+    "date": "2026-09-04",
+    "commits": 18,
+    "gate": "340 native + 87 vitest + 7 e2e + typecheck/build green",
+    "fixed": ["CA-001","CA-002","CA-003","CA-004","CA-005","CA-006","CA-007","CA-008","CA-009","CA-010","CA-011","CA-012","CA-013","CA-014","CA-015","CA-016","CA-017","CA-021","CA-022","CA-023","CA-024","CA-027","CA-028","CA-029","CA-030","CA-031","CA-032","CA-033","CA-034","CA-035","CA-036","CA-037","CA-038","CA-040","CA-041","CA-042","CA-043","CA-044","CA-045","CA-047","CA-048","CA-049","CA-050","CA-051","CA-055"],
+    "remaining": ["CA-039 (FFmpeg std::system)", "CA-052 (native TR strings, partial)", "CA-053 (i18n primary flow only)", "e2e flow specs", "content-hash cross-scan dedup"]
+  },
   "baseline": {
     "native_tests": "322/322 passed (3 skipped)",
     "vitest": "83/83 passed",
