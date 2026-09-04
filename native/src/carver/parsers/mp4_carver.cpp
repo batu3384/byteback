@@ -110,6 +110,9 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
     uint64_t walkEnd = 0; // bytes from carve start
     uint64_t off = 0;
     const uint64_t limit = maxBytes;
+    // W2: crafted 8-byte-box chains must not turn the walk into millions of
+    // sector reads. Real files have well under 8k top-level boxes.
+    uint64_t fetchBudget = 8192;
     uint8_t hdr[16];
 
     while (off + 8 <= limit) {
@@ -117,8 +120,11 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
         const size_t inProbe = (off + 16 <= probeSize) ? 16 : (off + 8 <= probeSize ? 8 : 0);
         if (inProbe > 0) {
             std::memcpy(hdr, probe + off, inProbe);
-        } else if (!readAt || !readAt(abs, 8, hdr)) {
+        } else if (!readAt || fetchBudget == 0) {
             break;
+        } else {
+            --fetchBudget;
+            if (!readAt(abs, 8, hdr)) break;
         }
 
         uint64_t atomSize = readBe32(hdr);
@@ -128,8 +134,11 @@ StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize
         if (atomSize == 1) {
             if (inProbe >= 16) {
                 std::memcpy(hdr, probe + off, 16);
-            } else if (!readAt || !readAt(abs, 16, hdr)) {
+            } else if (!readAt || fetchBudget == 0) {
                 break;
+            } else {
+                --fetchBudget;
+                if (!readAt(abs, 16, hdr)) break;
             }
             atomSize = readBe64(hdr + 8);
             headerSize = 16;
