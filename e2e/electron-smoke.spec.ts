@@ -1,12 +1,10 @@
 import { test, expect, _electron as electron } from '@playwright/test'
-import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 const root = path.join(__dirname, '..')
 const mainJs = path.join(root, 'out', 'main', 'main.js')
 
 test('Byteback window shows', async () => {
-  test.skip(!existsSync(mainJs), 'out/main/main.js missing — npm run build first')
 
   const app = await electron.launch({
     args: [mainJs],
@@ -24,7 +22,6 @@ test('Byteback window shows', async () => {
 })
 
 test('scan profile legend and mode buttons', async () => {
-  test.skip(!existsSync(mainJs), 'out/main/main.js missing — npm run build first')
 
   const app = await electron.launch({
     args: [mainJs],
