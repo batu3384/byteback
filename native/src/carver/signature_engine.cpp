@@ -196,13 +196,16 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     };
 
     // ============================================================
-    // Images (15 signatures)
+    // Images
     // ============================================================
     addSig("JPEG Image", ".jpg", "Image", {0xFF, 0xD8, 0xFF}, {0xFF, 0xD9}, 256 * 1024 * 1024);
     addSig("PNG Image", ".png", "Image", {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}, 256 * 1024 * 1024);
     addSig("GIF Image", ".gif", "Image", {0x47, 0x49, 0x46, 0x38}, {0x00, 0x3B}, 64 * 1024 * 1024);
     // BM alone is too weak; expire-path validateBmp rejects / demotes FPs.
     addSig("BMP Image", ".bmp", "Image", {0x42, 0x4D}, {}, 50 * 1024 * 1024);
+    // CA-006: specific RAW before generic TIFF — same-offset dedup keeps the
+    // first match, so the 10-byte CR2 magic must precede the 4-byte TIFF one.
+    addSig("Canon CR2 RAW", ".cr2", "Image", {0x49, 0x49, 0x2A, 0x00, 0x10, 0x00, 0x00, 0x00, 0x43, 0x52}, {}, 50 * 1024 * 1024);
     addSig("TIFF Image (LE)", ".tiff", "Image", {0x49, 0x49, 0x2A, 0x00}, {}, 100 * 1024 * 1024);
     addSig("TIFF Image (BE)", ".tiff", "Image", {0x4D, 0x4D, 0x00, 0x2A}, {}, 100 * 1024 * 1024);
     // CA-006: single RIFF-container signature. The subtype (WEBP/AVI/WAVE)
@@ -210,67 +213,47 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     // the old trio of same-magic signatures triple-reported every RIFF file.
     addSig("RIFF Container", ".riff", "Container", {0x52, 0x49, 0x46, 0x46}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("HEIC Image", ".heic", "Image", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63}, {}, 256 * 1024 * 1024);
-    addSig("PSD Photoshop", ".psd", "Image", {0x38, 0x42, 0x50, 0x53}, {}, 500 * 1024 * 1024);
-    addSig("ICO Icon", ".ico", "Image", {0x00, 0x00, 0x01, 0x00}, {}, 1 * 1024 * 1024);
-    addSig("CUR Cursor", ".cur", "Image", {0x00, 0x00, 0x02, 0x00}, {}, 1 * 1024 * 1024);
-    addSig("TGA Image", ".tga", "Image", {}, {0x54, 0x52, 0x55, 0x45, 0x56, 0x49, 0x53, 0x49, 0x4F, 0x4E}, 50 * 1024 * 1024);
-    addSig("SVG Image", ".svg", "Image", {0x3C, 0x73, 0x76, 0x67}, {}, 10 * 1024 * 1024);
-    addSig("Adobe AI", ".ai", "Image", {0x25, 0x50, 0x44, 0x46}, {}, 200 * 1024 * 1024);
-    addSig("Canon CR2 RAW", ".cr2", "Image", {0x49, 0x49, 0x2A, 0x00, 0x10, 0x00, 0x00, 0x00, 0x43, 0x52}, {}, 50 * 1024 * 1024);
 
     // ============================================================
-    // Documents (12 signatures)
+    // Documents
     // ============================================================
     addSig("PDF Document", ".pdf", "Document", {0x25, 0x50, 0x44, 0x46, 0x2D}, {0x25, 0x25, 0x45, 0x4F, 0x46}, 100 * 1024 * 1024);
     addSig("RTF Document", ".rtf", "Document", {0x7B, 0x5C, 0x72, 0x74, 0x66, 0x31}, {0x7D}, 20 * 1024 * 1024);
     addSig("MS Office (OLE2)", ".doc", "Document", {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, {}, 100 * 1024 * 1024);
-    // CA-006: odt/epub/pages removed — they share the PK magic with
-    // ZIP and produced duplicate records for the same bytes. One signature
-    // (ZIP/DOCX/XLSX below) covers the whole container family; the format
-    // distinction needs container-content inspection, which is out of scope
-    // for header/footer carving.
-    addSig("CHM Help File", ".chm", "Document", {0x49, 0x54, 0x53, 0x46, 0x03, 0x00, 0x00, 0x00}, {}, 30 * 1024 * 1024);
-    addSig("XML Document", ".xml", "Document", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 50 * 1024 * 1024);
-    addSig("HTML Page", ".html", "Document", {0x3C, 0x21, 0x44, 0x4F, 0x43, 0x54, 0x59, 0x50, 0x45}, {}, 10 * 1024 * 1024);
-    addSig("LaTeX Document", ".tex", "Document", {0x5C, 0x64, 0x6F, 0x63, 0x75, 0x6D, 0x65, 0x6E, 0x74, 0x63, 0x6C, 0x61, 0x73, 0x73}, {}, 10 * 1024 * 1024);
-    addSig("Markdown", ".md", "Document", {0x23, 0x20}, {}, 5 * 1024 * 1024);
-    addSig("PostScript", ".ps", "Document", {0x25, 0x21, 0x50, 0x53}, {0x25, 0x25, 0x45, 0x4F, 0x46}, 50 * 1024 * 1024);
-    addSig("DjVu Document", ".djvu", "Document", {0x41, 0x54, 0x26, 0x54, 0x46, 0x4F, 0x52, 0x4D}, {}, 100 * 1024 * 1024);
+    // CA-002: doc/xls/ppt/msi/msg all share the OLE2 magic above; JSON entries
+    // per product were removed (same-offset dedup kept whichever loaded first,
+    // mislabeling the rest). Text-magic "signatures" (Markdown/XML/HTML/LaTeX/
+    // SVG/MBOX/EXE MZ/...) are gone entirely — they matched ordinary text and
+    // opened maxSize-sized phantom carves, which is what flooded results.
 
     // ============================================================
-    // Video (14 signatures)
+    // Video
     // ============================================================
+    // Generic ftyp catch for brands not listed in appendFtypMediaSignatures
+    // (which run first and win the same-offset dedup).
     addSig("MP4 Video", ".mp4", "Video", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("MP4 Video (Alt)", ".mp4", "Video", {0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("MP4 Video (Alt2)", ".mp4", "Video", {0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("MKV Video", ".mkv", "Video", {0x1A, 0x45, 0xDF, 0xA3}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("MKV/WebM Video", ".mkv", "Video", {0x1A, 0x45, 0xDF, 0xA3}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("MPEG Video", ".mpg", "Video", {0x00, 0x00, 0x01, 0xBA}, {0x00, 0x00, 0x01, 0xB9}, 2ULL * 1024 * 1024 * 1024);
-    addSig("MOV Video", ".mov", "Video", {0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("FLV Video", ".flv", "Video", {0x46, 0x4C, 0x56, 0x01}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("WMV Video", ".wmv", "Video", {0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("ASF Video (WMV)", ".wmv", "Video", {0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("3GP Video", ".3gp", "Video", {0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x33, 0x67, 0x70}, {}, 1ULL * 1024 * 1024 * 1024);
-    addSig("WebM Video", ".webm", "Video", {0x1A, 0x45, 0xDF, 0xA3}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("MPEG-TS", ".ts", "Video", {0x47, 0x40, 0x00}, {}, 4ULL * 1024 * 1024 * 1024);
-    addSig("M4V Video", ".m4v", "Video", {0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4D, 0x34, 0x56}, {}, 4ULL * 1024 * 1024 * 1024);
     addSig("SWF Flash", ".swf", "Video", {0x46, 0x57, 0x53}, {}, 100 * 1024 * 1024);
 
     // ============================================================
-    // Audio (12 signatures)
+    // Audio
     // ============================================================
     addSig("MP3 Audio", ".mp3", "Audio", {0x49, 0x44, 0x33}, {}, 128 * 1024 * 1024);
-    addSig("MP3 Audio (no ID3)", ".mp3", "Audio", {0xFF, 0xFB}, {}, 128 * 1024 * 1024);
     addSig("FLAC Audio", ".flac", "Audio", {0x66, 0x4C, 0x61, 0x43}, {}, 100 * 1024 * 1024);
     addSig("OGG Audio", ".ogg", "Audio", {0x4F, 0x67, 0x67, 0x53}, {}, 100 * 1024 * 1024);
-    addSig("AAC Audio", ".aac", "Audio", {0xFF, 0xF1}, {}, 20 * 1024 * 1024);
-    addSig("WMA Audio", ".wma", "Audio", {0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}, {}, 50 * 1024 * 1024);
     addSig("MIDI Audio", ".mid", "Audio", {0x4D, 0x54, 0x68, 0x64}, {}, 5 * 1024 * 1024);
     addSig("AIFF Audio", ".aiff", "Audio", {0x46, 0x4F, 0x52, 0x4D}, {}, 100 * 1024 * 1024);
-    addSig("M4A Audio", ".m4a", "Audio", {0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x4D, 0x34, 0x41}, {}, 50 * 1024 * 1024);
     addSig("APE Audio", ".ape", "Audio", {0x4D, 0x41, 0x43, 0x20}, {}, 100 * 1024 * 1024);
     addSig("WavPack Audio", ".wv", "Audio", {0x77, 0x76, 0x70, 0x6B}, {}, 100 * 1024 * 1024);
+    addSig("Musepack MPC", ".mpc", "Audio", {0x4D, 0x50, 0x2B, 0x05}, {}, 50 * 1024 * 1024);
 
     // ============================================================
-    // Archives (12 signatures)
+    // Archives
     // ============================================================
     addSig("ZIP/DOCX/XLSX", ".zip", "Archive", {0x50, 0x4B, 0x03, 0x04}, {0x50, 0x4B, 0x05, 0x06}, 500 * 1024 * 1024);
     addSig("RAR Archive", ".rar", "Archive", {0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00}, {}, 500 * 1024 * 1024);
@@ -279,51 +262,40 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("GZIP Archive", ".gz", "Archive", {0x1F, 0x8B, 0x08}, {}, 100 * 1024 * 1024);
     addSig("BZIP2 Archive", ".bz2", "Archive", {0x42, 0x5A, 0x68}, {}, 100 * 1024 * 1024);
     addSig("XZ Archive", ".xz", "Archive", {0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, {}, 500 * 1024 * 1024);
-    addSig("TAR Archive", ".tar", "Archive", {0x75, 0x73, 0x74, 0x61, 0x72}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("ZSTD Archive", ".zst", "Archive", {0x28, 0xB5, 0x2F, 0xFD}, {}, 500 * 1024 * 1024);
     addSig("LZ4 Archive", ".lz4", "Archive", {0x04, 0x22, 0x4D, 0x18}, {}, 500 * 1024 * 1024);
     addSig("CAB Archive", ".cab", "Archive", {0x4D, 0x53, 0x43, 0x46}, {}, 500 * 1024 * 1024);
-    addSig("MSI Installer", ".msi", "Archive", {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, {}, 500 * 1024 * 1024);
 
     // ============================================================
-    // Databases & Email (8 signatures)
+    // Databases & Email
     // ============================================================
     addSig("SQLite Database", ".sqlite", "Database", {0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00}, {}, 1ULL * 1024 * 1024 * 1024);
-    addSig("PST Email Data", ".pst", "Email", {0x21, 0x42, 0x44, 0x4E}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("OST Email Data", ".ost", "Email", {0x21, 0x42, 0x44, 0x4E}, {}, 2ULL * 1024 * 1024 * 1024);
-    addSig("MBOX Email", ".mbox", "Email", {0x46, 0x72, 0x6F, 0x6D, 0x20}, {}, 1ULL * 1024 * 1024 * 1024);
+    addSig("PST/OST Email Data", ".pst", "Email", {0x21, 0x42, 0x44, 0x4E}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("MS Access DB", ".mdb", "Database", {0x00, 0x01, 0x00, 0x00, 0x53, 0x74, 0x61, 0x6E, 0x64, 0x61, 0x72, 0x64, 0x20, 0x4A, 0x65, 0x74}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("MS Access 2007+", ".accdb", "Database", {0x00, 0x01, 0x00, 0x00, 0x53, 0x74, 0x61, 0x6E, 0x64, 0x61, 0x72, 0x64, 0x20, 0x41, 0x43, 0x45}, {}, 2ULL * 1024 * 1024 * 1024);
     addSig("Windows Registry", ".reg", "System", {0x72, 0x65, 0x67, 0x66}, {}, 100 * 1024 * 1024);
     addSig("Windows Shortcut", ".lnk", "System", {0x4C, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00}, {}, 1 * 1024 * 1024);
 
     // ============================================================
-    // Executables, System & Forensics (9 signatures)
+    // System & Forensics
     // ============================================================
     addSig("NTFS MFT Record", ".mft", "System", {0x46, 0x49, 0x4C, 0x45, 0x30}, {}, 1024); // MFT FILE0 record is typically 1024 bytes
-    addSig("Windows Executable", ".exe", "Executable", {0x4D, 0x5A}, {}, 100 * 1024 * 1024);
-    addSig("ELF Executable", ".elf", "Executable", {0x7F, 0x45, 0x4C, 0x46}, {}, 100 * 1024 * 1024);
-    addSig("Java Class", ".class", "Executable", {0xCA, 0xFE, 0xBA, 0xBE}, {}, 10 * 1024 * 1024);
-    addSig("Mach-O Binary", ".macho", "Executable", {0xFE, 0xED, 0xFA, 0xCE}, {}, 100 * 1024 * 1024);
-    addSig("Mach-O 64-bit", ".macho", "Executable", {0xFE, 0xED, 0xFA, 0xCF}, {}, 100 * 1024 * 1024);
-    addSig("DEX Android", ".dex", "Executable", {0x64, 0x65, 0x78, 0x0A}, {}, 50 * 1024 * 1024);
-    addSig("WASM Binary", ".wasm", "Executable", {0x00, 0x61, 0x73, 0x6D}, {}, 50 * 1024 * 1024);
-    addSig("Windows DLL", ".dll", "Executable", {0x4D, 0x5A}, {}, 100 * 1024 * 1024);
+    addSig("Windows EDB", ".edb", "Database", {0xEF, 0xCD, 0xAB, 0x89}, {}, 500 * 1024 * 1024);
+    addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 512 * 1024 * 1024);
+    addSig("Windows Prefetch", ".pf", "Misc", {0x4D, 0x41, 0x4D, 0x04}, {}, 1024 * 1024); // MAMx (Win10/11)
+    // Real EVTX magic is "ElfFile\0" (the old "elif" matched every Python file).
+    addSig("EVTX Log", ".evtx", "Misc", {0x45, 0x6C, 0x66, 0x46, 0x69, 0x6C, 0x65, 0x00}, {}, 100 * 1024 * 1024);
 
     // ============================================================
-    // Disk Images & Virtualization (8 signatures)
+    // Disk Images & Virtualization
     // ============================================================
-    addSig("ISO 9660 Image", ".iso", "DiskImage", {0x43, 0x44, 0x30, 0x30, 0x31}, {}, 8ULL * 1024 * 1024 * 1024);
     addSig("VHD Disk Image", ".vhd", "DiskImage", {0x63, 0x6F, 0x6E, 0x65, 0x63, 0x74, 0x69, 0x78}, {}, 100ULL * 1024 * 1024 * 1024);
     addSig("VMDK Disk Image", ".vmdk", "DiskImage", {0x4B, 0x44, 0x4D, 0x56}, {}, 100ULL * 1024 * 1024 * 1024);
     addSig("QCOW2 Disk Image", ".qcow2", "DiskImage", {0x51, 0x46, 0x49, 0xFB}, {}, 100ULL * 1024 * 1024 * 1024);
     addSig("VDI VirtualBox", ".vdi", "DiskImage", {0x3C, 0x3C, 0x3C, 0x20}, {}, 100ULL * 1024 * 1024 * 1024);
-    addSig("DMG Apple", ".dmg", "DiskImage", {0x78, 0x01, 0x73, 0x0D, 0x62, 0x62, 0x60}, {}, 8ULL * 1024 * 1024 * 1024);
-    addSig("LUKS Encrypted", ".luks", "Encrypted", {0x4C, 0x55, 0x4B, 0x53, 0xBA, 0xBE}, {}, 0);
-    addSig("VeraCrypt Volume", ".hc", "Encrypted", {}, {}, 0);
 
     // ============================================================
-    // Fonts (4 signatures)
+    // Fonts
     // ============================================================
     addSig("TrueType Font", ".ttf", "Font", {0x00, 0x01, 0x00, 0x00, 0x00}, {}, 10 * 1024 * 1024);
     addSig("OpenType Font", ".otf", "Font", {0x4F, 0x54, 0x54, 0x4F}, {}, 10 * 1024 * 1024);
@@ -331,37 +303,17 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("WOFF2 Font", ".woff2", "Font", {0x77, 0x4F, 0x46, 0x32}, {}, 10 * 1024 * 1024);
 
     // ============================================================
-    // Misc (7 signatures)
+    // Misc & forensic artifacts
     // ============================================================
     addSig("PCap Network", ".pcap", "Network", {0xD4, 0xC3, 0xB2, 0xA1}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("PCap-ng Network", ".pcapng", "Network", {0x0A, 0x0D, 0x0D, 0x0A}, {}, 1ULL * 1024 * 1024 * 1024);
-    addSig("torrent File", ".torrent", "Misc", {0x64, 0x38, 0x3A, 0x61, 0x6E, 0x6E, 0x6F, 0x75, 0x6E, 0x63, 0x65}, {}, 5 * 1024 * 1024);
-    addSig("iCalendar", ".ics", "Misc", {0x42, 0x45, 0x47, 0x49, 0x4E, 0x3A, 0x56, 0x43, 0x41, 0x4C}, {}, 1 * 1024 * 1024);
-    addSig("vCard Contact", ".vcf", "Misc", {0x42, 0x45, 0x47, 0x49, 0x4E, 0x3A, 0x56, 0x43, 0x41, 0x52, 0x44}, {}, 1 * 1024 * 1024);
-    addSig("GPX GPS Data", ".gpx", "Misc", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 10 * 1024 * 1024);
-    addSig("KML Google Earth", ".kml", "Misc", {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, {}, 10 * 1024 * 1024);
-
-    // ============================================================
-    // Extended signatures — high-value formats missing from the base set
-    // ============================================================
-    // Camera RAW (distinct magics; TIFF-based RAWs share II*\0 and are
-    // already covered by the TIFF signature, so only non-TIFF RAWs here).
     addSig("Fuji RAF RAW", ".raf", "Image", {0x46, 0x55, 0x4A, 0x49, 0x46, 0x49, 0x4C, 0x4D, 0x43, 0x43, 0x44, 0x44, 0x2D, 0x52, 0x41, 0x57}, {}, 100 * 1024 * 1024);
     addSig("JPEG2000 JP2", ".jp2", "Image", {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 50 * 1024 * 1024);
-    addSig("Canon CR3 RAW", ".cr3", "Image", {0x66, 0x74, 0x79, 0x70, 0x63, 0x72, 0x78, 0x20}, {}, 100 * 1024 * 1024);
-    // Documents
-    addSig("Windows EDB", ".edb", "Database", {0xEF, 0xCD, 0xAB, 0x89}, {}, 500 * 1024 * 1024);
-    addSig("Thumbcache DB", ".db", "Database", {0x56, 0x65, 0x72, 0x35, 0x46, 0x69, 0x6C}, {}, 512 * 1024 * 1024);
-    // Archives / containers
-    addSig("Apple DMG UDIF", ".dmg", "DiskImage", {0x78, 0x01, 0x73, 0x0D, 0x62, 0x70, 0x69, 0x73, 0x74}, {}, 50 * 1024 * 1024); // kolye block
-    addSig("Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);
-    // Audio
-    addSig("Opus Audio", ".opus", "Audio", {0x4F, 0x67, 0x67, 0x53}, {}, 50 * 1024 * 1024); // OGG container
-    addSig("Musepack MPC", ".mpc", "Audio", {0x4D, 0x50, 0x2B, 0x05}, {}, 50 * 1024 * 1024);
-    // Misc forensic artifacts
-    addSig("Windows Prefetch", ".pf", "Misc", {0x4D, 0x41, 0x4D, 0x04}, {}, 1024 * 1024); // MAMx (Win10/11)
-    addSig("LNK Shortcut", ".lnk", "Misc", {0x4C, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00}, {}, 1024 * 1024);
-    addSig("EVTX Log", ".evtx", "Misc", {0x65, 0x6C, 0x69, 0x66}, {}, 100 * 1024 * 1024); // "elf" magic
+    addSig("Apple Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);
+    addSig("KeePass KDBX", ".kdbx", "Document", {0x03, 0x4B, 0x44, 0x42, 0x58}, {}, 50 * 1024 * 1024);
+    addSig("OneNote Package", ".one", "Document", {0xE4, 0x52, 0x5C, 0x7B, 0x8C, 0xD9, 0xA7, 0x4D}, {}, 500 * 1024 * 1024);
+    addSig("Adobe InDesign", ".indd", "Document", {0x06, 0x06, 0xED, 0xFD, 0xD5, 0x06, 0xE2, 0x17}, {}, 500 * 1024 * 1024);
+    addSig("Blender Blend", ".blend", "Document", {0x42, 0x4C, 0x45, 0x4E, 0x44, 0x45, 0x52}, {}, 500 * 1024 * 1024);
 }
 
 void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
@@ -382,20 +334,20 @@ void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
         {"HEIC msf1", ".heic", "Image", "msf1", 0x18, 256u << 20},
         {"AVIF avif", ".avif", "Image", "avif", 0x20, 256u << 20},
         {"AVIF avis", ".avif", "Image", "avis", 0x20, 256u << 20},
-        {"MP4 isom", ".mp4", "Video", "isom", 0x18, 4u << 30},
-        {"MP4 iso2", ".mp4", "Video", "iso2", 0x18, 4u << 30},
-        {"MP4 mp41", ".mp4", "Video", "mp41", 0x18, 4u << 30},
-        {"MP4 mp42", ".mp4", "Video", "mp42", 0x18, 4u << 30},
-        {"MP4 avc1", ".mp4", "Video", "avc1", 0x18, 4u << 30},
-        {"MP4 ndas", ".mp4", "Video", "ndas", 0x18, 4u << 30},
-        {"MP4 dash", ".mp4", "Video", "dash", 0x18, 4u << 30},
-        {"M4V video", ".m4v", "Video", "M4V ", 0x1C, 4u << 30},
+        {"MP4 isom", ".mp4", "Video", "isom", 0x18, 4ULL << 30},
+        {"MP4 iso2", ".mp4", "Video", "iso2", 0x18, 4ULL << 30},
+        {"MP4 mp41", ".mp4", "Video", "mp41", 0x18, 4ULL << 30},
+        {"MP4 mp42", ".mp4", "Video", "mp42", 0x18, 4ULL << 30},
+        {"MP4 avc1", ".mp4", "Video", "avc1", 0x18, 4ULL << 30},
+        {"MP4 ndas", ".mp4", "Video", "ndas", 0x18, 4ULL << 30},
+        {"MP4 dash", ".mp4", "Video", "dash", 0x18, 4ULL << 30},
+        {"M4V video", ".m4v", "Video", "M4V ", 0x1C, 4ULL << 30},
         {"M4A audio", ".m4a", "Audio", "M4A ", 0x1C, 256u << 20},
-        {"3GP 3gp4", ".3gp", "Video", "3gp4", 0x18, 2u << 30},
-        {"3GP 3gp5", ".3gp", "Video", "3gp5", 0x18, 2u << 30},
+        {"3GP 3gp4", ".3gp", "Video", "3gp4", 0x18, 2ULL << 30},
+        {"3GP 3gp5", ".3gp", "Video", "3gp5", 0x18, 2ULL << 30},
         {"3GP 3ga", ".3ga", "Audio", "3ga ", 0x18, 256u << 20},
-        {"MOV qt  ", ".mov", "Video", "qt  ", 0x14, 4u << 30},
-        {"F4V flash", ".f4v", "Video", "f4v ", 0x18, 4u << 30},
+        {"MOV qt  ", ".mov", "Video", "qt  ", 0x14, 4ULL << 30},
+        {"F4V flash", ".f4v", "Video", "f4v ", 0x18, 4ULL << 30},
         {"CR3 Canon", ".cr3", "Image", "crx ", 0x18, 256u << 20},
     };
     for (const auto& r : rows) {
@@ -422,13 +374,14 @@ void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
 void appendResourceSignatureFiles(std::vector<FileSignature>& signatures,
                                   const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
     static const char* kFiles[] = {
-        "resources/signatures.json",
+        // CA-010: resources/signatures.json is NOT auto-loaded — every entry
+        // duplicates the embedded set (incl. RIFF triple-reports and a bare
+        // MZ that sneaked EXE carving back in). Users pass overlays explicitly
+        // via loadSignatures(jsonPath).
         "resources/signatures-extended.json",
         "resources/signatures-supplement.json",
-        "../resources/signatures.json",
         "../resources/signatures-extended.json",
         "../resources/signatures-supplement.json",
-        "../../resources/signatures.json",
         "../../resources/signatures-extended.json",
         "../../resources/signatures-supplement.json",
         "signatures-extended.json",
@@ -451,8 +404,10 @@ size_t CarvingEngine::globalSignatureCount() {
 
 bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     signatures.clear();
-    loadEmbeddedSignatures(signatures);
+    // Brand-precise ftyp signatures first: same-offset dedup keeps the first
+    // match, so listed brands must precede the generic MP4 entries below.
     appendFtypMediaSignatures(signatures);
+    loadEmbeddedSignatures(signatures);
 
     auto hexFn = [this](const std::string& hex) { return hexToBytes(hex); };
     if (!jsonPath.empty()) appendSignaturesFromJson(signatures, jsonPath, hexFn);

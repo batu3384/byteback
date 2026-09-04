@@ -32,8 +32,10 @@ awareness).
   discovery, APSB volume, btree leaf drec (`source=apfs_file`) and file extent
   runs (`apfs_extent`). Catalog: `nx_fs_oid` + first 256 blocks + recursive omap
   btree (not a full container snapshot walk).
-- **Carving** — Aho–Corasick signature scan (200+ built-in signatures via embedded
-  engine + `resources/signatures-extended.json`),
+- **Carving** — Aho–Corasick signature scan (150 built-in signatures: embedded
+  engine + curated `resources/signatures-extended.json` / `-supplement.json`;
+  the set is validation-focused — text-magic signatures are intentionally
+  excluded because they only generate phantom results),
   structural validation (JPEG/PNG/ZIP/PDF/GZIP/RIFF), clustered BGC recovery
   path for split fragments (sector-stepped, per-scan budget). CPU only; no
   CUDA/OpenCL PFAC.
