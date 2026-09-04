@@ -652,6 +652,41 @@ const STRINGS: Record<string, Entry> = {
   'note.bitlocker.tpm_only': { tr: 'Yalnız TPM koruyucusu — parola/kurtarma yolu yok', en: 'TPM protector only — no password/recovery path' },
   'note.bitlocker.bek_only': { tr: 'Yalnız .BEK başlangıç-anahtarı koruyucusu — parola/kurtarma yolu yok', en: 'Startup-key (.BEK) protector only — no password/recovery path' },
   'note.bitlocker.protector_unsupported': { tr: 'TPM/başlangıç-anahtarı/parola koruyucusu desteklenmiyor', en: 'TPM/startup-key/password protector unsupported' },
+
+  // Shared label utils (results-view-utils) — keys so nothing matches localized text.
+  'quality.none': { tr: '—', en: '—' },
+  'quality.carve.full': { tr: 'Muhtemelen tam', en: 'Probably intact' },
+  'quality.carve.suspect': { tr: 'Şüpheli', en: 'Suspicious' },
+  'quality.carve.weak': { tr: 'Zayıf', en: 'Weak' },
+  'quality.high': { tr: 'Yüksek güven', en: 'High confidence' },
+  'quality.mid': { tr: 'Orta güven', en: 'Medium confidence' },
+  'quality.low': { tr: 'Düşük güven', en: 'Low confidence' },
+  'status.carved': { tr: 'Oyulmuş (imza)', en: 'Carved (signature)' },
+  'status.allocated': { tr: 'Tahsisli / kullanımda', en: 'Allocated / in use' },
+  'status.deleted': { tr: 'Silinmiş / unallocated', en: 'Deleted / unallocated' },
+  'ts.noFsDate': { tr: 'FS tarihi yok', en: 'no FS date' },
+
+  // Source labels (shared/source-label.ts via key form).
+  'source.apfs_container': { tr: 'APFS keşif (nx_fs_oid + omap paddr + APSB)', en: 'APFS discovery (nx_fs_oid + omap paddr + APSB)' },
+  'source.apfs_file': { tr: 'APFS katalog adı (extent yok, kurtarılamaz)', en: 'APFS catalog name (no extent, unrecoverable)' },
+  'source.apfs_extent': { tr: 'APFS extent (kurtarılabilir)', en: 'APFS extent (recoverable)' },
+  'source.hfs_limit': { tr: 'HFS katalog tavanı (test/limit)', en: 'HFS catalog ceiling (test/limit)' },
+  'source.vss_unbound': { tr: 'VSS bağlanmadı', en: 'VSS not bound' },
+  'source.vss_bind': { tr: 'VSS bağlandı (serial+boyut)', en: 'VSS bound (serial+size)' },
+  'source.vss_snapshot': { tr: 'VSS snapshot (üstveri)', en: 'VSS snapshot (metadata)' },
+  'source.vss_ntfs': { tr: 'VSS NTFS', en: 'VSS NTFS' },
+  'source.vss_fat': { tr: 'VSS FAT', en: 'VSS FAT' },
+  'source.bitlocker_detect': { tr: 'BitLocker (anahtar yok, şifre kırma yok)', en: 'BitLocker (no key, no brute force)' },
+  'source.bitlocker_fve': { tr: 'BitLocker FVE (kayıt decrypt değil)', en: 'BitLocker FVE (metadata only, not decryption)' },
+  'source.ntfs_mft_logfile': { tr: 'NTFS MFT (LogFile doğrulandı)', en: 'NTFS MFT (LogFile verified)' },
+  'source.ntfs_mft_usn': { tr: 'NTFS MFT (USN silme doğrulandı)', en: 'NTFS MFT (USN delete verified)' },
+  'source.ntfs_recycle': { tr: 'Geri Dönüşüm Kutusu ($R)', en: 'Recycle Bin ($R)' },
+  'source.ntfs_recycle_meta': { tr: 'Geri Dönüşüm Kutusu ($I, yalnızca ad)', en: 'Recycle Bin ($I, name only)' },
+  'source.ntfs_i30': { tr: 'NTFS $I30 slack (yalnızca ad, kurtarılamaz)', en: 'NTFS $I30 slack (name only, unrecoverable)' },
+  'source.ntfs_thumbcache': { tr: 'NTFS thumbcache (gömülü JPEG)', en: 'NTFS thumbcache (embedded JPEG)' },
+  'source.usn_journal': { tr: 'USN zaman çizelgesi', en: 'USN timeline' },
+  'source.ntfs_logfile': { tr: 'LogFile ipucu (kurtarılamaz)', en: 'LogFile hint (unrecoverable)' },
+  'source.carver_duplicate': { tr: 'Carve tekrarı (MFT ile çakışıyor)', en: 'Carve duplicate (overlaps MFT)' },
 }
 
 /**
@@ -676,7 +711,7 @@ export function t(key: string): string {
 /** t() with {token} interpolation: tFormat('scan.deleted_of', { n: '5' }). */
 export function tFormat(key: string, vars: Record<string, string>): string {
   let out = t(key)
-  for (const [k, v] of Object.entries(vars)) out = out.replace(`{${k}}`, v)
+  for (const [k, v] of Object.entries(vars)) out = out.split(`{${k}}`).join(v)
   return out
 }
 
