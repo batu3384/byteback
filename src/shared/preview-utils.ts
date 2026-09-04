@@ -80,7 +80,10 @@ export function previewDataUrl(preview: FilePreviewResult): string | null {
   const mime = resolvePreviewImageMime(preview)
   if (!mime) return null
   const bytes = preview.data
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!)
-  return `data:${mime};base64,${btoa(binary)}`
+  // Chunked conversion — per-byte string concat was slow on 64KB previews.
+  const parts: string[] = []
+  for (let i = 0; i < bytes.length; i += 8192) {
+    parts.push(String.fromCharCode(...bytes.subarray(i, i + 8192)))
+  }
+  return `data:${mime};base64,${btoa(parts.join(''))}`
 }

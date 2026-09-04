@@ -12,6 +12,8 @@ export type MappedFile = {
   sourceLabel: string
   dateLabel: string
   qualityLabel: string
+  confidence?: number
+  confidenceTier: 'high' | 'mid' | 'low' | 'none'
 }
 
 export type TreeNode = {
@@ -97,11 +99,29 @@ export function chipToCategory(chip: string): string {
 
 export type StatusChip = 'deleted' | 'allocated' | 'all' | 'carved'
 
+/** CA-030: sortable column keys; values map to the native ORDER BY whitelist. */
+export type SortField = 'confidence' | 'size' | 'name' | 'date' | 'id'
+export type SortDir = 'asc' | 'desc'
+
+export function sortKey(field: SortField, dir: SortDir): string {
+  if (field === 'id') return ''
+  return `${field}_${dir}`
+}
+
+/** Confidence chip tier for triage coloring. */
+export function confidenceTier(c?: number): 'high' | 'mid' | 'low' | 'none' {
+  if (typeof c !== 'number' || c <= 0) return 'none'
+  if (c >= 80) return 'high'
+  if (c >= 50) return 'mid'
+  return 'low'
+}
+
 export function toSqlListFilter(
   statusChip: StatusChip,
   typeChip: string,
   query: string,
   showDuplicates: boolean,
+  orderBy?: string,
 ): {
   status: number
   category: string
@@ -110,6 +130,7 @@ export function toSqlListFilter(
   sourceNotLike: string
   includeDuplicates: boolean
   includeDiscovery: boolean
+  orderBy?: string
 } {
   const base = {
     category: chipToCategory(typeChip),
@@ -118,6 +139,7 @@ export function toSqlListFilter(
     sourceNotLike: '',
     includeDuplicates: showDuplicates,
     includeDiscovery: false,
+    orderBy: orderBy || undefined,
   }
   if (statusChip === 'carved') return { ...base, status: -1, sourceLike: 'carver%' }
   // Metadata deleted only — carve lives under "Oyulmuş" (DiskDrill/Recuva style split).

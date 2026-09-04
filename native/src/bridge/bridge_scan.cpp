@@ -45,6 +45,9 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     if (o.Has("includeDiscovery") && o.Get("includeDiscovery").IsBoolean()) {
         f.includeDiscovery = o.Get("includeDiscovery").As<Napi::Boolean>().Value();
     }
+    if (o.Has("orderBy") && o.Get("orderBy").IsString()) {
+        f.orderBy = o.Get("orderBy").As<Napi::String>().Utf8Value();
+    }
     return f;
 }
 

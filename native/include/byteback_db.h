@@ -85,6 +85,7 @@ struct FileListFilter {
     std::string sourceNotLike; // empty = all; e.g. "carver%" excludes carve from deleted view
     bool includeDuplicates = true;
     bool includeDiscovery = false;
+    std::string orderBy;      // CA-030: whitelisted key ("confidence_desc", ...); empty = id
 };
 
 class MetadataStore {
