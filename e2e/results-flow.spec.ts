@@ -9,13 +9,6 @@ const FIXTURE_FILES = [
   { name: 'clip.mp4', path: '/recovered_raw/clip.mp4', sizeBytes: 900_000_000, confidence: 90, status: 0, source: 'carver', category: 'Video', startSector: 40000, endSector: 1800000 },
 ]
 
-async function launch() {
-  const app = await electron.launch({ args: [mainJs], cwd: root })
-  const win = await app.firstWindow()
-  await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
-  return { app, win }
-}
-
 test('seeded scan flows into results triage and unlocks the report nav', async () => {
   const launched = await launchApp()
   const { app, win } = launched

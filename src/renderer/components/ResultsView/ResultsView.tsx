@@ -36,6 +36,61 @@ interface ResultsViewProps {
 
 const PAGE_SIZE = 500
 
+// W3: module-level so React keeps card state across parent re-renders.
+function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
+  f: MappedFile
+  thumb?: FilePreviewResult
+  onVisible: (id: number) => void
+  onOpen: (id: number) => void
+  noPreviewLabel: string
+  ariaLabel: string
+}): React.ReactElement {
+  const [visible, setVisible] = useState(false)
+  const imgRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = imgRef.current
+    if (!el || visible) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((en) => en.isIntersecting)) {
+          setVisible(true)
+          onVisible(f.id)
+        }
+      },
+      { rootMargin: '200px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [visible, f.id, onVisible])
+  const dataUrl = useMemo(() => (thumb ? previewDataUrl(thumb) : null), [thumb])
+  return (
+    <div
+      ref={imgRef}
+      style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'rgba(255,255,255,0.02)', cursor: 'pointer' }}
+      onClick={() => onOpen(f.id)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') onOpen(f.id)
+      }}
+      aria-label={ariaLabel}
+    >
+      <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
+        {dataUrl ? (
+          <img src={dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+        ) : thumb ? (
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>{noPreviewLabel}</span>
+        ) : (
+          <Loader2 size={20} className="spinner" color="var(--text-muted)" />
+        )}
+      </div>
+      <div style={{ padding: '6px 8px', fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }} title={f.name}>
+        {f.name}
+      </div>
+    </div>
+  )
+}
+
 function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewProps): React.ReactElement {
   const { t } = useI18n()
   const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated' | 'carved'>('deleted')
@@ -55,6 +110,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
   const [hfsTruncated, setHfsTruncated] = useState(false)
   const [recoverReport, setRecoverReport] = useState<string | null>(null)
+  const [recoverStats, setRecoverStats] = useState<{ failed: number; zero: number; bad: number } | null>(null)
   const [preview, setPreview] = useState<FilePreviewResult | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewTargetId, setPreviewTargetId] = useState<number | null>(null)
@@ -218,6 +274,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
 
     setIsRecovering(true)
     setRecoverReport(null)
+    setRecoverStats(null)
     try {
       let destDir = await window.api.pickDirectory()
       if (!destDir) return
@@ -357,6 +414,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setRecoverReport(
       tFormat('results.recoverDone', { ok: String(successCount), bad: String(failedCount), zero: String(zeroFilledCount), dest: destDir }) + `${skipLine}${padWarn}${validationLine}${verifiedLine}${errLine}`,
     )
+    setRecoverStats({ failed: failedCount, zero: zeroFilledCount, bad: validatedBad })
     } finally {
       setIsRecovering(false)
     }
@@ -480,6 +538,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, id)
       setThumbs((prev) => {
         const next = new Map(prev)
+        // W4: 64KB payloads must not accumulate unbounded across pages.
+        // ponytail: clear-all eviction at 1000 — LRU needs age tracking we
+        // don't have; a hard cap keeps the renderer bounded.
+        if (next.size >= 1000) next.clear()
         next.set(id, res)
         return next
       })
@@ -490,60 +552,17 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     }
   }, [driveIndex, effectiveScanId])
 
+  // W4: a different scan session invalidates every cached preview/record.
+  useEffect(() => {
+    setThumbs(new Map())
+    setRecordById(new Map())
+    thumbLoadingRef.current.clear()
+  }, [effectiveScanId])
+
   // Gallery thumbnail card: lazy-loads its 64KB preview when scrolled into view.
-  const ThumbCard = ({ f }: { f: MappedFile }): React.ReactElement => {
-    const [visible, setVisible] = useState(false)
-    const imgRef = useRef<HTMLDivElement | null>(null)
-    useEffect(() => {
-      const el = imgRef.current
-      if (!el || visible) return
-      const io = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((en) => en.isIntersecting)) {
-            setVisible(true)
-            void loadThumb(f.id)
-          }
-        },
-        { rootMargin: '200px' },
-      )
-      io.observe(el)
-      return () => io.disconnect()
-    }, [visible, f.id, loadThumb])
-    const thumb = thumbs.get(f.id)
-    const dataUrl = useMemo(() => (thumb ? previewDataUrl(thumb) : null), [thumb])
-    return (
-      <div
-        ref={imgRef}
-        style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'rgba(255,255,255,0.02)', cursor: 'pointer' }}
-        onClick={() => {
-          setSelectedFiles(new Set([f.id]))
-          void loadPreview(f.id)
-        }}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            setSelectedFiles(new Set([f.id]))
-            void loadPreview(f.id)
-          }
-        }}
-        aria-label={tFormat('results.previewFileAria', { name: f.name })}
-      >
-        <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
-          {dataUrl ? (
-            <img src={dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
-          ) : thumb ? (
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>{t('results.noPreview')}</span>
-          ) : (
-            <Loader2 size={20} className="spinner" color="var(--text-muted)" />
-          )}
-        </div>
-        <div style={{ padding: '6px 8px', fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }} title={f.name}>
-          {f.name}
-        </div>
-      </div>
-    )
-  }
+  // (W3: the card component lives at module level — an inline definition gave
+  // it a new identity every render and remounted the whole gallery per state
+  // change, O(N²) while thumbnails arrived.)
 
   const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode[] => {
     const out: React.ReactNode[] = []
@@ -655,11 +674,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       {recoverReport && (
         <div
           className="glass-panel"
-          role={/Başarısız: [1-9]|Uyarı:|Bozuk [1-9]/.test(recoverReport) ? 'alert' : 'status'}
+          role={!!recoverStats && (recoverStats.failed > 0 || recoverStats.zero > 0 || recoverStats.bad > 0) ? 'alert' : 'status'}
           style={{
             padding: '16px 24px',
             borderLeft: `4px solid ${
-              /Başarısız: [1-9]|Uyarı:|Bozuk [1-9]/.test(recoverReport)
+              !!recoverStats && (recoverStats.failed > 0 || recoverStats.zero > 0 || recoverStats.bad > 0)
                 ? 'var(--alert-red)'
                 : 'var(--accent-blue)'
             }`,
@@ -776,7 +795,18 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' }}>
                   {galleryFiles.map((f) => (
-                    <ThumbCard key={f.id} f={f} />
+                    <ThumbCard
+                      key={f.id}
+                      f={f}
+                      thumb={thumbs.get(f.id)}
+                      onVisible={(id) => void loadThumb(id)}
+                      onOpen={(id) => {
+                        setSelectedFiles(new Set([id]))
+                        void loadPreview(id)
+                      }}
+                      noPreviewLabel={t('results.noPreview')}
+                      ariaLabel={tFormat('results.previewFileAria', { name: f.name })}
+                    />
                   ))}
                 </div>
               )}
