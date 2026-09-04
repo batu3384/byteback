@@ -599,18 +599,6 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
 }
 
 namespace {
-
-bool unallocatedMapUnsupported(VolumeFsKind kind) {
-    switch (kind) {
-        case VolumeFsKind::Refs:
-        case VolumeFsKind::Apfs:
-        case VolumeFsKind::Hfs:
-            return true;
-        default:
-            return false;
-    }
-}
-
 } // namespace
 
 std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
@@ -641,17 +629,22 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
         }
     }
 
-    bool sawUnsupported = false;
     for (const auto& part : parts) {
         if (part.sizeInSectors == 0) continue;
         uint64_t offsetBytes = part.startSector * sectorSize;
         uint64_t sizeBytes = part.sizeInSectors * sectorSize;
         VolumeFsKind kind = probeVolumeAt(reader, offsetBytes, sectorSize);
-        if (unallocatedMapUnsupported(kind) || kind == VolumeFsKind::Unknown) sawUnsupported = true;
         auto u = buildUnallocatedRanges(reader, kind, offsetBytes, sizeBytes);
         out.insert(out.end(), u.begin(), u.end());
     }
-    if (out.empty() && !sawUnsupported && !parts.empty()) {
+    // CA-022: when the unallocated map comes back empty — unsupported FS
+    // (ReFS/APFS/HFS), unknown FS, or a corrupt filesystem — fall back to
+    // carving the whole partition. The previous `sawUnsupported` gate kept the
+    // range set empty, so deep scans on exactly the damaged/unusual volumes
+    // this tool exists for carved zero sectors and still reported 100%. The
+    // carver's bounded-emission policy keeps the fallback from flooding
+    // results with phantom records.
+    if (out.empty() && !parts.empty()) {
         for (const auto& part : parts) {
             if (part.sizeInSectors > 0) pushRange(out, part.startSector, part.sizeInSectors);
         }

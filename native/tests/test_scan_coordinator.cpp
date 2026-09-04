@@ -343,17 +343,24 @@ TEST(ScanCoordinator, QuickScanMetadataProgressHasMidTicks) {
     EXPECT_GE(distinct, 2u);
 }
 
-TEST(ScanCoordinator, CarveUnallocatedOnlySkipsWhenNoBitmap) {
+TEST(ScanCoordinator, CarveUnallocatedOnlyFallsBackWhenNoBitmap) {
+    // CA-022: an unsupported FS (HFS+) with no allocation bitmap used to skip
+    // carving entirely ("carve_skipped") and still report 100%. The empty map
+    // now falls back to whole-partition carving, so recoverable files are
+    // found instead of silently dropped.
     std::vector<uint8_t> disk(512 * 32, 0);
     std::memcpy(disk.data() + 1024, "H+  ", 4);
+    const auto png = byteback::testfix::buildMinimalValidPng();
+    std::memcpy(disk.data() + 8 * 512, png.data(), png.size());
     DiskReader reader;
     reader.attachMemoryVolume(std::move(disk));
 
     size_t carved = 0;
     std::atomic<bool> running{true};
-    runCarveScan(reader, [&](const FileRecord&) { ++carved; },
-                 [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+    runCarveScan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
 
-    EXPECT_EQ(carved, 0u);
-    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve_skipped");
+    EXPECT_GE(carved, 1u);
+    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve");
 }

@@ -78,10 +78,14 @@ TEST(UnallocatedMap, CarveUnallocatedOnlySkipsAllocatedPng) {
     EXPECT_TRUE(carvedFree);
 }
 
-TEST(UnallocatedMap, UnknownFsUnallocatedOnlySkipsCarve) {
+TEST(UnallocatedMap, UnknownFsUnallocatedOnlyFallsBackToWholeDisk) {
+    // CA-022: an unknown/unsupported filesystem used to produce an empty
+    // unallocated range set — deep scan carved zero sectors and still reported
+    // 100% complete. The empty map now falls back to whole-partition carving,
+    // so a real footer-complete PNG is found even here.
     std::vector<uint8_t> disk(512 * 64, 0);
-    const uint8_t pngSig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-    std::memcpy(disk.data() + 10 * 512, pngSig, sizeof(pngSig));
+    const auto png = byteback::testfix::buildMinimalValidPng();
+    std::memcpy(disk.data() + 10 * 512, png.data(), png.size());
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(disk));
@@ -92,7 +96,7 @@ TEST(UnallocatedMap, UnknownFsUnallocatedOnlySkipsCarve) {
         if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
     }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
 
-    EXPECT_EQ(carved, 0u);
+    EXPECT_GE(carved, 1u);
 }
 
 TEST(UnallocatedMap, FullCarveFindsPngOnRawDisk) {
