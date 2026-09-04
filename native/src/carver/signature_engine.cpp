@@ -8,12 +8,10 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
-#include <future>
 #include <algorithm>
 #include <regex>
 #include <functional>
 #include <mutex>
-#include "util/thread_pool.h"
 
 namespace byteback {
 
@@ -434,6 +432,7 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
 
 void CarvingEngine::buildAhoCorasick() {
     acNodes.clear();
+    acNext_.clear();
     acNodes.emplace_back(); // root node at index 0
     maxPatternBytes_ = 64;
 
@@ -504,6 +503,35 @@ void CarvingEngine::buildAhoCorasick() {
             q.push(child);
         }
     }
+
+    // CA-023: compile the full transition function. The hot scan loop used to
+    // walk fail links with two std::map lookups per non-matching byte
+    // (~8M map finds per 4MB chunk); a flat [state][256] table removes that
+    // as the scan bottleneck.
+    const size_t stateCount = acNodes.size();
+    acNext_.assign(stateCount * 256, 0);
+    for (int c = 0; c < 256; ++c) {
+        auto it = acNodes[0].children.find(static_cast<uint8_t>(c));
+        acNext_[c] = (it != acNodes[0].children.end()) ? it->second : 0;
+    }
+    std::queue<int> order;
+    for (auto const& [byte, child] : acNodes[0].children) order.push(child);
+    std::vector<bool> visited(stateCount, false);
+    while (!order.empty()) {
+        const int s = order.front();
+        order.pop();
+        if (s <= 0 || s >= static_cast<int>(stateCount) || visited[s]) continue;
+        visited[s] = true;
+        const int fail = acNodes[s].fail;
+        for (int c = 0; c < 256; ++c) {
+            auto it = acNodes[s].children.find(static_cast<uint8_t>(c));
+            const int next = (it != acNodes[s].children.end())
+                                 ? it->second
+                                 : acNext_[static_cast<size_t>(fail) * 256 + c];
+            acNext_[static_cast<size_t>(s) * 256 + c] = next;
+            if (it != acNodes[s].children.end()) order.push(it->second);
+        }
+    }
 }
 
 bool CarvingEngine::scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning) {
@@ -523,58 +551,19 @@ bool CarvingEngine::scanRange(DiskReader& reader, uint64_t firstSector, uint64_t
     if (sectorSize == 0) sectorSize = 512;
 
     const uint64_t rangeEndSector = std::min(lastSector, reader.getDiskSize() / sectorSize);
-    const uint64_t totalSectors = rangeEndSector - firstSector;
-    unsigned workers = carveWorkers_ > 0 ? carveWorkers_ : util::defaultCarveWorkers();
-    const uint64_t minParallelSectors = 8192 * 4; // 16 MiB at 4K chunks
-    if (workers <= 1 || totalSectors < minParallelSectors) {
-        return scanRangeSingle(reader, firstSector, rangeEndSector, callback, isRunning, 0, 0, nullptr);
-    }
+    if (rangeEndSector <= firstSector) return false;
 
-    const uint64_t band = (totalSectors + workers - 1) / workers;
-    const uint64_t overlapSectors =
-        std::max<uint64_t>(1, (maxPatternBytes_ + sectorSize - 1) / sectorSize + 1);
-
-    std::mutex callbackMu;
-    std::atomic<int> sharedBgc{bgcBudget_};
-    std::atomic<uint64_t> progressSector{firstSector};
-
-    auto safeCallback = [&](const FileRecord& fr) {
-        if (fr.id == -1) {
-            uint64_t prev = progressSector.load(std::memory_order_relaxed);
-            while (fr.startSector > prev &&
-                   !progressSector.compare_exchange_weak(prev, fr.startSector, std::memory_order_relaxed)) {}
-            std::lock_guard<std::mutex> lock(callbackMu);
-            FileRecord tick;
-            tick.id = -1;
-            tick.startSector = progressSector.load(std::memory_order_relaxed);
-            callback(tick);
-            return;
-        }
-        std::lock_guard<std::mutex> lock(callbackMu);
-        callback(fr);
-    };
-
-    util::parallelFor(workers, [&](unsigned w, unsigned n) {
-        const uint64_t coreStart = firstSector + w * band;
-        const uint64_t coreEnd = std::min(rangeEndSector, coreStart + band);
-        if (coreStart >= coreEnd) return;
-
-        uint64_t scanStart = coreStart;
-        if (w > 0 && coreStart > overlapSectors) scanStart = coreStart - overlapSectors;
-        uint64_t scanEnd = coreEnd;
-        if (w + 1 < n && coreEnd + overlapSectors < rangeEndSector) {
-            scanEnd = coreEnd + overlapSectors;
-        }
-
-        scanRangeSingle(reader, scanStart, scanEnd, safeCallback, isRunning,
-                        coreStart, coreEnd, &sharedBgc);
-    });
-
+    // CA-006: sequential scan. The old 4-worker banding overlapped bands by
+    // only ~2 sectors, so every file straddling a band edge was truncated at
+    // the boundary — and all I/O serialized on the reader's mutex anyway, so
+    // the parallelism bought nothing. The compiled transition table (below)
+    // recovers the throughput instead.
+    const bool ok = scanRangeSingle(reader, firstSector, rangeEndSector, callback, isRunning, 0, 0, nullptr);
     FileRecord done;
     done.id = -1;
     done.startSector = rangeEndSector;
     callback(done);
-    return true;
+    return ok;
 }
 
 bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
@@ -617,16 +606,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
 
         for (uint32_t i = 0; i < res.bytesRead; ++i) {
             uint8_t byte = currentBuf->data()[i];
-            
-            while (currentState != 0 && acNodes[currentState].children.find(byte) == acNodes[currentState].children.end()) {
-                currentState = acNodes[currentState].fail;
-            }
-            if (acNodes[currentState].children.find(byte) != acNodes[currentState].children.end()) {
-                currentState = acNodes[currentState].children[byte];
-            } else {
-                currentState = 0;
-            }
-            
+            currentState = acNext_[static_cast<size_t>(currentState) * 256 + byte];
+
             uint64_t currentAbsoluteOffset = baseOffset + i;
 
             // Handle Header Matches

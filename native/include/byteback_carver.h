@@ -67,6 +67,7 @@ private:
 
     std::vector<FileSignature> signatures;
     std::vector<ACTrieNode> acNodes;
+    std::vector<int> acNext_; // compiled [state][256] transitions (CA-023)
     uint32_t maxPatternBytes_ = 64;
     unsigned carveWorkers_ = 0;
     // CA-001: per-scan BGC budget — the rescue path is bounded so a stream of

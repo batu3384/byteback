@@ -128,6 +128,35 @@ std::vector<uint8_t> minimalJpeg() {
 }
 } // namespace
 
+// CA-006: a file whose header sits one band and whose footer sits in the next
+// band was truncated at the old 4-worker band edge. Sequential scanning must
+// recover it whole.
+TEST(CarvePolicy, FileCrossingOldBandEdgeRecoveredWhole) {
+    constexpr size_t kDisk = 64u * 1024 * 1024; // old: 4 bands of 16 MiB
+    const size_t off = 16u * 1024 * 1024 - 8192; // header in band 0, footer in band 1
+
+    std::vector<uint8_t> disk(kDisk, 0);
+    static const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static const uint8_t iend[] = {0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82};
+    std::memcpy(disk.data() + off, sig, sizeof(sig));
+    std::memcpy(disk.data() + off + 4096, iend, sizeof(iend));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("png") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, 4096u + sizeof(iend));
+}
+
 // CA-004/CA-005: a JPEG starting mid-sector must be validated, recorded with
 // its true byte offset, and recovered byte-exact (previously the recovery
 // read from the sector floor and produced shifted garbage).
