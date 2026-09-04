@@ -14,15 +14,22 @@ namespace carver {
 
 namespace {
 
+// W2: real-disk fetch budget shared by the targeted parsers — a crafted
+// stream must not turn a bounded walk into millions of sector reads.
+constexpr uint64_t kFetchBudget = 65536;
+
 // Fetch `len` bytes at absolute offset `abs`, serving from the probe window
-// when possible, otherwise through the caller's readAt.
+// when possible, otherwise through the caller's readAt (budgeted).
 bool fetchAt(const uint8_t* probe, size_t probeSize, uint64_t probeAbsOffset,
-             const BoxHeaderReader& readAt, uint64_t abs, uint32_t len, uint8_t* out) {
+             const BoxHeaderReader& readAt, uint64_t& budget,
+             uint64_t abs, uint32_t len, uint8_t* out) {
     if (abs >= probeAbsOffset && abs + len <= probeAbsOffset + probeSize) {
         std::memcpy(out, probe + static_cast<size_t>(abs - probeAbsOffset), len);
         return true;
     }
-    return readAt && readAt(abs, len, out);
+    if (budget == 0 || !readAt) return false;
+    --budget;
+    return readAt(abs, len, out);
 }
 
 uint16_t rd16(const uint8_t* p, bool le) {
@@ -202,7 +209,8 @@ StructuralParseResult parseMkvBounded(const uint8_t* probe, size_t probeSize,
     StructuralParseResult r;
     uint8_t hdr[16];
     if (!probe || probeSize < 8) return r;
-    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset, 12, hdr)) return r;
+    uint64_t budget = kFetchBudget;
+    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget, probeAbsOffset, 12, hdr)) return r;
     static const uint8_t kEbml[4] = {0x1A, 0x45, 0xDF, 0xA3};
     if (std::memcmp(hdr, kEbml, 4) != 0) return r;
 
@@ -214,7 +222,7 @@ StructuralParseResult parseMkvBounded(const uint8_t* probe, size_t probeSize,
     // Segment ID follows the whole EBML header element: ID + vint + payload.
     const uint64_t segIdOff = 4 + hdrLen + hdrSize;
     uint8_t seg[16];
-    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset + segIdOff, 12, seg)) return r;
+    if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget, probeAbsOffset + segIdOff, 12, seg)) return r;
     static const uint8_t kSegment[4] = {0x18, 0x53, 0x80, 0x67};
     if (std::memcmp(seg, kSegment, 4) != 0) return r;
 
@@ -244,56 +252,50 @@ uint32_t oggCrc32(const uint8_t* data, size_t len) {
 
 // OGG: walk pages until the EOS flag or a broken capture. Every page's CRC
 // is verified — junk after a magic must not validate as a "page walk".
+// W2: at most three bulk fetches per page (header+lacing in one read, body
+// in one read) under a global fetch budget — per-byte lacing reads turned a
+// large stream into millions of sector reads.
 StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
                                       uint64_t probeAbsOffset, uint64_t maxBytes,
                                       const BoxHeaderReader& readAt) {
     StructuralParseResult r;
     if (!probe || probeSize < 27) return r;
 
-    // A page is at most 27 + 255 + 65025 bytes; one buffer serves the walk.
+    uint64_t budget = kFetchBudget;
     std::vector<uint8_t> page;
     page.reserve(27 + 255 + 65025);
     uint64_t off = 0;
     uint64_t end = 0;
-    for (int pages = 0; pages < 1000000; ++pages) {
-        if (off + 27 > maxBytes) break;
-        uint8_t hdr[27];
-        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, probeAbsOffset + off, 27, hdr)) break;
+    while (off + 27 <= maxBytes) {
+        // Header + maximal lacing table in one fetch.
+        uint8_t head[27 + 255];
+        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                     probeAbsOffset + off, sizeof(head), head)) break;
+        const uint8_t* hdr = head;
         if (std::memcmp(hdr, "OggS", 4) != 0) break; // slack or garbage after the stream
         if (hdr[4] != 0) break;                      // stream structure version
         if (hdr[5] & 0xF8) break;                    // reserved flag bits set
         const uint32_t nseg = hdr[26];
         if (nseg == 0) break;
         uint64_t body = 0;
-        for (uint32_t i = 0; i < nseg; ++i) {
-            uint8_t segLen = 0;
-            if (!fetchAt(probe, probeSize, probeAbsOffset, readAt,
-                         probeAbsOffset + off + 27 + i, 1, &segLen)) break;
-            body += segLen;
-            page.push_back(segLen);
-        }
-        if (off + 27 + nseg + body > maxBytes) {
-            page.clear();
-            break;
-        }
-        // Fetch the whole page: CRC covers header + lacing + payload with the
-        // checksum field zeroed.
-        page.insert(page.begin(), hdr, hdr + 27);
-        std::memset(page.data() + 22, 0, 4);
+        for (uint32_t i = 0; i < nseg; ++i) body += head[27 + i];
         const uint64_t pageLen = 27 + nseg + body;
-        if (page.size() > 27 + nseg) page.resize(pageLen); // room for payload
-        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt,
-                     probeAbsOffset + off + 27 + nseg, static_cast<uint32_t>(body),
-                     page.data() + 27 + nseg)) {
-            page.clear();
-            break;
+        if (off + pageLen > maxBytes) break;
+
+        // CRC covers header + lacing + payload with the checksum zeroed.
+        page.assign(head, head + 27 + nseg);
+        if (body > 0) {
+            page.resize(static_cast<size_t>(pageLen));
+            if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                         probeAbsOffset + off + 27 + nseg, static_cast<uint32_t>(body),
+                         page.data() + 27 + nseg)) break;
         }
+        std::memset(page.data() + 22, 0, 4);
         if (oggCrc32(page.data(), static_cast<size_t>(pageLen)) != rd32(hdr + 22, true)) {
             break; // checksum mismatch: not a real OGG page
         }
         off += pageLen;
         end = off;
-        page.clear();
         if (hdr[5] & 0x04) break; // EOS page: stream ends here
     }
     if (end < 28) return r;
