@@ -91,10 +91,17 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
           <button className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} style={{ padding: '6px 12px' }}><ChevronLeft size={16} /> Önceki</button>
           <div className="sector-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Sektör</label>
-            <input 
-              type="number" 
-              value={sector} 
-              onChange={(e) => setSector(Number(e.target.value))}
+            <input
+              type="number"
+              defaultValue={sector}
+              key={sector}
+              onBlur={(e) => {
+                const pending = Number(e.target.value)
+                if (Number.isFinite(pending) && pending >= 0) setSector(pending)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              }}
               min="0"
               style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '80px', fontFamily: 'monospace' }}
             />

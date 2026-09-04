@@ -3,6 +3,7 @@ import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
 import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
 import { scanProfileLabel } from '../../../shared/scan-profiles'
+import { formatSize } from '../ResultsView/results-view-utils'
 import {
   etaFromMonotonicWindow,
   formatEtaClock,
@@ -15,7 +16,7 @@ import type { ScanPhase } from '../../../shared/scan-required'
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
-  progress: { current: number; total: number; phase?: string }
+  progress: { current: number; total: number; badSectors?: number[]; phase?: string }
   status: string
   phase: ScanPhase
   elapsed: number
@@ -264,6 +265,12 @@ function ScanView({
           HFS+ katalog limit sentinel kaydı var. Varsayılan yürüyüş sınırsız; bu uyarı yalnız limit verilmiş taramada çıkar.
         </div>
       )}
+      {/* CA-041: bad-sector telemetry from failed reads, surfaced at last. */}
+      {progress.badSectors && progress.badSectors.length > 0 && (
+        <div className="glass-panel" role="alert" style={{ padding: '12px 24px', borderLeft: '4px solid var(--alert-red)', fontSize: '0.85rem' }}>
+          {progress.badSectors.length.toLocaleString('tr-TR')} sektör okunamadı (bozuk). Bu bölgelerdeki veriler kurtarılamamış olabilir.
+        </div>
+      )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
         {progress.phase === 'carve_skipped'
           ? 'Oyma atlandı — bu dosya sistemi için boş alan haritası yok (APFS/HFS/ReFS). Tam disk carve veya carve_only profilini dene.'
@@ -361,7 +368,7 @@ function ScanView({
                       <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
                       <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'var(--surface-overlay)', padding: '2px 8px', borderRadius: '12px', flexShrink: 0 }}>{f.category}</span>
                       <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem', flexShrink: 0 }}>
-                        {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
+                        {formatSize(f.sizeBytes || f.size || 0)}
                       </span>
                     </button>
                   )
@@ -381,7 +388,7 @@ function ScanView({
               </div>
               {[
                 ['Kategori', selectedFile.category ?? '—'],
-                ['Boyut', ((selectedFile.sizeBytes ?? 0) / 1024).toFixed(2) + ' KB'],
+                ['Boyut', formatSize(selectedFile.sizeBytes ?? 0)],
                 ['Başlangıç Sektörü', selectedFile.startSector?.toLocaleString() ?? '—'],
                 ['Bitiş Sektörü', selectedFile.endSector?.toLocaleString() ?? '—'],
                 ['Güven Skoru', selectedFile.confidence != null ? `${selectedFile.confidence}%` : '—'],
