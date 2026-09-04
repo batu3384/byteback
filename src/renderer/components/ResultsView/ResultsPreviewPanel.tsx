@@ -3,7 +3,7 @@ import type { FilePreviewResult, FileRecord } from '../../../shared/ipc-contract
 import { formatPreviewHex, previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
 import { extractJpegExifUnix, extractPdfInfo, sniffMediaContainer } from '../../../shared/embedded-metadata'
 import { formatFsTimestamp, getExtension } from './results-view-utils'
-import { localizeNote } from '../../i18n'
+import { localizeNote, t, tFormat } from '../../i18n'
 
 interface ResultsPreviewPanelProps {
   preview: FilePreviewResult | null
@@ -14,17 +14,17 @@ interface ResultsPreviewPanelProps {
 
 function typeMetaLine(preview: FilePreviewResult, record: FileRecord | null | undefined): string {
   const source = record?.source ?? '—'
-  const detected = preview.mime || preview.kind || 'bilinmiyor'
+  const detected = preview.mime || preview.kind || t('preview.unknown')
   const nameExt = record ? getExtension(record.name) : ''
-  const extPart = nameExt ? `.${nameExt}` : 'yok'
+  const extPart = nameExt ? `.${nameExt}` : t('preview.noExt')
   const mimeLeaf = preview.mime?.includes('/') ? preview.mime.split('/')[1] : ''
   const mismatch =
     Boolean(mimeLeaf) &&
     Boolean(nameExt) &&
     mimeLeaf !== nameExt &&
     !(mimeLeaf === 'jpeg' && (nameExt === 'jpg' || nameExt === 'jpeg'))
-  const note = mismatch ? ' · uzantı yanıltıcı olabilir' : ''
-  return `${source} · tespit: ${detected} · ad uzantısı: ${extPart}${note}`
+  const note = mismatch ? t('preview.extMismatch') : ''
+  return tFormat('preview.typeMeta', { source, detected, ext: extPart }) + note
 }
 
 function embeddedDateLine(preview: FilePreviewResult, record: FileRecord | null | undefined): string | null {
@@ -66,18 +66,18 @@ export default function ResultsPreviewPanel({
   return (
     <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <strong>Önizleme{previewRecord ? `: ${previewRecord.name}` : ''}</strong>
+        <strong>{previewRecord ? tFormat('preview.titleWithName', { name: previewRecord.name }) : t('preview.title')}</strong>
         <button type="button" className="btn-secondary" style={{ padding: '4px 10px' }} onClick={onClose}>
-          Kapat
+          {t('preview.close')}
         </button>
       </div>
       {previewLoading && !preview ? (
-        <p style={{ color: 'var(--text-muted)' }}>Okunuyor...</p>
+        <p style={{ color: 'var(--text-muted)' }}>{t('preview.reading')}</p>
       ) : preview?.success ? (
         <>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '8px' }}>
-            {typeMetaLine(preview, previewRecord)} · {preview.data?.length ?? 0} bayt
-            {(preview.data?.length ?? 0) >= 64 * 1024 ? ' · ilk 64 KB' : ''}
+            {typeMetaLine(preview, previewRecord)} · {tFormat('preview.bytes', { n: String(preview.data?.length ?? 0) })}
+            {(preview.data?.length ?? 0) >= 64 * 1024 ? t('preview.first64kb') : ''}
             {embeddedDate ? ` · ${embeddedDate}` : ''}
             {preview.note ? ` · ${localizeNote(preview.note)}` : ''}
           </p>
@@ -85,13 +85,13 @@ export default function ResultsPreviewPanel({
             <img
               key={previewKey}
               src={previewImgUrl}
-              alt={previewRecord?.name ?? 'önizleme'}
+              alt={previewRecord?.name ?? t('preview.alt')}
               onError={() => setFailedKey(previewKey)}
               style={{ maxWidth: '100%', maxHeight: '240px', objectFit: 'contain', borderRadius: '4px' }}
             />
           ) : preview.kind === 'image' && (imgFailed || !detectedMime) ? (
             <p role="alert" style={{ color: 'var(--alert-red)' }}>
-              Önizleme gösterilemiyor (içerik/tür uyuşmuyor)
+              {t('preview.imageMismatch')}
             </p>
           ) : preview.kind === 'text' && preview.data ? (
             <pre style={{ fontFamily: 'monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
@@ -99,13 +99,13 @@ export default function ResultsPreviewPanel({
             </pre>
           ) : preview.kind === 'pdf' ? (
             <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              <p>PDF yapısal özet (ilk KB):</p>
+              <p>{t('preview.pdfSummary')}</p>
               <ul style={{ margin: '4px 0 0 16px' }}>
-                {pdfInfo?.version ? <li>Sürüm: {pdfInfo.version}</li> : null}
-                {pdfInfo?.creationDate ? <li>Oluşturma (gömülü): {pdfInfo.creationDate}</li> : null}
-                {pdfInfo?.title ? <li>Başlık: {pdfInfo.title}</li> : null}
+                {pdfInfo?.version ? <li>{tFormat('preview.pdfVersion', { v: pdfInfo.version })}</li> : null}
+                {pdfInfo?.creationDate ? <li>{tFormat('preview.pdfCreated', { d: pdfInfo.creationDate })}</li> : null}
+                {pdfInfo?.title ? <li>{tFormat('preview.pdfTitle', { title: pdfInfo.title })}</li> : null}
                 {!pdfInfo?.version && !pdfInfo?.creationDate && !pdfInfo?.title ? (
-                  <li>Gömülü metadata bulunamadı — tam görüntü yok.</li>
+                  <li>{t('preview.pdfNone')}</li>
                 ) : null}
               </ul>
             </div>
@@ -122,17 +122,17 @@ export default function ResultsPreviewPanel({
               ) : null}
               {mediaHint && !preview.note ? (
                 <p>
-                  {mediaHint.kind === 'video' ? 'Video' : 'Ses'} konteyneri: {mediaHint.label}. Tam oynatma önizlemesi yok — kurtarmadan önce başka araçla doğrula.
+                  {tFormat('preview.mediaContainer', { kind: mediaHint.kind === 'video' ? t('preview.video') : t('preview.audio'), label: mediaHint.label })}
                 </p>
               ) : null}
             </div>
           ) : preview.kind === 'binary' ? (
-            <p style={{ color: 'var(--text-muted)' }}>Görsel/metin önizlemesi yok (binary).</p>
+            <p style={{ color: 'var(--text-muted)' }}>{t('preview.noBinary')}</p>
           ) : null}
           {preview.data && preview.data.length > 0 && preview.kind !== 'text' ? (
             <details style={{ marginTop: '12px' }}>
               <summary style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                Detaylar (hex)
+                {t('preview.detailsHex')}
               </summary>
               <pre style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '8px', maxHeight: '160px', overflow: 'auto' }}>
                 {formatPreviewHex(preview.data)}
@@ -141,7 +141,7 @@ export default function ResultsPreviewPanel({
           ) : null}
         </>
       ) : (
-        <p role="alert" style={{ color: 'var(--alert-red)' }}>{preview?.error ?? 'Önizleme alınamadı.'}</p>
+        <p role="alert" style={{ color: 'var(--alert-red)' }}>{preview?.error ?? t('preview.failed')}</p>
       )}
     </div>
   )

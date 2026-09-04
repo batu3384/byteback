@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './RaidBuilder.css';
 import { Layers, HardDrive, Cpu, Settings2, Play, CheckCircle } from 'lucide-react';
 import InlineAlert from '../InlineAlert';
+import { useI18n, tFormat } from '../../i18n';
 
 interface Disk {
   id: string;
@@ -14,6 +15,7 @@ interface RaidBuilderProps {
 }
 
 const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
+  const { t } = useI18n()
   const [availableDisks, setAvailableDisks] = useState<Disk[]>([]);
   const [raidArray, setRaidArray] = useState<Disk[]>([]);
   const [raidType, setRaidType] = useState<string>('RAID 5');
@@ -27,7 +29,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
       window.api.listDrives().then((drives: any[]) => {
         const disks = drives.map(d => ({
           id: d.index.toString(),
-          name: `Sürücü ${d.index} (${d.model})`,
+          name: tFormat('raid.diskName', { n: String(d.index), model: d.model }),
           capacity: `${(d.sizeBytes / (1024 ** 3)).toFixed(2)} GB`
         }));
         setAvailableDisks(disks);
@@ -83,22 +85,22 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         const capGb = res.capacity ? (res.capacity / (1024 ** 3)).toFixed(2) : '?';
         setRaidNotice({
           variant: 'success',
-          message: `${raidType} dizisi oluşturuldu. Kapasite: ${capGb} GB, disk sayısı: ${res.numDisks}. Hızlı tarama başlatılıyor.`,
+          message: tFormat('raid.builtOk', { type: raidType, cap: capGb, n: String(res.numDisks) }),
         });
         if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         setAssembled(false);
-        const why = res && res.error ? ` Hata: ${res.error}` : '';
+        const why = res && res.error ? tFormat('raid.errorSuffix', { err: res.error }) : '';
         setRaidNotice({
           variant: 'error',
-          message: `${raidType} dizisi oluşturulamadı. Disk sırasını, minimum disk sayısını (RAID 5: 3, RAID 6: 4, RAID 10: çift sayı) ve Yönetici izinlerini kontrol edin.${why}`,
+          message: tFormat('raid.buildFailed', { type: raidType }) + why,
         });
       }
     } else {
       setIsBuilding(false);
       setRaidNotice({
         variant: 'error',
-        message: 'Native backend kullanılamıyor. Uygulamayı Yönetici olarak çalıştırın.',
+        message: t('raid.noBackend'),
       });
     }
   };
@@ -110,8 +112,8 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           <Layers size={32} color="var(--accent-blue)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sanal RAID Oluşturucu (Virtual RAID Constructor)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Disk ekle/çıkar düğmeleri veya sürükle-bırak. Sıra stripe/parite yerleşimini belirler.</p>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('raid.title')}</h2>
+          <p style={{ color: 'var(--text-muted)' }}>{t('raid.subtitle')}</p>
         </div>
       </div>
 
@@ -132,7 +134,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         >
           <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <HardDrive size={20} color="var(--accent-blue)" />
-            <h3 style={{ fontSize: '1.1rem', margin: 0 }}>Kullanılabilir Diskler</h3>
+            <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{t('raid.available')}</h3>
           </div>
           <div className="disk-list" style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {availableDisks.map(disk => (
@@ -154,13 +156,13 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <div className="disk-name" style={{ fontWeight: 500, color: 'var(--text-main)', marginBottom: '4px' }}>{disk.name}</div>
                   <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{disk.capacity}</div>
                 </div>
-                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'available', 'array')}>Diziye ekle</button>
+                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'available', 'array')}>{t('raid.addToArray')}</button>
               </div>
             ))}
             {availableDisks.length === 0 && (
               <div className="empty-state" style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto', padding: '40px 0' }}>
                 <HardDrive size={48} style={{ margin: '0 auto 16px', opacity: 0.2 }} />
-                <p>Burada disk bulunmuyor.</p>
+                <p>{t('raid.emptyAvailable')}</p>
               </div>
             )}
           </div>
@@ -176,7 +178,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           <div className="array-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <Cpu size={20} color="#b700ff" />
-              <h3 style={{ fontSize: '1.1rem', margin: 0 }}>Sanal Dizi (Array)</h3>
+              <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{t('raid.arrayTitle')}</h3>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Settings2 size={16} color="var(--text-muted)" />
@@ -189,7 +191,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 <option value="RAID 0">RAID 0 (Stripe)</option>
                 <option value="RAID 1">RAID 1 (Mirror)</option>
                 <option value="RAID 5">RAID 5 (Parity)</option>
-                <option value="RAID 6">RAID 6 (Çift Parite)</option>
+                <option value="RAID 6">{t('raid.raid6')}</option>
                 <option value="RAID 10">RAID 10 (Mirror+Stripe)</option>
               </select>
             </div>
@@ -213,7 +215,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
                   <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)' }}>{disk.capacity}</div>
                 </div>
-                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'array', 'available')}>Çıkar</button>
+                <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'array', 'available')}>{t('raid.remove')}</button>
                 {assembled && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'rgba(255,255,255,0.85)', cursor: 'pointer' }}>
                     <input
@@ -226,7 +228,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                         if (ok) setFailedSlots(prev => new Set(prev).add(index));
                       }}
                     />
-                    Bozuk üye
+                    {t('raid.failedMember')}
                   </label>
                 )}
               </div>
@@ -236,7 +238,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 <div style={{ padding: '20px', border: '2px dashed var(--panel-border)', borderRadius: '12px', display: 'inline-block', marginBottom: '16px' }}>
                   <HardDrive size={32} style={{ opacity: 0.5 }} />
                 </div>
-                <p>Disk ekle düğmesi veya sürükle-bırak.</p>
+                <p>{t('raid.emptyArray')}</p>
               </div>
             )}
           </div>
@@ -250,16 +252,16 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
             >
               {isBuilding ? (
                 <>
-                  <Settings2 size={20} className="spinner" /> Parite Hesaplanıyor...
+                  <Settings2 size={20} className="spinner" /> {t('raid.building')}
                 </>
               ) : (
                 <>
-                  <Play size={20} fill="currentColor" /> {raidType} DİZİSİNİ OLUŞTUR VE BAĞLA
+                  <Play size={20} fill="currentColor" /> {tFormat('raid.buildBtn', { type: raidType })}
                 </>
               )}
             </button>
             <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
-              En az 2 disk gereklidir. Dizi kurulduktan sonra bozuk üyeyi işaretleyin; RAID 0 o şeridi sıfırlar, RAID 5/6 parite ile okur.
+              {t('raid.hint')}
             </p>
           </div>
         </div>

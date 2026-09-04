@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import './CaseView.css'
 import { Briefcase, FolderOpen } from 'lucide-react'
 import type { CaseInfo, NsrlStats } from '../../../shared/ipc-contract'
+import { useI18n, tFormat } from '../../i18n'
 
 const emptyCase: CaseInfo = {
   caseNumber: '',
@@ -13,6 +14,7 @@ const emptyCase: CaseInfo = {
 }
 
 function CaseView(): React.ReactElement {
+  const { t } = useI18n()
   const [info, setInfo] = useState<CaseInfo>(emptyCase)
   const [nsrl, setNsrl] = useState<NsrlStats>({ count: 0, path: '' })
   const [saveError, setSaveError] = useState('')
@@ -32,7 +34,7 @@ function CaseView(): React.ReactElement {
     setSaveError('')
     setSaved(false)
     if (!window.api?.setCaseInfo) {
-      setSaveError('Motor hazır değil.')
+      setSaveError(t('case.engineNotReady'))
       return
     }
     const ok = await window.api.setCaseInfo({
@@ -42,7 +44,7 @@ function CaseView(): React.ReactElement {
       notes: info.notes,
     })
     if (!ok) {
-      setSaveError('Dava kaydı yazılamadı.')
+      setSaveError(t('case.saveFailed'))
       return
     }
     setSaved(true)
@@ -52,13 +54,13 @@ function CaseView(): React.ReactElement {
   const handleNsrl = async () => {
     setNsrlError('')
     if (!window.api?.pickAndLoadNsrl) {
-      setNsrlError('Motor hazır değil.')
+      setNsrlError(t('case.engineNotReady'))
       return
     }
     const result = await window.api.pickAndLoadNsrl()
     if (!result) return
     if (!result.ok) {
-      setNsrlError('NSRL dosyası yüklenemedi. 32 karakter hex satırları veya CSV ilk sütun beklenir.')
+      setNsrlError(t('case.nsrlLoadFailed'))
       return
     }
     setNsrl(result)
@@ -69,14 +71,14 @@ function CaseView(): React.ReactElement {
       <div className="case-header glass-panel">
         <Briefcase size={28} color="var(--accent-blue)" aria-hidden="true" />
         <div>
-          <h2>Dava ve hash seti</h2>
-          <p>E01 başlığı ve adli rapor bu alanları kullanır. NSRL bellek içi MD5 setidir; tam RDS değildir.</p>
+          <h2>{t('case.title')}</h2>
+          <p>{t('case.subtitle')}</p>
         </div>
       </div>
 
       {saveError && (
         <div className="case-alert" role="alert" tabIndex={-1}>
-          <h3>Kayıt başarısız</h3>
+          <h3>{t('case.saveErrorTitle')}</h3>
           <p>{saveError}</p>
         </div>
       )}
@@ -88,28 +90,28 @@ function CaseView(): React.ReactElement {
           void handleSave()
         }}
       >
-        <label htmlFor="case-number">Dava numarası</label>
+        <label htmlFor="case-number">{t('case.caseNumberLabel')}</label>
         <input
           id="case-number"
           value={info.caseNumber}
           onChange={(e) => setInfo({ ...info, caseNumber: e.target.value })}
         />
 
-        <label htmlFor="case-investigator">Uzman / investigator</label>
+        <label htmlFor="case-investigator">{t('case.investigatorLabel')}</label>
         <input
           id="case-investigator"
           value={info.investigator}
           onChange={(e) => setInfo({ ...info, investigator: e.target.value })}
         />
 
-        <label htmlFor="case-agency">Kurum</label>
+        <label htmlFor="case-agency">{t('case.agencyLabel')}</label>
         <input
           id="case-agency"
           value={info.agency}
           onChange={(e) => setInfo({ ...info, agency: e.target.value })}
         />
 
-        <label htmlFor="case-notes">Notlar</label>
+        <label htmlFor="case-notes">{t('case.notesLabel')}</label>
         <textarea
           id="case-notes"
           rows={4}
@@ -118,21 +120,21 @@ function CaseView(): React.ReactElement {
         />
 
         <div className="case-actions">
-          <button type="submit" className="btn-primary">Kaydet</button>
-          {saved && <span className="case-saved">Kaydedildi. Sonraki E01 bu numarayı taşır.</span>}
+          <button type="submit" className="btn-primary">{t('case.save')}</button>
+          {saved && <span className="case-saved">{t('case.saved')}</span>}
         </div>
       </form>
 
       <div className="case-nsrl glass-panel">
-        <h3>NSRL MD5 seti</h3>
-        <p>Kullanıcı dosyası: 32 hex MD5 herhangi CSV sütununda. Resmi RDS SHA-1 ilk sütunu atlanır. Gömülü RDS yok.</p>
+        <h3>{t('case.nsrlTitle')}</h3>
+        <p>{t('case.nsrlHint')}</p>
         {nsrlError && <p className="case-field-error" role="alert">{nsrlError}</p>}
-        <p>Yüklü hash: {nsrl.count}{nsrl.path ? ` · ${nsrl.path}` : ''}</p>
+        <p>{tFormat('case.loadedHashes', { n: String(nsrl.count) })}{nsrl.path ? ` · ${nsrl.path}` : ''}</p>
         {nsrl.count === 0 && nsrl.path ? (
-          <p className="case-field-error" role="status">0 MD5 yüklendi. SHA-1 sütunu atlandı veya dosya boş.</p>
+          <p className="case-field-error" role="status">{t('case.zeroLoaded')}</p>
         ) : null}
         <button type="button" className="btn-secondary" onClick={() => void handleNsrl()}>
-          <FolderOpen size={16} aria-hidden="true" /> NSRL dosyası seç
+          <FolderOpen size={16} aria-hidden="true" /> {t('case.pickNsrl')}
         </button>
       </div>
     </div>

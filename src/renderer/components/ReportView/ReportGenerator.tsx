@@ -6,6 +6,7 @@ import { APP_VERSION } from '../../../shared/app-version';
 import { htmlEscape } from '../../../shared/html-escape';
 import { canGenerateReport } from '../../../shared/scan-required';
 import InlineAlert from '../InlineAlert';
+import { useI18n, tFormat } from '../../i18n';
 
 interface ReportGeneratorProps {
   scanId: number;
@@ -23,6 +24,7 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, scanState }) => {
+  const { t } = useI18n();
   const [generating, setGenerating] = useState(false);
   const [reportHtml, setReportHtml] = useState<string | null>(null);
   const [reportHash, setReportHash] = useState<string>('');
@@ -63,7 +65,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
         .then(setSummary)
         .catch((e: unknown) => {
           setSummary(null)
-          setSummaryError(e instanceof Error ? e.message : 'Tarama özeti okunamadı')
+          setSummaryError(e instanceof Error ? e.message : t('report.summaryReadFailed'))
         });
     } else {
       setSummary(null);
@@ -73,7 +75,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
 
   const generateReport = async () => {
     if (!reportAllowed) {
-      setFormError('Adli rapor yalnızca tamamlanmış bir tarama oturumundan üretilebilir. Önce tarama yapın.');
+      setFormError(t('report.needsComplete'));
       return;
     }
     setFormError(null);
@@ -91,12 +93,10 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
         auditLines = (await window.api?.getAuditLog?.(50)) ?? [];
       } catch { /* audit log optional in report */ }
       const auditSection = auditLines.length > 0 ? `
-<h2>5. Denetim Günlüğü Özeti (Audit Log — hash zincirli)</h2>
-<p>Aşağıda, motorun SHA-256 hash zinciriyle korunan adli denetim günlüğünün son
-${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinindeki
-<code>byteback.db.audit.log</code> dosyasındadır.</p>
+<h2>${t('report.auditHeading')}</h2>
+<p>${tFormat('report.auditIntro', { n: String(auditLines.length) })}</p>
 <table>
-  <tr><th>Olay</th></tr>
+  <tr><th>${t('report.auditEventTh')}</th></tr>
   ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${htmlEscape(l)}</td></tr>`).join('\n  ')}
 </table>
 ` : '';
@@ -124,54 +124,53 @@ ${auditLines.length} kaydı yer almaktadır. Tam günlük, uygulama veri dizinin
       } catch { /* case metadata optional */ }
 
       const body = `
-<h1>Byteback — Adli Bilişim Kurtarma Raporu</h1>
+<h1>${t('report.h1')}</h1>
 <div class="header-meta">
-  <div><strong>Tarih:</strong> ${htmlEscape(dateStr)} ${htmlEscape(timeStr)}</div>
-  <div><strong>Yazılım:</strong> Byteback v${htmlEscape(APP_VERSION)}</div>
-  <div><strong>Uzman:</strong> ${htmlEscape(investigator || 'Dava kaydında yok')}</div>
+  <div><strong>${t('report.dateLabel')}</strong> ${htmlEscape(dateStr)} ${htmlEscape(timeStr)}</div>
+  <div><strong>${t('report.softwareLabel')}</strong> Byteback v${htmlEscape(APP_VERSION)}</div>
+  <div><strong>${t('report.investigatorLabel')}</strong> ${htmlEscape(investigator || t('report.noInvestigator'))}</div>
 </div>
 
-<h2>1. Vaka Bilgileri</h2>
+<h2>${t('report.caseInfoHeading')}</h2>
 <table>
-  <tr><th>Alan</th><th>Değer</th></tr>
-  <tr><td>Vaka Numarası</td><td>${htmlEscape(caseNumber || 'Dava numarası yok')}</td></tr>
-  <tr><td>Kurum</td><td>${htmlEscape(agency || '—')}</td></tr>
-  <tr><td>Rapor Tarihi</td><td>${htmlEscape(now.toLocaleString('tr-TR'))}</td></tr>
-  <tr><td>Yazılım Sürümü</td><td>Byteback ${htmlEscape(APP_VERSION)} (Native C++ Engine)</td></tr>
-  <tr><td>İşletim Sistemi</td><td>Windows</td></tr>
+  <tr><th>${t('report.fieldTh')}</th><th>${t('report.valueTh')}</th></tr>
+  <tr><td>${t('report.caseNumberTd')}</td><td>${htmlEscape(caseNumber || t('report.noCaseNumber'))}</td></tr>
+  <tr><td>${t('report.agencyTd')}</td><td>${htmlEscape(agency || '—')}</td></tr>
+  <tr><td>${t('report.reportDateTd')}</td><td>${htmlEscape(now.toLocaleString('tr-TR'))}</td></tr>
+  <tr><td>${t('report.softwareVersionTd')}</td><td>Byteback ${htmlEscape(APP_VERSION)} (Native C++ Engine)</td></tr>
+  <tr><td>${t('report.osTd')}</td><td>Windows</td></tr>
 </table>
 
-<h2>2. Delil (Kanıt) Özeti</h2>
+<h2>${t('report.evidenceHeading')}</h2>
 <table>
-  <tr><th>Metrik</th><th>Değer</th></tr>
-  <tr><td>Bulunan Toplam Dosya</td><td>${totalFiles}</td></tr>
-  <tr><td>Silinmiş / unallocated (status=0)</td><td>${summary?.deletedFiles ?? 0}</td></tr>
-  <tr><td>Allocated / in-use (status=1)</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
-      <tr><td>Tarama Süresi</td><td>${reportElapsedSec} sn</td></tr>
-  <tr><td>USN Zaman Çizelgesi Olayları</td><td>${summary?.timelineEvents ?? 0}</td></tr>
-  <tr><td>USN Oluşturma / Silme / Yeniden Adlandırma</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
+  <tr><th>${t('report.metricTh')}</th><th>${t('report.valueTh')}</th></tr>
+  <tr><td>${t('report.totalFilesTd')}</td><td>${totalFiles}</td></tr>
+  <tr><td>${t('report.deletedTd')}</td><td>${summary?.deletedFiles ?? 0}</td></tr>
+  <tr><td>${t('report.allocatedTd')}</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
+      <tr><td>${t('report.scanDurationTd')}</td><td>${reportElapsedSec} ${t('report.secondsSuffix')}</td></tr>
+  <tr><td>${t('report.timelineEventsTd')}</td><td>${summary?.timelineEvents ?? 0}</td></tr>
+  <tr><td>${t('report.usnOpsTd')}</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
 </table>
 
-<h2>3. Gözetim Zinciri (Chain of Custody)</h2>
-<p>Disk açılışı GENERIC_READ kullanır; FILE_SHARE_WRITE açıktır ve yazma-engelleyici yoktur.
-Kurtarma çıktısı, disk imajı ve dosya imhası hedefe yazar. Kaynak medyaya yazılmadığı iddia edilmez.</p>
+<h2>${t('report.custodyHeading')}</h2>
+<p>${t('report.custodyBody')}</p>
 
-<h2>4. Dosya Kategorileri Dağılımı</h2>
+<h2>${t('report.categoriesHeading')}</h2>
 <table>
-  <tr><th>Kategori</th><th>Dosya Sayısı</th></tr>
-  <tr><td>Resimler</td><td>${imgCount}</td></tr>
-  <tr><td>Videolar</td><td>${vidCount}</td></tr>
-  <tr><td>Belgeler</td><td>${docCount}</td></tr>
-  <tr><td>Ses Dosyaları</td><td>${audCount}</td></tr>
-  <tr><td>Arşivler</td><td>${arcCount}</td></tr>
-  <tr><td>Diğer</td><td>${othCount}</td></tr>
+  <tr><th>${t('report.categoryTh')}</th><th>${t('report.countTh')}</th></tr>
+  <tr><td>${t('report.imagesTd')}</td><td>${imgCount}</td></tr>
+  <tr><td>${t('report.videosTd')}</td><td>${vidCount}</td></tr>
+  <tr><td>${t('report.documentsTd')}</td><td>${docCount}</td></tr>
+  <tr><td>${t('report.audioTd')}</td><td>${audCount}</td></tr>
+  <tr><td>${t('report.archivesTd')}</td><td>${arcCount}</td></tr>
+  <tr><td>${t('report.otherTd')}</td><td>${othCount}</td></tr>
 </table>
 ${auditSection}
 `;
 
       const hash = await sha256Hex(body);
       const finalHtml = `<!DOCTYPE html>
-<html lang="tr"><head><meta charset="utf-8"><title>Byteback - Adli Bilişim Raporu</title>
+<html lang="tr"><head><meta charset="utf-8"><title>${t('report.docTitle')}</title>
 <style>
   body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; background: #f8f9fa; color: #1a1a2e; }
   h1 { color: #0B0F19; border-bottom: 3px solid #2962FF; padding-bottom: 10px; }
@@ -185,14 +184,10 @@ ${auditSection}
 </style></head><body>
 ${body}
 <div class="footer">
-  <p>Bu rapor Byteback tarafından otomatik olarak oluşturulmuştur.
-  Raporu mahkemeye veya kuruma sunmadan önce doğruluk kontrolü uzmanın sorumluluğundadır.</p>
-  <p><strong>Rapor Bütünlük Doğrulaması (SHA-256):</strong> Aşağıdaki özet, bu raporun
-  rapor bölümlerinin (audit günlüğü dahil) tam içeriği üzerinden hesaplanmıştır:</p>
+  <p>${t('report.footerAuto')}</p>
+  <p><strong>${t('report.footerHashLabel')}</strong> ${t('report.footerHashBody')}</p>
   <p class="hash-box">${hash}</p>
-  <p>Rapor içeriğinde yapılan herhangi bir değişiklik bu özeti geçersiz kılar.
-  Kurtarılan bireysel dosyaların MD5 özetleri, kurtarma işlemi sonunda
-  kurtarma sonuçlarıyla birlikte ayrıca raporlanır.</p>
+  <p>${t('report.footerHashNote')}</p>
 </div>
 </body></html>`;
 
@@ -213,7 +208,7 @@ ${body}
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `byteback-rapor-${dateStr}.html`;
+    a.download = tFormat('report.fileName', { date: dateStr });
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -228,7 +223,7 @@ ${body}
       if (res?.success) {
         setPdfDone(res.path ?? '')
       } else if (res?.error && !res.canceled) {
-        setFormError('PDF oluşturulamadı: ' + res.error)
+        setFormError(tFormat('report.pdfFailed', { err: res.error }))
       }
     } catch (err) {
       console.error(err)
@@ -244,17 +239,16 @@ ${body}
           <FileText size={32} color="var(--success-green)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Rapor Oluşturucu (Forensic Report)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Kurtarma operasyonunuz için Adli Bilişim (Forensic) standartlarında resmi rapor oluşturun.</p>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('report.title')}</h2>
+          <p style={{ color: 'var(--text-muted)' }}>{t('report.subtitle')}</p>
         </div>
       </div>
 
       <div className="report-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
         {!reportAllowed && (
-          <InlineAlert variant="warning" title="Tarama gerekli">
-            Resmi adli rapor, SQLite veritabanına kayıtlı tamamlanmış bir tarama oturumu olmadan üretilemez.
-            Ana ekrandan tarama başlatın ve tamamlanmasını bekleyin.
+          <InlineAlert variant="warning" title={t('report.scanRequiredTitle')}>
+            {t('report.scanRequiredBody')}
           </InlineAlert>
         )}
 
@@ -266,7 +260,7 @@ ${body}
 
         {summaryError && (
           <InlineAlert variant="warning" onDismiss={() => setSummaryError(null)}>
-            Tarama özeti yüklenemedi: {summaryError}
+            {tFormat('report.summaryLoadFailed', { err: summaryError })}
           </InlineAlert>
         )}
 
@@ -274,16 +268,16 @@ ${body}
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <ShieldCheck size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Gözetim Zinciri</h4>
-              <p style={{ fontWeight: 500 }}>Bütünlük Doğrulaması</p>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Rapor gövdesi SHA-256 ile özetlenir; PDF dışa aktarımında dosya paylaşım bayrakları uygulanır.</p>
+              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.custodyCardTitle')}</h4>
+              <p style={{ fontWeight: 500 }}>{t('report.custodyCardSub')}</p>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('report.custodyCardBody')}</p>
             </div>
           </div>
 
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <PieChart size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Bulunan Dosyalar</h4>
+              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.foundFilesTitle')}</h4>
               <p style={{ fontWeight: 500 }}>{summary?.totalFiles ?? (scanId > 0 ? '…' : '0')}</p>
             </div>
           </div>
@@ -291,21 +285,21 @@ ${body}
           <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Clock size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Rapor Doğrulaması</h4>
-              <p style={{ fontWeight: 500 }}>SHA-256 (Gerçek Hesap)</p>
+              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.verifyTitle')}</h4>
+              <p style={{ fontWeight: 500 }}>{t('report.verifySub')}</p>
             </div>
           </div>
         </div>
 
         <div style={{ background: 'rgba(0,0,0,0.2)', padding: '24px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
           <h3 style={{ fontSize: '1.1rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <FileText size={18} color="var(--success-green)" /> Rapora Dahil Edilecekler
+            <FileText size={18} color="var(--success-green)" /> {t('report.includedTitle')}
           </h3>
           <ul style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginLeft: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <li>Vaka bilgileri ve tarama istatistikleri</li>
-            <li>Adli gözetim zinciri beyanı (Chain of Custody)</li>
-            <li>Dosya kategorilerine göre dağılım analizi</li>
-            <li>Rapor içeriğinin SHA-256 bütünlük özeti (raporla birlikte hesaplanır ve gömülür)</li>
+            <li>{t('report.included1')}</li>
+            <li>{t('report.included2')}</li>
+            <li>{t('report.included3')}</li>
+            <li>{t('report.included4')}</li>
           </ul>
         </div>
 
@@ -315,36 +309,36 @@ ${body}
               className="btn-primary"
               onClick={generateReport}
               disabled={!reportAllowed}
-              title={!reportAllowed ? 'Önce taramayı tamamlayın' : undefined}
+              title={!reportAllowed ? t('report.generateBlockedTitle') : undefined}
               style={{ padding: '16px 32px', fontSize: '1.1rem', background: 'var(--success-green)', color: '#000', opacity: reportAllowed ? 1 : 0.5 }}
             >
-              RESMİ RAPOR OLUŞTUR
+              {t('report.generateBtn')}
             </button>
           )}
 
           {generating && (
             <div className="generating-state" style={{ display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--success-green)' }}>
               <Clock size={24} className="spinner" />
-              <span style={{ fontSize: '1.1rem', fontWeight: 500 }}>Adli Bilişim raporu hazırlanıyor...</span>
+              <span style={{ fontSize: '1.1rem', fontWeight: 500 }}>{t('report.generating')}</span>
             </div>
           )}
 
           {reportHtml && !generating && (
             <div className="report-ready" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
               <span style={{ color: 'var(--success-green)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.2rem' }}>
-                <CheckCircle size={24} /> Rapor Hazır
+                <CheckCircle size={24} /> {t('report.ready')}
               </span>
               <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all', maxWidth: '600px' }}>
                 SHA-256: {reportHash}
               </div>
               {pdfDone && (
                 <div style={{ fontSize: '0.85rem', color: 'var(--success-green)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                  PDF kaydedildi: {pdfDone}
+                  {tFormat('report.pdfSaved', { path: pdfDone })}
                 </div>
               )}
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button className="btn-primary" onClick={downloadReport} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Download size={18} /> HTML Olarak İndir
+                  <Download size={18} /> {t('report.downloadHtml')}
                 </button>
                 <button
                   className="btn-primary"
@@ -352,10 +346,10 @@ ${body}
                   disabled={pdfBusy}
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--accent-blue)', color: '#fff' }}
                 >
-                  <Download size={18} /> {pdfBusy ? 'PDF Oluşturuluyor...' : 'PDF Olarak İndir'}
+                  <Download size={18} /> {pdfBusy ? t('report.pdfBuilding') : t('report.downloadPdf')}
                 </button>
                 <button className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); setPdfDone(''); }}>
-                  Yeniden Oluştur
+                  {t('report.regenerate')}
                 </button>
               </div>
             </div>

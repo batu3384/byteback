@@ -2,21 +2,23 @@ import React, { useState, useEffect, useRef } from 'react';
 import './KeywordSearch.css';
 import { Search, FileText, Filter, AlertCircle, FileSearch, Keyboard } from 'lucide-react';
 import type { FileRecord } from '../../../shared/ipc-contract';
+import { useI18n, tFormat } from '../../i18n';
 
 interface KeywordSearchProps {
   scanId: number;
 }
 
 const CATEGORIES = [
-  { value: '', label: 'Tüm Kategoriler' },
-  { value: 'Image', label: 'Görsel' },
-  { value: 'Document', label: 'Belge' },
-  { value: 'Video', label: 'Video' },
-  { value: 'Audio', label: 'Ses' },
-  { value: 'Archive', label: 'Arşiv' },
+  { value: '', labelKey: 'kw.catAll' },
+  { value: 'Image', labelKey: 'kw.catImage' },
+  { value: 'Document', labelKey: 'scan.document' },
+  { value: 'Video', labelKey: 'scan.video' },
+  { value: 'Audio', labelKey: 'scan.audio' },
+  { value: 'Archive', labelKey: 'scan.archive' },
 ];
 
 const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<FileRecord[]>([]);
@@ -40,11 +42,11 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   const handleSearch = async () => {
     if (!query.trim()) return;
     if (useRegex && query.length > 128) {
-      setRegexError('Regex en fazla 128 karakter.');
+      setRegexError(t('kw.regexTooLong'));
       return;
     }
     if (scanId <= 0) {
-      setRegexError('Önce bir tarama tamamlayın.');
+      setRegexError(t('kw.needScan'));
       return;
     }
 
@@ -63,7 +65,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       try {
         new RegExp(query, 'i');
       } catch (err: any) {
-        setRegexError(`Geçersiz regex: ${err?.message ?? err}`);
+        setRegexError(tFormat('kw.invalidRegex', { err: err?.message ?? String(err) }));
         setSearching(false);
         return;
       }
@@ -101,12 +103,12 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       try {
         const res = await window.api.startContentSearch(scanId, query);
         if (!res.ok) {
-          setRegexError(res.error ?? 'İçerik araması başlatılamadı (başka disk işlemi sürüyor olabilir)');
+          setRegexError(res.error ?? t('kw.contentStartFailed'))
           setSearching(false);
           setSearchDone(true);
         }
       } catch (e: unknown) {
-        setRegexError(e instanceof Error ? e.message : 'İçerik araması hatası');
+        setRegexError(e instanceof Error ? e.message : t('kw.contentError'))
         setSearching(false);
         setSearchDone(true);
       }
@@ -123,13 +125,13 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         category || undefined,
       );
       if (res.error) {
-        setSearchError(`Arama hatası: ${res.error}`);
+        setSearchError(tFormat('kw.searchError', { err: res.error }));
         setResults([]);
       } else {
         setResults(res.rows);
       }
     } catch {
-      setSearchError('Arama sırasında beklenmeyen bir hata oluştu.');
+      setSearchError(t('kw.unexpectedError'));
       setResults([]);
     }
     setSearching(false);
@@ -149,8 +151,8 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   return (
     <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
       <div className="search-header glass-panel" style={{ padding: '24px' }}>
-        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Kelime Araması</h2>
-        <p style={{ color: 'var(--text-muted)' }}>SQLite metadata araması veya dosya içeriğinde (ilk 256 KB) metin araması. 16 MiB üstü dosyalar içerik indeksine alınmaz. Derin tarama imzası CPU Aho-Corasick; GPU PFAC yok.</p>
+        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('title.search')}</h2>
+        <p style={{ color: 'var(--text-muted)' }}>{t('kw.subtitle')}</p>
       </div>
 
       <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -160,7 +162,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
             <input
               type="text"
               style={{ flex: 1, background: 'transparent', border: 'none', padding: '12px 16px', color: 'var(--text-main)', fontSize: '1rem' }}
-              placeholder="Anahtar kelime girin (örn. 'fatura', 'sözleşme', '.xlsx')"
+              placeholder={t('kw.queryPlaceholder')}
               value={query}
               maxLength={200}
               onChange={(e) => setQuery(e.target.value)}
@@ -168,11 +170,11 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
             />
           </div>
           <button className="btn-primary search-btn" onClick={handleSearch} disabled={searching} style={{ padding: '0 32px' }}>
-            {searching ? 'Aranıyor...' : 'Ara'}
+            {searching ? t('kw.searching') : t('kw.search')}
           </button>
           {searching && searchContent && (
             <button className="btn-secondary" onClick={handleStop} style={{ padding: '0 16px' }}>
-              Durdur
+              {t('kw.stop')}
             </button>
           )}
         </div>
@@ -185,10 +187,10 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
 
         <div className="search-filters" style={{ display: 'flex', gap: '16px', color: 'var(--text-muted)', fontSize: '0.9rem', flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)' }}>
-            <Filter size={16} /> Filtreler:
+            <Filter size={16} /> {t('kw.filters')}
           </span>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            Kategori:
+            {t('scan.category')}:
             <select
               value={category}
               disabled={searchContent}
@@ -196,7 +198,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               style={{ background: 'rgba(0,0,0,0.2)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px', padding: '4px 8px' }}
             >
               {CATEGORIES.map((c) => (
-                <option key={c.value || 'all'} value={c.value}>{c.label}</option>
+                <option key={c.value || 'all'} value={c.value}>{t(c.labelKey)}</option>
               ))}
             </select>
           </label>
@@ -207,7 +209,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               onChange={(e) => { setSearchContent(e.target.checked); if (e.target.checked) setUseRegex(false); }}
               id="content-toggle"
             />
-            <label htmlFor="content-toggle" style={{ cursor: 'pointer' }}>İçerik Araması</label>
+            <label htmlFor="content-toggle" style={{ cursor: 'pointer' }}>{t('kw.contentSearch')}</label>
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: useRegex ? 'pointer' : 'not-allowed', opacity: searchContent ? 0.5 : 1 }}>
             <input
@@ -217,7 +219,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               onChange={(e) => { setUseRegex(e.target.checked); setRegexError(''); }}
               id="regex-toggle"
             />
-            <label htmlFor="regex-toggle" style={{ cursor: 'pointer' }}>Düzenli İfade (Regex)</label>
+            <label htmlFor="regex-toggle" style={{ cursor: 'pointer' }}>{t('kw.regex')}</label>
           </label>
         </div>
       </div>
@@ -228,8 +230,8 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
             <Search size={48} className="spinner" style={{ margin: '0 auto 16px' }} />
             <p style={{ color: 'var(--text-muted)' }}>
               {searchContent && progress.total > 0
-                ? `Dosya içeriği taranıyor… ${progressPct}% (${progress.current}/${progress.total})`
-                : 'Bulunan dosyalar taranıyor...'}
+                ? tFormat('kw.contentProgress', { pct: String(progressPct), cur: String(progress.current), total: String(progress.total) })
+                : t('kw.scanningFound')}
             </p>
           </div>
         )}
@@ -243,14 +245,14 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         {searchDone && !searchError && !regexError && results.length === 0 && (
           <div className="empty-state" style={{ margin: 'auto', textAlign: 'center' }}>
             <AlertCircle size={48} color="var(--warning-yellow)" style={{ margin: '0 auto 16px' }} />
-            <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>"<strong>{query}</strong>" için sonuç bulunamadı</p>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Farklı anahtar kelimeler deneyin veya arama filtrelerini kontrol edin.</p>
+            <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>{t('kw.noResultsLead')}<strong>{query}</strong>{t('kw.noResultsTail')}</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{t('kw.tryDifferent')}</p>
           </div>
         )}
 
         {results.length > 0 && (
           <div className="results-list" style={{ padding: '16px 24px', overflowY: 'auto' }}>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>{results.length} sonuç bulundu.</p>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>{tFormat('kw.foundCount', { n: String(results.length) })}</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {results.map((r, i) => (
                 <div key={`${r.id}-${i}`} style={{
@@ -272,7 +274,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         {!searching && !searchDone && (
           <div className="empty-state" style={{ margin: 'auto', textAlign: 'center', color: 'var(--panel-border)' }}>
             <Keyboard size={64} style={{ margin: '0 auto 16px' }} />
-            <p style={{ color: 'var(--text-muted)' }}>Kurtarılan dosyalar arasında arama yapmak için bir kelime girin.</p>
+            <p style={{ color: 'var(--text-muted)' }}>{t('kw.prompt')}</p>
           </div>
         )}
       </div>

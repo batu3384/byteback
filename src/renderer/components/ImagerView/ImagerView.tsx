@@ -3,6 +3,7 @@ import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
 import InlineAlert from '../InlineAlert'
+import { useI18n, tFormat } from '../../i18n'
 
 interface DriveInfo {
   index: number
@@ -20,13 +21,14 @@ interface ImagerViewProps {
 }
 
 function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): React.ReactElement {
+  const { t } = useI18n()
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [selectedDrive, setSelectedDrive] = useState<number | ''>('')
   const [destPath, setDestPath] = useState<string>('')
 
   const [imaging, setImaging] = useState(imagingActive)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
-  const [status, setStatus] = useState<string>(imagingActive ? 'İmaj sürüyor…' : '')
+  const [status, setStatus] = useState<string>(imagingActive ? t('imager.running') : '')
   const [elapsed, setElapsed] = useState(0)
   const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
   const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
@@ -50,7 +52,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
       cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string }) => {
         if (data.total === 0) {
           // CA-034: surface the real reason when the main process sent one.
-          setStatus(data.error ? `İmaj alma başarısız: ${data.error}` : 'İmaj alma başarısız (açma/yazma hatası)')
+          setStatus(data.error ? tFormat('imager.failedWith', { err: data.error }) : t('imager.failed'))
           setImaging(false)
           onImagingStateChange(false)
           if (timerRef.current) clearInterval(timerRef.current)
@@ -73,7 +75,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         });
 
         if (data.current >= data.total && data.total > 0) {
-          setStatus('İmaj Alma Tamamlandı')
+          setStatus(t('imager.done'))
           setImaging(false)
           onImagingStateChange(false)
           if (data.md5) setImageMd5(data.md5)
@@ -101,15 +103,15 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   const beginImaging = () => {
     setFormError(null)
     if (!window.api?.startImaging) {
-      setFormError('İmaj API\'si kullanılamıyor. Uygulamayı masaüstü modunda çalıştırın.')
+      setFormError(t('imager.noApi'))
       return
     }
     if (selectedDrive === '' || selectedDrive === undefined) {
-      setFormError('Sürücü seçin.')
+      setFormError(t('imager.selectDrive'))
       return
     }
     setImaging(true)
-    setStatus('İmaj Alınıyor...')
+    setStatus(t('imager.starting'))
     onImagingStateChange(true)
     setProgress({ current: 0, total: 0 })
     setElapsed(0)
@@ -125,7 +127,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
 
   const handleStartImaging = () => {
     if (selectedDrive === '' || destPath.trim() === '') {
-      setFormError('Lütfen kaynak sürücü ve hedef dosya yolu belirleyin.')
+      setFormError(t('imager.needSourceDest'))
       return
     }
 
@@ -145,7 +147,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
     }
     setImaging(false)
     onImagingStateChange(false)
-    setStatus('İmaj Alma İptal Edildi')
+    setStatus(t('imager.cancelled'))
   }
 
   const formatTime = (seconds: number) => {
@@ -167,8 +169,8 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
           <Save size={32} color="var(--accent-blue)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Disk İmaj Alma (RAW / E01)</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Sektör-sektör kopya. E01 çok segment; segment başına uint32 tablo, .E02 rotasyonu.</p>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('imager.title')}</h2>
+          <p style={{ color: 'var(--text-muted)' }}>{t('imager.subtitle')}</p>
         </div>
       </div>
 
@@ -177,36 +179,36 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
           <InlineAlert variant="error" onDismiss={() => setFormError(null)}>{formError}</InlineAlert>
         )}
         {ewfConfirmOpen && (
-          <InlineAlert variant="warning" title="E01 segment uyarısı">
-            Disk 4 GiB üzeri. E01 çok segment yazılır (.E01, .E02, …). Devam etmek istiyor musunuz?
+          <InlineAlert variant="warning" title={t('imager.ewfConfirmTitle')}>
+            {t('imager.ewfConfirmBody')}
             <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button type="button" className="btn-primary" onClick={() => { setEwfConfirmOpen(false); beginImaging() }}>Devam et</button>
-              <button type="button" className="btn-secondary" onClick={() => setEwfConfirmOpen(false)}>İptal</button>
+              <button type="button" className="btn-primary" onClick={() => { setEwfConfirmOpen(false); beginImaging() }}>{t('dash.resume')}</button>
+              <button type="button" className="btn-secondary" onClick={() => setEwfConfirmOpen(false)}>{t('ssd.cancel')}</button>
             </div>
           </InlineAlert>
         )}
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Server size={16} /> Kaynak Sürücü
+            <Server size={16} /> {t('imager.sourceLabel')}
           </label>
-          <select 
+          <select
             className="form-select"
             style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
-            value={selectedDrive} 
+            value={selectedDrive}
             onChange={(e) => setSelectedDrive(e.target.value === '' ? '' : Number(e.target.value))}
             disabled={imaging}
           >
-            <option value="" style={{ background: 'var(--bg-surface)' }}>Sürücü Seçin...</option>
+            <option value="" style={{ background: 'var(--bg-surface)' }}>{t('imager.selectPlaceholder')}</option>
             {drives.map(d => (
               <option key={d.index} value={d.index} style={{ background: 'var(--bg-surface)' }}>
-                Fiziksel Sürücü {d.index} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
+                {tFormat('drive.physical', { n: String(d.index) })} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
               </option>
             ))}
           </select>
         </div>
 
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>İmaj Formatı</label>
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('imager.formatLabel')}</label>
           <select
             value={format}
             onChange={(e) => setFormat(e.target.value as 'raw' | 'ewf')}
@@ -214,24 +216,24 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             disabled={imaging}
           >
-            <option value="raw" style={{ background: 'var(--bg-surface)' }}>RAW (DD) Birebir Kopya (.dd, .img)</option>
-            <option value="ewf" style={{ background: 'var(--bg-surface)' }}>E01 (EnCase Forensic) + MD5 Hash (.E01)</option>
+            <option value="raw" style={{ background: 'var(--bg-surface)' }}>{t('imager.formatRaw')}</option>
+            <option value="ewf" style={{ background: 'var(--bg-surface)' }}>{t('imager.formatEwf')}</option>
           </select>
           {showEwfSegmentWarning && (
             <p role="status" style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
-              Seçilen disk 4 GiB üzeri. Motor .E01/.E02/… segmentleri yazar (EnCase EWF1).
+              {t('imager.ewfMultiSegment')}
             </p>
           )}
         </div>
 
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Hedef İmaj Dosyası</label>
+          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('imager.destLabel')}</label>
           <div style={{ display: 'flex', gap: '8px' }}>
             <input 
               type="text" 
               className="form-input"
               style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
-              placeholder="D:\Kopya_Disk1.dd" 
+              placeholder={t('imager.destPlaceholder')}
               value={destPath}
               readOnly
               disabled={imaging}
@@ -247,7 +249,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
               }}
               style={{ padding: '0 16px', whiteSpace: 'nowrap' }}
             >
-              Gözat...
+              {t('imager.browse')}
             </button>
           </div>
         </div>
@@ -255,11 +257,11 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
           {!imaging ? (
             <button className="btn-primary start-btn" onClick={handleStartImaging} style={{ padding: '12px 32px', fontSize: '1rem' }}>
-              <Play size={18} fill="currentColor" /> İmaj Almayı Başlat
+              <Play size={18} fill="currentColor" /> {t('imager.start')}
             </button>
           ) : (
             <button className="btn-secondary stop-btn" onClick={handleStopImaging} style={{ padding: '12px 32px', fontSize: '1rem', color: 'var(--alert-red)', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
-              <Square size={18} fill="currentColor" /> İptal Et
+              <Square size={18} fill="currentColor" /> {t('imager.cancelBtn')}
             </button>
           )}
         </div>
@@ -267,14 +269,14 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         {(imaging || status) && (
           <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'rgba(255,255,255,0.02)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
-              <span style={{ fontWeight: 500, color: status.includes('Tamamlandı') ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {status.includes('Tamamlandı') ? <CheckCircle size={18} /> : <Activity size={18} />} {status}
+              <span style={{ fontWeight: 500, color: status.includes(t('imager.doneMarker')) ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {status.includes(t('imager.doneMarker')) ? <CheckCircle size={18} /> : <Activity size={18} />} {status}
               </span>
-              <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>Geçen Süre: {formatTime(elapsed)}</span>
+              <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{tFormat('imager.elapsed', { t: formatTime(elapsed) })}</span>
             </div>
             
             <div className="progress-labels" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-              <span>Sektör: {progress.current.toLocaleString()} / {progress.total ? progress.total.toLocaleString() : '?'}</span>
+              <span>{tFormat('imager.sectorProgress', { cur: progress.current.toLocaleString(), total: progress.total ? progress.total.toLocaleString() : '?' })}</span>
               <span>%{percent}</span>
             </div>
             <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
@@ -284,7 +286,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             {imageMd5 && (
               <div style={{ marginTop: '16px', padding: '12px 16px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px' }}>
                 <div style={{ fontSize: '0.8rem', color: 'var(--success-green)', marginBottom: '6px', fontWeight: 500 }}>
-                  İmaj Bütünlük Doğrulaması (Zincirleme Sorumluluk)
+                  {t('imager.md5Title')}
                 </div>
                 <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-main)', wordBreak: 'break-all', userSelect: 'all' }}>
                   MD5: {imageMd5}
@@ -296,10 +298,10 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '0.85rem' }}>
                 <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Activity size={14} /> G/Ç Gecikme Grafiği (I/O Latency)
+                  <Activity size={14} /> {t('imager.latencyChart')}
                 </span>
                 <span style={{ color: latencies[latencies.length - 1] > 100 ? 'var(--alert-red)' : 'var(--success-green)', fontFamily: 'monospace' }}>
-                  Anlık: {latencies.length > 0 ? latencies[latencies.length - 1] : 0} ms
+                  {tFormat('imager.instant', { n: String(latencies.length > 0 ? latencies[latencies.length - 1] : 0) })}
                 </span>
               </div>
               <div className="latency-chart" style={{ display: 'flex', alignItems: 'flex-end', height: '60px', gap: '2px', overflow: 'hidden' }}>
