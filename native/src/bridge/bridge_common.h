@@ -51,7 +51,6 @@ struct ScanContext {
     std::mutex bufferMutex;
     std::vector<uint64_t> badSectors;
     uint64_t generation = 0;
-    std::atomic<uint32_t> filesPosted{0};
     std::atomic<uint64_t> lastScannedSectors{0};
     std::atomic<bool> dbFlushFailed{false};
 };

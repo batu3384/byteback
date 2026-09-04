@@ -36,11 +36,31 @@ export function canGenerateReport(scanId: number, state?: ScanState | null): boo
   return false
 }
 
-export function isLiveScanStatus(status: string): boolean {
-  return status === 'Tarama Sürüyor...'
-    || status === 'Tarama Devam Ediyor...'
-    || status === 'RAID Taraması Sürüyor...'
-    || status === 'Durduruluyor...'
+/**
+ * CA-017: the busy gate is a state machine, not display text. Renderer keeps
+ * this phase in App state; strings are derived from it, never the reverse.
+ */
+export type ScanPhase =
+  | 'idle'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'complete'
+  | 'paused'
+  | 'stopped'
+  | 'failed'
+
+export function isLiveScanPhase(phase: ScanPhase): boolean {
+  return phase === 'starting' || phase === 'running' || phase === 'stopping'
+}
+
+/** Maps a native scans.status code to a renderer phase. -1 = unknown/still running. */
+export function scanPhaseFromStatusCode(status: number): ScanPhase {
+  if (status === SCAN_STATUS.complete) return 'complete'
+  if (status === SCAN_STATUS.stopped) return 'stopped'
+  if (status === SCAN_STATUS.paused) return 'paused'
+  if (status === SCAN_STATUS.failed) return 'failed'
+  return 'running'
 }
 
 export function diskBusyMessage(raw?: string): string | undefined {

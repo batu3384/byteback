@@ -10,12 +10,14 @@ import {
   scanStepIndex,
   type EtaSample,
 } from '../../../shared/scan-eta'
+import type { ScanPhase } from '../../../shared/scan-required'
 
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
   progress: { current: number; total: number; phase?: string }
   status: string
+  phase: ScanPhase
   elapsed: number
   activeScanId: number
   onStop: () => void
@@ -34,7 +36,7 @@ const TYPE_CHIPS: { id: string; label: string; category: string }[] = [
 
 function ScanView({
   driveIndex, scanType,
-  progress, status,
+  progress, status, phase,
   elapsed, activeScanId,
   onStop, onCancel, onViewResults
 }: ScanViewProps): React.ReactElement {
@@ -82,7 +84,7 @@ function ScanView({
       speedHistoryRef.current = []
       emaRef.current = 0
     }
-    if (status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi') {
+    if (phase === 'complete' || phase === 'stopped') {
       setEtaSeconds(-1)
       setCurrentSpeed(0)
       setEtaStalled(false)
@@ -103,7 +105,7 @@ function ScanView({
     setCurrentSpeed(r.speed)
     setEtaSeconds(r.etaSeconds)
     setEtaStalled(r.stalled)
-  }, [progress.current, progress.total, progress.phase, status, elapsed])
+  }, [progress.current, progress.total, progress.phase, phase, elapsed])
 
   const listFilter = useCallback(() => {
     const chip = TYPE_CHIPS.find((c) => c.id === typeChipRef.current)
@@ -188,18 +190,21 @@ function ScanView({
   const percent = progress.total > 0
     ? Math.min(100, Math.floor((progress.current / progress.total) * 100))
     : 0
-  const isFinished = status === 'Tarama Tamamlandı' || status === 'Tarama İptal Edildi'
-  const isPaused = status.includes('Duraklatıldı')
-  const isFailed = status.includes('Başarısız') || status.includes('kullanılamıyor')
+  // CA-017: derive view state from the phase, not from status copy.
+  const isFinished = phase === 'complete' || phase === 'stopped'
+  const isPaused = phase === 'paused'
+  const isFailed = phase === 'failed'
   const isTerminal = isFinished || isPaused || isFailed
-  const stopping = status === 'Durduruluyor...'
-  const scanTitle = isFinished
+  const stopping = phase === 'stopping'
+  const scanTitle = phase === 'complete'
     ? 'Tarama tamamlandı'
-    : isPaused
-      ? 'Tarama duraklatıldı'
-      : isFailed
-        ? 'Tarama başarısız'
-        : `Sürücü ${driveIndex === -1 ? 'RAID' : driveIndex} taranıyor`
+    : phase === 'stopped'
+      ? 'Tarama iptal edildi'
+      : isPaused
+        ? 'Tarama duraklatıldı'
+        : isFailed
+          ? 'Tarama başarısız'
+          : `Sürücü ${driveIndex === -1 ? 'RAID' : driveIndex} taranıyor`
   const step = scanStepIndex(progress.phase, scanType)
   const remainingLabel = isFinished
     ? formatElapsed(0)

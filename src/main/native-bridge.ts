@@ -62,7 +62,7 @@ interface BytebackEngine {
   startScan(
     drivePath: string,
     scanType: string,
-    callbackOrOptions: ((data: unknown) => void) | Record<string, unknown>,
+    callbackOrOptions: ((data: unknown) => void) | Record<string, unknown> | import('../shared/ipc-contract').ScanOptions,
     callback?: (data: unknown) => void,
   ): number
   stopScan(): void

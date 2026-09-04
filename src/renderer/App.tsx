@@ -15,7 +15,7 @@ import TimelineView from './components/TimelineView/TimelineView'
 import CaseView from './components/CaseView/CaseView'
 import ScanRequiredPanel from './components/ScanRequiredPanel'
 import InlineAlert from './components/InlineAlert'
-import { hasValidScanId, isLiveScanStatus, isScanDependentPage, isDiskBusyPage } from '../shared/scan-required'
+import { hasValidScanId, isLiveScanPhase, isScanDependentPage, isDiskBusyPage, scanPhaseFromStatusCode, type ScanPhase } from '../shared/scan-required'
 import { SCAN_STATUS, scanPhaseFromState } from '../shared/scan-session'
 import type { ScanState } from '../shared/ipc-contract'
 
@@ -30,16 +30,17 @@ function App(): React.ReactElement {
   // Global Scan State (Persists across tab changes)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, badSectors: [] as number[], phase: 'metadata' })
   const [scanStatus, setScanStatus] = useState('Bekleniyor...')
+  const [scanPhase, setScanPhase] = useState<ScanPhase>('idle')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
   const [scanRowState, setScanRowState] = useState<ScanState | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
   const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[] } | null>(null)
-  
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeScanIdRef = useRef(activeScanId)
   activeScanIdRef.current = activeScanId
-  const scanBusy = isLiveScanStatus(scanStatus)
+  const scanBusy = isLiveScanPhase(scanPhase)
 
   const hydrateFromScanState = useCallback((state: ScanState) => {
     setActiveScanId(state.id)
@@ -75,8 +76,10 @@ function App(): React.ReactElement {
         hydrateFromScanState(state)
         if (state.status === SCAN_STATUS.paused) {
           setScanStatus('Tarama Duraklatıldı — devam edilebilir')
+          setScanPhase('paused')
         } else if (state.status === SCAN_STATUS.complete) {
           setScanStatus('Tarama Tamamlandı')
+          setScanPhase('complete')
         }
       })
       .catch(() => { /* ilk açılışta kayıt yok */ })
@@ -95,13 +98,18 @@ function App(): React.ReactElement {
     let cleanupComplete: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
-      cleanupProgress = window.api.onScanProgress((data: { current: number, total: number, badSectors?: number[], phase?: string }) => {
+      cleanupProgress = window.api.onScanProgress((data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => {
+        // CA-016: progress events carry the scan id; a stale scan can no
+        // longer overwrite the active scan's progress bar.
+        if (data.scanId && data.scanId > 0 && activeScanIdRef.current > 0 && data.scanId !== activeScanIdRef.current) return
         setScanProgress({
           current: data.current,
           total: data.total,
           badSectors: data.badSectors ?? [],
           phase: data.phase ?? 'metadata',
         })
+        // First progress proves the native scan actually started.
+        setScanPhase((p) => (p === 'starting' ? 'running' : p))
       })
     }
 
@@ -109,11 +117,19 @@ function App(): React.ReactElement {
       cleanupComplete = window.api.onScanComplete(({ scanId, status }) => {
         if (scanId > 0 && activeScanIdRef.current > 0 && scanId !== activeScanIdRef.current) return
         if (scanId > 0) setActiveScanId(scanId)
+        setScanPhase(scanPhaseFromStatusCode(status))
         if (status === 1) setScanStatus('Tarama Tamamlandı')
         else if (status === 2) setScanStatus('Tarama İptal Edildi')
         else if (status === 4) setScanStatus('Tarama Duraklatıldı — devam edilebilir')
         else setScanStatus('Tarama Başarısız')
         if (timerRef.current) clearInterval(timerRef.current)
+        // CA-014: refresh the scan row so the report nav unlocks without an
+        // app restart.
+        if (scanId > 0 && window.api?.getScanState) {
+          window.api.getScanState(scanId)
+            .then((state) => { if (state?.id > 0) setScanRowState(state) })
+            .catch(() => { /* keep previous row state */ })
+        }
         // Only completed scans fill the bar; cancel/fail/pause keep honest position.
         if (status === 1) {
           setScanProgress(prev => ({ ...prev, current: prev.total > 0 ? prev.total : prev.current }))
@@ -129,6 +145,7 @@ function App(): React.ReactElement {
 
   const failScan = (message: string) => {
     setScanStatus(message)
+    setScanPhase('failed')
     if (timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
@@ -160,6 +177,7 @@ function App(): React.ReactElement {
         .catch(() => { /* resume yine de dener */ })
     }
     setScanStatus(isResume ? 'Tarama Devam Ediyor...' : 'Tarama Sürüyor...')
+    setScanPhase('starting')
     setActivePage('scan')
 
     if (!window.api?.startScan) {
@@ -188,6 +206,7 @@ function App(): React.ReactElement {
     setScanConfig({ driveIndex: -1, scanType })
     setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
     setScanStatus('RAID Taraması Sürüyor...')
+    setScanPhase('starting')
     setScanElapsed(0)
     setActivePage('scan')
     if (!window.api?.startScan) {
@@ -209,6 +228,7 @@ function App(): React.ReactElement {
   const handleOpenPausedResults = (state: ScanState) => {
     hydrateFromScanState(state)
     setScanStatus('Tarama Duraklatıldı — devam edilebilir')
+    setScanPhase('paused')
     setActivePage('results')
   }
 
@@ -220,6 +240,7 @@ function App(): React.ReactElement {
       setScanRowState(null)
       setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
       setScanStatus('Bekleniyor...')
+      setScanPhase('idle')
       setScanElapsed(0)
       setScanConfig({ driveIndex: null, scanType: 'quick' })
       setActivePage('dashboard')
@@ -232,6 +253,7 @@ function App(): React.ReactElement {
       window.api.stopScan()
     }
     setScanStatus('Durduruluyor...')
+    setScanPhase('stopping')
   }
 
   const handleAction = (page: Page, data?: any) => {
@@ -240,12 +262,16 @@ function App(): React.ReactElement {
       if (data.sectorSize) setSelectedDriveSectorSize(data.sectorSize)
     }
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
+    if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
     setActivePage(page)
   }
 
   const handleNavigate = (page: string) => {
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
+    // CA-013: no live or hydrated scan session — the active-scan page would
+    // render a bogus "Sürücü undefined taranıyor" with a live stop button.
+    if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
     setActivePage(page as Page)
   }
@@ -267,15 +293,19 @@ function App(): React.ReactElement {
           />
         )
       case 'scan':
-        return <ScanView 
-                 driveIndex={scanConfig.driveIndex} 
-                 scanType={scanConfig.scanType} 
+        if (scanPhase === 'idle' && !hasValidScanId(activeScanId)) {
+          return <ScanRequiredPanel onGoDashboard={() => setActivePage('dashboard')} />
+        }
+        return <ScanView
+                 driveIndex={scanConfig.driveIndex}
+                 scanType={scanConfig.scanType}
                  progress={scanProgress}
                  status={scanStatus}
+                 phase={scanPhase}
                  elapsed={scanElapsed}
                  activeScanId={activeScanId}
                  onStop={handleStopScan}
-                 onCancel={() => setActivePage('dashboard')} 
+                 onCancel={() => setActivePage('dashboard')}
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
@@ -319,7 +349,7 @@ function App(): React.ReactElement {
           title={activePage}
           scanBusy={scanBusy}
           scanPercent={scanProgress.total > 0 ? Math.min(100, Math.floor((scanProgress.current / scanProgress.total) * 100)) : undefined}
-          onOpenScan={() => setActivePage('scan')}
+          onOpenScan={() => handleNavigate('scan')}
         />
         <main className="app-content">
           {dbError && (

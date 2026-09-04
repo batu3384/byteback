@@ -14,15 +14,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('start-scan', driveIndex, scanType, scanOptions),
   stopScan: () => ipcRenderer.send('stop-scan'),
   
-  onScanProgress: (callback: (data: { current: number, total: number, badSectors?: number[] }) => void) => {
+  onScanProgress: (callback: (data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
     ipcRenderer.on('scan-progress', handler)
     return () => ipcRenderer.removeListener('scan-progress', handler)
-  },
-  onScanFileFound: (callback: (data: any) => void) => {
-    const handler = (event: IpcRendererEvent, data: any) => callback(data)
-    ipcRenderer.on('scan-file-found', handler)
-    return () => ipcRenderer.removeListener('scan-file-found', handler)
   },
   onScanComplete: (callback: (data: { scanId: number; status: number }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
@@ -107,7 +102,6 @@ contextBridge.exposeInMainWorld('api', {
 
   removeAllScanListeners: () => {
     ipcRenderer.removeAllListeners('scan-progress')
-    ipcRenderer.removeAllListeners('scan-file-found')
     ipcRenderer.removeAllListeners('scan-complete')
   }
 })

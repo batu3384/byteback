@@ -4,9 +4,11 @@ import {
   diskBusyMessage,
   hasValidScanId,
   isDiskBusyPage,
-  isLiveScanStatus,
+  isLiveScanPhase,
   isScanDependentPage,
+  scanPhaseFromStatusCode,
   SCAN_DEPENDENT_PAGES,
+  type ScanPhase,
 } from './scan-required'
 
 describe('scan-required', () => {
@@ -37,11 +39,21 @@ describe('scan-required', () => {
     expect(isDiskBusyPage('dashboard')).toBe(false)
   })
 
-  it('isLiveScanStatus only while a scan is in flight', () => {
-    expect(isLiveScanStatus('Tarama Sürüyor...')).toBe(true)
-    expect(isLiveScanStatus('RAID Taraması Sürüyor...')).toBe(true)
-    expect(isLiveScanStatus('Tarama Tamamlandı')).toBe(false)
-    expect(isLiveScanStatus('Bekleniyor...')).toBe(false)
+  it('isLiveScanPhase only while a scan is in flight', () => {
+    // CA-017: the gate is a state machine — display strings must never
+    // decide whether hex/imager/shredder stay locked.
+    const live: ScanPhase[] = ['starting', 'running', 'stopping']
+    for (const p of live) expect(isLiveScanPhase(p)).toBe(true)
+    const notLive: ScanPhase[] = ['idle', 'complete', 'paused', 'stopped', 'failed']
+    for (const p of notLive) expect(isLiveScanPhase(p)).toBe(false)
+  })
+
+  it('scanPhaseFromStatusCode maps native status codes', () => {
+    expect(scanPhaseFromStatusCode(1)).toBe('complete')
+    expect(scanPhaseFromStatusCode(2)).toBe('stopped')
+    expect(scanPhaseFromStatusCode(4)).toBe('paused')
+    expect(scanPhaseFromStatusCode(3)).toBe('failed')
+    expect(scanPhaseFromStatusCode(0)).toBe('running')
   })
 
   it('diskBusyMessage translates native busy errors', () => {

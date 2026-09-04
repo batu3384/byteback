@@ -100,11 +100,7 @@ export function registerIpcHandlers(): void {
     callNative('list-volume-letters', () => getEngine().listVolumeLetters())
   )
 
-  ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string, scanOptions?: {
-    partitionIndex?: number
-    partitionStartSector?: number
-    partitionSizeInSectors?: number
-  }) => {
+  ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
     if (!dbReady) {
       throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor — tarama başlatılamaz')
     }
@@ -112,19 +108,22 @@ export function registerIpcHandlers(): void {
       const engine = getEngine()
       const token = ++activeScanToken
 
+      // CA-016: the native engine assigns the scan id synchronously inside
+      // startScan, before any thread-safe callback can fire — stamp it onto
+      // progress events so the renderer can drop stale scans.
+      let boundScanId = -1
       const callback = (data: any) => {
+        if (token !== activeScanToken) return
         if (data.type === 'progress') {
           appendProgressLog(data.current, data.total, data.phase)
           event.sender.send('scan-progress', {
+            scanId: boundScanId,
             current: data.current,
             total: data.total,
             badSectors: data.badSectors,
             phase: data.phase,
           })
-        } else if (data.type === 'file') {
-          event.sender.send('scan-file-found', data)
         } else if (data.type === 'complete') {
-          if (token !== activeScanToken) return
           setScanLive(false)
           const st = Number(data.status)
           appendSessionLog(
@@ -134,14 +133,14 @@ export function registerIpcHandlers(): void {
           event.sender.send('scan-complete', { scanId: data.scanId, status: data.status })
         }
       }
-      
+
       const drivePath = driveIndex === -1 ? 'raid' : String(driveIndex)
       console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType, 'opts:', scanOptions ?? {})
       const opts = scanOptions && Object.keys(scanOptions).length > 0 ? scanOptions : undefined
       const id = opts
-        ? (engine.startScan as (a: string, b: string, c: object, d: (data: unknown) => void) => number)(
-          drivePath, scanType, opts, callback)
-        : engine.startScan(drivePath, scanType, callback)
+        ? engine.startScan(drivePath, scanType, opts, callback)
+        : engine.startScan(drivePath, scanType, {}, callback)
+      boundScanId = id
       if (id > 0) {
         setScanLive(true)
         appendSessionLog('SCAN_START', `scanId=${id} drive=${drivePath} type=${scanType}`)
