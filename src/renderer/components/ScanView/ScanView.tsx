@@ -238,7 +238,7 @@ function ScanView({
           </div>
         </div>
         <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
-          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
+          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kayıt</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString('tr-TR')}</span>
             <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
@@ -246,11 +246,11 @@ function ScanView({
               {carvedCount > 0 ? ` · oyulmuş ${carvedCount.toLocaleString('tr-TR')}` : ''}
             </span>
           </div>
-          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
+          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Geçen Süre</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatElapsed(elapsed)}</span>
           </div>
-          <div className="stat-pill" style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
+          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kalan Süre</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 && !etaStalled ? 'var(--accent-blue)' : 'inherit' }}>
               {remainingLabel}
@@ -287,7 +287,7 @@ function ScanView({
           <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
           <span>%{percent}</span>
         </div>
-        <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
+        <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
         <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -351,7 +351,7 @@ function ScanView({
                       aria-pressed={!!isSelected}
                       style={{
                       display: 'flex', alignItems: 'center', padding: '12px 16px', width: '100%',
-                      background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'rgba(255,255,255,0.02)', borderRadius: '6px', cursor: 'pointer',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'var(--surface-overlay)', borderRadius: '6px', cursor: 'pointer',
                       border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.4)' : 'transparent'}`, transition: 'all 0.2s', color: 'inherit', textAlign: 'left'
                     }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'var(--panel-border)' }}
@@ -359,7 +359,7 @@ function ScanView({
                     >
                       <File size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
                       <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                      <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '2px 8px', borderRadius: '12px', flexShrink: 0 }}>{f.category}</span>
+                      <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'var(--surface-overlay)', padding: '2px 8px', borderRadius: '12px', flexShrink: 0 }}>{f.category}</span>
                       <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem', flexShrink: 0 }}>
                         {(f.sizeBytes ? f.sizeBytes : f.size) ? ((f.sizeBytes || f.size) / 1024).toFixed(2) : 0} KB
                       </span>
@@ -371,7 +371,7 @@ function ScanView({
           </div>
 
           {selectedFile && (
-            <div style={{ width: '320px', flexShrink: 0, background: 'rgba(0,0,0,0.2)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
+            <div style={{ width: '320px', flexShrink: 0, background: 'var(--well-bg)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
                 <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Dosya Detayı</h4>
                 <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)}>✕</button>
@@ -392,7 +392,7 @@ function ScanView({
                 ['Değiştirme', selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString('tr-TR') : '—'],
                 ['Yol', selectedFile.path ?? '—'],
               ].map(([k, v]) => (
-                <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: '0.8rem' }}>
+                <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid var(--surface-overlay)', fontSize: '0.8rem' }}>
                   <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{k}</span>
                   <span style={{ textAlign: 'right', wordBreak: 'break-all' }}>{String(v)}</span>
                 </div>

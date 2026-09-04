@@ -52,7 +52,7 @@
 }
 
 .icon-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-overlay);
   color: var(--text-main);
   border-color: var(--panel-border);
 }

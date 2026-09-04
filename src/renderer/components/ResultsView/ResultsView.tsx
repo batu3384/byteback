@@ -840,7 +840,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                       setSelectedFiles(new Set([f.id]))
                       void loadPreview(f.id)
                     }}
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
+                    style={{ borderBottom: '1px solid var(--surface-overlay)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
                   >
                     <td style={{ padding: '12px' }}>
                       <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} aria-label={`${f.name} seç`} />

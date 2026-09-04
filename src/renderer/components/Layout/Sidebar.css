@@ -84,12 +84,12 @@
 }
 
 .nav-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-overlay);
   color: var(--text-main);
 }
 
 .nav-btn.active {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--surface-overlay-strong);
   color: var(--text-main);
 }
 
