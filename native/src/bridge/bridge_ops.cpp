@@ -27,10 +27,15 @@ Napi::Value SetCaseInfo(const Napi::CallbackInfo& info) {
 
     Napi::Object obj = info[0].As<Napi::Object>();
     byteback::CaseInfo c = bdata->engine.getMetadataStore().getCaseInfo();
-    if (obj.Has("caseNumber")) c.caseNumber = obj.Get("caseNumber").As<Napi::String>().Utf8Value();
-    if (obj.Has("investigator")) c.investigator = obj.Get("investigator").As<Napi::String>().Utf8Value();
-    if (obj.Has("agency")) c.agency = obj.Get("agency").As<Napi::String>().Utf8Value();
-    if (obj.Has("notes")) c.notes = obj.Get("notes").As<Napi::String>().Utf8Value();
+    // Guarded reads: a non-string field from a future caller must be skipped,
+    // not thrown into NAPI_CATCH and reported as a failed save.
+    auto getString = [&obj](const char* key, std::string& out) {
+        if (obj.Has(key) && obj.Get(key).IsString()) out = obj.Get(key).As<Napi::String>().Utf8Value();
+    };
+    getString("caseNumber", c.caseNumber);
+    getString("investigator", c.investigator);
+    getString("agency", c.agency);
+    getString("notes", c.notes);
 
     bool ok = bdata->engine.getMetadataStore().setCaseInfo(c);
     if (ok) {

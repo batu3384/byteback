@@ -21,6 +21,9 @@ Thumbs.db
 *.db
 *.sqlite
 
+# Agent workflow artifacts (CA-050)
+.superpowers/
+
 playwright-report/
 test-results/
 

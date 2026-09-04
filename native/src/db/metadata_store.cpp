@@ -192,7 +192,23 @@ bool MetadataStore::open(const std::string& dbPath) {
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
+    // CA-040: surface structural corruption at open (quick_check: fast, skips
+    // index cross-checks — full integrity_check would stall big scan DBs).
+    {
+        char* err = nullptr;
+        if (sqlite3_exec(db_, "PRAGMA quick_check;", nullptr, nullptr, &err) != SQLITE_OK) {
+            std::fprintf(stderr, "[byteback] quick_check failed: %s\n", err ? err : "?");
+            if (err) sqlite3_free(err);
+        }
+    }
     bool ok = createTables();
+    // CA-040: schema versioning — bump SCHEMA_VERSION with every migration so
+    // a partially-migrated database is detectable.
+    {
+        char* err = nullptr;
+        sqlite3_exec(db_, "PRAGMA user_version = 2;", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+    }
     // CA-005 migration: existing databases predate the compressed column.
     if (ok) {
         char* err = nullptr;
