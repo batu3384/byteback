@@ -73,6 +73,77 @@ TEST(XtsAes128, DecryptRoundTrip) {
     EXPECT_EQ(std::memcmp(pt, back, 32), 0);
 }
 
+namespace {
+std::vector<uint8_t> fipsHex(const char* hex) {
+    auto nibble = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+        if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+        return static_cast<uint8_t>(c - 'A' + 10);
+    };
+    std::vector<uint8_t> out;
+    for (const char* p = hex; *p && p[1]; p += 2) out.push_back(static_cast<uint8_t>(nibble(p[0]) * 16 + nibble(p[1])));
+    return out;
+}
+
+// XTS per-block tweak advance (little-endian shift, 0x87 reduction) — an
+// independent copy so the production loop is cross-checked, not trusted.
+void gf128DoubleRef(uint8_t t[16]) {
+    uint8_t carryIn = 0;
+    for (int j = 0; j < 16; ++j) {
+        uint8_t carryOut = static_cast<uint8_t>(t[j] >> 7);
+        t[j] = static_cast<uint8_t>((t[j] << 1) | carryIn);
+        carryIn = carryOut;
+    }
+    if (carryIn) t[0] ^= 0x87;
+}
+} // namespace
+
+// AR2 vector gap: no FIPS-197 C.3 known answer existed for AES-256 (only the
+// C.1 AES-128 vector), so a wrong key schedule could hide behind roundtrips.
+TEST(Aes256, Fips197EcbOneBlock) {
+    // FIPS-197 C.3 AES-256: key 603deb..., pt 6bc1bee2..., ct f3eed1bd...
+    const auto key = fipsHex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4");
+    const auto pt = fipsHex("6bc1bee22e409f96e93d7e117393172a");
+    const auto expect = fipsHex("f3eed1bdb5d2a03c064b5a7e3db181f8");
+    uint8_t ct[16], back[16];
+    byteback::crypto::aes256EncryptBlock(key.data(), pt.data(), ct);
+    EXPECT_EQ(std::memcmp(ct, expect.data(), 16), 0);
+    byteback::crypto::aes256DecryptBlock(key.data(), ct, back);
+    EXPECT_EQ(std::memcmp(back, pt.data(), 16), 0);
+}
+
+// AR2 vector gap: multi-block tweak chaining (GF(2^128) successive doubling
+// and the K1/K2 key-half split) was only self-roundtrip tested. Recompute the
+// expected ciphertext block-by-block with an independent tweak-chain copy.
+TEST(XtsAes128, MultiBlockMatchesIndependentGf128Composition) {
+    uint8_t key[32];
+    for (int i = 0; i < 32; ++i) key[i] = static_cast<uint8_t>(i + 1);
+    uint8_t tweak[16] = {0x0F}; // nonzero data-unit tweak
+    std::vector<uint8_t> pt(64);
+    for (int i = 0; i < 64; ++i) pt[i] = static_cast<uint8_t>(0xC0 ^ i);
+    std::vector<uint8_t> ct(64);
+    ASSERT_TRUE(byteback::crypto::xtsAes128Crypt(key, tweak, pt.data(), ct.data(), 64, true));
+
+    // Independent composition: t = AES_K2(tweak); block i uses t advanced by
+    // i doublings; C_i = AES_K1(P_i ^ t_i) ^ t_i.
+    uint8_t t[16];
+    byteback::crypto::aes128EncryptBlock(key + 16, tweak, t);
+    for (int blk = 0; blk < 4; ++blk) {
+        uint8_t x[16], c[16];
+        for (int i = 0; i < 16; ++i) x[i] = static_cast<uint8_t>(pt[blk * 16 + i] ^ t[i]);
+        byteback::crypto::aes128EncryptBlock(key, x, c);
+        for (int i = 0; i < 16; ++i) {
+            EXPECT_EQ(ct[blk * 16 + i], static_cast<uint8_t>(c[i] ^ t[i]))
+                << "block " << blk << " byte " << i;
+        }
+        gf128DoubleRef(t);
+    }
+
+    std::vector<uint8_t> back(64);
+    ASSERT_TRUE(byteback::crypto::xtsAes128Crypt(key, tweak, ct.data(), back.data(), 64, false));
+    EXPECT_EQ(back, pt);
+}
+
 TEST(DiskReaderXts, DecryptsMemorySectorWithFvek) {
     uint8_t key[32] = {};
     uint8_t tweak[16] = {};

@@ -260,17 +260,42 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
                 }
             }
 
-            if (failedData == 1) {
-                // Single failure: D = P XOR (other data blocks).
-                std::vector<uint8_t> acc(block_size_, 0), temp(block_size_);
-                if (!disk_active_[p_disk]) {
-                    throw std::runtime_error("RAID 6: data + P failed with Q needed (unsupported single-pass path)");
-                }
-                readMemberAligned(p_disk, stripe_base, block_size_, acc.data());
+            auto slotOf = [&](size_t disk) -> int {
+                int slot = 0;
                 for (size_t i = 0; i < num_disks_; ++i) {
-                    if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
-                    readMemberAligned(i, stripe_base, block_size_, temp.data());
-                    for (size_t b = 0; b < block_size_; ++b) acc[b] ^= temp[b];
+                    if (i == p_disk || i == q_disk) continue;
+                    if (i == disk) return slot;
+                    slot++;
+                }
+                return -1;
+            };
+
+            if (failedData == 1) {
+                // Single failure: D = P XOR (other data blocks) — or, when the
+                // failed disk is P itself, D = Q' / g^slot from the Q syndrome.
+                // Previously the P-lost case threw even though Q alone fully
+                // reconstructs one missing block.
+                std::vector<uint8_t> acc(block_size_, 0), temp(block_size_);
+                if (disk_active_[p_disk]) {
+                    readMemberAligned(p_disk, stripe_base, block_size_, acc.data());
+                    for (size_t i = 0; i < num_disks_; ++i) {
+                        if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
+                        readMemberAligned(i, stripe_base, block_size_, temp.data());
+                        for (size_t b = 0; b < block_size_; ++b) acc[b] ^= temp[b];
+                    }
+                } else if (disk_active_[q_disk]) {
+                    readMemberAligned(q_disk, stripe_base, block_size_, acc.data());
+                    for (size_t i = 0; i < num_disks_; ++i) {
+                        if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
+                        readMemberAligned(i, stripe_base, block_size_, temp.data());
+                        for (size_t b = 0; b < block_size_; ++b) {
+                            acc[b] ^= raid6_math::gfMul(temp[b], raid6_math::gfPow(slotOf(i)));
+                        }
+                    }
+                    const uint8_t gf = raid6_math::gfPow(slotOf(failed[0]));
+                    for (size_t b = 0; b < block_size_; ++b) acc[b] = raid6_math::gfDiv(acc[b], gf);
+                } else {
+                    throw std::runtime_error("RAID 6: data block and both parities failed");
                 }
                 std::memcpy(&result[res_idx], &acc[offset_in_block], read_len);
             } else if (failedData == 2) {
@@ -278,15 +303,6 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
                 //   P' = P XOR (healthy data) = X_i XOR X_j
                 //   Q' = Q XOR (healthy data * g^slot) = X_i*g^i XOR X_j*g^j
                 // where i/j are the failed blocks' stripe slot indices.
-                auto slotOf = [&](size_t disk) -> int {
-                    int slot = 0;
-                    for (size_t i = 0; i < num_disks_; ++i) {
-                        if (i == p_disk || i == q_disk) continue;
-                        if (i == disk) return slot;
-                        slot++;
-                    }
-                    return -1;
-                };
                 int si = slotOf(failed[0]);
                 int sj = slotOf(failed[1]);
 
