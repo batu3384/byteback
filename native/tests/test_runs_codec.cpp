@@ -39,6 +39,17 @@ TEST(RunsCodec, MalformedInputNeverThrows) {
     EXPECT_TRUE(deserializeRuns("[[1,2],oops").empty());
 }
 
+// AR2 vector gap: the sparse sentinel is UINT64_MAX itself, not /4.
+TEST(RunsCodec, SparseSentinelLiteralRoundTrip) {
+    std::vector<FileRecord::DataRun> runs = {{18446744073709551615ull, 8}, {0, 1}};
+    auto json = serializeRuns(runs);
+    auto out = deserializeRuns(json);
+    ASSERT_EQ(out.size(), runs.size());
+    EXPECT_EQ(out[0].startSector, 18446744073709551615ull);
+    EXPECT_EQ(out[0].sectorCount, 8u);
+    EXPECT_EQ(out[1].startSector, 0u);
+}
+
 TEST(RunsCodec, OverflowRejected) {
     std::string huge = "[[999999999999999999999999999999,1]]";
     EXPECT_TRUE(deserializeRuns(huge).empty());

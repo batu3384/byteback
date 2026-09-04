@@ -8,6 +8,7 @@ import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import { previewDataUrl } from '../../../shared/preview-utils'
 import { useI18n, tFormat } from '../../i18n'
+import InlineAlert from '../InlineAlert'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
 import {
   qualityHint,
@@ -102,6 +103,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
+  const [destWarning, setDestWarning] = useState<{
+    proceed: () => void
+    messageKey: 'results.confirmDestOnDrive' | 'results.confirmDestOnRaid'
+  } | null>(null)
   const [viewMode, setViewMode] = useState<'tree' | 'flat' | 'gallery'>('flat')
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [dbFiles, setDbFiles] = useState<FileRecord[]>([])
@@ -252,57 +257,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         source: f.source,
       })).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
 
-  const handleRecover = async () => {
-    if (scanBusy) {
-      setRecoverReport(t('results.recoverWhileBusy'))
-      return
-    }
-    if (effectiveScanId <= 0) {
-      setRecoverReport(t('results.recoverNeedsScan'))
-      return
-    }
-    if (selectedFiles.size === 0) return
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
-    const effectiveDrive = driveIndex !== null ? driveIndex : -1
-    if (effectiveDrive < 0 && !raidState.active) {
-      setRecoverReport(t('results.recoverNeedsDrive'))
-      return
-    }
-    if (!window.api?.recoverFile) {
-      setRecoverReport(t('results.recoverNoApi'))
-      return
-    }
-
-    setIsRecovering(true)
-    setRecoverReport(null)
-    setRecoverStats(null)
+  const runRecover = async (destDir: string, effectiveDrive: number, raidState: RaidState): Promise<void> => {
     try {
-      let destDir = await window.api.pickDirectory()
-      if (!destDir) return
-    if (
-      effectiveDrive >= 0 &&
-      window.api.resolveVolume &&
-      (await isDestOnScannedDrive(destDir, effectiveDrive, (letter) => window.api.resolveVolume(letter)))
-    ) {
-      const proceed = window.confirm(
-        t('results.confirmDestOnDrive'),
-      )
-      if (!proceed) return
-    } else if (
-      raidState.active &&
-      window.api.resolveVolume &&
-      (await isDestOnRaidMemberDrive(
-        destDir,
-        raidState.memberDriveIndices ?? [],
-        (letter) => window.api.resolveVolume(letter),
-      ))
-    ) {
-      const proceed = window.confirm(
-        t('results.confirmDestOnRaid'),
-      )
-      if (!proceed) return
-    }
-
     const filesToRecover: FileRecord[] = []
     const skipped: string[] = []
     for (const id of selectedFiles) {
@@ -418,6 +374,70 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setRecoverStats({ failed: failedCount, zero: zeroFilledCount, bad: validatedBad })
     } finally {
       setIsRecovering(false)
+    }
+  }
+
+  const handleRecover = async () => {
+    if (scanBusy) {
+      setRecoverReport(t('results.recoverWhileBusy'))
+      return
+    }
+    if (effectiveScanId <= 0) {
+      setRecoverReport(t('results.recoverNeedsScan'))
+      return
+    }
+    if (selectedFiles.size === 0) return
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+    const effectiveDrive = driveIndex !== null ? driveIndex : -1
+    if (effectiveDrive < 0 && !raidState.active) {
+      setRecoverReport(t('results.recoverNeedsDrive'))
+      return
+    }
+    if (!window.api?.recoverFile) {
+      setRecoverReport(t('results.recoverNoApi'))
+      return
+    }
+
+    setIsRecovering(true)
+    setRecoverReport(null)
+    setRecoverStats(null)
+    setDestWarning(null)
+    let warned = false
+    try {
+      const destDir = await window.api.pickDirectory()
+      if (!destDir) return
+      if (
+        effectiveDrive >= 0 &&
+        window.api.resolveVolume &&
+        (await isDestOnScannedDrive(destDir, effectiveDrive, (letter) => window.api.resolveVolume(letter)))
+      ) {
+        warned = true
+        setDestWarning({
+          proceed: () => { setDestWarning(null); void runRecover(destDir, effectiveDrive, raidState) },
+          messageKey: 'results.confirmDestOnDrive',
+        })
+        return
+      }
+      if (
+        raidState.active &&
+        window.api.resolveVolume &&
+        (await isDestOnRaidMemberDrive(
+          destDir,
+          raidState.memberDriveIndices ?? [],
+          (letter) => window.api.resolveVolume(letter),
+        ))
+      ) {
+        warned = true
+        setDestWarning({
+          proceed: () => { setDestWarning(null); void runRecover(destDir, effectiveDrive, raidState) },
+          messageKey: 'results.confirmDestOnRaid',
+        })
+        return
+      }
+      await runRecover(destDir, effectiveDrive, raidState)
+    } finally {
+      // Inline-confirm hand-off: keep isRecovering while the warning waits.
+      if (!warned) setIsRecovering(false)
     }
   }
 
@@ -673,6 +693,23 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         </div>
       </div>
 
+      {destWarning && (
+        <InlineAlert variant="warning" role="alert">
+          <div style={{ whiteSpace: 'pre-wrap' }}>{t(destWarning.messageKey)}</div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+            <button type="button" className="btn-primary" onClick={destWarning.proceed}>
+              {t('results.confirmProceed')}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => { setDestWarning(null); setIsRecovering(false) }}
+            >
+              {t('results.confirmCancel')}
+            </button>
+          </div>
+        </InlineAlert>
+      )}
       {recoverReport && (
         <div
           className="glass-panel"

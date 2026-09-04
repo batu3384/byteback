@@ -117,6 +117,8 @@ function ScanView({
       category: chip?.category ?? '',
       includeDuplicates: false,
       includeDiscovery: false,
+      // Heading says "Silinmiş" — match the Results page, which excludes carved rows.
+      sourceNotLike: 'carver%',
     }
   }, [])
 

@@ -191,6 +191,53 @@ TEST(CarvePolicy, MkvSegmentVintBoundsTheCarve) {
     EXPECT_GE(found[0].confidence, 75);
 }
 
+// AR2 vector gaps: EBML vint edge cases through the real parser.
+TEST(CarvePolicy, MkvUnknownSizeVintIsRejected) {
+    // Segment vint 0xFF = "unknown size" — unboundable, must stay dormant.
+    std::vector<uint8_t> disk(8192, 0);
+    disk[0] = 0x1A; disk[1] = 0x45; disk[2] = 0xDF; disk[3] = 0xA3;
+    disk[4] = 0x88;
+    disk[13] = 0x18; disk[14] = 0x53; disk[15] = 0x80; disk[16] = 0x67;
+    disk[17] = 0xFF;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    int records = 0;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mkv") != std::string::npos) ++records;
+    }, &running));
+    EXPECT_EQ(records, 0);
+}
+
+TEST(CarvePolicy, IsobmffLargesize64BitPathBoundsTheCarve) {
+    // ftyp (32-bit size) + mdat with atomSize==1 + 64-bit largesize: the
+    // largesize branch had zero coverage before the AR2 audit.
+    const uint64_t kMdatPayload = 300;
+    std::vector<uint8_t> disk(8192, 0);
+    disk[0] = 0; disk[1] = 0; disk[2] = 0; disk[3] = 24;
+    std::memcpy(disk.data() + 4, "ftypisom", 8);
+    // mdat: size32 = 1, type 'mdat', largesize64 = payload + 16.
+    disk[24] = 0; disk[25] = 0; disk[26] = 0; disk[27] = 1;
+    std::memcpy(disk.data() + 28, "mdat", 4);
+    const uint64_t large = kMdatPayload + 16;
+    for (int i = 0; i < 8; ++i) disk[32 + i] = static_cast<uint8_t>((large >> (56 - 8 * i)) & 0xFF);
+    std::memset(disk.data() + 40, 0xAB, static_cast<size_t>(kMdatPayload));
+
+    auto readAt = [&](uint64_t off, uint32_t len, uint8_t* out) {
+        if (off + len > disk.size()) return false;
+        std::memcpy(out, disk.data() + off, len);
+        return true;
+    };
+    auto pr = byteback::carver::parseIsobmffBounded(disk.data(), 4096, 0, 1ull << 30, readAt);
+    ASSERT_TRUE(pr.valid);
+    EXPECT_EQ(pr.size, 40ull + kMdatPayload);
+}
+
 TEST(CarvePolicy, OggPageWalkBoundsTheCarve) {
     // Two CRC-valid pages: page1 27+1+100 (BOS), page2 27+1+50 (EOS).
     auto oggCrc = [](const std::vector<uint8_t>& d) {

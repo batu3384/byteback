@@ -193,6 +193,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_signature_hygiene.cpp
     tests/test_carve_policy.cpp
     tests/test_process_util.cpp
+    tests/test_aes_ccm.cpp
     tests/test_ntfs_thumbcache.cpp
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp

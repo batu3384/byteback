@@ -19,6 +19,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
   const [data, setData] = useState<number[]>([])
   const [readFailed, setReadFailed] = useState(false)
   const [readError, setReadError] = useState<string | null>(null)
+  const [atDiskEnd, setAtDiskEnd] = useState(false)
   const [loading, setLoading] = useState(false)
 
   // Update cache whenever sector changes
@@ -43,16 +44,20 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
           setReadFailed(false)
           setReadError(null)
           setData(result.data)
+          // Short read = last sector of the drive.
+          setAtDiskEnd(result.data.length < sectorSize)
         } else {
           setReadFailed(true)
           setReadError(result.error ?? t('hex.sectorReadFailed'))
           setData([])
+          setAtDiskEnd(true)
         }
       }
     } catch (err) {
       console.error(err)
       setReadFailed(true)
       setData([])
+      setAtDiskEnd(true)
     } finally {
       setLoading(false)
     }
@@ -90,7 +95,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
           <span className="badge" style={{ fontSize: '0.7rem', padding: '2px 6px', border: '1px solid var(--alert-red)', color: 'var(--alert-red)', borderRadius: '4px' }}>{t('hex.readonly')}</span>
         </div>
         <div className="sector-navigation" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <button className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} style={{ padding: '6px 12px' }}><ChevronLeft size={16} /> {t('scan.prev')}</button>
+          <button className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} disabled={sector <= 0} style={{ padding: '6px 12px' }}><ChevronLeft size={16} /> {t('scan.prev')}</button>
           <div className="sector-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('scan.sector')}</label>
             <input
@@ -108,7 +113,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
               style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '80px', fontFamily: 'monospace' }}
             />
           </div>
-          <button className="btn-secondary" onClick={() => setSector(s => s + 1)} style={{ padding: '6px 12px' }}>{t('scan.next')} <ChevronRight size={16} /></button>
+          <button className="btn-secondary" onClick={() => setSector(s => s + 1)} disabled={atDiskEnd || loading} style={{ padding: '6px 12px' }}>{t('scan.next')} <ChevronRight size={16} /></button>
           <button className="btn-primary" onClick={() => fetchSector(sector)} style={{ padding: '6px 12px' }}><Search size={16} /> {t('hex.go')}</button>
         </div>
       </div>
