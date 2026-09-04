@@ -36,6 +36,9 @@ function App(): React.ReactElement {
   const [scanRowState, setScanRowState] = useState<ScanState | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
   const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[] } | null>(null)
+  // CA-032: imaging runs in the main process; the flag survives navigation so
+  // the progress card re-appears when the user returns to the imager page.
+  const [imagingActive, setImagingActive] = useState(false)
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeScanIdRef = useRef(activeScanId)
@@ -321,7 +324,7 @@ function App(): React.ReactElement {
       case 'smart':
         return <SmartView driveIndex={selectedDrive} />
       case 'imager':
-        return <ImagerView />
+        return <ImagerView imagingActive={imagingActive} onImagingStateChange={setImagingActive} />
       case 'shredder':
         return <ShredderView />
       case 'raid':

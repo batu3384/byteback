@@ -13,35 +13,46 @@ interface DriveInfo {
   type: string
 }
 
-function ImagerView(): React.ReactElement {
+interface ImagerViewProps {
+  /** CA-032: lifted to App — survives navigation while the main process images. */
+  imagingActive: boolean
+  onImagingStateChange: (active: boolean) => void
+}
+
+function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): React.ReactElement {
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [selectedDrive, setSelectedDrive] = useState<number | ''>('')
   const [destPath, setDestPath] = useState<string>('')
-  
-  const [imaging, setImaging] = useState(false)
+
+  const [imaging, setImaging] = useState(imagingActive)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
-  const [status, setStatus] = useState<string>('')
+  const [status, setStatus] = useState<string>(imagingActive ? 'İmaj sürüyor…' : '')
   const [elapsed, setElapsed] = useState(0)
   const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
   const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
   const [imageMd5, setImageMd5] = useState<string>('')
   const [formError, setFormError] = useState<string | null>(null)
   const [ewfConfirmOpen, setEwfConfirmOpen] = useState(false)
-  
+
   const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const lastProgressTimeRef = useRef<number>(0)
 
   useEffect(() => {
     // Load drives
     if (window.api && window.api.listDrives) {
       window.api.listDrives().then(setDrives).catch(console.error)
     }
+  }, [])
 
+  useEffect(() => {
     let cleanupProgress: (() => void) | undefined
     if (window.api && window.api.onImagingProgress) {
-      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string }) => {
+      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string }) => {
         if (data.total === 0) {
-          setStatus('İmaj alma başarısız (açma/yazma hatası)')
+          // CA-034: surface the real reason when the main process sent one.
+          setStatus(data.error ? `İmaj alma başarısız: ${data.error}` : 'İmaj alma başarısız (açma/yazma hatası)')
           setImaging(false)
+          onImagingStateChange(false)
           if (timerRef.current) clearInterval(timerRef.current)
           return
         }
@@ -49,9 +60,9 @@ function ImagerView(): React.ReactElement {
 
         setLatencies(prev => {
           const now = Date.now();
-          const lastTime = (window as any).lastProgressTime || now;
+          const lastTime = lastProgressTimeRef.current || now;
           const delta = now - lastTime;
-          (window as any).lastProgressTime = now;
+          lastProgressTimeRef.current = now;
 
           // Avoid 0ms spikes on first run
           const finalLatency = delta > 0 && delta < 1000 ? delta : 15;
@@ -62,8 +73,9 @@ function ImagerView(): React.ReactElement {
         });
 
         if (data.current >= data.total && data.total > 0) {
-          setStatus('İmaj Alma Tamamlandı ✅')
+          setStatus('İmaj Alma Tamamlandı')
           setImaging(false)
+          onImagingStateChange(false)
           if (data.md5) setImageMd5(data.md5)
           if (timerRef.current) clearInterval(timerRef.current)
         }
@@ -72,9 +84,19 @@ function ImagerView(): React.ReactElement {
 
     return () => {
       if (cleanupProgress) cleanupProgress()
-      if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [])
+  }, [onImagingStateChange])
+
+  useEffect(() => {
+    if (imaging) {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = setInterval(() => setElapsed(prev => prev + 1), 1000)
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [imaging])
 
   const beginImaging = () => {
     setFormError(null)
@@ -88,18 +110,16 @@ function ImagerView(): React.ReactElement {
     }
     setImaging(true)
     setStatus('İmaj Alınıyor...')
+    onImagingStateChange(true)
     setProgress({ current: 0, total: 0 })
     setElapsed(0)
     setImageMd5('')
-
-    if (timerRef.current) clearInterval(timerRef.current)
-    timerRef.current = setInterval(() => setElapsed(prev => prev + 1), 1000)
 
     if (window.api && window.api.startImaging) {
       window.api.startImaging(Number(selectedDrive), destPath, format)
     } else {
       setImaging(false)
-      if (timerRef.current) clearInterval(timerRef.current)
+      onImagingStateChange(false)
     }
   }
 
@@ -124,8 +144,8 @@ function ImagerView(): React.ReactElement {
       window.api.stopImaging()
     }
     setImaging(false)
+    onImagingStateChange(false)
     setStatus('İmaj Alma İptal Edildi')
-    if (timerRef.current) clearInterval(timerRef.current)
   }
 
   const formatTime = (seconds: number) => {
@@ -264,7 +284,7 @@ function ImagerView(): React.ReactElement {
             {imageMd5 && (
               <div style={{ marginTop: '16px', padding: '12px 16px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px' }}>
                 <div style={{ fontSize: '0.8rem', color: 'var(--success-green)', marginBottom: '6px', fontWeight: 500 }}>
-                  🔒 İmaj Bütünlük Doğrulaması (Zincirleme Sorumluluk)
+                  İmaj Bütünlük Doğrulaması (Zincirleme Sorumluluk)
                 </div>
                 <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-main)', wordBreak: 'break-all', userSelect: 'all' }}>
                   MD5: {imageMd5}
