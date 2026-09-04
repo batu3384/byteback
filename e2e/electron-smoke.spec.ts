@@ -1,38 +1,20 @@
-import { test, expect, _electron as electron } from '@playwright/test'
-import path from 'node:path'
-
-const root = path.join(__dirname, '..')
-const mainJs = path.join(root, 'out', 'main', 'main.js')
+import { test, expect } from '@playwright/test'
+import { launchApp, closeApp } from './helpers'
 
 test('Byteback window shows', async () => {
-
-  const app = await electron.launch({
-    args: [mainJs],
-    cwd: root,
-  })
+  const launched = await launchApp()
+  const { win } = launched
   try {
-    const win = await app.firstWindow()
     await expect(win).toHaveTitle(/Byteback/)
-    await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({
-      timeout: 30_000,
-    })
   } finally {
-    await app.close()
+    await closeApp(launched)
   }
 })
 
 test('scan profile legend and mode buttons', async () => {
-
-  const app = await electron.launch({
-    args: [mainJs],
-    cwd: root,
-  })
+  const launched = await launchApp()
+  const { win } = launched
   try {
-    const win = await app.firstWindow()
-    await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({
-      timeout: 30_000,
-    })
-
     const legend = win.getByTestId('scan-profile-legend')
     await expect(legend).toBeVisible()
     await expect(legend).toContainText('Hızlı')
@@ -47,6 +29,6 @@ test('scan profile legend and mode buttons', async () => {
       await expect(win.getByTestId('scan-mode-full-carve').first()).toBeVisible()
     }
   } finally {
-    await app.close()
+    await closeApp(launched)
   }
 })

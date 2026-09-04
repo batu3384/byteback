@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('api', {
   startScan: (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) =>
     ipcRenderer.invoke('start-scan', driveIndex, scanType, scanOptions),
   stopScan: () => ipcRenderer.send('stop-scan'),
+
+  seedScanFixture: (files: Array<Record<string, unknown>>) =>
+    ipcRenderer.invoke('seed-scan-fixture', files),
   
   onScanProgress: (callback: (data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)

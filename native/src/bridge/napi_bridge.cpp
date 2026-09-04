@@ -33,6 +33,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("startContentSearch", Napi::Function::New(env, StartContentSearch));
     exports.Set("stopContentSearch", Napi::Function::New(env, StopContentSearch));
     exports.Set("getScanSummary", Napi::Function::New(env, GetScanSummary));
+    exports.Set("seedScanFixture", Napi::Function::New(env, SeedScanFixture));
     exports.Set("startScan", Napi::Function::New(env, StartScan));
     exports.Set("stopScan", Napi::Function::New(env, StopScan));
     exports.Set("isScanActive", Napi::Function::New(env, IsScanActive));

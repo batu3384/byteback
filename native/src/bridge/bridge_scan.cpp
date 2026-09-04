@@ -846,6 +846,58 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+// CA-035 companion: deterministic scan fixture for e2e flows. Creates a
+// completed scan row and inserts the given records; returns the scanId.
+// Local test-data only — writes to the app's own SQLite database.
+Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 1 || !info[0].IsArray()) return Napi::Number::New(env, -1);
+
+    byteback::MetadataStore& store = bdata->engine.getMetadataStore();
+    if (!store.isOpen()) return Napi::Number::New(env, -1);
+
+    const Napi::Array files = info[0].As<Napi::Array>();
+    std::vector<byteback::FileRecord> records;
+    for (uint32_t i = 0; i < files.Length(); ++i) {
+        if (!files.Get(i).IsObject()) continue;
+        Napi::Object o = files.Get(i).As<Napi::Object>();
+        byteback::FileRecord r{};
+        r.id = 0;
+        r.parentId = -1;
+        auto str = [&](const char* key, std::string& out) {
+            if (o.Has(key) && o.Get(key).IsString()) out = o.Get(key).As<Napi::String>().Utf8Value();
+        };
+        str("name", r.name);
+        str("path", r.path);
+        str("category", r.category);
+        str("source", r.source);
+        if (o.Has("sizeBytes") && o.Get("sizeBytes").IsNumber())
+            r.sizeBytes = static_cast<uint64_t>(o.Get("sizeBytes").As<Napi::Number>().DoubleValue());
+        if (o.Has("status") && o.Get("status").IsNumber())
+            r.status = o.Get("status").As<Napi::Number>().Int32Value();
+        if (o.Has("confidence") && o.Get("confidence").IsNumber())
+            r.confidence = o.Get("confidence").As<Napi::Number>().Int32Value();
+        if (o.Has("startSector") && o.Get("startSector").IsNumber())
+            r.startSector = static_cast<uint64_t>(o.Get("startSector").As<Napi::Number>().DoubleValue());
+        if (o.Has("endSector") && o.Get("endSector").IsNumber())
+            r.endSector = static_cast<uint64_t>(o.Get("endSector").As<Napi::Number>().DoubleValue());
+        r.modifiedAt = 0;
+        r.createdAt = 0;
+        records.push_back(std::move(r));
+    }
+    if (records.empty()) return Napi::Number::New(env, -1);
+
+    const int64_t scanId = store.createScan(0, "deep", 1000);
+    if (scanId <= 0) return Napi::Number::New(env, -1);
+    if (!store.insertFilesBatch(scanId, records)) return Napi::Number::New(env, -1);
+    store.updateScanProgress(scanId, 1000);
+    store.completeScan(scanId, 1);
+    return Napi::Number::New(env, static_cast<double>(scanId));
+    NAPI_CATCH
+}
+
 Napi::Value GetScanSummary(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY

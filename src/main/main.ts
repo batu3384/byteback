@@ -12,6 +12,12 @@ import {
 let mainWindow: BrowserWindow | null = null
 let allowClose = false
 
+// e2e isolation: each test run gets a fresh userData (DB, localStorage),
+// so tests cannot leak theme/language/scan state into each other.
+if (process.env.BYTEBACK_USER_DATA) {
+  app.setPath('userData', process.env.BYTEBACK_USER_DATA)
+}
+
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
