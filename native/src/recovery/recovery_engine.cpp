@@ -232,7 +232,12 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             result.success = false;
             return result;
         }
-        // Above the cap: fall through to raw write (documented limitation).
+        // CA-027: above the cap we refuse instead of silently writing the raw
+        // compressed bytes as "recovered" file content.
+        outFile.close();
+        result.success = false;
+        result.error = "compressed stream too large to inflate (>64 MiB cap); raw bytes not written";
+        return result;
     }
 
     // Walk through each data run and read the clusters
