@@ -49,6 +49,31 @@ bool isMp4FamilyExt(const std::string& ext) {
            ext == "avif" || ext == "cr3";
 }
 
+// Bounded-targeted parse for formats whose size derives from headers beyond
+// the probe window (mp4 boxes, MKV Segment vint, OGG page walk).
+bool applyBoundedTargetedParse(const std::string& ext, DiskReader& reader, uint64_t carveStartOffset,
+                               const uint8_t* probe, size_t probeSize, uint64_t maxSize,
+                               uint64_t& actualSize, int& confidence) {
+    auto readAt = [&reader](uint64_t off, uint32_t len, uint8_t* out) {
+        auto res = reader.readBytes(off, len, out);
+        return res.success && res.bytesRead >= len;
+    };
+    carver::StructuralParseResult pr;
+    if (isMp4FamilyExt(ext)) {
+        pr = carver::parseIsobmffBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
+    } else if (ext == "mkv" || ext == "webm") {
+        pr = carver::parseMkvBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
+    } else if (ext == "ogg") {
+        pr = carver::parseOggBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
+    } else {
+        return false;
+    }
+    if (!pr.valid) return true; // handled: no bound available (dormant)
+    if (pr.size > 0 && pr.size <= maxSize) actualSize = pr.size;
+    if (pr.confidence > confidence) confidence = pr.confidence;
+    return true;
+}
+
 void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size_t size,
                                uint64_t& actualSize, std::string& effExt, int& confidence) {
     carver::StructuralParseResult pr;
@@ -129,19 +154,14 @@ bool refineExpiredCarve(const FileSignature& sig, DiskReader* reader, uint64_t c
     if (vScore > 0) confidence = vScore;
     else if (sig.footer.empty()) confidence = 55; // ponytail: header-only ceiling, not 70
 
-    if (reader && isMp4FamilyExt(effExt)) {
-        // CA-018: box walk with targeted reads — a 2GB movie is no longer
-        // clamped to the 1MB probe.
-        auto readAt = [reader](uint64_t off, uint32_t len, uint8_t* out) {
-            auto res = reader->readBytes(off, len, out);
-            return res.success && res.bytesRead >= len;
-        };
-        auto pr = carver::parseIsobmffBounded(data, probeSize, carveStartOffset,
-                                              unboundedSize, readAt);
-        if (pr.valid) {
-            if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
-            if (!pr.extension.empty()) effExt = pr.extension;
-            if (pr.confidence > confidence) confidence = pr.confidence;
+    if (reader) {
+        // CA-018/CA-022: targeted reads — movies and streams bound exactly
+        // instead of clamping to the 1MB probe.
+        if (applyBoundedTargetedParse(effExt, *reader, carveStartOffset, data, probeSize,
+                                      unboundedSize, actualSize, confidence)) {
+            // handled (bounded or dormant)
+        } else {
+            applyStructuralRefinement(effExt, data, probeSize, actualSize, effExt, confidence);
         }
     } else {
         applyStructuralRefinement(effExt, data, probeSize, actualSize, effExt, confidence);
@@ -782,9 +802,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             std::string effExt = ext;
                             std::string effName = it->filename;
                             if (isZipFamilyExt(effExt) || effExt == "sqlite" || effExt == "db" ||
-                                isMp4FamilyExt(effExt)) {
-                                // One shared probe read; the mp4 walk also fetches
-                                // box headers beyond it via targeted reads.
+                                isMp4FamilyExt(effExt) || effExt == "mkv" || effExt == "webm" ||
+                                effExt == "ogg") {
+                                // One shared probe read; bounded formats also fetch
+                                // headers beyond it via targeted reads.
                                 uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
                                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> probeBuf;
@@ -795,20 +816,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                     }
                                 }
                                 if (!probeBuf.empty()) {
-                                    if (isMp4FamilyExt(effExt)) {
-                                        // CA-018: targeted box walk beats the 1MB probe clamp.
-                                        auto readAt = [&reader](uint64_t off, uint32_t len, uint8_t* out) {
-                                            auto res = reader.readBytes(off, len, out);
-                                            return res.success && res.bytesRead >= len;
-                                        };
-                                        auto pr = carver::parseIsobmffBounded(probeBuf.data(), probeBuf.size(),
-                                                                              it->startOffset, actualSize, readAt);
-                                        if (pr.valid) {
-                                            if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
-                                            if (!pr.extension.empty()) effExt = pr.extension;
-                                            if (pr.confidence > confidence) confidence = pr.confidence;
-                                        }
-                                    } else {
+                                    // CA-018/CA-022: targeted reads beat the 1MB probe clamp.
+                                    if (!applyBoundedTargetedParse(effExt, reader, it->startOffset,
+                                                                   probeBuf.data(), probeBuf.size(),
+                                                                   actualSize, actualSize, confidence)) {
                                         // CA-003: actualSize can exceed the 1MB probe; never
                                         // hand the parser a size larger than the buffer.
                                         applyStructuralRefinement(effExt, probeBuf.data(),
