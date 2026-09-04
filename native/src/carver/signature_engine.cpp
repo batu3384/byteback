@@ -598,11 +598,30 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
     
     for (uint64_t sector = firstSector; sector < rangeEndSector; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
-        
-        auto res = reader.readSectors(sector * sectorSize, chunkSize, currentBuf->data());
+        const uint64_t sectorsToRead = std::min<uint64_t>(chunkSectors, rangeEndSector - sector);
+
+        // CA-007: clamp the read to the range end — reads past the disk end
+        // fail on physical drives, which silently skipped the last <=4MB of
+        // every range. On failure, halve down to single sectors so one bad
+        // sector no longer blinds the whole 4MB chunk; the reader's bad-sector
+        // telemetry records the failures. Sub-reads are processed in disk
+        // order, so automaton state and active carves stay continuous.
+        struct SubRead { uint64_t sector; uint32_t sectors; };
+        std::vector<SubRead> subReads{{sector, static_cast<uint32_t>(sectorsToRead)}};
+        while (!subReads.empty()) {
+        const auto sub = subReads.back();
+        subReads.pop_back();
+        const uint32_t wantBytes = sub.sectors * sectorSize;
+        auto res = reader.readSectors(sub.sector * sectorSize, wantBytes, currentBuf->data());
+        if ((!res.success || res.bytesRead < wantBytes) && sub.sectors > 1) {
+            const uint32_t half = sub.sectors / 2;
+            subReads.push_back({sub.sector + half, sub.sectors - half});
+            subReads.push_back({sub.sector, half});
+            continue;
+        }
         if (!res.success) continue;
-        
-        uint64_t baseOffset = sector * sectorSize;
+
+        uint64_t baseOffset = sub.sector * sectorSize;
 
         for (uint32_t i = 0; i < res.bytesRead; ++i) {
             uint8_t byte = currentBuf->data()[i];
@@ -888,8 +907,9 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         
         FileRecord progressTick;
         progressTick.id = -1;
-        progressTick.startSector = sector + chunkSectors;
+        progressTick.startSector = sub.sector + sub.sectors;
         emit(progressTick);
+        } // sub-reads
     }
 
     // Process remaining active carves when disk ends
