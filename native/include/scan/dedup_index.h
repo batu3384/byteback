@@ -32,10 +32,21 @@ private:
     void ensureCarveSorted();
     bool overlapsExistingCarve(const FileRecord& fr);
 
+    // CA-009: the old query lower_bound'ed a startSector-sorted vector with an
+    // endSector comparator. The range is not partitioned for that comparator,
+    // so the binary search could land past a long-span entry and never see it.
+    // prefixMaxEnd[i] (running max of endSector) is monotone, which bounds the
+    // candidate window with two valid binary searches.
+    static const Entry* findOverlap(const std::vector<Entry>& entries,
+                                    const std::vector<uint64_t>& prefixMaxEnd,
+                                    uint64_t frStart, uint64_t frEnd, uint64_t frSpan);
+
     mutable bool sorted_ = true;
     mutable bool carveSorted_ = true;
     std::vector<Entry> entries_;
     std::vector<Entry> carveEntries_;
+    std::vector<uint64_t> metaPrefixMaxEnd_;
+    std::vector<uint64_t> carvePrefixMaxEnd_;
 };
 
 } // namespace byteback
