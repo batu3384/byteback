@@ -86,6 +86,7 @@ set(SOURCES
   src/carver/parsers/zip_family.cpp
   src/carver/parsers/sqlite_carver.cpp
   src/carver/parsers/mp4_carver.cpp
+  src/carver/parsers/bounded_size_parsers.cpp
   src/math/entropy.cpp
   src/smart/smart_monitor.cpp
   src/memory/memory_pool.cpp
@@ -189,6 +190,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_signature_carve.cpp
     tests/test_signature_coverage.cpp
     tests/test_signature_hygiene.cpp
+    tests/test_carve_policy.cpp
     tests/test_ntfs_thumbcache.cpp
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
@@ -255,6 +257,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/carver/parsers/zip_family.cpp
     src/carver/parsers/sqlite_carver.cpp
     src/carver/parsers/mp4_carver.cpp
+    src/carver/parsers/bounded_size_parsers.cpp
     src/io/disk_reader_win.cpp
     src/io/volume_mapper_win.cpp
     src/memory/memory_pool.cpp

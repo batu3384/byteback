@@ -57,6 +57,11 @@ void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size
     if (isZipFamilyExt(ext)) pr = carver::parseZipFamily(data, size);
     else if (ext == "sqlite" || ext == "db") pr = carver::parseSqliteDb(data, size);
     else if (isMp4FamilyExt(ext)) pr = carver::parseMp4Mov(data, size);
+    else if (ext == "tiff" || ext == "cr2") pr = carver::parseTiff(data, size);
+    else if (ext == "riff") pr = carver::parseRiff(data, size);
+    else if (ext == "ts") pr = carver::parseMpegTs(data, size);
+    else if (ext == "7z") pr = carver::parseSevenZip(data, size);
+    else if (ext == "cab") pr = carver::parseCab(data, size);
     else return;
 
     if (!pr.valid) return;
@@ -109,9 +114,14 @@ void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reade
 }
 
 // Expire / disk-end carves without a footer match: validate before emit.
+// CA-001 policy: the size must be bounded by a structural parser (zip EOCD,
+// mp4 atoms, TIFF strips, RIFF chunk size, ...). Candidates still sitting at
+// the signature's maxSize are phantom records — the garbage generator — and
+// are dropped regardless of validator score.
 bool refineExpiredCarve(const FileSignature& sig, const uint8_t* data, size_t probeSize,
                         std::string& filename, std::string& effExt, uint64_t& actualSize,
                         int& confidence) {
+    const uint64_t unboundedSize = actualSize;
     if (!refineBmpCarve(data, probeSize, filename, effExt, actualSize, confidence)) return false;
 
     const int vScore = (data && probeSize) ? dispatchValidator(effExt, data, probeSize) : 0;
@@ -129,6 +139,7 @@ bool refineExpiredCarve(const FileSignature& sig, const uint8_t* data, size_t pr
     }
 
     if (!data || probeSize == 0) return false;
+    if (actualSize >= unboundedSize) return false; // size never bounded -> phantom
 
     if (sig.footer.empty()) {
         if (vScore > 0 && vScore < 50) return false;
@@ -733,8 +744,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 if (probe > 0) {
                                     std::vector<uint8_t> probeBuf(probe);
                                     if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
+                                        // CA-003: actualSize can exceed the 1MB probe; never
+                                        // hand the parser a size larger than the buffer.
                                         applyStructuralRefinement(effExt, probeBuf.data(),
-                                                                  static_cast<size_t>(actualSize),
+                                                                  static_cast<size_t>(std::min<uint64_t>(actualSize, probeBuf.size())),
                                                                   actualSize, effExt, confidence);
                                         auto dot = effName.find_last_of('.');
                                         if (dot != std::string::npos) effName = effName.substr(0, dot);
