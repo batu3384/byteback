@@ -21,7 +21,7 @@ export async function launchApp(): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: [mainJs],
     cwd: root,
-    env: { ...process.env, BYTEBACK_USER_DATA: userData },
+    env: { ...process.env, BYTEBACK_USER_DATA: userData, BYTEBACK_E2E: '1' },
   })
   const win = await app.firstWindow()
   await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })

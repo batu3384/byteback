@@ -472,17 +472,18 @@ std::string previewTempToken(const FileRecord& record) {
     return std::to_string(record.id) + "_" + std::to_string(pid) + "_" + std::to_string(n);
 }
 
-std::string resolveFfmpegExe() {
-    if (const char* env = std::getenv("BYTEBACK_FFMPEG")) {
-        if (env[0] != '\0') return std::string(env);
+std::wstring resolveFfmpegExeW() {
+    // F5: wide env — a non-ASCII BYTEBACK_FFMPEG must not garble through ACP.
+    if (const wchar_t* env = _wgetenv(L"BYTEBACK_FFMPEG")) {
+        if (env[0] != L'\0') return std::wstring(env);
     }
-    return "ffmpeg";
+    return L"ffmpeg";
 }
 
-bool ffmpegReachable(const std::string& exe) {
-    // CA-039: SearchPathW / attribute check — the old `where` shell probe
-    // interpolated the exe name into a cmd.exe command line.
-    return !resolveOnPath(exe).empty();
+bool ffmpegReachable(const std::wstring& exe) {
+    // F2/F3: PATH-only scan, .exe targets only — no app-dir/CWD planting,
+    // no .bat/.cmd respawning a shell.
+    return !resolveOnPathW(exe).empty();
 }
 
 void setVideoPreviewNote(FilePreviewResult& out, const char* msg) {
@@ -494,7 +495,7 @@ void setVideoPreviewNote(FilePreviewResult& out, const char* msg) {
 bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePreviewResult& out) {
     if (out.kind == "image" || !isVideoRecord(record)) return false;
 
-    const std::string ffmpeg = resolveFfmpegExe();
+    const std::wstring ffmpeg = resolveFfmpegExeW();
     if (!ffmpegReachable(ffmpeg)) {
         setVideoPreviewNote(out, "video.ffmpeg.missing");
         return false;
@@ -531,14 +532,13 @@ bool tryFfmpegVideoFrame(DiskReader& reader, const FileRecord& record, FilePrevi
         ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     }
 
-    // CA-039: CreateProcessW argv — no cmd.exe, so a crafted BYTEBACK_FFMPEG
-    // value or temp path can never break out of quoting; 10s timeout kills a
-    // hung decoder instead of freezing the preview IPC.
-    const bool ok = runProcess(ffmpeg, {
-        "-hide_banner", "-loglevel", "error", "-y",
-        "-i", inPath.string(),
-        "-frames:v", "1", "-q:v", "3",
-        outPath.string(),
+    // CA-039/F5: CreateProcessW argv with wide paths — no cmd.exe, no ACP
+    // round-trip for non-ASCII temp paths; 10s timeout kills a hung decoder.
+    const bool ok = runProcessW(ffmpeg, {
+        L"-hide_banner", L"-loglevel", L"error", L"-y",
+        L"-i", inPath.wstring(),
+        L"-frames:v", L"1", L"-q:v", L"3",
+        outPath.wstring(),
     }, 10000);
     if (!ok) {
         setVideoPreviewNote(out, "video.ffmpeg.frame_failed");
