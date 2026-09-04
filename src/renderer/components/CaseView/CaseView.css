@@ -45,7 +45,7 @@
 .case-form input,
 .case-form textarea {
   padding: 10px 12px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--well-bg);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
   color: var(--text-main);
