@@ -1,5 +1,6 @@
 import React from 'react'
 import { FolderSearch } from 'lucide-react'
+import { useI18n } from '../i18n'
 
 interface ScanRequiredPanelProps {
   title?: string
@@ -7,9 +8,10 @@ interface ScanRequiredPanelProps {
 }
 
 export default function ScanRequiredPanel({
-  title = 'Tamamlanmış tarama gerekli',
+  title,
   onGoDashboard,
 }: ScanRequiredPanelProps): React.ReactElement {
+  const { t } = useI18n()
   return (
     <div
       className="scan-required-panel glass-panel"
@@ -26,15 +28,13 @@ export default function ScanRequiredPanel({
       }}
     >
       <FolderSearch size={48} color="var(--accent-blue)" aria-hidden="true" />
-      <h3 style={{ fontSize: '1.25rem' }}>{title}</h3>
+      <h3 style={{ fontSize: '1.25rem' }}>{title ?? t('needscan.title')}</h3>
       <p style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
-        Bu bölüm, SQLite veritabanına kaydedilmiş bir tarama oturumuna bağlıdır.
-        Ana ekrandan bir sürücü seçip taramayı tamamlayın veya duraklatılmış oturumdan
-        sonuçları görüntüleyin; ardından arama, zaman çizelgesi ve rapor kullanılabilir olur.
+        {t('needscan.body')}
       </p>
       {onGoDashboard && (
         <button type="button" className="btn-primary" onClick={onGoDashboard}>
-          Ana ekrana git
+          {t('needscan.goDashboard')}
         </button>
       )}
     </div>

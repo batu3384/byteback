@@ -12,6 +12,7 @@ import {
   Activity,
 } from 'lucide-react'
 import type { TimelineEvent } from '../../../shared/types'
+import { useI18n, tFormat } from '../../i18n'
 
 interface TimelineViewProps {
   scanId: number
@@ -19,15 +20,15 @@ interface TimelineViewProps {
 
 const PAGE_SIZE = 200
 
-const EVENT_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-  create: { label: 'Oluşturma', color: 'var(--success-green)', icon: <FilePlus size={14} /> },
-  delete: { label: 'Silme', color: 'var(--alert-red)', icon: <FileMinus size={14} /> },
-  rename_old: { label: 'Yeniden Adlandırma (eski)', color: 'var(--warning-yellow)', icon: <FileOutput size={14} /> },
-  rename_new: { label: 'Yeniden Adlandırma (yeni)', color: 'var(--warning-yellow)', icon: <FileInput size={14} /> },
-  overwrite: { label: 'Üzerine Yazma', color: 'var(--accent-blue)', icon: <FileOutput size={14} /> },
-  extend: { label: 'Büyütme', color: 'var(--accent-blue)', icon: <FileInput size={14} /> },
-  truncate: { label: 'Kırpma', color: 'var(--warning-yellow)', icon: <FileMinus size={14} /> },
-  touch: { label: 'Erişim', color: 'var(--text-muted)', icon: <Activity size={14} /> },
+const EVENT_META: Record<string, { labelKey: string; color: string; icon: React.ReactNode }> = {
+  create: { labelKey: 'tl.event.create', color: 'var(--success-green)', icon: <FilePlus size={14} /> },
+  delete: { labelKey: 'tl.event.delete', color: 'var(--alert-red)', icon: <FileMinus size={14} /> },
+  rename_old: { labelKey: 'tl.event.rename_old', color: 'var(--warning-yellow)', icon: <FileOutput size={14} /> },
+  rename_new: { labelKey: 'tl.event.rename_new', color: 'var(--warning-yellow)', icon: <FileInput size={14} /> },
+  overwrite: { labelKey: 'tl.event.overwrite', color: 'var(--accent-blue)', icon: <FileOutput size={14} /> },
+  extend: { labelKey: 'tl.event.extend', color: 'var(--accent-blue)', icon: <FileInput size={14} /> },
+  truncate: { labelKey: 'tl.event.truncate', color: 'var(--warning-yellow)', icon: <FileMinus size={14} /> },
+  touch: { labelKey: 'tl.event.touch', color: 'var(--text-muted)', icon: <Activity size={14} /> },
 }
 
 function formatTimestamp(unix: number): string {
@@ -38,6 +39,7 @@ function formatTimestamp(unix: number): string {
 }
 
 function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
+  const { t } = useI18n()
   const [events, setEvents] = useState<TimelineEvent[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
@@ -84,14 +86,14 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
             <Clock size={32} color="var(--accent-blue)" />
           </div>
           <div>
-            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Birleşik Olay Zaman Çizelgesi</h2>
+            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('tl.title')}</h2>
             <p style={{ color: 'var(--text-muted)' }}>
-              USN Journal kayıtlarından yeniden kurulmuş dosya olayları — tarama #{scanId}, {total.toLocaleString('tr-TR')} olay
+              {tFormat('tl.subtitle', { n: String(scanId), total: total.toLocaleString('tr-TR') })}
             </p>
           </div>
         </div>
         <button className="btn-secondary" onClick={() => fetchTimeline(page, filter)} disabled={loading} style={{ display: 'flex', gap: '8px' }}>
-          <RefreshCw size={16} className={loading ? 'spinner' : ''} /> Yenile
+          <RefreshCw size={16} className={loading ? 'spinner' : ''} /> {t('dash.refresh')}
         </button>
       </div>
 
@@ -101,7 +103,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
           style={{ padding: '6px 16px', background: filter === '' ? 'var(--panel-border)' : 'transparent' }}
           onClick={() => setFilter('')}
         >
-          Tümü
+          {t('scan.all')}
         </button>
         {Object.entries(EVENT_META).map(([key, meta]) => (
           <button
@@ -110,7 +112,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
             style={{ padding: '6px 16px', background: filter === key ? 'var(--panel-border)' : 'transparent', color: meta.color, display: 'flex', gap: '6px', alignItems: 'center' }}
             onClick={() => setFilter(key)}
           >
-            {meta.icon} {meta.label}
+            {meta.icon} {t(meta.labelKey)}
           </button>
         ))}
       </div>
@@ -119,21 +121,20 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
         {loading ? (
           <div style={{ padding: '60px', textAlign: 'center' }}>
             <RefreshCw size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
-            <p style={{ color: 'var(--text-muted)' }}>Zaman çizelgesi yükleniyor...</p>
+            <p style={{ color: 'var(--text-muted)' }}>{t('tl.loading')}</p>
           </div>
         ) : events.length === 0 ? (
           <div style={{ padding: '60px', textAlign: 'center' }}>
             <Clock size={48} style={{ margin: '0 auto 16px', color: 'var(--panel-border)' }} />
-            <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>Olay Bulunamadı</h3>
+            <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>{t('tl.emptyTitle')}</h3>
             <p style={{ color: 'var(--text-muted)' }}>
-              Bu taramada USN Journal olayı yakalanmadı. Journal, NTFS birimlerinde silinen dosyaların ikincil kanıtıdır;
-              birim Journal kapalıysa veya kayıt silinmişse olay görüntülenemez.
+              {t('tl.emptyBody')}
             </p>
           </div>
         ) : (
           <>
             <div style={{ padding: '8px 24px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Bu sayfada: {Object.entries(typeCounts).map(([t, c]) => `${EVENT_META[t]?.label ?? t}: ${c}`).join(' · ')}
+              {tFormat('tl.pageSummary', { list: Object.entries(typeCounts).map(([k, c]) => `${EVENT_META[k] ? t(EVENT_META[k].labelKey) : k}: ${c}`).join(' · ') })}
             </div>
             {events.map((ev) => {
               const meta = EVENT_META[ev.eventType] ?? EVENT_META.touch
@@ -164,10 +165,10 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
                     {formatTimestamp(ev.timestamp)}
                   </div>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center', color: meta.color, fontSize: '0.8rem', minWidth: '180px', flexShrink: 0 }}>
-                    {meta.icon} {meta.label}
+                    {meta.icon} {t(meta.labelKey)}
                   </div>
                   <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.fileName}>
-                    {ev.fileName || '(isimsiz)'}
+                    {ev.fileName || t('tl.unnamed')}
                   </div>
                 </div>
               )
@@ -178,13 +179,13 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
 
       <div className="timeline-pagination" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '16px', paddingBottom: '8px' }}>
         <button className="btn-secondary" onClick={() => goPage(page - 1)} disabled={page === 0 || loading} style={{ display: 'flex', gap: '6px' }}>
-          <ChevronLeft size={16} /> Önceki
+          <ChevronLeft size={16} /> {t('scan.prev')}
         </button>
         <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          Sayfa {page + 1} / {pageCount}
+          {tFormat('tl.pageOf', { cur: String(page + 1), total: String(pageCount) })}
         </span>
         <button className="btn-secondary" onClick={() => goPage(page + 1)} disabled={page + 1 >= pageCount || loading} style={{ display: 'flex', gap: '6px' }}>
-          Sonraki <ChevronRight size={16} />
+          {t('scan.next')} <ChevronRight size={16} />
         </button>
       </div>
     </div>

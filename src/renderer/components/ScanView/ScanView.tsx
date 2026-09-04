@@ -12,6 +12,7 @@ import {
   type EtaSample,
 } from '../../../shared/scan-eta'
 import type { ScanPhase } from '../../../shared/scan-required'
+import { useI18n, tFormat } from '../../i18n'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -26,13 +27,13 @@ interface ScanViewProps {
   onViewResults: () => void
 }
 
-const TYPE_CHIPS: { id: string; label: string; category: string }[] = [
-  { id: 'all', label: 'Tümü', category: '' },
-  { id: 'img', label: 'Resim', category: 'Image' },
-  { id: 'video', label: 'Video', category: 'Video' },
-  { id: 'audio', label: 'Ses', category: 'Audio' },
-  { id: 'doc', label: 'Belge', category: 'Document' },
-  { id: 'archive', label: 'Arşiv', category: 'Archive' },
+const TYPE_CHIPS: { id: string; labelKey: string; category: string }[] = [
+  { id: 'all', labelKey: 'scan.all', category: '' },
+  { id: 'img', labelKey: 'scan.image', category: 'Image' },
+  { id: 'video', labelKey: 'scan.video', category: 'Video' },
+  { id: 'audio', labelKey: 'scan.audio', category: 'Audio' },
+  { id: 'doc', labelKey: 'scan.document', category: 'Document' },
+  { id: 'archive', labelKey: 'scan.archive', category: 'Archive' },
 ]
 
 function ScanView({
@@ -42,6 +43,7 @@ function ScanView({
   onStop, onCancel, onViewResults
 }: ScanViewProps): React.ReactElement {
 
+  const { t } = useI18n()
   const pageRef = useRef(0)
   const [page, setPage] = useState(0)
   const [typeChip, setTypeChip] = useState('all')
@@ -182,10 +184,11 @@ function ScanView({
   }
 
   const formatSpeed = (speed: number) => {
+    const unit = t('scan.sectorPerSec')
     if (speed <= 0) return '—'
-    if (speed > 1000000) return `${(speed / 1000000).toFixed(2)} M sektör/s`
-    if (speed > 1000) return `${(speed / 1000).toFixed(2)} K sektör/s`
-    return `${Math.floor(speed)} sektör/s`
+    if (speed > 1000000) return `${(speed / 1000000).toFixed(2)} M ${unit}`
+    if (speed > 1000) return `${(speed / 1000).toFixed(2)} K ${unit}`
+    return `${Math.floor(speed)} ${unit}`
   }
 
   const percent = progress.total > 0
@@ -198,21 +201,21 @@ function ScanView({
   const isTerminal = isFinished || isPaused || isFailed
   const stopping = phase === 'stopping'
   const scanTitle = phase === 'complete'
-    ? 'Tarama tamamlandı'
+    ? t('scan.finished')
     : phase === 'stopped'
-      ? 'Tarama iptal edildi'
+      ? t('scan.cancelled')
       : isPaused
-        ? 'Tarama duraklatıldı'
+        ? t('scan.paused')
         : isFailed
-          ? 'Tarama başarısız'
-          : `Sürücü ${driveIndex === -1 ? 'RAID' : driveIndex} taranıyor`
+          ? t('scan.failed')
+          : tFormat('scan.driveScanning', { drive: driveIndex === -1 ? t('scan.raid') : String(driveIndex) })
   const step = scanStepIndex(progress.phase, scanType)
   const remainingLabel = isFinished
     ? formatElapsed(0)
     : etaStalled
-      ? 'ilerleme yok'
+      ? t('scan.noProgress')
       : etaSeconds < 0
-        ? 'hesaplanıyor'
+        ? t('scan.calculating')
         : formatEtaClock(etaSeconds)
   const rangeStart = listCount === 0 ? 0 : page * limit + 1
   const rangeEnd = Math.min((page + 1) * limit, listCount)
@@ -240,19 +243,19 @@ function ScanView({
         </div>
         <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
           <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kayıt</span>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.records')}</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString('tr-TR')}</span>
             <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-              silinmiş {deletedCount.toLocaleString('tr-TR')}
-              {carvedCount > 0 ? ` · oyulmuş ${carvedCount.toLocaleString('tr-TR')}` : ''}
+              {tFormat('scan.deletedOf', { n: deletedCount.toLocaleString('tr-TR') })}
+              {carvedCount > 0 ? ` · ${tFormat('scan.carvedOf', { n: carvedCount.toLocaleString('tr-TR') })}` : ''}
             </span>
           </div>
           <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Geçen Süre</span>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.elapsed')}</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatElapsed(elapsed)}</span>
           </div>
           <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kalan Süre</span>
+            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.remaining')}</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 && !etaStalled ? 'var(--accent-blue)' : 'inherit' }}>
               {remainingLabel}
             </span>
@@ -262,23 +265,23 @@ function ScanView({
 
       {hfsTruncated && (
         <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          HFS+ katalog limit sentinel kaydı var. Varsayılan yürüyüş sınırsız; bu uyarı yalnız limit verilmiş taramada çıkar.
+          {t('scan.hfsLimit')}
         </div>
       )}
       {/* CA-041: bad-sector telemetry from failed reads, surfaced at last. */}
       {progress.badSectors && progress.badSectors.length > 0 && (
         <div className="glass-panel" role="alert" style={{ padding: '12px 24px', borderLeft: '4px solid var(--alert-red)', fontSize: '0.85rem' }}>
-          {progress.badSectors.length.toLocaleString('tr-TR')} sektör okunamadı (bozuk). Bu bölgelerdeki veriler kurtarılamamış olabilir.
+          {tFormat('scan.badSectors', { n: progress.badSectors.length.toLocaleString('tr-TR') })}
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
         {progress.phase === 'carve_skipped'
-          ? 'Oyma atlandı — bu dosya sistemi için boş alan haritası yok (APFS/HFS/ReFS). Tam disk carve veya carve_only profilini dene.'
+          ? t('scan.carveSkipped')
           : scanType === 'carve_only'
-          ? `Adım ${step.step}/${step.of}: ${scanPhaseLabel(progress.phase)}. ${carveSignatureCount != null ? `${carveSignatureCount.toLocaleString('tr-TR')} imza.` : ''} Dosya sistemi atlandı — yalnız imza carve. Sonuçlara istediğin zaman geç.`
+          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: scanPhaseLabel(progress.phase), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
           : scanType === 'deep' || scanType === 'full_carve'
-          ? `Adım ${step.step}/${step.of}: ${scanPhaseLabel(progress.phase)}. ${carveSignatureCount != null ? `${carveSignatureCount.toLocaleString('tr-TR')} imza.` : ''} Sonuçlara istediğin zaman geç — tarama arka planda sürer. %75 civarı metadata bitişi; sonrası oyma ve uzun sürebilir.`
-          : 'Hızlı tarama yalnız dosya tablosu okur. Boş alandaki foto/video için Derin tarama.'}
+          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: scanPhaseLabel(progress.phase), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
+          : t('scan.noteQuick')}
       </div>
 
       <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
@@ -290,7 +293,7 @@ function ScanView({
           deletedCount={deletedCount}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-          <span>Adım {step.step}/{step.of} · {scanPhaseLabel(progress.phase)}</span>
+          <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {scanPhaseLabel(progress.phase)}</span>
           <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
           <span>%{percent}</span>
         </div>
@@ -298,17 +301,17 @@ function ScanView({
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
         <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          Sektör {progress.current.toLocaleString('tr-TR')} / {progress.total ? progress.total.toLocaleString('tr-TR') : '—'}
+          {tFormat('scan.sectorRange', { cur: progress.current.toLocaleString('tr-TR'), total: progress.total ? progress.total.toLocaleString('tr-TR') : '—' })}
         </div>
       </div>
 
       <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)', flexWrap: 'wrap', gap: '8px' }}>
           <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>
-            Silinmiş {rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${listCount.toLocaleString('tr-TR')}` : '0'}
+            {tFormat('scan.deletedRange', { range: rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${listCount.toLocaleString('tr-TR')}` : '0' })}
             {listLoading ? ' …' : ''}
           </h3>
-          <div className="filter-chips" role="group" aria-label="Dosya tipi">
+          <div className="filter-chips" role="group" aria-label={t('scan.fileTypeAria')}>
             {TYPE_CHIPS.map((chip) => (
               <button
                 key={chip.id}
@@ -320,16 +323,16 @@ function ScanView({
                   setPage(0)
                 }}
               >
-                {chip.label}
+                {t(chip.labelKey)}
               </button>
             ))}
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
             <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0 || listLoading} onClick={() => setPage(p => p - 1)}>
-              <ChevronLeft size={16} /> Önceki
+              <ChevronLeft size={16} /> {t('scan.prev')}
             </button>
             <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= listCount || listLoading} onClick={() => setPage(p => p + 1)}>
-              Sonraki <ChevronRight size={16} />
+              {t('scan.next')} <ChevronRight size={16} />
             </button>
           </div>
         </div>
@@ -338,12 +341,12 @@ function ScanView({
             {filesFound.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>
                 {listLoading
-                  ? 'Liste yükleniyor…'
+                  ? t('scan.listLoading')
                   : typeChip !== 'all'
-                    ? 'Bu tipte silinmiş kayıt yok. Uzantısız dosyalar Tümü süzgecinde.'
+                    ? t('scan.noDeletedOfType')
                     : totalFiles > 0
-                      ? `Kayıt: ${totalFiles.toLocaleString('tr-TR')} (silinmiş: ${deletedCount.toLocaleString('tr-TR')})`
-                      : 'Henüz dosya bulunamadı...'}
+                      ? tFormat('scan.recordSummary', { total: totalFiles.toLocaleString('tr-TR'), deleted: deletedCount.toLocaleString('tr-TR') })
+                      : t('scan.noFiles')}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -380,24 +383,24 @@ function ScanView({
           {selectedFile && (
             <div style={{ width: '320px', flexShrink: 0, background: 'var(--well-bg)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
-                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Dosya Detayı</h4>
+                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.fileDetail')}</h4>
                 <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)}>✕</button>
               </div>
               <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', marginBottom: 'var(--space-md)', color: 'var(--text-main)' }}>
                 {selectedFile.name}
               </div>
               {[
-                ['Kategori', selectedFile.category ?? '—'],
-                ['Boyut', formatSize(selectedFile.sizeBytes ?? 0)],
-                ['Başlangıç Sektörü', selectedFile.startSector?.toLocaleString() ?? '—'],
-                ['Bitiş Sektörü', selectedFile.endSector?.toLocaleString() ?? '—'],
-                ['Güven Skoru', selectedFile.confidence != null ? `${selectedFile.confidence}%` : '—'],
-                ['Durum', selectedFile.status === 0 ? 'Silinmiş' : selectedFile.status === 1 ? 'Aktif' : 'Bilinmiyor'],
-                ['Kaynak', selectedFile.source ?? '—'],
-                ['Data Run Sayısı', selectedFile.runs?.length ?? 0],
-                ['Oluşturma', selectedFile.createdAt ? new Date(selectedFile.createdAt * 1000).toLocaleString('tr-TR') : '—'],
-                ['Değiştirme', selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString('tr-TR') : '—'],
-                ['Yol', selectedFile.path ?? '—'],
+                [t('scan.category'), selectedFile.category ?? '—'],
+                [t('scan.size'), formatSize(selectedFile.sizeBytes ?? 0)],
+                [t('scan.startSector'), selectedFile.startSector?.toLocaleString() ?? '—'],
+                [t('scan.endSector'), selectedFile.endSector?.toLocaleString() ?? '—'],
+                [t('scan.confidence'), selectedFile.confidence != null ? `${selectedFile.confidence}%` : '—'],
+                [t('scan.statusLabel'), selectedFile.status === 0 ? t('scan.deleted') : selectedFile.status === 1 ? t('scan.active') : t('scan.unknown')],
+                [t('scan.source'), selectedFile.source ?? '—'],
+                [t('scan.runCount'), selectedFile.runs?.length ?? 0],
+                [t('scan.created'), selectedFile.createdAt ? new Date(selectedFile.createdAt * 1000).toLocaleString('tr-TR') : '—'],
+                [t('scan.modified'), selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString('tr-TR') : '—'],
+                [t('scan.path'), selectedFile.path ?? '—'],
               ].map(([k, v]) => (
                 <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid var(--surface-overlay)', fontSize: '0.8rem' }}>
                   <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{k}</span>
@@ -412,19 +415,19 @@ function ScanView({
       <div className="scan-actions" style={{ display: 'flex', gap: 'var(--space-md)', justifyContent: 'flex-end', marginTop: 'var(--space-md)' }}>
         {!isTerminal && !stopping && (
           <button className="btn-danger" onClick={onStop} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Square size={16} fill="currentColor" /> Taramayı Durdur
+            <Square size={16} fill="currentColor" /> {t('scan.stop')}
           </button>
         )}
         {(isFinished || isPaused) && (
           <button className="btn-primary" onClick={onViewResults}>
-            Sonuçları Görüntüle
+            {t('scan.viewResults')}
           </button>
         )}
         {isTerminal && (
-          <button className="btn-secondary" onClick={onCancel}>Ana ekran</button>
+          <button className="btn-secondary" onClick={onCancel}>{t('scan.backHome')}</button>
         )}
         {stopping && (
-          <span style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>Native tarama duruyor…</span>
+          <span style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>{t('scan.stopping')}</span>
         )}
       </div>
 

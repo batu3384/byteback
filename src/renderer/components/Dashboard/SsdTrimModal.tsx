@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import type { ScanProfile } from '../../../shared/scan-profiles'
-import { SCAN_PROFILES } from '../../../shared/scan-profiles'
+import { useI18n } from '../../i18n'
 
 interface SsdTrimModalProps {
   open: boolean
@@ -11,6 +11,7 @@ interface SsdTrimModalProps {
 }
 
 function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps): React.ReactElement | null {
+  const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -24,8 +25,6 @@ function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps
   }, [open, onCancel])
 
   if (!open) return null
-
-  const profile = SCAN_PROFILES[scanType]
 
   return (
     <div
@@ -53,27 +52,26 @@ function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps
         <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
           <AlertTriangle size={28} color="var(--warning-yellow)" style={{ flexShrink: 0 }} aria-hidden="true" />
           <div>
-            <h3 id="ssd-trim-title" style={{ marginBottom: '8px' }}>SSD / TRIM uyarısı</h3>
+            <h3 id="ssd-trim-title" style={{ marginBottom: '8px' }}>{t('ssd.title')}</h3>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.5, margin: 0 }}>
-              Bu sürücü SSD olarak tespit edildi. TRIM, silinen veriyi fiziksel olarak temizleyebilir —
-              kurtarma başarı oranı düşük olabilir. Mümkünse imaj alın veya taramayı hemen başlatın.
+              {t('ssd.body')}
             </p>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px', marginBottom: 0 }}>
-              Seçilen mod: <strong>{profile.label}</strong> — {profile.detail}
+              {t('ssd.mode')} <strong>{t(`profile.${scanType}.label`)}</strong> — {t(`profile.${scanType}.detail`)}
             </p>
             {(scanType === 'full_carve' || scanType === 'carve_only') && (
               <p style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem', marginTop: '8px', marginBottom: 0 }}>
                 {scanType === 'carve_only'
-                  ? 'Yalnızca carve dosya sistemi okumaz; SSD üzerinde çok uzun sürebilir.'
-                  : 'Tam disk carve tüm sektörleri tarar; SSD üzerinde çok uzun sürebilir.'}
+                  ? t('ssd.carveOnlyWarning')
+                  : t('ssd.fullCarveWarning')}
               </p>
             )}
           </div>
         </div>
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-          <button type="button" className="btn-secondary" onClick={onCancel}>İptal</button>
+          <button type="button" className="btn-secondary" onClick={onCancel}>{t('ssd.cancel')}</button>
           <button ref={confirmRef} type="button" className="btn-primary" data-testid="ssd-trim-confirm" onClick={onConfirm}>
-            Yine de tara
+            {t('ssd.scanAnyway')}
           </button>
         </div>
       </div>

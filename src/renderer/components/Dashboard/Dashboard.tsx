@@ -7,7 +7,7 @@ import type { ScanProfile } from '../../../shared/scan-profiles'
 import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../../../shared/scan-session'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
-import { localizeNote } from '../../i18n'
+import { localizeNote, useI18n, tFormat } from '../../i18n'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
 
 interface DashboardProps {
@@ -19,6 +19,7 @@ interface DashboardProps {
 }
 
 function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData, scanBusy }: DashboardProps): React.ReactElement {
+  const { t } = useI18n()
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null)
@@ -47,9 +48,9 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   useEffect(() => {
     window.api?.getDbStatus?.()
       .then((s) => {
-        if (!s.ready) setDbError(s.error ?? 'Veritabanı başlatılamadı')
+        if (!s.ready) setDbError(s.error ?? t('dash.dbInitError'))
       })
-      .catch(() => setDbError('Veritabanı durumu okunamadı'))
+      .catch(() => setDbError(t('dash.dbStatusError')))
   }, [])
 
   const fetchDrives = async () => {
@@ -64,14 +65,14 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         setIsAdmin(adminStatus)
         setDrives(driveList as DriveInfo[])
         if (!driveList || driveList.length === 0) {
-          setError('Hiçbir fiziksel sürücü tespit edilemedi. Uygulama yönetici izni olmadan çalışıyorsa bazı sürücüler gizlenebilir.')
+          setError(t('dash.noDrives'))
         }
       } else {
-        setError('Kritik Hata: window.api bulunamadı! IPC Köprüsü yüklenemedi. Lütfen uygulamayı masaüstü modunda çalıştırın.')
+        setError(t('dash.noApi'))
       }
     } catch (err: any) {
       console.error('Sürücüler alınırken hata:', err)
-      setError('Sürücü listesi alınırken hata oluştu: ' + (err?.message || String(err)))
+      setError(tFormat('dash.driveListError', { err: err?.message || String(err) }))
       setDrives([])
     } finally {
       setLoading(false)
@@ -103,7 +104,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   const handleClearScans = async () => {
     if (!onClearScanData || clearBusy) return
     const ok = window.confirm(
-      'Tüm tarama kayıtları ve bulunan dosyalar SQLite\'dan silinecek. Bu işlem geri alınamaz. Devam?',
+      t('dash.clearConfirm'),
     )
     if (!ok) return
     setClearBusy(true)
@@ -113,7 +114,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         setPausedSession(null)
         setLatestScan(null)
       } else {
-        window.alert('Tarama kayıtları temizlenemedi. Aktif tarama varsa önce durdurun.')
+        window.alert(t('dash.clearFailed'))
       }
     } finally {
       setClearBusy(false)
@@ -141,7 +142,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   const startVolumeScan = (resolved: ResolvedVolume, scanType: ScanProfile, extra?: ScanOptions) => {
     if (!onStartScan) return
     setVolumeResolveStatus(
-      `PhysicalDrive${resolved.driveIndex} @ sektör ${resolved.startSector} (${resolved.fsType})`
+      tFormat('dash.volumeResolved', { drive: String(resolved.driveIndex), sector: String(resolved.startSector), fs: resolved.fsType })
     )
     onStartScan(resolved.driveIndex, scanType, {
       partitionStartSector: resolved.startSector,
@@ -152,16 +153,16 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
 
   const requestVolumeScan = async (scanType: ScanProfile) => {
     if (!isAdmin) {
-      setVolumeResolveStatus('Yönetici izni gerekli.')
+      setVolumeResolveStatus(t('dash.adminRequired'))
       return
     }
     if (!window.api?.resolveVolume || !onStartScan) {
-      setVolumeResolveStatus('API yok')
+      setVolumeResolveStatus(t('dash.noApiShort'))
       return
     }
     const resolved = await window.api.resolveVolume(volumeLetter) as ResolvedVolume | null
     if (!resolved) {
-      setVolumeResolveStatus(`${volumeLetter} çözülemedi (erişim veya harf hatalı)`)
+      setVolumeResolveStatus(tFormat('dash.volumeResolveFailed', { letter: volumeLetter }))
       return
     }
     const needsTrim = scanNeedsSsdDeepAck(scanType)
@@ -196,90 +197,90 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         <div className="admin-banner glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px 24px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239, 68, 68, 0.05)' }}>
           <ShieldAlert size={24} color="var(--alert-red)" />
           <div className="admin-banner-text" style={{ flex: 1, fontSize: '0.9rem' }}>
-            <strong style={{ color: 'var(--alert-red)' }}>Yönetici İzni Yok</strong> — Sürücüler listelenebilir ancak sektör tabanlı işlemler için uygulamayı <em>Yönetici Olarak Çalıştır</em> ile yeniden başlatmanız gerekir.
+            <strong style={{ color: 'var(--alert-red)' }}>{t('dash.adminBannerTitle')}</strong> {t('dash.adminBannerLead')} <em>{t('dash.adminBannerRunAs')}</em>{t('dash.adminBannerTail')}
           </div>
         </div>
       )}
 
       {dbError && (
-        <InlineAlert variant="error" title="Veritabanı kullanılamıyor">
-          Tarama sonuçları, kurtarma ve rapor SQLite veritabanına bağlıdır. Hata: {dbError}. Uygulamayı yeniden başlatın; sorun sürerse `%APPDATA%/byteback` yazma iznini kontrol edin.
+        <InlineAlert variant="error" title={t('dash.dbAlertTitle')}>
+          {tFormat('dash.dbAlertBody', { err: dbError })}
         </InlineAlert>
       )}
 
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        Kanıt diski: motor GENERIC_READ. BitLocker: FVEK hex, kullanıcı parolası (0x2000) veya kurtarma parolası (0x0800); TPM/startup-key desteklenmez. İmaj ham ciphertext yazar. PhysicalDrive imhası Yok Edici’de seri + IMHA + onay ile.
+        {t('dash.evidenceNote')}
       </div>
 
       <div className="glass-panel" data-testid="scan-profile-legend" style={{ padding: '16px 24px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '10px' }}>Tarama profilleri</div>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '10px' }}>{t('dash.profilesTitle')}</div>
         <ul style={{ margin: 0, paddingLeft: '20px', color: 'var(--text-muted)', fontSize: '0.85rem', lineHeight: 1.6 }}>
           {(Object.keys(SCAN_PROFILES) as ScanProfile[]).map((key) => (
-            <li key={key}><strong>{SCAN_PROFILES[key].label}:</strong> {SCAN_PROFILES[key].detail}</li>
+            <li key={key}><strong>{t(`profile.${key}.label`)}:</strong> {t(`profile.${key}.detail`)}</li>
           ))}
         </ul>
       </div>
 
       <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
-          <label htmlFor="fvek-hex" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>BitLocker FVEK (64 veya 128 hex)</label>
+          <label htmlFor="fvek-hex" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('dash.fvekLabel')}</label>
           <input
             id="fvek-hex"
-            aria-label="BitLocker FVEK hex"
+            aria-label={t('dash.fvekAria')}
             aria-describedby="fvek-status"
             type={fvekShow ? 'text' : 'password'}
             autoComplete="off"
             value={fvekHex}
             onChange={(e) => { setFvekHex(e.target.value); setFvekStatus(null) }}
-            placeholder="boş = anahtarı temizle"
+            placeholder={t('dash.fvekPlaceholder')}
             spellCheck={false}
             style={{ flex: 1, minWidth: '220px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', fontFamily: 'monospace' }}
           />
           <button type="button" className="btn-secondary" onClick={() => setFvekShow((v) => !v)}>
-            {fvekShow ? 'Gizle' : 'Göster'}
+            {fvekShow ? t('dash.hide') : t('dash.show')}
           </button>
           <button
             type="button"
             className="btn-secondary"
             onClick={async () => {
               if (!window.api?.setBitLockerFvek) {
-                setFvekStatus('API yok')
+                setFvekStatus(t('dash.noApiShort'))
                 return
               }
               const hex = fvekHex.replace(/\s/g, '')
               const ok = await window.api.setBitLockerFvek(hex)
-              setFvekStatus(ok ? (hex ? 'FVEK tarama/kurtarma/hex okumasına uygulandı' : 'FVEK temizlendi') : 'Geçersiz (64/128 hex) veya motor hatası')
+              setFvekStatus(ok ? (hex ? t('dash.fvekApplied') : t('dash.fvekCleared')) : t('dash.fvekInvalid'))
             }}
           >
-            FVEK uygula
+            {t('dash.fvekApply')}
           </button>
         </div>
         {fvekStatus && <span id="fvek-status" style={{ fontSize: '0.85rem' }}>{fvekStatus}</span>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
-          <label htmlFor="bitlocker-drive" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>BitLocker birimi</label>
+          <label htmlFor="bitlocker-drive" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('dash.bitlockerVolume')}</label>
           <select
             id="bitlocker-drive"
-            aria-label="BitLocker sürücüsü"
+            aria-label={t('dash.bitlockerDriveAria')}
             value={recoveryDrive}
             onChange={(e) => setRecoveryDrive(Number(e.target.value))}
             style={{ padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
           >
             {drives.map((d) => (
-              <option key={d.index} value={d.index}>{d.index}: {d.model || 'disk'}</option>
+              <option key={d.index} value={d.index}>{d.index}: {d.model || t('dash.diskFallback')}</option>
             ))}
           </select>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
-          <label htmlFor="user-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kullanıcı parolası (0x2000)</label>
+          <label htmlFor="user-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('dash.userPasswordLabel')}</label>
           <input
             id="user-password"
-            aria-label="BitLocker kullanıcı parolası"
+            aria-label={t('dash.userPasswordAria')}
             aria-describedby="user-password-status"
             type="password"
             autoComplete="off"
             value={userPassword}
             onChange={(e) => { setUserPassword(e.target.value); setUserPasswordStatus(null) }}
-            placeholder="Windows oturum parolası"
+            placeholder={t('dash.userPasswordPlaceholder')}
             style={{ flex: 1, minWidth: '200px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
           />
           <button
@@ -287,28 +288,28 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             className="btn-secondary"
             onClick={async () => {
               if (!window.api?.setBitLockerPassword) {
-                setUserPasswordStatus('API yok')
+                setUserPasswordStatus(t('dash.noApiShort'))
                 return
               }
               const err = await window.api.setBitLockerPassword(recoveryDrive, userPassword)
-              setUserPasswordStatus(err ? err : 'FVEK motor okumasına uygulandı')
+              setUserPasswordStatus(err ? err : t('dash.fvekEngineApplied'))
             }}
           >
-            Paroladan aç
+            {t('dash.unlockPassword')}
           </button>
         </div>
         {userPasswordStatus && <span id="user-password-status" style={{ fontSize: '0.85rem' }}>{userPasswordStatus}</span>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
-          <label htmlFor="recovery-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Kurtarma parolası (0x0800)</label>
+          <label htmlFor="recovery-password" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('dash.recoveryLabel')}</label>
           <input
             id="recovery-password"
-            aria-label="BitLocker kurtarma parolası"
+            aria-label={t('dash.recoveryAria')}
             aria-describedby="recovery-status"
             type="password"
             autoComplete="off"
             value={recoveryPassword}
             onChange={(e) => { setRecoveryPassword(e.target.value); setRecoveryStatus(null) }}
-            placeholder="48-digit veya recovery password"
+            placeholder={t('dash.recoveryPlaceholder')}
             style={{ flex: 1, minWidth: '200px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
           />
           <button
@@ -316,27 +317,27 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             className="btn-secondary"
             onClick={async () => {
               if (!window.api?.setBitLockerRecoveryPassword) {
-                setRecoveryStatus('API yok')
+                setRecoveryStatus(t('dash.noApiShort'))
                 return
               }
               const err = await window.api.setBitLockerRecoveryPassword(recoveryDrive, recoveryPassword)
-              setRecoveryStatus(err ? localizeNote(err) : 'FVEK motor okumasına uygulandı')
+              setRecoveryStatus(err ? localizeNote(err) : t('dash.fvekEngineApplied'))
             }}
           >
-            Kurtarmadan aç
+            {t('dash.unlockRecovery')}
           </button>
         </div>
         {recoveryStatus && <span id="recovery-status" style={{ fontSize: '0.85rem' }}>{recoveryStatus}</span>}
       </div>
 
       <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>Mantıksal sürücüden tara</div>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{t('dash.volumeScanTitle')}</div>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-          Harf (ör. D:) → PhysicalDrive + bölüm ofseti. Yalnızca o birimi tarar.
+          {t('dash.volumeScanHint')}
         </p>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
           <select
-            aria-label="Mantıksal sürücü harfi"
+            aria-label={t('dash.volumeLetterLabel')}
             value={volumeLetter}
             onChange={(e) => { setVolumeLetter(e.target.value); setVolumeResolveStatus(null) }}
             style={{ padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
@@ -350,41 +351,41 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             className="btn-secondary"
             disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-quick"
-            title={SCAN_PROFILES.quick.detail}
+            title={t('profile.quick.detail')}
             onClick={() => void requestVolumeScan('quick')}
           >
-            {SCAN_PROFILES.quick.label}
+            {t('profile.quick.label')}
           </button>
           <button
             type="button"
             className="btn-primary"
             disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-deep"
-            title={SCAN_PROFILES.deep.detail}
+            title={t('profile.deep.detail')}
             onClick={() => void requestVolumeScan('deep')}
           >
-            <Search size={16} /> {SCAN_PROFILES.deep.label}
+            <Search size={16} /> {t('profile.deep.label')}
           </button>
           <button
             type="button"
             className="btn-secondary"
             disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-carve-only"
-            title={SCAN_PROFILES.carve_only.detail}
+            title={t('profile.carve_only.detail')}
             onClick={() => void requestVolumeScan('carve_only')}
           >
-            {SCAN_PROFILES.carve_only.label}
+            {t('profile.carve_only.label')}
           </button>
           <button
             type="button"
             className="btn-secondary"
             disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-full-carve"
-            title={SCAN_PROFILES.full_carve.detail}
+            title={t('profile.full_carve.detail')}
             onClick={() => void requestVolumeScan('full_carve')}
             style={{ borderColor: 'var(--warning-yellow)' }}
           >
-            <AlertTriangle size={14} /> {SCAN_PROFILES.full_carve.label}
+            <AlertTriangle size={14} /> {t('profile.full_carve.label')}
           </button>
         </div>
         {volumeResolveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{volumeResolveStatus}</span>}
@@ -395,12 +396,12 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <Activity size={24} color="var(--warning-yellow)" />
             <div>
-              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Yarım Kalan Tarama</h3>
+              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>{t('dash.pausedTitle')}</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                Sürücü {pausedSession.driveIndex} · {pausedSession.scanType} · %{scanProgressPercent(pausedSession)} ({pausedSession.scannedSectors} / {pausedSession.totalSectors} sektör)
-                {!scanShowsMetadataResume(pausedSession) ? '' : ' · metadata aşamasından devam edilecek'}
+                {tFormat('dash.pausedMeta', { drive: String(pausedSession.driveIndex), type: pausedSession.scanType, pct: String(scanProgressPercent(pausedSession)), scanned: String(pausedSession.scannedSectors), total: String(pausedSession.totalSectors) })}
+                {!scanShowsMetadataResume(pausedSession) ? '' : ` · ${t('dash.metadataResume')}`}
                 {pausedSession.metadataComplete && (pausedSession.carveResumeSector ?? 0) > 0
-                  ? ` · oyma @ sektör ${pausedSession.carveResumeSector!.toLocaleString('tr-TR')}`
+                  ? ` · ${tFormat('dash.carveResume', { sector: pausedSession.carveResumeSector!.toLocaleString('tr-TR') })}`
                   : ''}
               </p>
             </div>
@@ -412,7 +413,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               data-testid="view-paused-results-btn"
               onClick={() => onOpenPausedResults?.(pausedSession)}
             >
-              <FolderCheck size={16} /> Sonuçları gör
+              <FolderCheck size={16} /> {t('dash.viewPausedResults')}
             </button>
             <button
               type="button"
@@ -428,7 +429,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
                 onStartScan(pausedSession.driveIndex, pausedSession.scanType, extra)
               }}
             >
-              <Play size={16} fill="currentColor" /> Devam et
+              <Play size={16} fill="currentColor" /> {t('dash.resume')}
             </button>
           </div>
         </div>
@@ -439,24 +440,24 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <Activity size={24} color="var(--accent-blue)" className="spinner" />
             <div>
-              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>Tarama sürüyor</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Tarama ekranından ilerlemeyi izleyebilirsiniz.</p>
+              <h3 style={{ fontSize: '1rem', marginBottom: '4px' }}>{t('dash.scanRunningTitle')}</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{t('dash.scanRunningHint')}</p>
             </div>
           </div>
           <button type="button" className="btn-primary" onClick={() => onAction && onAction('scan')}>
-            <Play size={16} fill="currentColor" /> Taramaya dön
+            <Play size={16} fill="currentColor" /> {t('dash.backToScan')}
           </button>
         </div>
       )}
 
       <div className="dashboard-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '16px', gap: '12px', flexWrap: 'wrap' }}>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>Sistemdeki Sürücüler</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>Erişilebilir tüm fiziksel donanımlar</p>
+          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('dash.drivesTitle')}</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>{t('dash.drivesSubtitle')}</p>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <button className="btn-secondary" onClick={fetchDrives} disabled={loading} style={{ display: 'flex', gap: '8px' }}>
-          <RefreshCw size={16} className={loading ? 'spinner' : ''} /> Yenile
+          <RefreshCw size={16} className={loading ? 'spinner' : ''} /> {t('dash.refresh')}
         </button>
         {onClearScanData && (
           <button
@@ -467,7 +468,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             onClick={handleClearScans}
             style={{ display: 'flex', gap: '8px' }}
           >
-            <RotateCw size={16} /> Tarama kayıtlarını temizle
+            <RotateCw size={16} /> {t('dash.clearScans')}
           </button>
         )}
         </div>
@@ -476,17 +477,17 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       {loading ? (
         <div className="loading-state glass-panel" style={{ padding: '80px', textAlign: 'center' }}>
           <RefreshCw size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
-          <p style={{ color: 'var(--text-muted)' }}>Sürücüler donanım seviyesinde sorgulanıyor...</p>
+          <p style={{ color: 'var(--text-muted)' }}>{t('dash.probing')}</p>
         </div>
       ) : drives.length === 0 ? (
         <div className="empty-state glass-panel" style={{ padding: '80px', textAlign: 'center' }}>
           <HardDrive size={48} style={{ margin: '0 auto 16px', color: 'var(--panel-border)' }} />
-          <h3 style={{ marginBottom: '8px', fontSize: '1.2rem' }}>Sürücü Bulunamadı</h3>
+          <h3 style={{ marginBottom: '8px', fontSize: '1.2rem' }}>{t('dash.noDriveTitle')}</h3>
           <p style={{ color: 'var(--text-muted)', marginBottom: '24px', maxWidth: '400px', margin: '0 auto 24px', lineHeight: 1.5 }}>
-            {error || 'Sisteminizde desteklenen fiziksel bir disk tespit edilemedi. Lütfen bağlantıları kontrol edin.'}
+            {error || t('dash.noDriveBody')}
           </p>
           <button className="btn-secondary" onClick={fetchDrives} style={{ display: 'inline-flex', gap: '8px' }}>
-            <RotateCw size={16} /> Tekrar Dene
+            <RotateCw size={16} /> {t('dash.retry')}
           </button>
         </div>
       ) : (
@@ -509,21 +510,21 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <div style={{ background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '12px' }}><HardDrive size={28} color="var(--text-main)" /></div>
           <div>
             <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{drives.length}</div>
-            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Bulunan Disk</div>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('dash.statDisks')}</div>
           </div>
         </div>
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}><Activity size={28} color="var(--accent-blue)" /></div>
           <div>
             <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{scanBusy ? '1' : pausedSession ? '1' : '0'}</div>
-            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Bekleyen / aktif tarama</div>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('dash.statActive')}</div>
           </div>
         </div>
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '16px', borderRadius: '12px' }}><FolderCheck size={28} color="var(--success-green)" /></div>
           <div>
             <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{latestScan?.recoveredFiles ?? 0}</div>
-            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Kurtarılan (son tarama)</div>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('dash.statRecovered')}</div>
           </div>
         </div>
       </div>
