@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('start-imaging', driveIndex, destPath, format),
   stopImaging: () => ipcRenderer.send('stop-imaging'),
 
-  onImagingProgress: (callback: (data: { current: number, total: number, md5?: string }) => void) => {
+  onImagingProgress: (callback: (data: { current: number, total: number, md5?: string, error?: string }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
     ipcRenderer.on('imaging-progress', handler)
     return () => ipcRenderer.removeListener('imaging-progress', handler)
