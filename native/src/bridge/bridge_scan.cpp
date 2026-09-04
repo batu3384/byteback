@@ -331,8 +331,31 @@ Napi::Value GetTimelineEvents(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
-Napi::Value GetAuditLog(const Napi::CallbackInfo& info) {
+// Runtime audit-chain verification over the active log (see
+// forensic::VerifyAuditChainFile). Returns {ok, entries, brokenAt, detail}.
+Napi::Value VerifyAuditLog(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || bdata->auditLogPath.empty()) {
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("ok", Napi::Boolean::New(env, false));
+        obj.Set("entries", Napi::Number::New(env, 0));
+        obj.Set("brokenAt", Napi::Number::New(env, 0));
+        obj.Set("detail", Napi::String::New(env, "no audit log open"));
+        return obj;
+    }
+    const auto r = forensic::VerifyAuditChainFile(bdata->auditLogPath);
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("ok", Napi::Boolean::New(env, r.ok));
+    obj.Set("entries", Napi::Number::New(env, r.entries));
+    obj.Set("brokenAt", Napi::Number::New(env, r.brokenAt));
+    obj.Set("detail", Napi::String::New(env, r.detail));
+    return obj;
+    NAPI_CATCH
+}
+
+Napi::Value GetAuditLog(const Napi::CallbackInfo& info) {    Napi::Env env = info.Env();
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata || bdata->auditLogPath.empty()) {
@@ -854,8 +877,7 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
 // completed scan row and inserts the given records; returns the scanId.
 // AR2-F1: bounded (1000 records, 512-char strings) and audit-logged — an
 // e2e-only surface must not fabricate untraceable evidence even if reached.
-Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
+Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {    Napi::Env env = info.Env();
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata || info.Length() < 1 || !info[0].IsArray()) return Napi::Number::New(env, -1);

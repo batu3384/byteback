@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4996) // disable deprecation warnings for gmtime
@@ -269,6 +270,47 @@ void AuditLogger::ProcessQueue() {
         
         previousHash_ = new_hash;
     }
+}
+
+AuditChainVerifyResult VerifyAuditChainFile(const std::string& path) {
+    AuditChainVerifyResult res;
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        res.detail = "open failed";
+        return res;
+    }
+    std::string prev(64, '0');
+    std::string line;
+    int lineNo = 0;
+    const std::string marker = " | ChainHash: ";
+    while (std::getline(in, line)) {
+        ++lineNo;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        const size_t pos = line.rfind(marker);
+        if (pos == std::string::npos) {
+            res.entries = lineNo;
+            res.brokenAt = lineNo;
+            res.detail = "missing ChainHash";
+            return res;
+        }
+        const std::string message = line.substr(0, pos);
+        const std::string stored = line.substr(pos + marker.size());
+        const std::string toHash = prev + message;
+        const std::string expected = AuditLogger::CalculateSHA256(
+            reinterpret_cast<const uint8_t*>(toHash.c_str()), toHash.size());
+        if (expected != stored) {
+            res.entries = lineNo;
+            res.brokenAt = lineNo;
+            res.detail = "hash mismatch";
+            return res;
+        }
+        prev = stored;
+        res.entries = lineNo;
+    }
+    res.ok = res.entries > 0;
+    res.detail = res.ok ? "ok" : "empty";
+    return res;
 }
 
 } // namespace forensic

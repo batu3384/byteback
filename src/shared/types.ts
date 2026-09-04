@@ -95,6 +95,7 @@ declare global {
       resetScanDatabase: () => Promise<boolean>
       getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
       getAuditLog: (maxLines?: number) => Promise<string[]>
+      verifyAuditLog: () => Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>
       getSessionLog: (maxLines?: number) => Promise<{ path: string; lines: string[]; summary: string }>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 

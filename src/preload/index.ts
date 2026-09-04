@@ -72,6 +72,8 @@ contextBridge.exposeInMainWorld('api', {
   resetScanDatabase: () => ipcRenderer.invoke('reset-scan-database'),
   getTimelineEvents: (scanId: number, offset: number, limit: number, filter?: string) => ipcRenderer.invoke('get-timeline-events', scanId, offset, limit, filter),
   getAuditLog: (maxLines?: number) => ipcRenderer.invoke('get-audit-log', maxLines),
+  verifyAuditLog: () =>
+    ipcRenderer.invoke('verify-audit-log') as Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>,
   getSessionLog: (maxLines?: number) =>
     ipcRenderer.invoke('get-session-log', maxLines) as Promise<{ path: string; lines: string[]; summary: string }>,
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),

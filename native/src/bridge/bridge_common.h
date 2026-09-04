@@ -140,6 +140,7 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info);
 Napi::Value StopContentSearch(const Napi::CallbackInfo& info);
 Napi::Value GetScanSummary(const Napi::CallbackInfo& info);
 Napi::Value SeedScanFixture(const Napi::CallbackInfo& info);
+Napi::Value VerifyAuditLog(const Napi::CallbackInfo& info);
 
 // bridge_imager.cpp
 Napi::Value StartImaging(const Napi::CallbackInfo& info);

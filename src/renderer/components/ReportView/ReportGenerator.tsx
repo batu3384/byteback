@@ -34,6 +34,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
   const [formError, setFormError] = useState<string | null>(null);
 
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [chain, setChain] = useState<{ ok: boolean; entries: number; brokenAt: number; detail: string } | null>(null);
 
   const [rowState, setRowState] = useState<import('../../../shared/ipc-contract').ScanState | null>(scanState ?? null)
 
@@ -49,6 +50,13 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
   useEffect(() => {
     setRowState(scanState ?? null)
   }, [scanState])
+
+  // Runtime audit-chain verification: re-walks the SHA-256 chain so the
+  // tamper-evidence claim is machine-checked, not manual.
+  useEffect(() => {
+    if (!window.api?.verifyAuditLog) return
+    window.api.verifyAuditLog().then(setChain).catch(() => setChain(null))
+  }, [])
 
   useEffect(() => {
     if (scanId > 0 && window.api?.getScanState) {
@@ -89,12 +97,24 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
       // native engine (scan/imaging/wipe events). Embedded verbatim so the
       // report reflects what actually happened, not what we wish happened.
       let auditLines: string[] = [];
+      let chainStatus: { ok: boolean; entries: number; brokenAt: number; detail: string } | null = null;
       try {
         auditLines = (await window.api?.getAuditLog?.(50)) ?? [];
       } catch { /* audit log optional in report */ }
+      try {
+        chainStatus = (await window.api?.verifyAuditLog?.()) ?? null;
+      } catch { /* verification optional in report */ }
+      const chainLine = chainStatus
+        ? `<div><strong>${t('report.chainLabel')}</strong> ${
+            chainStatus.ok
+              ? tFormat('report.chainOk', { n: String(chainStatus.entries) })
+              : tFormat('report.chainBroken', { line: String(chainStatus.brokenAt), detail: chainStatus.detail })
+          }</div>`
+        : '';
       const auditSection = auditLines.length > 0 ? `
 <h2>${t('report.auditHeading')}</h2>
 <p>${tFormat('report.auditIntro', { n: String(auditLines.length) })}</p>
+${chainLine}
 <table>
   <tr><th>${t('report.auditEventTh')}</th></tr>
   ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${htmlEscape(l)}</td></tr>`).join('\n  ')}
@@ -286,7 +306,13 @@ ${body}
             <Clock size={24} color="var(--accent-blue)" />
             <div>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.verifyTitle')}</h4>
-              <p style={{ fontWeight: 500 }}>{t('report.verifySub')}</p>
+              <p style={{ fontWeight: 500 }}>
+                {chain == null
+                  ? t('report.chainChecking')
+                  : chain.ok
+                    ? tFormat('report.chainOk', { n: String(chain.entries) })
+                    : tFormat('report.chainBroken', { line: String(chain.brokenAt), detail: chain.detail })}
+              </p>
             </div>
           </div>
         </div>

@@ -221,7 +221,11 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-audit-log', (_event, maxLines?: number) =>
-    callNative('get-audit-log', () => getEngine().getAuditLog(maxLines ?? 200))
+    callNative('get-audit-log', () => getEngine().getAuditLog(maxLines))
+  )
+
+  ipcMain.handle('verify-audit-log', () =>
+    callNative('verify-audit-log', () => getEngine().verifyAuditLog())
   )
 
   ipcMain.handle('get-session-log', (_event, maxLines?: number) => {
