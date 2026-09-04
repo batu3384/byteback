@@ -347,7 +347,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
-            disabled={!isAdmin}
+            disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-quick"
             title={SCAN_PROFILES.quick.detail}
             onClick={() => void requestVolumeScan('quick')}
@@ -357,7 +357,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-primary"
-            disabled={!isAdmin}
+            disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-deep"
             title={SCAN_PROFILES.deep.detail}
             onClick={() => void requestVolumeScan('deep')}
@@ -367,7 +367,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
-            disabled={!isAdmin}
+            disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-carve-only"
             title={SCAN_PROFILES.carve_only.detail}
             onClick={() => void requestVolumeScan('carve_only')}
@@ -377,7 +377,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
-            disabled={!isAdmin}
+            disabled={!isAdmin || scanBusy}
             data-testid="volume-scan-full-carve"
             title={SCAN_PROFILES.full_carve.detail}
             onClick={() => void requestVolumeScan('full_carve')}
@@ -414,8 +414,10 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               <FolderCheck size={16} /> Sonuçları gör
             </button>
             <button
+              type="button"
               className="btn-primary"
               data-testid="resume-scan-btn"
+              disabled={scanBusy}
               onClick={() => {
                 if (!onStartScan) return
                 const extra: ScanOptions = { resumeScanId: pausedSession.id }

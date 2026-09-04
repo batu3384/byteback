@@ -69,8 +69,6 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     return fileObj;
 }
 
-constexpr uint32_t kMaxLiveFileEvents = 0;
-
 bool flushFileBufferLocked(byteback::Engine* engine, ScanContext* context) {
     if (!engine || !context || context->fileBuffer.empty()) return true;
     if (!engine->getMetadataStore().insertFilesBatch(context->scanId, context->fileBuffer)) {
@@ -585,18 +583,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 }
             }
         }
-
-        if (context->filesPosted.load() < kMaxLiveFileEvents) {
-            auto callback = [out](Napi::Env env, Napi::Function jsCallback) {
-                Napi::Object obj = FileRecordToJs(env, out);
-                obj.Set("type", Napi::String::New(env, "file"));
-                obj.Set("size", Napi::Number::New(env, static_cast<double>(out.sizeBytes)));
-                jsCallback.Call({obj});
-            };
-            if (tsfnPost(context->tsfn, callback)) context->filesPosted.fetch_add(1);
-        }
     };
-
     const int64_t checkpointScanId = context->scanId;
     auto totalSectorsSet = std::make_shared<std::atomic<bool>>(false);
     auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
