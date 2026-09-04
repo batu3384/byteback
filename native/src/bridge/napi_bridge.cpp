@@ -60,6 +60,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("loadNsrl", Napi::Function::New(env, LoadNsrl));
     exports.Set("lookupNsrl", Napi::Function::New(env, LookupNsrl));
     exports.Set("getNsrlStats", Napi::Function::New(env, GetNsrlStats));
+    exports.Set("setSignaturesDir", Napi::Function::New(env, SetSignaturesDir));
 
     return exports;
 }

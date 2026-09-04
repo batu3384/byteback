@@ -49,6 +49,12 @@ public:
     size_t signatureCount() const { return signatures.size(); }
     const std::vector<FileSignature>& getSignatures() const { return signatures; }
 
+    // CA-010: absolute directory holding signatures-extended.json /
+    // signatures-supplement.json, resolved by the main process (asar cannot
+    // be read by std::ifstream). Empty string restores the dev CWD-relative
+    // probes. Process-wide; call once before the first scan.
+    static void setResourceSignatureDir(const std::string& dir);
+
     // Loads embedded + resource JSON once; safe to call from UI before scan.
     static size_t globalSignatureCount();
     bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);

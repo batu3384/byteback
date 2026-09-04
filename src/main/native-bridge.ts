@@ -14,7 +14,7 @@ export type {
 } from '../shared/ipc-contract'
 
 import { existsSync } from 'fs'
-import { nativeAddonCandidates } from './native-addon-path'
+import { nativeAddonCandidates, signaturesDirCandidates } from './native-addon-path'
 import type {
   DriveInfo,
   FileRecord,
@@ -112,6 +112,7 @@ interface BytebackEngine {
   loadNsrl(path: string): { ok: boolean; count: number; path: string }
   lookupNsrl(md5Hex: string): boolean
   getNsrlStats(): { count: number; path: string }
+  setSignaturesDir(dir: string): boolean
 }
 
 let engine: BytebackEngine | null = null
@@ -137,6 +138,15 @@ export function getEngine(): BytebackEngine {
     engine = require(addonPath) as BytebackEngine
     if (!engine || typeof engine.getVersion !== 'function') {
       throw new Error('Native addon loaded but did not expose the expected BytebackEngine API')
+    }
+    // CA-010: std::ifstream cannot read inside app.asar, and the packaged CWD
+    // is not the install dir — hand the carver an absolute directory holding
+    // the (asarUnpacked) signature JSONs.
+    const sigDir = signaturesDirCandidates(__dirname, process.resourcesPath).find((p) =>
+      existsSync(p),
+    )
+    if (sigDir && typeof engine.setSignaturesDir === 'function') {
+      engine.setSignaturesDir(sigDir)
     }
     return engine
   } catch (e: any) {
