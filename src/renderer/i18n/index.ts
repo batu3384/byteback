@@ -70,6 +70,7 @@ const STRINGS: Record<string, Entry> = {
   'nav.reportLockedTitle': { tr: 'Adli rapor için tamamlanmış tarama gerekli', en: 'A completed scan is required for a forensic report' },
   'nav.scanLockedTitle': { tr: 'Önce bir taramayı tamamlayın veya duraklatılmış oturumu açın', en: 'Complete a scan or open a paused session first' },
   'nav.diskBusyTitle': { tr: 'Hex, imaj ve imha tarama bitene kadar kapalı', en: 'Hex, imaging and shredder stay closed until the scan finishes' },
+  'nav.forensicBadge': { tr: 'Adli', en: 'Forensic' },
 
   // Dashboard
   'dash.volumeScanTitle': { tr: 'Mantıksal sürücüden tara', en: 'Scan from a logical volume' },
@@ -316,6 +317,8 @@ const STRINGS: Record<string, Entry> = {
   'results.errLine': { tr: '\nHatalar:\n{list}', en: '\nErrors:\n{list}' },
   'results.recoverDone': { tr: 'Kurtarma bitti. Başarılı: {ok}. Başarısız: {bad}. Eksik/pad okuma: {zero}. Hedef: {dest}', en: 'Recovery finished. Succeeded: {ok}. Failed: {bad}. Padded/incomplete reads: {zero}. Destination: {dest}' },
   'results.csvFailed': { tr: 'CSV dışa aktarım başarısız.', en: 'CSV export failed.' },
+  'results.confirmProceed': { tr: 'Yine de devam et', en: 'Continue anyway' },
+  'results.confirmCancel': { tr: 'İptal', en: 'Cancel' },
   'results.csvFileName': { tr: 'byteback-sonuclar-{n}-kayit-{date}.csv', en: 'byteback-results-{n}-records-{date}.csv' },
 
   // CSV header row (results export)
@@ -597,6 +600,7 @@ const STRINGS: Record<string, Entry> = {
   'kw.noResultsTail': { tr: '" için sonuç bulunamadı', en: '"' },
   'kw.tryDifferent': { tr: 'Farklı anahtar kelimeler deneyin veya arama filtrelerini kontrol edin.', en: 'Try different keywords or check the search filters.' },
   'kw.foundCount': { tr: '{n} sonuç bulundu.', en: '{n} results found.' },
+  'kw.truncated': { tr: 'İlk 500 sonuç gösteriliyor — aramayı daraltın.', en: 'Showing the first 500 results — narrow your search.' },
   'kw.prompt': { tr: 'Kurtarılan dosyalar arasında arama yapmak için bir kelime girin.', en: 'Enter a keyword to search among the recovered files.' },
 
   // TimelineView

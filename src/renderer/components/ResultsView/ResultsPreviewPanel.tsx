@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import type { FilePreviewResult, FileRecord } from '../../../shared/ipc-contract'
 import { formatPreviewHex, previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
 import { extractJpegExifUnix, extractPdfInfo, sniffMediaContainer } from '../../../shared/embedded-metadata'
@@ -61,13 +61,22 @@ export default function ResultsPreviewPanel({
   )
   const embeddedDate = preview ? embeddedDateLine(preview, previewRecord) : null
 
+  // Escape closes the panel; listener sits above the early return so hooks stay ordered.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   if (!preview && !previewLoading) return null
 
   return (
     <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <strong>{previewRecord ? tFormat('preview.titleWithName', { name: previewRecord.name }) : t('preview.title')}</strong>
-        <button type="button" className="btn-secondary" style={{ padding: '4px 10px' }} onClick={onClose}>
+        <button type="button" className="btn-secondary" style={{ padding: '4px 10px' }} onClick={onClose} autoFocus>
           {t('preview.close')}
         </button>
       </div>

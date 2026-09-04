@@ -102,7 +102,7 @@ function Sidebar({ activePage, activeScanId, scanState, scanBusy, onNavigate }: 
       </nav>
 
       <div className="sidebar-footer">
-        <div className="pro-badge">Adli</div>
+        <div className="pro-badge">{t('nav.forensicBadge')}</div>
         <div className="version-info">Sürüm v{APP_VERSION}</div>
       </div>
     </aside>

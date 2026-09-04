@@ -268,6 +268,11 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
                 </div>
               ))}
             </div>
+            {!searching && results.length >= 500 && (
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
+                {t('kw.truncated')}
+              </p>
+            )}
           </div>
         )}
 
