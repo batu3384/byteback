@@ -45,7 +45,9 @@
     "asar": true,
     "asarUnpack": [
       "**/*.node",
-      "native/build/Release/**"
+      "native/build/Release/**",
+      "resources/signatures-extended.json",
+      "resources/signatures-supplement.json"
     ],
     "files": [
       "out/**/*",

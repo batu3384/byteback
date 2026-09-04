@@ -84,3 +84,14 @@ Napi::Value GetNsrlStats(const Napi::CallbackInfo& info) {
     return obj;
     NAPI_CATCH
 }
+
+// CA-010: main process hands over the absolute signatures directory (packaged
+// apps cannot read resources inside app.asar via std::ifstream).
+Napi::Value SetSignaturesDir(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
+    byteback::CarvingEngine::setResourceSignatureDir(info[0].As<Napi::String>().Utf8Value());
+    return Napi::Boolean::New(env, true);
+    NAPI_CATCH
+}

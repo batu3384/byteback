@@ -382,8 +382,29 @@ void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
     }
 }
 
+// CA-010: absolute signatures dir set by the main process. Packaged apps run
+// with a CWD that is NOT the install dir and std::ifstream cannot read inside
+// app.asar, so the CWD-relative probes below silently missed in production.
+static std::string g_resourceSignatureDir;
+
 void appendResourceSignatureFiles(std::vector<FileSignature>& signatures,
                                   const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
+    static const char* kNames[] = {
+        "signatures-extended.json",
+        "signatures-supplement.json",
+    };
+    if (!g_resourceSignatureDir.empty()) {
+        for (const char* name : kNames) {
+            std::string abs = g_resourceSignatureDir;
+            if (!abs.empty() && abs.back() != '/' && abs.back() != '\\') abs += '/';
+            abs += name;
+            if (!appendSignaturesFromJson(signatures, abs, hexToBytes)) {
+                std::cerr << "[byteback] signatures file missing or unparseable: " << abs << std::endl;
+            }
+        }
+        return;
+    }
+    // Dev fallback: repo-root CWD-relative probes.
     static const char* kFiles[] = {
         // CA-010: resources/signatures.json is NOT auto-loaded — every entry
         // duplicates the embedded set (incl. RIFF triple-reports and a bare
@@ -402,6 +423,10 @@ void appendResourceSignatureFiles(std::vector<FileSignature>& signatures,
 }
 
 } // namespace
+
+void CarvingEngine::setResourceSignatureDir(const std::string& dir) {
+    g_resourceSignatureDir = dir;
+}
 
 size_t CarvingEngine::globalSignatureCount() {
     static size_t count = 0;

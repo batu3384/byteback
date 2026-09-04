@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { nativeAddonCandidates } from './native-addon-path'
+import { signaturesDirCandidates } from './native-addon-path'
 import { join } from 'path'
 
-describe('nativeAddonCandidates', () => {
-  it('includes the unpacked asar path for packaged builds', () => {
-    const list = nativeAddonCandidates('/app/out/main', '/app/resources')
-    expect(list[0].replace(/\\/g, '/')).toContain('native/build/Release/byteback_engine.node')
-    expect(list[1]).toBe(
-      join('/app/resources', 'app.asar.unpacked', 'native', 'build', 'Release', 'byteback_engine.node'),
-    )
+// CA-010: the packaged app must prefer the asar-unpacked resources copy —
+// std::ifstream in the native carver cannot read inside app.asar.
+describe('signaturesDirCandidates', () => {
+  it('prefers the unpacked asar resources dir when packaged', () => {
+    const list = signaturesDirCandidates('/app/out/main', '/app/resources')
+    expect(list[0]).toBe(join('/app/resources', 'app.asar.unpacked', 'resources'))
+    expect(list[1].replace(/\\/g, '/')).toBe('/app/resources')
+  })
+
+  it('falls back to the dev repo resources dir', () => {
+    const list = signaturesDirCandidates('/repo/out/main')
+    expect(list[0].replace(/\\/g, '/')).toBe('/repo/resources')
   })
 })

@@ -169,3 +169,4 @@ Napi::Value SetCaseInfo(const Napi::CallbackInfo& info);
 Napi::Value LoadNsrl(const Napi::CallbackInfo& info);
 Napi::Value LookupNsrl(const Napi::CallbackInfo& info);
 Napi::Value GetNsrlStats(const Napi::CallbackInfo& info);
+Napi::Value SetSignaturesDir(const Napi::CallbackInfo& info);
