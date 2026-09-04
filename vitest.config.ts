@@ -2,8 +2,9 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // Vitest configuration for the renderer/TypeScript layer.
-// Main-process code (src/main/**) talks to the native addon and Electron APIs
-// and is not unit-tested here; it is covered by integration checks instead.
+// Includes src/main utilities that don't require Electron at import time
+// (e.g. native-addon-path, image-dest-allowlist); electron-coupled main code
+// is covered by e2e.
 export default defineConfig({
   plugins: [react()],
   test: {

@@ -15,6 +15,7 @@ export type {
 
 import { existsSync } from 'fs'
 import { nativeAddonCandidates, signaturesDirCandidates } from './native-addon-path'
+import { APP_VERSION } from '../shared/app-version'
 import type {
   DriveInfo,
   FileRecord,
@@ -138,6 +139,12 @@ export function getEngine(): BytebackEngine {
     engine = require(addonPath) as BytebackEngine
     if (!engine || typeof engine.getVersion !== 'function') {
       throw new Error('Native addon loaded but did not expose the expected BytebackEngine API')
+    }
+    // CA-049: an engine/JS version skew must be visible, not silent — reports
+    // stamp the JS version while the data comes from the native engine.
+    const nativeVersion = engine.getVersion()
+    if (nativeVersion && nativeVersion !== APP_VERSION) {
+      console.warn(`[byteback] version skew: JS ${APP_VERSION} vs native engine ${nativeVersion}`)
     }
     // CA-010: std::ifstream cannot read inside app.asar, and the packaged CWD
     // is not the install dir — hand the carver an absolute directory holding
