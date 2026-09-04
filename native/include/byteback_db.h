@@ -18,6 +18,10 @@ struct FileRecord {
     uint64_t sizeBytes;
     uint64_t startSector;
     uint64_t endSector;
+    // CA-004/CA-005: byte offset of the file start inside the start sector.
+    // 0 for sector-aligned records (NTFS/FAT runs); carve records carry the
+    // real in-sector offset so recovery reads the exact header, not the floor.
+    uint64_t startByteOffset = 0;
 
     struct DataRun {
         uint64_t startSector;

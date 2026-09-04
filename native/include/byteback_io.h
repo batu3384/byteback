@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <functional>
 #include <memory>
@@ -59,6 +61,27 @@ public:
     // Read sectors from current drive
     // offset and size MUST be sector-aligned
     ReadResult readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer);
+
+    // CA-004: byte-granular read for arbitrary offsets AND sizes (carve
+    // headers that start mid-sector, tails that end mid-sector). Backed by an
+    // aligned sector read + slice, so XTS decryption and every backend keep
+    // working. `buffer` needs exactly sizeBytes of room. Thread-safe: the
+    // scratch is call-local.
+    ReadResult readBytes(uint64_t byteOffset, uint32_t sizeBytes, uint8_t* buffer) {
+        const uint32_t ss = sectorSize_ ? sectorSize_ : 512;
+        const uint64_t alignedStart = (byteOffset / ss) * ss;
+        const uint32_t skip = static_cast<uint32_t>(byteOffset - alignedStart);
+        if (skip == 0 && sizeBytes % ss == 0) return readSectors(byteOffset, sizeBytes, buffer);
+        const uint32_t alignedSize = ((skip + sizeBytes + ss - 1) / ss) * ss;
+        std::vector<uint8_t> scratch(alignedSize);
+        ReadResult res = readSectors(alignedStart, alignedSize, scratch.data());
+        if (res.bytesRead > skip) {
+            const uint64_t avail = std::min<uint64_t>(res.bytesRead - skip, sizeBytes);
+            std::memcpy(buffer, scratch.data() + skip, static_cast<size_t>(avail));
+            res.bytesRead = avail;
+        }
+        return res;
+    }
 
     // Get disk geometry of opened drive
     uint64_t getDiskSize() const;

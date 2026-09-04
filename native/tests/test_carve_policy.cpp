@@ -3,9 +3,14 @@
 // are phantom records and must never reach the results.
 #include "byteback_carver.h"
 #include "byteback_io.h"
+#include "byteback_db.h"
+#include "byteback_recovery.h"
 #include "carver/structural_parsers.h"
+#include "crypto/byteback_md5.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstring>
+#include <filesystem>
 #include <vector>
 
 using namespace byteback;
@@ -114,4 +119,84 @@ TEST(CarvePolicy, BoundedSizeParsersUnitCheck) {
     pr = byteback::carver::parseCab(cab, sizeof(cab));
     ASSERT_TRUE(pr.valid);
     EXPECT_EQ(pr.size, 512u);
+}
+
+namespace {
+std::vector<uint8_t> minimalJpeg() {
+    return {0xFF,0xD8,0xFF,0xDB, 0x00,0x03,0x00, 0xFF,0xDA,0x00,0x02,
+            0x11,0x22,0x33,0x44,0x55, 0xFF,0xD9};
+}
+} // namespace
+
+// CA-004/CA-005: a JPEG starting mid-sector must be validated, recorded with
+// its true byte offset, and recovered byte-exact (previously the recovery
+// read from the sector floor and produced shifted garbage).
+TEST(CarvePolicy, UnalignedCarveRecoversByteExact) {
+    const auto jpeg = minimalJpeg();
+    const size_t kOffset = 300; // mid-sector
+
+    std::vector<uint8_t> disk(8192, 0x77);
+    std::memcpy(disk.data() + kOffset, jpeg.data(), jpeg.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension == "jpg") found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].startByteOffset, kOffset);
+    EXPECT_EQ(found[0].startSector, 0u);
+    EXPECT_EQ(found[0].sizeBytes, jpeg.size());
+
+    // Recovery must reproduce the exact source bytes.
+    std::filesystem::path dest = std::filesystem::temp_directory_path() / "byteback_carve_policy";
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, found[0], dest.string(), nullptr, nullptr);
+    ASSERT_TRUE(result.success) << result.error;
+    ASSERT_EQ(result.bytesRecovered, jpeg.size());
+
+    crypto::Md5 expected;
+    expected.update(jpeg.data(), jpeg.size());
+    EXPECT_EQ(result.md5Hash, expected.finalHex());
+    std::filesystem::remove_all(dest);
+}
+
+// The byte offset must survive the DB roundtrip or resumed sessions would
+// recover shifted files.
+TEST(CarvePolicy, StartByteOffsetRoundTripsThroughDb) {
+    const auto dbPath = (std::filesystem::temp_directory_path() /
+                         "byteback_carve_policy.db").string();
+    std::filesystem::remove(dbPath);
+
+    MetadataStore store;
+    ASSERT_TRUE(store.open(dbPath));
+
+    FileRecord rec;
+    rec.name = "mid.jpg";
+    rec.sizeBytes = 1234;
+    rec.startSector = 7;
+    rec.startByteOffset = 300;
+    rec.endSector = 10;
+    rec.status = 0;
+    rec.confidence = 85;
+    rec.source = "carver";
+
+    const int64_t scanId = store.createScan(0, "deep", 100);
+    ASSERT_GT(scanId, 0);
+    ASSERT_GT(store.insertFile(scanId, rec), 0);
+
+    const auto loaded = store.getFileById(store.getLatestScanId(), scanId);
+    ASSERT_GE(loaded.id, 0);
+    EXPECT_EQ(loaded.startByteOffset, 300u);
+
+    store.close();
+    std::filesystem::remove(dbPath);
 }

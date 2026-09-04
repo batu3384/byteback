@@ -106,7 +106,9 @@ void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reade
         want = ((want + ss - 1) / ss) * ss;
         if (want == 0) want = 512;
         std::vector<uint8_t> head(want);
-        if (reader.readSectors(startOff, want, head.data()).success) {
+        // CA-004: startOff is byte-exact and may sit mid-sector; readBytes
+        // handles the alignment instead of rejecting the read.
+        if (reader.readBytes(startOff, want, head.data()).success) {
             t = carver::extractJpegExifUnix(head.data(), std::min(static_cast<size_t>(want), static_cast<size_t>(fileSize)));
         }
     }
@@ -698,7 +700,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 actualSize > 4096 && actualSize <= (16u << 20)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
-                                auto rres = reader.readSectors(it->startOffset, alignedSize, alignedBuf.data());
+                                auto rres = reader.readBytes(it->startOffset, alignedSize, alignedBuf.data());
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
                                     if (confidence >= 40 && confidence < 85) {
@@ -743,7 +745,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
                                 if (probe > 0) {
                                     std::vector<uint8_t> probeBuf(probe);
-                                    if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
+                                    if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
                                         // CA-003: actualSize can exceed the 1MB probe; never
                                         // hand the parser a size larger than the buffer.
                                         applyStructuralRefinement(effExt, probeBuf.data(),
@@ -759,7 +761,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 uint8_t hdr[512];
                                 uint32_t hdrAligned = ((512u + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> hdrBuf(hdrAligned);
-                                if (reader.readSectors(it->startOffset, hdrAligned, hdrBuf.data()).success) {
+                                if (reader.readBytes(it->startOffset, hdrAligned, hdrBuf.data()).success) {
                                     std::memcpy(hdr, hdrBuf.data(), 512);
                                     if (const char* sub = byteback::carver::detectRiffSubtype(hdr, 512)) {
                                         effExt = sub;
@@ -780,6 +782,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 fr.path = "/recovered_raw/" + fr.name;
                                 fr.sizeBytes = actualSize - bgc.gapLen - bgc.gap2Len;
                                 fr.startSector = it->startSector;
+                                fr.startByteOffset = it->startOffset % sectorSize;
                                 fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                                 fr.runs.push_back({it->startOffset / sectorSize,
                                                    (bgc.frag1Len + sectorSize - 1) / sectorSize});
@@ -819,6 +822,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             fr.path = "/recovered_raw/" + fr.name;
                             fr.sizeBytes = actualSize;
                             fr.startSector = it->startSector;
+                            fr.startByteOffset = it->startOffset % sectorSize;
                             fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                             fr.status = 0;
                             fr.confidence = confidence;
@@ -854,7 +858,9 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 std::vector<uint8_t> probeBuf;
                 if (probe > 0) {
                     probeBuf.resize(probe);
-                    if (reader.readSectors(it->startOffset, probe, probeBuf.data()).success) {
+                    // CA-004: byte-exact read; unaligned candidates were silently
+                    // erased here before because readSectors rejected the offset.
+                    if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
                         std::string name = it->filename;
                         if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt,
                                                 actualSize, confidence)) {
@@ -879,7 +885,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 fr.path = "/recovered_raw/" + fr.name;
                 fr.sizeBytes = actualSize;
                 fr.startSector = it->startSector;
-                fr.endSector = it->startSector + (actualSize + sectorSize - 1) / sectorSize;
+                fr.startByteOffset = it->startOffset % sectorSize;
+                fr.endSector = (it->startOffset + actualSize + sectorSize - 1) / sectorSize;
                 fr.status = 0;
                 fr.confidence = confidence;
                 fr.category = refineCarveCategory(probeBuf.empty() ? nullptr : probeBuf.data(),
@@ -916,7 +923,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         std::vector<uint8_t> probeBuf;
         if (probe == 0) continue;
         probeBuf.resize(probe);
-        if (!reader.readSectors(ac.startOffset, probe, probeBuf.data()).success) continue;
+        if (!reader.readBytes(ac.startOffset, probe, probeBuf.data()).success) continue;
 
         std::string name = ac.filename;
         if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt, actualSize,
@@ -932,7 +939,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         fr.path = "/recovered_raw/" + fr.name;
         fr.sizeBytes = actualSize;
         fr.startSector = ac.startSector;
-        fr.endSector = ac.startSector + (actualSize + sectorSize - 1) / sectorSize;
+        fr.startByteOffset = ac.startOffset % sectorSize;
+        fr.endSector = (ac.startOffset + actualSize + sectorSize - 1) / sectorSize;
         fr.status = 0;
         fr.confidence = confidence;
         fr.category = refineCarveCategory(probeBuf.data(), probeBuf.size(), effExt, sig.category);

@@ -335,7 +335,10 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
-    uint64_t startOffset = record.startSector * sectorSize;
+    // CA-005: the record start is byte-exact (startByteOffset inside the
+    // start sector). Reading from the sector floor shifted every unaligned
+    // carve by up to 511 bytes and truncated its tail.
+    uint64_t startOffset = record.startSector * sectorSize + record.startByteOffset;
     uint64_t totalBytes = record.sizeBytes;
     uint64_t bytesWritten = 0;
 
@@ -347,11 +350,11 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     while (bytesWritten < totalBytes) {
         if (isRunning && !(*isRunning)) break;
 
-        uint32_t toRead = (uint32_t)std::min((uint64_t)readChunk, totalBytes - bytesWritten);
-        toRead = ((toRead + sectorSize - 1) / sectorSize) * sectorSize;
+        const uint32_t toRead = (uint32_t)std::min((uint64_t)readChunk, totalBytes - bytesWritten);
 
-        auto res = reader.readSectors(startOffset + bytesWritten, toRead, poolBuf->data());
-        
+        // readBytes handles mid-sector alignment internally.
+        auto res = reader.readBytes(startOffset + bytesWritten, toRead, poolBuf->data());
+
         if (!res.success || res.bytesRead == 0) {
             result.zeroFilled = true;
             uint32_t zeroSize = std::min(toRead, (uint32_t)(totalBytes - bytesWritten));
