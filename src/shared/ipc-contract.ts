@@ -113,6 +113,8 @@ export interface FileListFilter {
   sourceNotLike?: string
   includeDuplicates?: boolean
   includeDiscovery?: boolean
+  /** CA-030: whitelisted sort key (e.g. "confidence_desc"); native maps it to SQL. */
+  orderBy?: string
 }
 
 export type ProgressCallback = (data: {

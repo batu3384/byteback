@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import './ResultsView.css'
-import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye } from 'lucide-react'
+import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2 } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
+import { previewDataUrl } from '../../../shared/preview-utils'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
 import {
   qualityHint,
@@ -15,8 +16,12 @@ import {
   statusDisplayLabel,
   buildTree,
   toSqlListFilter,
+  confidenceTier,
+  sortKey,
   type MappedFile,
   type TreeNode,
+  type SortField,
+  type SortDir,
 } from './results-view-utils'
 
 const INACTIVE_RAID: RaidState = { active: false, capacity: 0, numDisks: 0, level: -1, memberDriveIndices: [] }
@@ -39,7 +44,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
-  const [viewMode, setViewMode] = useState<'tree' | 'flat'>('flat')
+  const [viewMode, setViewMode] = useState<'tree' | 'flat' | 'gallery'>('flat')
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [dbFiles, setDbFiles] = useState<FileRecord[]>([])
   const [totalCount, setTotalCount] = useState(0)
@@ -51,6 +56,14 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [preview, setPreview] = useState<FilePreviewResult | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewTargetId, setPreviewTargetId] = useState<number | null>(null)
+  const [sortField, setSortField] = useState<SortField>('confidence')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [thumbs, setThumbs] = useState<Map<number, FilePreviewResult>>(new Map())
+  const thumbsRef = useRef(thumbs)
+  thumbsRef.current = thumbs
+  const thumbLoadingRef = useRef<Set<number>>(new Set())
+  const previewReqRef = useRef(0)
+  const [csvExporting, setCsvExporting] = useState(false)
   const loadGenRef = useRef(0)
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
@@ -66,17 +79,22 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       setPreview({ success: false, error: 'Önizleme için sürücü veya RAID gerekli.' })
       return
     }
+    // CA-028: generation guard — rapid A/B clicks can resolve out of order;
+    // only the latest request may touch the panel.
+    const gen = ++previewReqRef.current
     setPreviewLoading(true)
     setPreviewTargetId(fileId)
     try {
       const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, fileId)
+      if (gen !== previewReqRef.current) return
       const err = diskBusyMessage(res.error) ?? res.error
       setPreview(err && err !== res.error ? { ...res, error: err } : res)
     } catch (e) {
+      if (gen !== previewReqRef.current) return
       const raw = e instanceof Error ? e.message : String(e)
       setPreview({ success: false, error: diskBusyMessage(raw) ?? 'Önizleme okunamadı.' })
     } finally {
-      setPreviewLoading(false)
+      if (gen === previewReqRef.current) setPreviewLoading(false)
     }
   }
 
@@ -84,7 +102,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
     const gen = ++loadGenRef.current
     setLoading(true)
-    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates)
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir))
     try {
       const [count, pageData, sum] = await Promise.all([
         window.api.getFileCount(scan, listFilter),
@@ -113,7 +131,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     } finally {
       if (gen === loadGenRef.current) setLoading(false)
     }
-  }, [statusFilter, typeFilter, nameQuery, showDuplicates])
+  }, [statusFilter, typeFilter, nameQuery, showDuplicates, sortField, sortDir])
 
   useEffect(() => {
     const t = setTimeout(() => setNameQuery(nameInput.trim()), 300)
@@ -198,11 +216,9 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
 
     setIsRecovering(true)
     setRecoverReport(null)
-    let destDir = await window.api.pickDirectory()
-    if (!destDir) {
-      setIsRecovering(false)
-      return
-    }
+    try {
+      let destDir = await window.api.pickDirectory()
+      if (!destDir) return
     if (
       effectiveDrive >= 0 &&
       window.api.resolveVolume &&
@@ -211,10 +227,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       const proceed = window.confirm(
         'Hedef klasör taradığın fiziksel sürücüde. Kurtarma silinen verinin üzerine yazabilir.\n\nBaşka bir disk seçmen önerilir. Yine de devam edilsin mi?',
       )
-      if (!proceed) {
-        setIsRecovering(false)
-        return
-      }
+      if (!proceed) return
     } else if (
       raidState.active &&
       window.api.resolveVolume &&
@@ -227,10 +240,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       const proceed = window.confirm(
         'Hedef klasör RAID dizisinin üye disklerinden birinde. Kurtarma silinen verinin üzerine yazabilir.\n\nBaşka bir disk seçmen önerilir. Yine de devam edilsin mi?',
       )
-      if (!proceed) {
-        setIsRecovering(false)
-        return
-      }
+      if (!proceed) return
     }
 
     const filesToRecover: FileRecord[] = []
@@ -247,7 +257,6 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     }
     const fileIds = filesToRecover.map((f) => f.id).filter((id) => id > 0)
     if (fileIds.length === 0) {
-      setIsRecovering(false)
       setRecoverReport(
         skipped.length
           ? 'Seçilen kayıtlar yalnızca keşif veya SQLite kimliği yok:\n' + skipped.join('\n')
@@ -262,6 +271,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     let validatedOk = 0
     let validatedBad = 0
     const errors: string[] = []
+    // CA-042: MD5 hashes are success info, not errors — reported separately.
+    const verified: string[] = []
 
     const noteValidation = (res: { validationScore?: number }) => {
       if (typeof res.validationScore !== 'number' || res.validationScore < 0) return
@@ -287,7 +298,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             /* NSRL lookup optional */
           }
         }
-        errors.push(nsrlLine)
+        verified.push(nsrlLine)
       }
       noteValidation(res)
     }
@@ -340,10 +351,14 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             validatedBad > 0 ? ' — bozuk skorlu dosyalar kurtarma başarısız sayılır' : ''
           }`
         : ''
+    const verifiedLine = verified.length ? `\nDoğrulananlar:\n${verified.slice(0, 8).join('\n')}` : ''
     const errLine = errors.length ? `\nHatalar:\n${errors.slice(0, 8).join('\n')}` : ''
     setRecoverReport(
-      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${padWarn}${validationLine}${errLine}`,
+      `Kurtarma bitti. Başarılı: ${successCount}. Başarısız: ${failedCount}. Eksik/pad okuma: ${zeroFilledCount}. Hedef: ${destDir}${skipLine}${padWarn}${validationLine}${verifiedLine}${errLine}`,
     )
+    } finally {
+      setIsRecovering(false)
+    }
   }
 
   const handlePreviewSelected = () => {
@@ -365,32 +380,36 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   }
 
   const exportCsv = async () => {
-    if (effectiveScanId <= 0 || !window.api?.getFilesPage || !window.api?.getFileCount) return
-    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates)
+    if (effectiveScanId <= 0 || !window.api?.getFilesPage || !window.api?.getFileCount || csvExporting) return
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir))
+    setCsvExporting(true)
     try {
       const total = await window.api.getFileCount(effectiveScanId, listFilter)
+      // CA-038: build the CSV per batch and hand Blob the chunk array — no
+      // multi-hundred-MB string concat of every record in renderer memory.
       const batch = 1000
-      const allRecords: FileRecord[] = []
+      const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
+      const chunks: string[] = [header.join(';')]
       for (let off = 0; off < total; off += batch) {
         const chunk = await window.api.getFilesPage(effectiveScanId, off, batch, listFilter)
-        allRecords.push(...(chunk ?? []))
+        for (const raw of chunk ?? []) {
+          const row = [
+            raw.name,
+            raw.sizeBytes ?? '',
+            raw.category ?? '',
+            raw.confidence ?? '',
+            raw.status ?? '',
+            raw.path ?? '',
+            raw.source ?? '',
+            raw.startSector ?? '',
+            raw.createdAt && raw.createdAt > 0 ? new Date(raw.createdAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
+            raw.modifiedAt && raw.modifiedAt > 0 ? new Date(raw.modifiedAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
+          ]
+          chunks.push(row.map((v) => csvCell(v)).join(';'))
+        }
         if ((chunk?.length ?? 0) < batch) break
       }
-      const rows = allRecords.map((raw) => ({
-        name: raw.name,
-        sizeBytes: raw.sizeBytes ?? '',
-        category: raw.category ?? '',
-        confidence: raw.confidence ?? '',
-        status: raw.status ?? '',
-        path: raw.path ?? '',
-        source: raw.source ?? '',
-        startSector: raw.startSector ?? '',
-        createdAt: raw.createdAt && raw.createdAt > 0 ? new Date(raw.createdAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
-        modifiedAt: raw.modifiedAt && raw.modifiedAt > 0 ? new Date(raw.modifiedAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
-      }))
-      const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt']
-      const csv = [header.join(';'), ...rows.map((r) => header.map((h) => csvCell((r as any)[h])).join(';'))].join('\r\n')
-      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+      const blob = new Blob(['\uFEFF' + chunks.join('\r\n')], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -399,14 +418,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       URL.revokeObjectURL(url)
     } catch {
       window.alert('CSV dışa aktarım başarısız.')
-    }
-  }
-
-  const toggleAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      setSelectedFiles(new Set(filteredFiles.map(f => f.id)))
-    } else {
-      setSelectedFiles(new Set())
+    } finally {
+      setCsvExporting(false)
     }
   }
 
@@ -422,10 +435,114 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     sourceLabel: sourceDisplayLabel(f.source),
     dateLabel: formatFsTimestamp(f.modifiedAt || f.createdAt, f.source),
     qualityLabel: qualityHint(f),
+    confidence: f.confidence,
+    confidenceTier: confidenceTier(f.confidence),
   }))
 
   const filteredFiles = mappedFiles
   const treeRoot = buildTree(filteredFiles)
+  const galleryFiles = filteredFiles.filter((f) => f.type === 'img')
+
+  // CA-037: select-all means "all rows visible on this page". Selection
+  // itself persists across pages; the checkbox only reflects this page.
+  const allPageSelected = filteredFiles.length > 0 && filteredFiles.every((f) => selectedFiles.has(f.id))
+  const toggleAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedFiles(new Set([...selectedFiles, ...filteredFiles.map((f) => f.id)]))
+    } else {
+      const next = new Set(selectedFiles)
+      for (const f of filteredFiles) next.delete(f.id)
+      setSelectedFiles(next)
+    }
+  }
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir(field === 'name' ? 'asc' : 'desc')
+    }
+    setPage(0)
+  }
+
+  const sortIndicator = (field: SortField) => (sortField === field ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
+
+  const loadThumb = useCallback(async (id: number) => {
+    if (thumbsRef.current.has(id) || thumbLoadingRef.current.has(id)) return
+    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+    const effectiveDrive = driveIndex !== null ? driveIndex : -1
+    if (effectiveDrive < 0 && !raidState.active) return
+    if (effectiveScanId <= 0 || !window.api?.readFilePreview) return
+    thumbLoadingRef.current.add(id)
+    try {
+      const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, id)
+      setThumbs((prev) => {
+        const next = new Map(prev)
+        next.set(id, res)
+        return next
+      })
+    } catch {
+      /* thumbnail is best-effort */
+    } finally {
+      thumbLoadingRef.current.delete(id)
+    }
+  }, [driveIndex, effectiveScanId])
+
+  // Gallery thumbnail card: lazy-loads its 64KB preview when scrolled into view.
+  const ThumbCard = ({ f }: { f: MappedFile }): React.ReactElement => {
+    const [visible, setVisible] = useState(false)
+    const imgRef = useRef<HTMLDivElement | null>(null)
+    useEffect(() => {
+      const el = imgRef.current
+      if (!el || visible) return
+      const io = new IntersectionObserver(
+        (entries) => {
+          if (entries.some((en) => en.isIntersecting)) {
+            setVisible(true)
+            void loadThumb(f.id)
+          }
+        },
+        { rootMargin: '200px' },
+      )
+      io.observe(el)
+      return () => io.disconnect()
+    }, [visible, f.id, loadThumb])
+    const thumb = thumbs.get(f.id)
+    const dataUrl = useMemo(() => (thumb ? previewDataUrl(thumb) : null), [thumb])
+    return (
+      <div
+        ref={imgRef}
+        style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'rgba(255,255,255,0.02)', cursor: 'pointer' }}
+        onClick={() => {
+          setSelectedFiles(new Set([f.id]))
+          void loadPreview(f.id)
+        }}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            setSelectedFiles(new Set([f.id]))
+            void loadPreview(f.id)
+          }
+        }}
+        aria-label={`${f.name} önizleme`}
+      >
+        <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
+          {dataUrl ? (
+            <img src={dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+          ) : thumb ? (
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>önizlenemedi</span>
+          ) : (
+            <Loader2 size={20} className="spinner" color="var(--text-muted)" />
+          )}
+        </div>
+        <div style={{ padding: '6px 8px', fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }} title={f.name}>
+          {f.name}
+        </div>
+      </div>
+    )
+  }
 
   const renderTreeNode = (node: TreeNode, depth: number): React.ReactNode[] => {
     const out: React.ReactNode[] = []
@@ -518,8 +635,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           >
             <Eye size={16} /> {previewLoading ? 'Önizleniyor...' : 'Önizle'}
           </button>
-          <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0}>
-            <Download size={16} /> Dışa Aktar (CSV)
+          <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0 || csvExporting}>
+            <Download size={16} /> {csvExporting ? 'Aktarılıyor…' : 'Dışa Aktar (CSV)'}
           </button>
           <button 
             className="btn-primary" 
@@ -623,9 +740,19 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             <button
               type="button"
               className="btn-secondary"
+              title={viewMode === 'tree' ? 'Düz liste' : viewMode === 'gallery' ? 'Düz liste' : 'Resim galerisi'}
+              onClick={() => setViewMode(viewMode === 'gallery' ? 'flat' : 'gallery')}
+              style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center', marginLeft: 'auto' }}
+            >
+              {viewMode === 'gallery' ? <List size={16} /> : <LayoutGrid size={16} />}
+              {viewMode === 'gallery' ? 'Liste' : 'Galeri'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
               title={viewMode === 'tree' ? 'Düz liste' : 'Dizin ağacı'}
               onClick={() => setViewMode(viewMode === 'tree' ? 'flat' : 'tree')}
-              style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center', marginLeft: 'auto' }}
+              style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center' }}
             >
               {viewMode === 'tree' ? <List size={16} /> : <ListTree size={16} />}
               {viewMode === 'tree' ? 'Liste' : 'Ağaç'}
@@ -639,7 +766,21 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               Ağaç görünümü yalnızca bu sayfadaki {filteredFiles.length} kaydı gösterir ({totalCount.toLocaleString('tr-TR')} toplam). Tam liste için düz görünüm veya CSV dışa aktarım kullanın.
             </p>
           )}
-          {viewMode === 'tree' ? (
+          {viewMode === 'gallery' ? (
+            <div style={{ padding: '16px 0' }}>
+              {galleryFiles.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  {loading ? 'Yükleniyor…' : 'Bu sayfada resim yok. Galeri yalnızca geçerli sayfadaki resimleri gösterir.'}
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' }}>
+                  {galleryFiles.map((f) => (
+                    <ThumbCard key={f.id} f={f} />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : viewMode === 'tree' ? (
           <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
             {filteredFiles.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
@@ -652,11 +793,21 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-surface)', zIndex: 1 }}>
               <tr>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', width: '40px' }}>
-                  <input type="checkbox" checked={selectedFiles.size === filteredFiles.length && filteredFiles.length > 0} onChange={toggleAll} />
+                  <input type="checkbox" checked={allPageSelected} onChange={toggleAll} aria-label="Bu sayfadaki tümünü seç" />
                 </th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Dosya Adı</th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Boyut</th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Değiştirilme</th>
+                {([
+                  ['Dosya Adı', 'name'],
+                  ['Boyut', 'size'],
+                  ['Değiştirilme', 'date'],
+                ] as const).map(([label, field]) => (
+                  <th key={field} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort(field)}>
+                    {label}
+                    <span aria-hidden="true">{sortIndicator(field)}</span>
+                  </th>
+                ))}
+                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('confidence')}>
+                  Güven<span aria-hidden="true">{sortIndicator('confidence')}</span>
+                </th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Kaynak</th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>Durum</th>
               </tr>
@@ -664,7 +815,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     {loading ? 'Yükleniyor…' : 'Bu süzgeçte dosya yok.'}
                   </td>
                 </tr>
@@ -673,10 +824,18 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   const titleParts = [f.path !== '—' ? `Konum: ${f.path}` : null, f.qualityLabel !== '—' ? `Kalite: ${f.qualityLabel}` : null]
                     .filter(Boolean)
                     .join(' · ')
+                  const tierColor = f.confidenceTier === 'high' ? 'var(--success-green)' : f.confidenceTier === 'mid' ? 'var(--warning-yellow)' : 'var(--alert-red)'
                   return (
                   <tr
                     key={f.id}
                     title={titleParts || undefined}
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        setSelectedFiles(new Set([f.id]))
+                        void loadPreview(f.id)
+                      }
+                    }}
                     onDoubleClick={() => {
                       setSelectedFiles(new Set([f.id]))
                       void loadPreview(f.id)
@@ -684,7 +843,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.02)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
                   >
                     <td style={{ padding: '12px' }}>
-                      <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} />
+                      <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} aria-label={`${f.name} seç`} />
                     </td>
                     <td className="file-name-cell" style={{ padding: '12px', display: 'flex', alignItems: 'center', gap: '12px', fontFamily: 'monospace' }}>
                       {getIconForType(f.type)}
@@ -692,9 +851,26 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     </td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.size}</td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{f.dateLabel}</td>
+                    <td style={{ padding: '12px' }}>
+                      {f.confidenceTier === 'none' ? (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>
+                      ) : (
+                        <span
+                          style={{
+                            padding: '3px 8px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: 600,
+                            color: tierColor,
+                            border: `1px solid ${tierColor}`,
+                            background: f.confidenceTier === 'high' ? 'rgba(16, 185, 129, 0.08)' : f.confidenceTier === 'mid' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                          }}
+                          title={f.qualityLabel}
+                        >
+                          {f.confidence ?? 0}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
                     <td style={{ padding: '12px' }}>
-                      <span style={{ 
+                      <span style={{
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
                         background: f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş')
                           ? 'rgba(16, 185, 129, 0.1)'

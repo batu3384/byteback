@@ -9,6 +9,8 @@ import {
   qualityHint,
   chipToCategory,
   toSqlListFilter,
+  sortKey,
+  confidenceTier,
 } from '../renderer/components/ResultsView/results-view-utils'
 import type { FileRecord } from './ipc-contract'
 
@@ -27,6 +29,7 @@ describe('results-view-utils', () => {
         sourceLabel: 'ntfs_mft',
         dateLabel: '—',
         qualityLabel: '—',
+        confidenceTier: 'none',
       },
     ])
     expect(tree.dirs.has('docs')).toBe(true)
@@ -47,6 +50,7 @@ describe('results-view-utils', () => {
         sourceLabel: 'carver',
         dateLabel: 'FS tarihi yok',
         qualityLabel: 'Zayıf',
+        confidenceTier: 'low',
       },
     ])
     expect(tree.dirs.size).toBe(0)
@@ -82,6 +86,19 @@ describe('results-view-utils', () => {
     const carve: FileRecord = { id: 2, name: 'b', confidence: 90, source: 'carver', sizeBytes: 0, status: 0 }
     expect(qualityHint(mft)).toBe('Düşük güven')
     expect(qualityHint(carve)).toBe('Muhtemelen tam')
+  })
+
+  it('sort keys land in the native ORDER BY whitelist', () => {
+    expect(sortKey('confidence', 'desc')).toBe('confidence_desc')
+    expect(sortKey('name', 'asc')).toBe('name_asc')
+    expect(sortKey('id', 'desc')).toBe('') // id = native default
+  })
+
+  it('confidence tiers color triage chips', () => {
+    expect(confidenceTier(90)).toBe('high')
+    expect(confidenceTier(60)).toBe('mid')
+    expect(confidenceTier(20)).toBe('low')
+    expect(confidenceTier(undefined)).toBe('none')
   })
 
   it('maps type chips to SQL category', () => {

@@ -55,6 +55,19 @@ void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
     if (!f.sourceNotLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceNotLike.c_str(), -1, SQLITE_TRANSIENT);
 }
 
+// CA-030: whitelisted sort keys — raw input never reaches the SQL string.
+std::string orderByToSql(const std::string& key) {
+    if (key == "confidence_desc") return "confidence DESC, id";
+    if (key == "confidence_asc") return "confidence ASC, id";
+    if (key == "size_desc") return "size_bytes DESC, id";
+    if (key == "size_asc") return "size_bytes ASC, id";
+    if (key == "name_asc") return "name COLLATE NOCASE ASC, id";
+    if (key == "name_desc") return "name COLLATE NOCASE DESC, id";
+    if (key == "date_desc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END DESC, id";
+    if (key == "date_asc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END ASC, id";
+    return "id";
+}
+
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     const char* txt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
     return txt ? txt : "";
@@ -522,7 +535,9 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         FROM files WHERE scan_id = ?
     )";
     appendListFilter(sql, filter, "");
-    sql += " ORDER BY id LIMIT ? OFFSET ?";
+    sql += " ORDER BY ";
+    sql += orderByToSql(filter.orderBy);
+    sql += " LIMIT ? OFFSET ?";
 
     std::vector<FileRecord> records;
     sqlite3_stmt* stmt = nullptr;
