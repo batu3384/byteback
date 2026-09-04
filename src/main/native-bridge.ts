@@ -52,6 +52,7 @@ interface BytebackEngine {
   resetScanDatabase(): boolean
   getTimelineEvents(scanId: number, offset: number, limit: number, eventTypeFilter?: string): TimelineResult
   getAuditLog(maxLines?: number): string[]
+  verifyAuditLog(): { ok: boolean; entries: number; brokenAt: number; detail: string }
   readSectors(driveIndex: number, offset: number, size: number): {
     success: boolean
     bytesRead: number

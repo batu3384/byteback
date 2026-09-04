@@ -687,6 +687,12 @@ const STRINGS: Record<string, Entry> = {
   'source.usn_journal': { tr: 'USN zaman çizelgesi', en: 'USN timeline' },
   'source.ntfs_logfile': { tr: 'LogFile ipucu (kurtarılamaz)', en: 'LogFile hint (unrecoverable)' },
   'source.carver_duplicate': { tr: 'Carve tekrarı (MFT ile çakışıyor)', en: 'Carve duplicate (overlaps MFT)' },
+
+  // Audit chain verification (runtime SHA-256 re-walk).
+  'report.chainLabel': { tr: 'Denetim zinciri:', en: 'Audit chain:' },
+  'report.chainChecking': { tr: 'Doğrulanıyor…', en: 'Verifying…' },
+  'report.chainOk': { tr: 'Doğrulandı — {n} kayıt bozulmamış (SHA-256 zinciri)', en: 'Verified — {n} entries intact (SHA-256 chain)' },
+  'report.chainBroken': { tr: 'BOZULDU — satır {line} ({detail})', en: 'BROKEN — line {line} ({detail})' },
 }
 
 /**

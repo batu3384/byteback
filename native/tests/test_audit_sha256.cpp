@@ -112,3 +112,52 @@ TEST(AuditChain, ChainHashFoldsPreviousLink) {
     EXPECT_NE(m1.find("EVENT | CHAIN_TEST_ALPHA"), std::string::npos);
     EXPECT_NE(m2.find("EVENT | CHAIN_TEST_BETA"), std::string::npos);
 }
+
+// ---- Runtime chain verifier ----
+TEST(AuditChain, VerifierAcceptsValidChainAndRejectsTampering) {
+    const auto calc = [](const std::string& s) {
+        return AuditLogger::CalculateSHA256(
+            reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    };
+
+    // Build a 3-entry valid chain with the same genesis + fold rule.
+    const std::string path = "test_audit_verify.log";
+    std::vector<std::string> msgs = {"EVENT | V_ONE", "EVENT | V_TWO", "EVENT | V_THREE"};
+    std::string prev(64, '0');
+    std::vector<std::string> lines;
+    for (const auto& m : msgs) {
+        std::string h = calc(prev + m);
+        lines.push_back(m + " | ChainHash: " + h);
+        prev = h;
+    }
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        for (const auto& l : lines) f << l << "\n";
+    }
+
+    auto ok = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(ok.ok);
+    EXPECT_EQ(ok.entries, 3);
+    EXPECT_EQ(ok.brokenAt, 0);
+
+    // Tamper with entry 2's payload: verifier must pin the exact line.
+    lines[1].replace(lines[1].find("V_TWO"), 5, "V_TWO_FIXED");
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        for (const auto& l : lines) f << l << "\n";
+    }
+    auto bad = forensic::VerifyAuditChainFile(path);
+    EXPECT_FALSE(bad.ok);
+    EXPECT_EQ(bad.brokenAt, 2);
+    EXPECT_EQ(bad.entries, 2);
+
+    // Empty file: not ok, zero entries.
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    }
+    auto empty = forensic::VerifyAuditChainFile(path);
+    EXPECT_FALSE(empty.ok);
+    EXPECT_EQ(empty.entries, 0);
+
+    ::remove(path.c_str());
+}
