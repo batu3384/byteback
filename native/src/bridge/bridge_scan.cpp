@@ -852,7 +852,8 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
 
 // CA-035 companion: deterministic scan fixture for e2e flows. Creates a
 // completed scan row and inserts the given records; returns the scanId.
-// Local test-data only — writes to the app's own SQLite database.
+// AR2-F1: bounded (1000 records, 512-char strings) and audit-logged — an
+// e2e-only surface must not fabricate untraceable evidence even if reached.
 Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
@@ -863,15 +864,20 @@ Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {
     if (!store.isOpen()) return Napi::Number::New(env, -1);
 
     const Napi::Array files = info[0].As<Napi::Array>();
+    constexpr uint32_t kMaxRecords = 1000;
+    constexpr size_t kMaxString = 512;
     std::vector<byteback::FileRecord> records;
-    for (uint32_t i = 0; i < files.Length(); ++i) {
+    for (uint32_t i = 0; i < files.Length() && i < kMaxRecords; ++i) {
         if (!files.Get(i).IsObject()) continue;
         Napi::Object o = files.Get(i).As<Napi::Object>();
         byteback::FileRecord r{};
         r.id = 0;
         r.parentId = -1;
         auto str = [&](const char* key, std::string& out) {
-            if (o.Has(key) && o.Get(key).IsString()) out = o.Get(key).As<Napi::String>().Utf8Value();
+            if (o.Has(key) && o.Get(key).IsString()) {
+                out = o.Get(key).As<Napi::String>().Utf8Value();
+                if (out.size() > kMaxString) out.resize(kMaxString);
+            }
         };
         str("name", r.name);
         str("path", r.path);
@@ -898,6 +904,8 @@ Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {
     if (!store.insertFilesBatch(scanId, records)) return Napi::Number::New(env, -1);
     store.updateScanProgress(scanId, 1000);
     store.completeScan(scanId, 1);
+    forensic::AuditLogger::GetInstance().LogEvent(
+        "SEED_FIXTURE | scanId=" + std::to_string(scanId) + " | count=" + std::to_string(records.size()));
     return Napi::Number::New(env, static_cast<double>(scanId));
     NAPI_CATCH
 }

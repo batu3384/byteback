@@ -1,10 +1,11 @@
 #pragma once
 
-// CA-039: shell-free child process execution. The old preview path built
-// cmd.exe command lines by quote concatenation and interpolated the
-// BYTEBACK_FFMPEG env value unvalidated — a crafted value could break out of
-// the quoting. CreateProcessW takes the command line directly: no shell, and
-// every argument goes through argv-rule quoting.
+// CA-039/AR2: shell-free child process execution. CreateProcessW takes the
+// command line directly: no shell, and every argument goes through argv-rule
+// quoting. Wide-char end to end (F5): non-ASCII temp paths must not round-trip
+// through the system code page. resolveOnPathW scans PATH entries only (F2:
+// SearchPathW's app-dir/CWD-first order enabled binary planting) and only ever
+// resolves .exe targets (F3: .bat/.cmd would respawn cmd.exe).
 
 #include <cstdint>
 #include <string>
@@ -17,24 +18,25 @@ namespace byteback {
 /** UTF-8 -> UTF-16. */
 std::wstring utf8ToWide(const std::string& s);
 
+/** Quote one argument per Windows argv parsing rules (wide variant). */
+std::wstring quoteProcessArgW(const std::wstring& arg);
+
 /**
- * Quote one argument per Windows argv parsing rules (double embedded quotes,
- * double backslash runs that precede a quote). Bare arguments stay bare.
+ * Run `exe` with `args` (no shell, hidden window). True iff launched, exited
+ * within timeoutMs with code 0; overruns are terminated.
  */
+bool runProcessW(const std::wstring& exe, const std::vector<std::wstring>& args, uint32_t timeoutMs);
+
+/**
+ * Resolve an executable to an .exe file. Explicit paths must already end in
+ * .exe; bare names are searched across PATH entries only (no app-dir/CWD
+ * precedence). Returns the resolved path or empty.
+ */
+std::wstring resolveOnPathW(const std::wstring& exe);
+
+/** Narrow wrappers for tests and ASCII-only callers. */
 std::string quoteProcessArg(const std::string& arg);
-
-/**
- * Run `exe` with `args` (no shell). Returns true iff the process launched,
- * exited within timeoutMs and its exit code was 0. On timeout the child is
- * terminated. Hidden window: no console flash for GUI-less parents.
- */
 bool runProcess(const std::string& exe, const std::vector<std::string>& args, uint32_t timeoutMs);
-
-/**
- * Resolve an executable: absolute/relative paths must exist; a bare name is
- * searched on PATH via SearchPathW (replaces the old `where` shell probe).
- * Returns the resolved absolute path, or empty when not found.
- */
 std::string resolveOnPath(const std::string& exe);
 
 #endif // _WIN32

@@ -168,10 +168,14 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  // e2e-only: seed a completed scan fixture into the app DB.
-  ipcMain.handle('seed-scan-fixture', (_event, files: Array<Record<string, unknown>>) =>
-    callNative('seed-scan-fixture', () => getEngine().seedScanFixture(files ?? [])),
-  )
+  // e2e-only: seed a completed scan fixture into the app DB. Gated on an
+  // explicit test flag — a production renderer must never fabricate scans.
+  ipcMain.handle('seed-scan-fixture', (_event, files: Array<Record<string, unknown>>) => {
+    if (process.env.BYTEBACK_E2E !== '1') {
+      throw new Error('seed-scan-fixture is only available in e2e runs (BYTEBACK_E2E=1)')
+    }
+    return callNative('seed-scan-fixture', () => getEngine().seedScanFixture(files ?? []))
+  })
 
   ipcMain.handle('get-timeline-events', (_event, scanId: number, offset: number, limit: number, filter?: string) =>
     callNative('get-timeline-events', () =>
