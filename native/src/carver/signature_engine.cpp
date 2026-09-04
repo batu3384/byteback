@@ -118,7 +118,8 @@ void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reade
 // mp4 atoms, TIFF strips, RIFF chunk size, ...). Candidates still sitting at
 // the signature's maxSize are phantom records — the garbage generator — and
 // are dropped regardless of validator score.
-bool refineExpiredCarve(const FileSignature& sig, const uint8_t* data, size_t probeSize,
+bool refineExpiredCarve(const FileSignature& sig, DiskReader* reader, uint64_t carveStartOffset,
+                        const uint8_t* data, size_t probeSize,
                         std::string& filename, std::string& effExt, uint64_t& actualSize,
                         int& confidence) {
     const uint64_t unboundedSize = actualSize;
@@ -128,7 +129,23 @@ bool refineExpiredCarve(const FileSignature& sig, const uint8_t* data, size_t pr
     if (vScore > 0) confidence = vScore;
     else if (sig.footer.empty()) confidence = 55; // ponytail: header-only ceiling, not 70
 
-    applyStructuralRefinement(effExt, data, probeSize, actualSize, effExt, confidence);
+    if (reader && isMp4FamilyExt(effExt)) {
+        // CA-018: box walk with targeted reads — a 2GB movie is no longer
+        // clamped to the 1MB probe.
+        auto readAt = [reader](uint64_t off, uint32_t len, uint8_t* out) {
+            auto res = reader->readBytes(off, len, out);
+            return res.success && res.bytesRead >= len;
+        };
+        auto pr = carver::parseIsobmffBounded(data, probeSize, carveStartOffset,
+                                              unboundedSize, readAt);
+        if (pr.valid) {
+            if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
+            if (!pr.extension.empty()) effExt = pr.extension;
+            if (pr.confidence > confidence) confidence = pr.confidence;
+        }
+    } else {
+        applyStructuralRefinement(effExt, data, probeSize, actualSize, effExt, confidence);
+    }
 
     if (effExt == "riff" && data && probeSize >= 12) {
         if (const char* sub = carver::detectRiffSubtype(data, probeSize)) {
@@ -766,21 +783,42 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             std::string effName = it->filename;
                             if (isZipFamilyExt(effExt) || effExt == "sqlite" || effExt == "db" ||
                                 isMp4FamilyExt(effExt)) {
+                                // One shared probe read; the mp4 walk also fetches
+                                // box headers beyond it via targeted reads.
                                 uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
                                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+                                std::vector<uint8_t> probeBuf;
                                 if (probe > 0) {
-                                    std::vector<uint8_t> probeBuf(probe);
-                                    if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
+                                    probeBuf.resize(probe);
+                                    if (!reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
+                                        probeBuf.clear();
+                                    }
+                                }
+                                if (!probeBuf.empty()) {
+                                    if (isMp4FamilyExt(effExt)) {
+                                        // CA-018: targeted box walk beats the 1MB probe clamp.
+                                        auto readAt = [&reader](uint64_t off, uint32_t len, uint8_t* out) {
+                                            auto res = reader.readBytes(off, len, out);
+                                            return res.success && res.bytesRead >= len;
+                                        };
+                                        auto pr = carver::parseIsobmffBounded(probeBuf.data(), probeBuf.size(),
+                                                                              it->startOffset, actualSize, readAt);
+                                        if (pr.valid) {
+                                            if (pr.size > 0 && pr.size <= actualSize) actualSize = pr.size;
+                                            if (!pr.extension.empty()) effExt = pr.extension;
+                                            if (pr.confidence > confidence) confidence = pr.confidence;
+                                        }
+                                    } else {
                                         // CA-003: actualSize can exceed the 1MB probe; never
                                         // hand the parser a size larger than the buffer.
                                         applyStructuralRefinement(effExt, probeBuf.data(),
                                                                   static_cast<size_t>(std::min<uint64_t>(actualSize, probeBuf.size())),
                                                                   actualSize, effExt, confidence);
-                                        auto dot = effName.find_last_of('.');
-                                        if (dot != std::string::npos) effName = effName.substr(0, dot);
-                                        effName += std::string(".") + effExt;
                                     }
                                 }
+                                auto dot = effName.find_last_of('.');
+                                if (dot != std::string::npos) effName = effName.substr(0, dot);
+                                effName += std::string(".") + effExt;
                             }
                             if (ext == "riff") {
                                 uint8_t hdr[512];
@@ -880,27 +918,27 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 int confidence = sig.footer.empty() ? 55 : 70;
                 uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(sig.maxSize, 1u << 20));
                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
-                std::vector<uint8_t> probeBuf;
-                if (probe > 0) {
-                    probeBuf.resize(probe);
-                    // CA-004: byte-exact read; unaligned candidates were silently
-                    // erased here before because readSectors rejected the offset.
-                    if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
-                        std::string name = it->filename;
-                        if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt,
-                                                actualSize, confidence)) {
+                    std::vector<uint8_t> probeBuf;
+                    if (probe > 0) {
+                        probeBuf.resize(probe);
+                        // CA-004: byte-exact read; unaligned candidates were silently
+                        // erased here before because readSectors rejected the offset.
+                        if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
+                            std::string name = it->filename;
+                            if (!refineExpiredCarve(sig, &reader, it->startOffset, probeBuf.data(), probeBuf.size(),
+                                                    name, effExt, actualSize, confidence)) {
+                                it = activeCarves.erase(it);
+                                continue;
+                            }
+                            it->filename = name;
+                        } else {
                             it = activeCarves.erase(it);
                             continue;
                         }
-                        it->filename = name;
                     } else {
                         it = activeCarves.erase(it);
                         continue;
                     }
-                } else {
-                    it = activeCarves.erase(it);
-                    continue;
-                }
 
                 FileRecord fr;
                 fr.id = 0;
@@ -952,8 +990,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         if (!reader.readBytes(ac.startOffset, probe, probeBuf.data()).success) continue;
 
         std::string name = ac.filename;
-        if (!refineExpiredCarve(sig, probeBuf.data(), probeBuf.size(), name, effExt, actualSize,
-                                confidence)) {
+        if (!refineExpiredCarve(sig, &reader, ac.startOffset, probeBuf.data(), probeBuf.size(),
+                                name, effExt, actualSize, confidence)) {
             continue;
         }
 

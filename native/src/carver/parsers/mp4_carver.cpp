@@ -96,5 +96,74 @@ StructuralParseResult parseMp4Mov(const uint8_t* data, size_t size) {
     return r;
 }
 
+// CA-018: box walk with targeted reads. The old probe-only walk clamped mdat
+// to the 1MB window, so a 2GB movie carved as "1MB valid" (moov in probe) or
+// not at all (moov beyond probe). Only box headers are fetched here; the
+// payload is never read.
+StructuralParseResult parseIsobmffBounded(const uint8_t* probe, size_t probeSize,
+                                          uint64_t probeAbsOffset, uint64_t maxBytes,
+                                          const BoxHeaderReader& readAt) {
+    StructuralParseResult r;
+    if (!probe || probeSize < 8) return r;
+
+    bool hasFtyp = false, hasMoov = false, hasMdat = false;
+    uint64_t walkEnd = 0; // bytes from carve start
+    uint64_t off = 0;
+    const uint64_t limit = maxBytes;
+    uint8_t hdr[16];
+
+    while (off + 8 <= limit) {
+        const uint64_t abs = probeAbsOffset + off;
+        const size_t inProbe = (off + 16 <= probeSize) ? 16 : (off + 8 <= probeSize ? 8 : 0);
+        if (inProbe > 0) {
+            std::memcpy(hdr, probe + off, inProbe);
+        } else if (!readAt || !readAt(abs, 8, hdr)) {
+            break;
+        }
+
+        uint64_t atomSize = readBe32(hdr);
+        const char* type = reinterpret_cast<const char*>(hdr + 4);
+        uint64_t headerSize = 8;
+        if (atomSize == 1) {
+            if (inProbe >= 16) {
+                std::memcpy(hdr, probe + off, 16);
+            } else if (!readAt || !readAt(abs, 16, hdr)) {
+                break;
+            }
+            atomSize = readBe64(hdr + 8);
+            headerSize = 16;
+        }
+        if (atomSize == 0) break; // "extends to end of file": slack after carve — stop
+        if (atomSize < headerSize) break;
+
+        const bool isMdat = std::memcmp(type, "mdat", 4) == 0;
+        if (std::memcmp(type, "ftyp", 4) == 0) hasFtyp = true;
+        else if (std::memcmp(type, "moov", 4) == 0) hasMoov = true;
+        else if (isMdat) hasMdat = true;
+
+        if (atomSize > limit - off) {
+            // Truncated at the carve bound: the movie payload itself ending
+            // here still bounds the file; anything else stops at the last
+            // complete box.
+            if (isMdat) {
+                walkEnd = limit;
+                off = limit;
+            }
+            break;
+        }
+        off += atomSize;
+        walkEnd = off;
+    }
+
+    if (!hasFtyp) return r;
+    r.valid = true;
+    r.extension = "mp4";
+    r.confidence = 65;
+    if (hasMdat) r.confidence = 80;
+    if (hasMoov) r.confidence = 90;
+    r.size = walkEnd > 0 ? walkEnd : off;
+    return r;
+}
+
 } // namespace carver
 } // namespace byteback

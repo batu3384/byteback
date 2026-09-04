@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <vector>
 
 using namespace byteback;
@@ -165,6 +166,69 @@ std::vector<uint8_t> minimalJpeg() {
             0x11,0x22,0x33,0x44,0x55, 0xFF,0xD9};
 }
 } // namespace
+
+// CA-018: a 2MB mdat must carve at full size — the old probe-only walk
+// clamped every footer-less mp4 to the 1MB probe window.
+TEST(CarvePolicy, LargeMdatMp4CarvesFullSize) {
+    const uint32_t kMdatPayload = 2u * 1024 * 1024;
+    const size_t kTotal = 24 + 8 + kMdatPayload; // ftyp box + mdat box
+
+    std::vector<uint8_t> disk(3u * 1024 * 1024, 0);
+    // ftyp box: size 24, 'ftyp', brand 'isom'
+    disk[0] = 0; disk[1] = 0; disk[2] = 0; disk[3] = 24;
+    std::memcpy(disk.data() + 4, "ftypisom", 8);
+    // mdat box at offset 24: size = payload + 8
+    const uint64_t mdatSize = kMdatPayload + 8;
+    disk[24] = static_cast<uint8_t>((mdatSize >> 24) & 0xFF);
+    disk[25] = static_cast<uint8_t>((mdatSize >> 16) & 0xFF);
+    disk[26] = static_cast<uint8_t>((mdatSize >> 8) & 0xFF);
+    disk[27] = static_cast<uint8_t>(mdatSize & 0xFF);
+    std::memcpy(disk.data() + 28, "mdat", 4);
+    std::memset(disk.data() + 32, 0xAB, kMdatPayload);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension.find("mp4") != std::string::npos) found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, kTotal);
+    EXPECT_GE(found[0].confidence, 75);
+}
+
+TEST(CarvePolicy, IsobmffBoundedWalksBeyondProbe) {
+    // ftyp(24) + mdat(1MB payload) laid out in a 2MB buffer acting as "disk";
+    // the probe window is only the first 4KB — the walk must fetch the mdat
+    // header beyond it and bound the file at its true end.
+    const uint32_t kMdatPayload = 1024u * 1024;
+    std::vector<uint8_t> media(24 + 8 + kMdatPayload, 0xAB);
+    media[0] = 0; media[1] = 0; media[2] = 0; media[3] = 24;
+    std::memcpy(media.data() + 4, "ftypisom", 8);
+    const uint64_t mdatSize = kMdatPayload + 8;
+    media[24] = static_cast<uint8_t>((mdatSize >> 24) & 0xFF);
+    media[25] = static_cast<uint8_t>((mdatSize >> 16) & 0xFF);
+    media[26] = static_cast<uint8_t>((mdatSize >> 8) & 0xFF);
+    media[27] = static_cast<uint8_t>(mdatSize & 0xFF);
+    std::memcpy(media.data() + 28, "mdat", 4);
+
+    auto readAt = [&](uint64_t off, uint32_t len, uint8_t* out) {
+        if (off + len > media.size()) return false;
+        std::memcpy(out, media.data() + off, len);
+        return true;
+    };
+
+    auto pr = byteback::carver::parseIsobmffBounded(media.data(), 4096, 0, 1ull << 30, readAt);
+    ASSERT_TRUE(pr.valid);
+    EXPECT_EQ(pr.size, media.size());
+    EXPECT_GE(pr.confidence, 80);
+}
 
 // CA-006: a file whose header sits one band and whose footer sits in the next
 // band was truncated at the old 4-worker band edge. Sequential scanning must
