@@ -194,21 +194,26 @@ bool MetadataStore::open(const std::string& dbPath) {
     sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
     // CA-040: surface structural corruption at open (quick_check: fast, skips
     // index cross-checks — full integrity_check would stall big scan DBs).
+    // W7: quick_check reports corruption as RESULT ROWS with rc=SQLITE_OK —
+    // capture the first row; a null callback discarded it and corrupt DBs
+    // opened "successfully".
     {
+        struct QuickCheckCtx { std::string first; bool sawRow = false; };
+        QuickCheckCtx qc;
+        auto cb = [](void* ud, int cols, char** vals, char** /*names*/) -> int {
+            auto* ctx = static_cast<QuickCheckCtx*>(ud);
+            if (!ctx->sawRow && cols > 0 && vals[0]) { ctx->first = vals[0]; ctx->sawRow = true; }
+            return 1; // first row is enough
+        };
         char* err = nullptr;
-        if (sqlite3_exec(db_, "PRAGMA quick_check;", nullptr, nullptr, &err) != SQLITE_OK) {
-            std::fprintf(stderr, "[byteback] quick_check failed: %s\n", err ? err : "?");
-            if (err) sqlite3_free(err);
+        const int rc = sqlite3_exec(db_, "PRAGMA quick_check;", cb, &qc, &err);
+        if (err) sqlite3_free(err);
+        if (rc != SQLITE_OK || (qc.sawRow && qc.first != "ok")) {
+            std::fprintf(stderr, "[byteback] DB quick_check failed: %s (rc=%d)\n",
+                         qc.sawRow ? qc.first.c_str() : "no result", rc);
         }
     }
     bool ok = createTables();
-    // CA-040: schema versioning — bump SCHEMA_VERSION with every migration so
-    // a partially-migrated database is detectable.
-    {
-        char* err = nullptr;
-        sqlite3_exec(db_, "PRAGMA user_version = 2;", nullptr, nullptr, &err);
-        if (err) sqlite3_free(err);
-    }
     // CA-005 migration: existing databases predate the compressed column.
     if (ok) {
         char* err = nullptr;
@@ -234,6 +239,26 @@ bool MetadataStore::open(const std::string& dbPath) {
         if (err) sqlite3_free(err);
         ensureFtsIndex(db_);
         ensureContentFtsIndex(db_);
+        // CA-040/W7: stamp the schema version only AFTER migrations ran, and
+        // refuse to open a database from a NEWER schema than this build knows.
+        constexpr int kSchemaVersion = 2;
+        sqlite3_stmt* ver = nullptr;
+        if (sqlite3_prepare_v2(db_, "PRAGMA user_version;", -1, &ver, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(ver) == SQLITE_ROW) {
+                const int existing = sqlite3_column_int(ver, 0);
+                if (existing > kSchemaVersion) {
+                    std::fprintf(stderr, "[byteback] DB schema v%d newer than build (v%d)\n", existing, kSchemaVersion);
+                    sqlite3_finalize(ver);
+                    sqlite3_close(db_);
+                    db_ = nullptr;
+                    return false;
+                }
+            }
+            sqlite3_finalize(ver);
+        }
+        char* verr = nullptr;
+        sqlite3_exec(db_, "PRAGMA user_version = 2;", nullptr, nullptr, &verr);
+        if (verr) sqlite3_free(verr);
     }
     return ok;
 }

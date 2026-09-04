@@ -43,6 +43,9 @@ function App(): React.ReactElement {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeScanIdRef = useRef(activeScanId)
   activeScanIdRef.current = activeScanId
+  // W8: set synchronously the moment a scan is requested — the async startup
+  // hydration must never overwrite a scan the user just started.
+  const scanStartAttemptRef = useRef(0)
   const scanBusy = isLiveScanPhase(scanPhase)
 
   const hydrateFromScanState = useCallback((state: ScanState) => {
@@ -74,8 +77,13 @@ function App(): React.ReactElement {
     window.api.getLatestUsableScanId()
       .then(async (id) => {
         if (id <= 0) return
+        // W8: a scan started while hydration was in flight owns the UI —
+        // stale hydration would hijack activeScanId and drop every event
+        // of the new scan.
+        if (scanStartAttemptRef.current > 0) return
         const state = await window.api!.getScanState(id)
         if (!state || state.id <= 0) return
+        if (scanStartAttemptRef.current > 0) return
         hydrateFromScanState(state)
         if (state.status === SCAN_STATUS.paused) {
           setScanStatus('Tarama Duraklatıldı — devam edilebilir')
@@ -99,6 +107,7 @@ function App(): React.ReactElement {
     // Setup Global IPC Listeners ONLY ONCE
     let cleanupProgress: (() => void) | undefined
     let cleanupComplete: (() => void) | undefined
+    let cleanupImaging: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
       cleanupProgress = window.api.onScanProgress((data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => {
@@ -140,9 +149,19 @@ function App(): React.ReactElement {
       })
     }
 
+    // W6: imaging completion/error must reset the App-level flag even while
+    // the imager page is unmounted — its own listener dies with the page and
+    // the flag would stick true until restart.
+    if (window.api && window.api.onImagingProgress) {
+      cleanupImaging = window.api.onImagingProgress((data: { current: number; total: number }) => {
+        if (data.total === 0 || data.current >= data.total) setImagingActive(false)
+      })
+    }
+
     return () => {
       if (cleanupProgress) cleanupProgress()
       if (cleanupComplete) cleanupComplete()
+      if (cleanupImaging) cleanupImaging()
     }
   }, [])
 
@@ -167,6 +186,7 @@ function App(): React.ReactElement {
       failScan(`Veritabanı kullanılamıyor: ${dbError}`)
       return
     }
+    scanStartAttemptRef.current++
     const isResume = !!(scanOptions?.resumeScanId && scanOptions.resumeScanId > 0)
     setSelectedDrive(driveIndex)
     setScanConfig({ driveIndex, scanType })
@@ -205,6 +225,7 @@ function App(): React.ReactElement {
       failScan(`Veritabanı kullanılamıyor: ${dbError}`)
       return
     }
+    scanStartAttemptRef.current++
     setSelectedDrive(-1)
     setScanConfig({ driveIndex: -1, scanType })
     setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
