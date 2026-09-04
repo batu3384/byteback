@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2 } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
-import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
+import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
@@ -15,6 +15,7 @@ import {
   formatSize,
   formatFsTimestamp,
   statusDisplayLabel,
+  statusDisplayKey,
   buildTree,
   toSqlListFilter,
   confidenceTier,
@@ -309,7 +310,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       if (!fileToRecover) continue
       const hasRuns = (fileToRecover.runs?.length ?? 0) > 0
       if (!canRecoverSource(fileToRecover.source, hasRuns) || isDiscoveryOnlySource(fileToRecover.source)) {
-        skipped.push(`${fileToRecover.name} (${sourceDisplayLabel(fileToRecover.source)})`)
+        skipped.push(`${fileToRecover.name} (${localizeSourceLabel(fileToRecover.source, t)})`)
         continue
       }
       filesToRecover.push(fileToRecover)
@@ -490,8 +491,9 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     size: formatSize(f.sizeBytes || 0),
     path: typeof f.path === 'string' && f.path ? f.path : '—',
     status: statusDisplayLabel(f.status, f.source),
+    statusKey: statusDisplayKey(f.status, f.source),
     type: resolveFileTypeChip(f),
-    sourceLabel: sourceDisplayLabel(f.source),
+    sourceLabel: localizeSourceLabel(f.source, t),
     dateLabel: formatFsTimestamp(f.modifiedAt || f.createdAt, f.source),
     qualityLabel: qualityHint(f),
     confidence: f.confidence,
@@ -905,13 +907,13 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     <td style={{ padding: '12px' }}>
                       <span style={{
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                        background: f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş')
+                        background: f.statusKey === 'status.deleted' || f.statusKey === 'status.carved'
                           ? 'rgba(16, 185, 129, 0.1)'
                           : 'rgba(245, 158, 11, 0.1)',
-                        color: f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş')
+                        color: f.statusKey === 'status.deleted' || f.statusKey === 'status.carved'
                           ? 'var(--success-green)'
                           : 'var(--warning-yellow)',
-                        border: `1px solid ${f.status.startsWith('Silinmiş') || f.status.startsWith('Oyulmuş') ? 'var(--success-green)' : 'var(--warning-yellow)'}`
+                        border: `1px solid ${f.statusKey === 'status.deleted' || f.statusKey === 'status.carved' ? 'var(--success-green)' : 'var(--warning-yellow)'}`
                       }}>
                         {f.status}
                       </span>

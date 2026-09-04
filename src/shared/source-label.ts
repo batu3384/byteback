@@ -41,28 +41,40 @@ export function canRecoverSource(source?: string, hasRuns?: boolean): boolean {
   return true
 }
 
-export function sourceDisplayLabel(source?: string): string {
-  if (source === 'apfs_container' || source === 'apfs_volume') {
-    return 'APFS keşif (nx_fs_oid + omap paddr + APSB)'
-  }
-  if (source === 'apfs_file') return 'APFS katalog adı (extent yok, kurtarılamaz)'
-  if (source === 'apfs_extent') return 'APFS extent (kurtarılabilir)'
-  if (source === 'hfs_limit') return 'HFS katalog tavanı (test/limit)'
-  if (source === 'vss_unbound') return 'VSS bağlanmadı'
-  if (source === 'vss_bind') return 'VSS bağlandı (serial+boyut)'
-  if (source === 'vss_snapshot') return 'VSS snapshot (üstveri)'
-  if (source === 'vss_ntfs') return 'VSS NTFS'
-  if (source === 'vss_fat') return 'VSS FAT'
-  if (source === 'bitlocker_detect') return 'BitLocker (anahtar yok, şifre kırma yok)'
-  if (source === 'bitlocker_fve') return 'BitLocker FVE (kayıt decrypt değil)'
-  if (source === 'ntfs_mft_logfile') return 'NTFS MFT (LogFile doğrulandı)'
-  if (source === 'ntfs_mft_usn') return 'NTFS MFT (USN silme doğrulandı)'
-  if (source === 'ntfs_recycle') return 'Geri Dönüşüm Kutusu ($R)'
-  if (source === 'ntfs_recycle_meta') return 'Geri Dönüşüm Kutusu ($I, yalnızca ad)'
-  if (source === 'ntfs_i30') return 'NTFS $I30 slack (yalnızca ad, kurtarılamaz)'
-  if (source === 'ntfs_thumbcache') return 'NTFS thumbcache (gömülü JPEG)'
-  if (source === 'usn_journal') return 'USN zaman çizelgesi'
-  if (source === 'ntfs_logfile') return 'LogFile ipucu (kurtarılamaz)'
-  if (source === 'carver_duplicate') return 'Carve tekrarı (MFT ile çakışıyor)'
-  return source ?? ''
+/** i18n key for sources with a curated label; callers translate via t().
+ *  Unknown sources return the raw id (locale-neutral technical name). */
+const KEY_BY_SOURCE: Record<string, string> = {
+  apfs_container: 'source.apfs_container',
+  apfs_volume: 'source.apfs_container',
+  apfs_file: 'source.apfs_file',
+  apfs_extent: 'source.apfs_extent',
+  hfs_limit: 'source.hfs_limit',
+  vss_unbound: 'source.vss_unbound',
+  vss_bind: 'source.vss_bind',
+  vss_snapshot: 'source.vss_snapshot',
+  vss_ntfs: 'source.vss_ntfs',
+  vss_fat: 'source.vss_fat',
+  bitlocker_detect: 'source.bitlocker_detect',
+  bitlocker_fve: 'source.bitlocker_fve',
+  ntfs_mft_logfile: 'source.ntfs_mft_logfile',
+  ntfs_mft_usn: 'source.ntfs_mft_usn',
+  ntfs_recycle: 'source.ntfs_recycle',
+  ntfs_recycle_meta: 'source.ntfs_recycle_meta',
+  ntfs_i30: 'source.ntfs_i30',
+  ntfs_thumbcache: 'source.ntfs_thumbcache',
+  usn_journal: 'source.usn_journal',
+  ntfs_logfile: 'source.ntfs_logfile',
+  carver_duplicate: 'source.carver_duplicate',
+}
+
+export function sourceLabelKey(source?: string): string {
+  if (!source) return ''
+  const key = KEY_BY_SOURCE[source]
+  return key ?? source
+}
+
+/** Convenience: translate with the passed t(). */
+export function localizeSourceLabel(source: string | undefined, t: (key: string) => string): string {
+  const key = sourceLabelKey(source)
+  return key.startsWith('source.') ? t(key) : key
 }

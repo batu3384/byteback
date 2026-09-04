@@ -1,27 +1,29 @@
 import { describe, it, expect } from 'vitest'
-import { sourceDisplayLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from './source-label'
+import { sourceLabelKey, localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from './source-label'
 
-describe('sourceDisplayLabel', () => {
-  it('marks APFS container and volume hits as discovery-only', () => {
-    expect(sourceDisplayLabel('apfs_container')).toBe('APFS keşif (nx_fs_oid + omap paddr + APSB)')
-    expect(sourceDisplayLabel('apfs_volume')).toBe('APFS keşif (nx_fs_oid + omap paddr + APSB)')
-    expect(sourceDisplayLabel('apfs_file')).toBe('APFS katalog adı (extent yok, kurtarılamaz)')
+describe('sourceLabelKey', () => {
+  it('maps APFS container and volume hits to curated keys', () => {
+    expect(sourceLabelKey('apfs_container')).toBe('source.apfs_container')
+    expect(sourceLabelKey('apfs_volume')).toBe('source.apfs_container')
+    expect(sourceLabelKey('apfs_file')).toBe('source.apfs_file')
   })
 
   it('marks HFS catalog ceiling records', () => {
-    expect(sourceDisplayLabel('hfs_limit')).toBe('HFS katalog tavanı (test/limit)')
+    expect(sourceLabelKey('hfs_limit')).toBe('source.hfs_limit')
   })
 
-  it('marks unbound VSS and BitLocker discovery', () => {
-    expect(sourceDisplayLabel('vss_unbound')).toBe('VSS bağlanmadı')
-    expect(sourceDisplayLabel('vss_bind')).toBe('VSS bağlandı (serial+boyut)')
-    expect(sourceDisplayLabel('bitlocker_detect')).toBe('BitLocker (anahtar yok, şifre kırma yok)')
-    expect(sourceDisplayLabel('bitlocker_fve')).toBe('BitLocker FVE (kayıt decrypt değil)')
+  it('maps unbound VSS and BitLocker discovery', () => {
+    expect(sourceLabelKey('vss_unbound')).toBe('source.vss_unbound')
+    expect(sourceLabelKey('vss_bind')).toBe('source.vss_bind')
+    expect(sourceLabelKey('bitlocker_detect')).toBe('source.bitlocker_detect')
+    expect(sourceLabelKey('bitlocker_fve')).toBe('source.bitlocker_fve')
   })
 
   it('passes through other sources', () => {
-    expect(sourceDisplayLabel('mft')).toBe('mft')
-    expect(sourceDisplayLabel(undefined)).toBe('')
+    expect(sourceLabelKey('mft')).toBe('mft')
+    expect(sourceLabelKey(undefined)).toBe('')
+    expect(localizeSourceLabel('mft', (k) => k)).toBe('mft')
+    expect(localizeSourceLabel('apfs_file', (k) => `T:${k}`)).toBe('T:source.apfs_file')
   })
 })
 
@@ -42,15 +44,15 @@ describe('isDiscoveryOnlySource', () => {
   })
 
   it('labels logfile-verified MFT', () => {
-    expect(sourceDisplayLabel('ntfs_mft_logfile')).toBe('NTFS MFT (LogFile doğrulandı)')
-    expect(sourceDisplayLabel('ntfs_mft_usn')).toBe('NTFS MFT (USN silme doğrulandı)')
-    expect(sourceDisplayLabel('ntfs_recycle')).toContain('Geri Dönüşüm')
+    expect(sourceLabelKey('ntfs_mft_logfile')).toBe('source.ntfs_mft_logfile')
+    expect(sourceLabelKey('ntfs_mft_usn')).toBe('source.ntfs_mft_usn')
+    expect(sourceLabelKey('ntfs_recycle')).toBe('source.ntfs_recycle')
     expect(isDiscoveryOnlySource('ntfs_recycle_meta')).toBe(true)
     expect(canRecoverSource('ntfs_i30', false)).toBe(false)
     expect(canRecoverSource('ntfs_i30', true)).toBe(false)
     expect(isDiscoveryOnlySource('ntfs_i30')).toBe(true)
     expect(canRecoverSource('ntfs_thumbcache', false)).toBe(true)
-    expect(sourceDisplayLabel('ntfs_thumbcache')).toContain('thumbcache')
+    expect(sourceLabelKey('ntfs_thumbcache')).toBe('source.ntfs_thumbcache')
   })
 
   it('hides carve duplicates from default recoverable list', () => {

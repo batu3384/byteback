@@ -1,4 +1,5 @@
 import type { FileRecord } from '../../../shared/ipc-contract'
+import { t, getLang } from '../../i18n'
 
 export type MappedFile = {
   id: number
@@ -9,6 +10,7 @@ export type MappedFile = {
   path: string
   type: string
   status: string
+  statusKey: string
   sourceLabel: string
   dateLabel: string
   qualityLabel: string
@@ -24,26 +26,31 @@ export type TreeNode = {
 }
 
 export function qualityHint(raw?: FileRecord): string {
-  if (!raw) return '—'
+  if (!raw) return t('quality.none')
   const c = raw.confidence ?? 0
   if (raw.source === 'carver' || raw.source === 'carver_bgc') {
-    if (c >= 85) return 'Muhtemelen tam'
-    if (c >= 60) return 'Şüpheli'
-    return 'Zayıf'
+    if (c >= 85) return t('quality.carve.full')
+    if (c >= 60) return t('quality.carve.suspect')
+    return t('quality.carve.weak')
   }
   if (c > 0) {
-    if (c >= 85) return 'Yüksek güven'
-    if (c >= 60) return 'Orta güven'
-    return 'Düşük güven'
+    if (c >= 85) return t('quality.high')
+    if (c >= 60) return t('quality.mid')
+    return t('quality.low')
   }
-  return '—'
+  return t('quality.none')
 }
 
-/** Honest status: carve ≠ metadata-deleted. */
+/** Honest status: carve ≠ metadata-deleted. Key form lets callers style by
+ *  classification instead of matching localized text. */
+export function statusDisplayKey(status?: number, source?: string): string {
+  if (source?.startsWith('carver')) return 'status.carved'
+  if (status === 1) return 'status.allocated'
+  return 'status.deleted'
+}
+
 export function statusDisplayLabel(status?: number, source?: string): string {
-  if (source?.startsWith('carver')) return 'Oyulmuş (imza)'
-  if (status === 1) return 'Tahsisli / kullanımda'
-  return 'Silinmiş / unallocated'
+  return t(statusDisplayKey(status, source))
 }
 
 export function getExtension(filename: string): string {
@@ -78,14 +85,14 @@ export function resolveFileTypeChip(record: {
 
 /** MFT timestamps; carve uses EXIF in modifiedAt when present; else honest placeholder. */
 export function formatFsTimestamp(unixSec?: number, source?: string): string {
+  const locale = getLang() === 'tr' ? 'tr-TR' : 'en-US'
   if (!unixSec || unixSec <= 0) {
-    if (source?.startsWith('carver')) return 'FS tarihi yok'
+    if (source?.startsWith('carver')) return t('ts.noFsDate')
     return '—'
   }
-  if (source?.startsWith('carver')) {
-    return `EXIF · ${new Date(unixSec * 1000).toLocaleString('tr-TR')}`
-  }
-  return new Date(unixSec * 1000).toLocaleString('tr-TR')
+  const date = new Date(unixSec * 1000).toLocaleString(locale)
+  if (source?.startsWith('carver')) return `EXIF · ${date}`
+  return date
 }
 
 export function chipToCategory(chip: string): string {
