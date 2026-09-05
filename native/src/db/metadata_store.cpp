@@ -34,6 +34,36 @@ void appendListFilter(std::string& sql, const FileListFilter& f, const char* pre
         sql += prefix;
         sql += "source NOT LIKE ?";
     }
+    if (f.sizeMin > 0) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "size_bytes >= ?";
+    }
+    if (f.sizeMax > 0) {
+        sql += " AND ";
+        sql += prefix;
+        sql += "size_bytes <= ?";
+    }
+    // P0-4: date bounds against modified_at with created_at fallback —
+    // each bound is its own CASE so binding order stays linear.
+    if (f.dateFrom > 0) {
+        sql += " AND CASE WHEN ";
+        sql += prefix;
+        sql += "modified_at > 0 THEN ";
+        sql += prefix;
+        sql += "modified_at ELSE ";
+        sql += prefix;
+        sql += "created_at END >= ?";
+    }
+    if (f.dateTo > 0) {
+        sql += " AND CASE WHEN ";
+        sql += prefix;
+        sql += "modified_at > 0 THEN ";
+        sql += prefix;
+        sql += "modified_at ELSE ";
+        sql += prefix;
+        sql += "created_at END <= ?";
+    }
     if (!f.includeDuplicates) {
         sql += " AND ";
         sql += prefix;
@@ -53,6 +83,10 @@ void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
     if (!f.category.empty()) sqlite3_bind_text(stmt, bind++, f.category.c_str(), -1, SQLITE_TRANSIENT);
     if (!f.sourceLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceLike.c_str(), -1, SQLITE_TRANSIENT);
     if (!f.sourceNotLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceNotLike.c_str(), -1, SQLITE_TRANSIENT);
+    if (f.sizeMin > 0) sqlite3_bind_int64(stmt, bind++, static_cast<int64_t>(f.sizeMin));
+    if (f.sizeMax > 0) sqlite3_bind_int64(stmt, bind++, static_cast<int64_t>(f.sizeMax));
+    if (f.dateFrom > 0) sqlite3_bind_int64(stmt, bind++, f.dateFrom);
+    if (f.dateTo > 0) sqlite3_bind_int64(stmt, bind++, f.dateTo);
 }
 
 // CA-030: whitelisted sort keys — raw input never reaches the SQL string.
@@ -208,7 +242,10 @@ bool MetadataStore::open(const std::string& dbPath) {
         char* err = nullptr;
         const int rc = sqlite3_exec(db_, "PRAGMA quick_check;", cb, &qc, &err);
         if (err) sqlite3_free(err);
-        if (rc != SQLITE_OK || (qc.sawRow && qc.first != "ok")) {
+        // rc=SQLITE_ABORT is expected: the callback returns 1 after the first
+        // row. Corruption is flagged by the row TEXT, not the rc.
+        const bool abortedEarly = (rc == SQLITE_ABORT);
+        if ((!abortedEarly && rc != SQLITE_OK) || (qc.sawRow && qc.first != "ok")) {
             std::fprintf(stderr, "[byteback] DB quick_check failed: %s (rc=%d)\n",
                          qc.sawRow ? qc.first.c_str() : "no result", rc);
         }

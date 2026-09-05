@@ -4,6 +4,7 @@
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_unlock.h"
 #include "recovery/preview_reader.h"
+#include "recovery/path_util.h"
 #include "forensic/audit_logger.h"
 #include <filesystem>
 
@@ -360,10 +361,10 @@ public:
     RecoverWorker(Napi::Env& env, byteback::Engine* engine, int driveIndex,
                   int64_t fileId, const std::string& destDir,
                   int64_t scanId, std::shared_ptr<byteback::VirtualRaid> raid,
-                  Napi::Promise::Deferred deferred)
+                  Napi::Promise::Deferred deferred, bool preservePaths = false)
         : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
           fileId_(fileId), destDir_(destDir), scanId_(scanId), raid_(std::move(raid)),
-          deferred_(deferred) {}
+          deferred_(deferred), preservePaths_(preservePaths) {}
 
     void Execute() override {
         try {
@@ -383,8 +384,13 @@ public:
                 }
                 byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
             }
+            // Optional folder-tree preservation: recover under the record's
+            // sanitized original directory instead of a flat destDir.
+            const std::string targetDir = preservePaths_
+                ? byteback::joinDestDir(destDir_, byteback::safeRelativeDir(rec.path))
+                : destDir_;
             byteback::RecoveryEngine recovery;
-            result_ = recovery.recoverFile(reader, rec, destDir_);
+            result_ = recovery.recoverFile(reader, rec, targetDir);
             if (byteback::countsAsRecovered(result_) && scanId_ > 0) {
                 engine_->getMetadataStore().incrementRecovered(scanId_);
             }
@@ -420,6 +426,7 @@ private:
     int64_t scanId_ = -1;
     std::shared_ptr<byteback::VirtualRaid> raid_;
     Napi::Promise::Deferred deferred_;
+    bool preservePaths_ = false;
     byteback::RecoveryResult result_;
 };
 
@@ -440,10 +447,11 @@ Napi::Value RecoverFile(const Napi::CallbackInfo& info) {
     int64_t fileId = info[1].As<Napi::Number>().Int64Value();
     std::string destDir = info[2].As<Napi::String>().Utf8Value();
     int64_t scanId = info[3].As<Napi::Number>().Int64Value();
+    const bool preservePaths = info.Length() >= 5 && info[4].IsBoolean() && info[4].As<Napi::Boolean>().Value();
 
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
     RecoverWorker* worker = new RecoverWorker(env, &bdata->engine, driveIndex, fileId, destDir,
-                                              scanId, bdata->raid, deferred);
+                                              scanId, bdata->raid, deferred, preservePaths);
     worker->Queue();
     return deferred.Promise();
     NAPI_CATCH
@@ -488,10 +496,10 @@ public:
     BatchRecoverWorker(Napi::Env& env, byteback::Engine* engine, int driveIndex,
                        std::vector<int64_t> fileIds, const std::string& destDir,
                        int64_t scanId, std::shared_ptr<byteback::VirtualRaid> raid,
-                       Napi::Promise::Deferred deferred)
+                       Napi::Promise::Deferred deferred, bool preservePaths = false)
         : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
           fileIds_(std::move(fileIds)), destDir_(destDir), scanId_(scanId),
-          raid_(std::move(raid)), deferred_(deferred) {}
+          raid_(std::move(raid)), deferred_(deferred), preservePaths_(preservePaths) {}
 
     void Execute() override {
         try {
@@ -518,7 +526,9 @@ public:
                     }
                     byteback::applyBoundFvek(reader, engine_->getDiskReader(), rec);
                 }
-                one = recovery.recoverFile(reader, rec, destDir_);
+                one = recovery.recoverFile(reader, rec, preservePaths_
+                    ? byteback::joinDestDir(destDir_, byteback::safeRelativeDir(rec.path))
+                    : destDir_);
                 summary_.results.push_back(one);
                 if (byteback::countsAsRecovered(one)) {
                     ++summary_.succeeded;
@@ -569,6 +579,7 @@ private:
     int64_t scanId_ = -1;
     std::shared_ptr<byteback::VirtualRaid> raid_;
     Napi::Promise::Deferred deferred_;
+    bool preservePaths_ = false;
     byteback::BatchRecoverySummary summary_;
     std::string error_;
 };
@@ -589,6 +600,7 @@ Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info) {
     Napi::Array arr = info[1].As<Napi::Array>();
     std::string destDir = info[2].As<Napi::String>().Utf8Value();
     int64_t scanId = info[3].As<Napi::Number>().Int64Value();
+    const bool preservePaths = info.Length() >= 5 && info[4].IsBoolean() && info[4].As<Napi::Boolean>().Value();
 
     std::vector<int64_t> ids;
     ids.reserve(arr.Length());
@@ -604,7 +616,7 @@ Napi::Value RecoverFilesBatch(const Napi::CallbackInfo& info) {
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
     BatchRecoverWorker* worker = new BatchRecoverWorker(env, &bdata->engine, driveIndex,
                                                         std::move(ids), destDir, scanId,
-                                                        bdata->raid, deferred);
+                                                        bdata->raid, deferred, preservePaths);
     worker->Queue();
     return deferred.Promise();
     NAPI_CATCH

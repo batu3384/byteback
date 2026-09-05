@@ -86,6 +86,10 @@ struct FileListFilter {
     bool includeDuplicates = true;
     bool includeDiscovery = false;
     std::string orderBy;      // CA-030: whitelisted key ("confidence_desc", ...); empty = id
+    uint64_t sizeMin = 0;     // P0-4: bytes; 0 = off
+    uint64_t sizeMax = 0;     // bytes; 0 = off
+    int64_t dateFrom = 0;     // unix seconds; 0 = off (modified_at, created_at fallback)
+    int64_t dateTo = 0;       // unix seconds; 0 = off
 };
 
 class MetadataStore {

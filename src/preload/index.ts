@@ -91,10 +91,13 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),
   getRaidState: () => ipcRenderer.invoke('get-raid-state'),
-  recoverFile: (driveIndex: number, fileId: number, destDir: string, scanId: number) =>
-    ipcRenderer.invoke('recover-file', driveIndex, fileId, destDir, scanId),
-  recoverFilesBatch: (driveIndex: number, fileIds: number[], destDir: string, scanId: number) =>
-    ipcRenderer.invoke('recover-files-batch', driveIndex, fileIds, destDir, scanId),
+  recoverFile: (driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) =>
+    ipcRenderer.invoke('recover-file', driveIndex, fileId, destDir, scanId, preservePaths),
+  recoverFilesBatch: (driveIndex: number, fileIds: number[], destDir: string, scanId: number, preservePaths?: boolean) =>
+    ipcRenderer.invoke('recover-files-batch', driveIndex, fileIds, destDir, scanId, preservePaths),
+  scanLostPartitions: (driveIndex: number, stepSectors?: number) =>
+    ipcRenderer.invoke('scan-lost-partitions', driveIndex, stepSectors),
+  setSignatureOverlay: (path: string) => ipcRenderer.invoke('set-signature-overlay', path),
   readFilePreview: (driveIndex: number, scanId: number, fileId: number) =>
     ipcRenderer.invoke('read-file-preview', driveIndex, scanId, fileId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),

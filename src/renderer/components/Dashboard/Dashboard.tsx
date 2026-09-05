@@ -8,6 +8,7 @@ import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../.
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
 import { localizeNote, useI18n, tFormat } from '../../i18n'
+import { formatSize } from '../ResultsView/results-view-utils'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
 
 interface DashboardProps {
@@ -44,6 +45,11 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
     scanType: ScanProfile
   } | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
+  // P0-2: lost partition search state.
+  const [lostScanDrive, setLostScanDrive] = useState(0)
+  const [lostScanning, setLostScanning] = useState(false)
+  const [lostStatus, setLostStatus] = useState<string | null>(null)
+  const [lostPartitions, setLostPartitions] = useState<Array<{ startSector: number; sizeSectors: number; fs: string }> | null>(null)
 
   useEffect(() => {
     window.api?.getDbStatus?.()
@@ -389,6 +395,71 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           </button>
         </div>
         {volumeResolveStatus && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{volumeResolveStatus}</span>}
+      </div>
+
+      {/* P0-2: TestDisk-style lost partition search over the whole disk. */}
+      <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{t('dash.lostPartitionsTitle')}</div>
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+          {t('dash.lostPartitionsHint')}
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+          <input
+            type="number"
+            min="0"
+            value={lostScanDrive}
+            onChange={(e) => setLostScanDrive(Number(e.target.value))}
+            aria-label={t('dash.lostDriveAria')}
+            style={{ width: '90px', padding: '8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={!isAdmin || lostScanning || scanBusy}
+            data-testid="lost-partitions-btn"
+            onClick={async () => {
+              if (!window.api?.scanLostPartitions) {
+                setLostStatus(t('dash.lostApiMissing'))
+                return
+              }
+              setLostScanning(true)
+              setLostStatus(t('dash.lostScanning'))
+              setLostPartitions(null)
+              try {
+                const found = await window.api.scanLostPartitions(lostScanDrive)
+                setLostPartitions(found)
+                setLostStatus(found.length ? tFormat('dash.lostFound', { n: String(found.length) }) : t('dash.lostNone'))
+              } catch (e) {
+                setLostStatus(e instanceof Error ? e.message : String(e))
+              } finally {
+                setLostScanning(false)
+              }
+            }}
+          >
+            {lostScanning ? t('dash.lostScanning') : t('dash.lostScanBtn')}
+          </button>
+          {lostStatus && <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }} role="status">{lostStatus}</span>}
+        </div>
+        {lostPartitions && lostPartitions.length > 0 && (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }} data-testid="lost-partitions-table">
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', padding: '6px 10px', borderBottom: '1px solid var(--panel-border)' }}>{t('dash.lostStartTh')}</th>
+                <th style={{ textAlign: 'left', padding: '6px 10px', borderBottom: '1px solid var(--panel-border)' }}>{t('dash.lostSizeTh')}</th>
+                <th style={{ textAlign: 'left', padding: '6px 10px', borderBottom: '1px solid var(--panel-border)' }}>{t('dash.lostFsTh')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lostPartitions.map((p) => (
+                <tr key={p.startSector}>
+                  <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{p.startSector.toLocaleString('tr-TR')}</td>
+                  <td style={{ padding: '6px 10px', color: 'var(--text-muted)' }}>{formatSize(p.sizeSectors * 512)}</td>
+                  <td style={{ padding: '6px 10px' }}>{p.fs}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {pausedSession && (

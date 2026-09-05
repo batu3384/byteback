@@ -372,3 +372,43 @@ TEST_F(MetadataStoreTest, GetLatestUsableScanIdPrefersPausedOrComplete) {
     ASSERT_TRUE(store_.completeScan(paused, 4));
     EXPECT_EQ(store_.getLatestUsableScanId(), paused);
 }
+
+TEST_F(MetadataStoreTest, SizeAndDateFilters) {
+    int64_t scanId = store_.createScan(0, "deep", 100);
+    auto rec = [&](const char* name, uint64_t sz, int64_t mod) {
+        FileRecord r; r.id = 0; r.parentId = -1; r.name = name;
+        r.sizeBytes = sz; r.startSector = 10; r.endSector = 12;
+        r.status = 0; r.confidence = 80; r.source = "mft";
+        r.modifiedAt = mod; r.createdAt = mod;
+        return r;
+    };
+    std::vector<FileRecord> batch = {
+        rec("small_new.bin", 100, 1700000000),
+        rec("big_new.bin", 9000000, 1700000100),
+        rec("big_old.bin", 9000000, 1600000000),
+    };
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    FileListFilter f;
+    f.sizeMin = 1000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 2);
+
+    f = FileListFilter{}; f.sizeMax = 1000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 1);
+
+    f = FileListFilter{}; f.sizeMin = 1000; f.sizeMax = 10000000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 2);
+
+    f = FileListFilter{}; f.dateFrom = 1650000000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 2);
+
+    f = FileListFilter{}; f.dateTo = 1650000000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 1);
+
+    // created_at fallback: zero modified_at must fall back to created_at.
+    FileRecord fb = rec("fb.bin", 500, 0);
+    fb.createdAt = 1700000500;
+    ASSERT_TRUE(store_.insertFile(scanId, fb));
+    f = FileListFilter{}; f.dateFrom = 1650000000;
+    EXPECT_EQ(store_.getFileCount(scanId, f), 3);
+}

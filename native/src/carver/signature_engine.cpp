@@ -427,6 +427,10 @@ void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
 // app.asar, so the CWD-relative probes below silently missed in production.
 static std::string g_resourceSignatureDir;
 
+// P0-3: optional user signature overlay — a JSON file in the resource
+// signature format, loaded on top of the built-ins for every scan.
+static std::string g_signatureOverlayPath;
+
 void appendResourceSignatureFiles(std::vector<FileSignature>& signatures,
                                   const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
     static const char* kNames[] = {
@@ -468,6 +472,10 @@ void CarvingEngine::setResourceSignatureDir(const std::string& dir) {
     g_resourceSignatureDir = dir;
 }
 
+void CarvingEngine::setSignatureOverlay(const std::string& path) {
+    g_signatureOverlayPath = path;
+}
+
 size_t CarvingEngine::globalSignatureCount() {
     static size_t count = 0;
     static std::once_flag once;
@@ -488,6 +496,12 @@ bool CarvingEngine::loadSignatures(const std::string& jsonPath) {
     auto hexFn = [this](const std::string& hex) { return hexToBytes(hex); };
     if (!jsonPath.empty()) appendSignaturesFromJson(signatures, jsonPath, hexFn);
     appendResourceSignatureFiles(signatures, hexFn);
+    if (!g_signatureOverlayPath.empty()) {
+        if (!appendSignaturesFromJson(signatures, g_signatureOverlayPath, hexFn)) {
+            std::cerr << "[byteback] signature overlay missing or unparseable: "
+                      << g_signatureOverlayPath << std::endl;
+        }
+    }
 
     for (size_t i = 0; i < signatures.size(); ++i) signatures[i].id = static_cast<int>(i);
 

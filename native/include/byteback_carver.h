@@ -55,6 +55,10 @@ public:
     // probes. Process-wide; call once before the first scan.
     static void setResourceSignatureDir(const std::string& dir);
 
+    // P0-3: optional user signature overlay (resource-format JSON) loaded on
+    // top of built-ins for every scan; empty path disables.
+    static void setSignatureOverlay(const std::string& path);
+
     // Loads embedded + resource JSON once; safe to call from UI before scan.
     static size_t globalSignatureCount();
     bool scan(DiskReader& reader, FileSystemParser::FileRecordCallback callback, std::atomic<bool>* isRunning = nullptr);

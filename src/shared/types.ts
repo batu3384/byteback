@@ -114,6 +114,7 @@ declare global {
         fileId: number,
         destDir: string,
         scanId: number,
+        preservePaths?: boolean,
       ) => Promise<RecoverResult>
 
       recoverFilesBatch: (
@@ -121,7 +122,17 @@ declare global {
         fileIds: number[],
         destDir: string,
         scanId: number,
+        preservePaths?: boolean,
       ) => Promise<BatchRecoverResult>
+
+      /** P0-2: TestDisk-style whole-disk lost partition search. */
+      scanLostPartitions: (
+        driveIndex: number,
+        stepSectors?: number,
+      ) => Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>>
+
+      /** P0-3: user signature overlay (resource-format JSON); '' disables. */
+      setSignatureOverlay: (path: string) => Promise<boolean>
 
       readFilePreview: (
         driveIndex: number,

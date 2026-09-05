@@ -129,6 +129,7 @@ export function toSqlListFilter(
   query: string,
   showDuplicates: boolean,
   orderBy?: string,
+  extra?: { sizeMin?: number; sizeMax?: number; dateFrom?: number; dateTo?: number },
 ): {
   status: number
   category: string
@@ -138,6 +139,10 @@ export function toSqlListFilter(
   includeDuplicates: boolean
   includeDiscovery: boolean
   orderBy?: string
+  sizeMin?: number
+  sizeMax?: number
+  dateFrom?: number
+  dateTo?: number
 } {
   const base = {
     category: chipToCategory(typeChip),
@@ -147,6 +152,10 @@ export function toSqlListFilter(
     includeDuplicates: showDuplicates,
     includeDiscovery: false,
     orderBy: orderBy || undefined,
+    sizeMin: extra?.sizeMin,
+    sizeMax: extra?.sizeMax,
+    dateFrom: extra?.dateFrom,
+    dateTo: extra?.dateTo,
   }
   if (statusChip === 'carved') return { ...base, status: -1, sourceLike: 'carver%' }
   // Metadata deleted only — carve lives under "Oyulmuş" (DiskDrill/Recuva style split).
