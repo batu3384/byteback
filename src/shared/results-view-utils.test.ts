@@ -103,6 +103,22 @@ describe('results-view-utils', () => {
     expect(confidenceTier(undefined)).toBe('none')
   })
 
+  it('toSqlListFilter passes size/date bounds through (P0-4)', () => {
+    const f = toSqlListFilter('all', 'all', '', true, 'confidence_desc',
+      { sizeMin: 1024, sizeMax: 1048576, dateFrom: 100, dateTo: 200 })
+    expect(f.sizeMin).toBe(1024)
+    expect(f.sizeMax).toBe(1048576)
+    expect(f.dateFrom).toBe(100)
+    expect(f.dateTo).toBe(200)
+    expect(f.orderBy).toBe('confidence_desc')
+
+    const bare = toSqlListFilter('all', 'all', '', true)
+    expect(bare.sizeMin).toBeUndefined()
+    expect(bare.sizeMax).toBeUndefined()
+    expect(bare.dateFrom).toBeUndefined()
+    expect(bare.dateTo).toBeUndefined()
+  })
+
   it('maps type chips to SQL category', () => {
     expect(chipToCategory('img')).toBe('Image')
     expect(chipToCategory('all')).toBe('')

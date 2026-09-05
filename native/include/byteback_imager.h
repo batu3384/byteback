@@ -31,6 +31,12 @@ public:
     void requestStop();
     void stopImaging();
 
+    // Test hook: image from an already-open reader (memory volumes) instead
+    // of opening a PhysicalDrive by index.
+    void startImagingFromReader(DiskReader& reader, const std::string& destPath, ProgressCallback onProgress,
+                                ImageFormat format = ImageFormat::Raw,
+                                const EwfOptions& ewfOpts = EwfOptions());
+
     // MD5 hex of the imaged data; valid after imaging completes (EWF only,
     // computed on the fly for both formats but only surfaced for EWF).
     std::string lastImageMd5() const { return lastImageMd5_; }
@@ -43,6 +49,9 @@ public:
 private:
     void imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
                        ImageFormat format, EwfOptions ewfOpts);
+    // Shared imaging core over an open reader; driveIndex variant opens its own.
+    void imagingRun(DiskReader& reader, const std::string& destPath, ProgressCallback onProgress,
+                    ImageFormat format, EwfOptions ewfOpts);
 
     std::atomic<bool> isRunning_;
     std::thread imagingThread_;

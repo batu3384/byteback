@@ -23,6 +23,17 @@ void DiskImager::startImaging(int driveIndex, const std::string& destPath, Progr
     imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts);
 }
 
+void DiskImager::startImagingFromReader(DiskReader& reader, const std::string& destPath,
+                                        ProgressCallback onProgress, ImageFormat format,
+                                        const EwfOptions& ewfOpts) {
+    stopImaging();
+    isRunning_ = true;
+    lastImageMd5_.clear();
+    imagingThread_ = std::thread([this, &reader, destPath, onProgress, format, ewfOpts]() {
+        imagingRun(reader, destPath, onProgress, format, ewfOpts);
+    });
+}
+
 void DiskImager::requestStop() {
     isRunning_ = false;
 }
@@ -39,16 +50,21 @@ void DiskImager::stopImaging() {
 
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
                              ImageFormat format, EwfOptions ewfOpts) {
+    DiskReader reader;
+    if (!reader.openDrive(driveIndex)) {
+        if (onProgress) onProgress(0, 0);
+        isRunning_ = false;
+        return;
+    }
+    imagingRun(reader, destPath, onProgress, format, ewfOpts);
+}
+
+void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, ProgressCallback onProgress,
+                            ImageFormat format, EwfOptions ewfOpts) {
     auto fail = [&]() {
         if (onProgress) onProgress(0, 0);
         isRunning_ = false;
     };
-
-    DiskReader reader;
-    if (!reader.openDrive(driveIndex)) {
-        fail();
-        return;
-    }
 
     uint64_t diskSize = reader.getDiskSize();
     uint32_t sectorSize = reader.getSectorSize();
