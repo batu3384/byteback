@@ -69,12 +69,16 @@ void VirtualRaid::write(size_t, const std::vector<uint8_t>&) {
 }
 
 uint64_t VirtualRaid::capacity() const {
+    // Block-floored usable extent per member: a striped array never exposes
+    // the tail of a partial last block — real controllers report floored
+    // capacity and the dead zone is unreachable (reads throw honestly).
+    const uint64_t usable = (disk_size_ / block_size_) * block_size_;
     switch (level_) {
-        case RaidLevel::RAID0: return disk_size_ * num_disks_;
+        case RaidLevel::RAID0: return usable * num_disks_;
         case RaidLevel::RAID1: return disk_size_;
-        case RaidLevel::RAID5: return disk_size_ * (num_disks_ - 1);
-        case RaidLevel::RAID6: return disk_size_ * (num_disks_ - 2);
-        case RaidLevel::RAID10: return disk_size_ * (num_disks_ / 2);
+        case RaidLevel::RAID5: return usable * (num_disks_ - 1);
+        case RaidLevel::RAID6: return usable * (num_disks_ - 2);
+        case RaidLevel::RAID10: return usable * (num_disks_ / 2);
     }
     return 0;
 }

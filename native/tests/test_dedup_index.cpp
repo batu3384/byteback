@@ -156,3 +156,18 @@ TEST(DedupIndex, MarksOverlappingCarveAgainstPriorCarve) {
     EXPECT_TRUE(idx.markDuplicate(second));
     EXPECT_EQ(second.source, "carver_duplicate");
 }
+
+// P0-6: identical content at disjoint sectors is a duplicate even when the
+// sector-overlap heuristics see nothing.
+TEST(DedupIndex, SameContentHashAtDisjointSectorsIsDuplicate) {
+    DedupIndex idx;
+    FileRecord first = makeRec("carver", 1000, 1010);
+    first.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    EXPECT_FALSE(idx.markDuplicate(first));
+
+    FileRecord second = makeRec("carver", 5000, 5010);
+    second.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    EXPECT_TRUE(idx.markDuplicate(second));
+    EXPECT_EQ(second.source, "carver_duplicate");
+    EXPECT_EQ(second.path, "/dup_of/content");
+}

@@ -8,6 +8,7 @@ void DedupIndex::clear() {
     carveEntries_.clear();
     metaPrefixMaxEnd_.clear();
     carvePrefixMaxEnd_.clear();
+    contentHashes_.clear();
     sorted_ = true;
     carveSorted_ = true;
 }
@@ -136,6 +137,14 @@ bool DedupIndex::overlapsExistingCarve(const FileRecord& fr) {
 bool DedupIndex::markDuplicate(FileRecord& fr) {
     if (!isCarveSource(fr.source)) return false;
     ensureSorted();
+    // P0-6: exact-content dedup beats sector-overlap heuristics — identical
+    // payloads at different sectors are duplicates regardless of layout.
+    if (!fr.contentHash.empty() && contentHashes_.count(fr.contentHash)) {
+        fr.source = "carver_duplicate";
+        fr.path = "/dup_of/content";
+        fr.confidence = std::min(fr.confidence, 30);
+        return true;
+    }
     if (overlapsExistingCarve(fr)) {
         fr.source = "carver_duplicate";
         fr.path = "/dup_of/carve";
@@ -165,6 +174,7 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
     tracked.name = fr.name;
     carveEntries_.push_back(std::move(tracked));
     carveSorted_ = false;
+    if (!fr.contentHash.empty()) contentHashes_.insert(fr.contentHash);
     return false;
 }
 

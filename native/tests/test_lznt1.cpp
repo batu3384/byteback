@@ -134,3 +134,60 @@ TEST(Lznt1, OutputCappedAtCapacity) {
     EXPECT_EQ(n, 16);
     EXPECT_EQ(std::memcmp(dst, "ABCDEFGH", 8), 0);
 }
+
+// ---- Real-Windows fixture: ntdll!RtlCompressBuffer produces genuine LZNT1
+// streams (real chunk-header decisions, real displacement splits) — the gap
+// every prior test had to work around with hand-built streams. ----
+#ifdef _WIN32
+#include <windows.h>
+
+TEST(Lznt1, DecompressesRealRtlCompressBufferOutput) {
+    using RtlCompressBufferFn = LONG(WINAPI *)(USHORT, PUCHAR, ULONG, PUCHAR, ULONG, ULONG, PULONG, PVOID);
+    using RtlGetWorkspaceFn = LONG(WINAPI *)(USHORT, PULONG, PULONG);
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    ASSERT_NE(ntdll, nullptr);
+    auto rtlCompress = reinterpret_cast<RtlCompressBufferFn>(
+        reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlCompressBuffer")));
+    auto rtlWorkspace = reinterpret_cast<RtlGetWorkspaceFn>(
+        reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetCompressionWorkSpaceSize")));
+    ASSERT_NE(rtlCompress, nullptr);
+    ASSERT_NE(rtlWorkspace, nullptr);
+
+    // 256 KB of realistic, highly compressible content: repeated registry-ish
+    // text with just enough variation to exercise literal + back-ref tokens.
+    std::vector<uint8_t> original(256 * 1024);
+    const char* line = "SOFTWARE\Microsoft\Windows\CurrentVersion\Run; value=byteback; type=REG_SZ\r\n";
+    size_t w = 0;
+    while (w < original.size()) {
+        for (size_t i = 0; i < strlen(line) && w < original.size(); ++i) {
+            original[w++] = static_cast<uint8_t>(line[i]);
+        }
+        if (w < original.size()) original[w++] = static_cast<uint8_t>('0' + (w / strlen(line)) % 10);
+    }
+
+    ULONG workspaceSize = 0, fragmentSize = 0;
+    ASSERT_EQ(rtlWorkspace(COMPRESSION_FORMAT_LZNT1, &workspaceSize, &fragmentSize), 0);
+
+    std::vector<uint8_t> workspace(workspaceSize);
+    std::vector<uint8_t> compressed(original.size() + 4096);
+    ULONG compressedSize = 0;
+    ASSERT_EQ(rtlCompress(COMPRESSION_FORMAT_LZNT1, original.data(),
+                          static_cast<ULONG>(original.size()), compressed.data(),
+                          static_cast<ULONG>(compressed.size()), 4096 /* chunk size */,
+                          &compressedSize, workspace.data()),
+              0);
+    ASSERT_GT(compressedSize, 0u);
+    ASSERT_LT(compressedSize, original.size()); // must actually compress
+
+    // Our decompressor must reproduce the original byte-for-byte from a
+    // genuine Windows-produced stream.
+    std::vector<uint8_t> out(original.size() + 4096);
+    const int n = lznt1Decompress(compressed.data(), compressedSize, out.data(),
+                                  static_cast<size_t>(out.size()));
+    ASSERT_GT(n, 0);
+    EXPECT_EQ(static_cast<size_t>(n), original.size());
+    EXPECT_EQ(std::memcmp(out.data(), original.data(), original.size()), 0);
+}
+
+#endif

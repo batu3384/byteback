@@ -191,8 +191,10 @@ TEST(VirtualRaidIo, Raid6QSyndromeReconstructsWhenPAndDataFail) {
 }
 
 // RAID0 tail: when a member's size is not a multiple of block_size_, reads of
-// valid tail bytes used to throw "Read exceeds RAID capacity" because the
-// guard tested the whole remaining block instead of the requested length.
+// valid tail bytes inside full blocks used to throw "Read exceeds RAID
+// capacity" because the guard tested the whole remaining block instead of the
+// requested length. The dead zone AFTER the floored capacity still throws —
+// real controllers never expose a partial-block tail either.
 TEST(VirtualRaidIo, Raid0ReadsLastTailByteWithoutFalseThrow) {
     constexpr size_t kMember = 3 * 512;  // 1536, not a multiple of kBlock
     constexpr size_t kBlock = 1024;
@@ -202,12 +204,16 @@ TEST(VirtualRaidIo, Raid0ReadsLastTailByteWithoutFalseThrow) {
         m1[i] = static_cast<uint8_t>((i + 0x80) & 0xFF);
     }
     auto raid = VirtualRaid::fromImages(RaidLevel::RAID0, {m0, m1}, kBlock);
-    // Last valid logical byte = block 2 slot 0, offset 511 = member 0 [1535].
-    auto out = raid.read(2 * kBlock + 511, 1);
+    // Floored capacity = floor(1536/1024)*1024*2 = 2048 — the dead-zone tail
+    // (partial last block) is unreachable, matching real controllers.
+    EXPECT_EQ(raid.capacity(), 2048u);
+    // Last valid logical byte = block 1, disk 1 offset 1023 -> m1[1023].
+    auto out = raid.read(2 * kBlock - 1, 1);
     ASSERT_EQ(out.size(), 1u);
-    EXPECT_EQ(out[0], static_cast<uint8_t>(511));
-    // Two bytes would cross the member end — that must still throw.
-    EXPECT_ANY_THROW((raid.read(2 * kBlock + 511, 2)));
+    EXPECT_EQ(out[0], static_cast<uint8_t>(127));
+    // Dead zone and any cross-capacity read throw honestly.
+    EXPECT_ANY_THROW((raid.read(2048, 1)));
+    EXPECT_ANY_THROW((raid.read(2047, 2)));
 }
 
 // Out-of-capacity reads must throw on every level; RAID6 previously returned

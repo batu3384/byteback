@@ -228,13 +228,17 @@ inline int lznt1Decompress(const uint8_t* src, size_t srcSize,
                                  (static_cast<uint16_t>(src[sp + 1]) << 8);
                 sp += 2;
 
-                // The displacement field width grows with output position:
-                // u = smallest power of two strictly greater than (dp - chunkBase),
-                // minimum 16. dispBits = log2(u).
+                // The displacement field width grows with output position, but
+                // the boundary is computed from (pos - 1), per MS-XCA 2.5
+                // ("iterator = uncompressed_data_block_offset - 1; while
+                // iterator >= 0x10: shift++"). Halving pos itself instead of
+                // pos - 1 yields one bit too many at exact power-of-two
+                // positions (16, 512, 1024, 2048, ...) and rejects genuine
+                // ntdll!RtlCompressBuffer streams.
                 size_t posInChunk = dp - chunkBase;
-                size_t u = 0x10;
+                size_t iter = posInChunk > 0 ? posInChunk - 1 : 0;
                 int dispBits = 4;
-                while (u <= posInChunk) { u <<= 1; ++dispBits; }
+                while (iter >= 0x10) { ++dispBits; iter >>= 1; }
                 // Guard: displacement field must fit in 16 bits with room for length.
                 if (dispBits > 12) return -1;
 
