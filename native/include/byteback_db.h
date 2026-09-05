@@ -22,6 +22,9 @@ struct FileRecord {
     // 0 for sector-aligned records (NTFS/FAT runs); carve records carry the
     // real in-sector offset so recovery reads the exact header, not the floor.
     uint64_t startByteOffset = 0;
+    // P0-6 content dedup: MD5 of the first 64 KB of payload (carve records
+    // only — computed from the already-in-memory probe). Empty = unknown.
+    std::string contentHash;
 
     struct DataRun {
         uint64_t startSector;

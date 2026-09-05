@@ -31,6 +31,7 @@ export interface FileRecord {
   createdAt?: number
   modifiedAt?: number
   runs?: DataRun[]
+  contentHash?: string
 }
 
 export interface SmartStatus {

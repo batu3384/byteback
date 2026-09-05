@@ -81,6 +81,7 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     fileObj.Set("createdAt", Napi::Number::New(env, static_cast<double>(fr.createdAt)));
     fileObj.Set("modifiedAt", Napi::Number::New(env, static_cast<double>(fr.modifiedAt)));
     fileObj.Set("runs", RunsToJs(env, fr.runs));
+    fileObj.Set("contentHash", jsUtf8(env, fr.contentHash));
     return fileObj;
 }
 

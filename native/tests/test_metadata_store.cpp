@@ -412,3 +412,22 @@ TEST_F(MetadataStoreTest, SizeAndDateFilters) {
     f = FileListFilter{}; f.dateFrom = 1650000000;
     EXPECT_EQ(store_.getFileCount(scanId, f), 3);
 }
+
+// P0-6: content hash must survive a DB round trip.
+TEST_F(MetadataStoreTest, ContentHashRoundTrip) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "dup.bin";
+    r.sizeBytes = 128;
+    r.source = "carver";
+    r.contentHash = "abc123";
+    int64_t id = store_.insertFile(scanId, r);
+    ASSERT_GT(id, 0);
+
+    auto loaded = store_.getFileById(id, scanId);
+    EXPECT_EQ(loaded.contentHash, "abc123");
+
+    auto page = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].contentHash, "abc123");
+}
