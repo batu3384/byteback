@@ -43,3 +43,54 @@ describe('localizeNote', () => {
     expect(out).not.toContain('{a}')
   })
 })
+
+// Lane-5 sweep: new error-surface keys must exist in both locales and resolve.
+describe('lane-5 sweep keys', () => {
+  beforeAll(() => setLang('tr'))
+
+  const keys = [
+    'common.close',
+    'smart.na',
+    'tl.loadFailed',
+    'case.loadFailed',
+    'shred.drivesFailed',
+    'raid.drivesFailed',
+    'raid.failMemberFailed',
+    'raid.slot',
+    'raid.raid0',
+    'raid.raid1',
+    'raid.raid5',
+    'raid.raid10',
+    'report.generateFailed',
+  ] as const
+
+  it.each(keys)('resolves %s in tr and en', (key) => {
+    setLang('tr')
+    const tr = t(key)
+    expect(tr).not.toBe(key)
+    setLang('en')
+    const en = t(key)
+    expect(en).not.toBe(key)
+  })
+
+  it('formats the raid slot label', () => {
+    setLang('tr')
+    expect(tFormat('raid.slot', { n: '2' })).toBe('Yuva 2')
+    setLang('en')
+    expect(tFormat('raid.slot', { n: '2' })).toBe('Slot 2')
+  })
+
+  it('formats the report generation failure', () => {
+    setLang('tr')
+    expect(tFormat('report.generateFailed', { err: 'x' })).toBe('Rapor oluşturulamadı: x')
+    setLang('en')
+    expect(tFormat('report.generateFailed', { err: 'x' })).toBe('Could not generate the report: x')
+  })
+
+  it('report.allocatedTd tr slot is Turkish, not the EN copy', () => {
+    setLang('tr')
+    expect(t('report.allocatedTd')).toContain('Tahsisli')
+    setLang('en')
+    expect(t('report.allocatedTd')).toContain('Allocated')
+  })
+})

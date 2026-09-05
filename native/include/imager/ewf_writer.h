@@ -51,6 +51,13 @@ public:
     // Emit the table/digest/done sections and close the file.
     bool finish();
 
+    // Cancelled acquisition: close the current segment with its tables and
+    // patch the segment headers so the partial image stays readable, but
+    // deliberately omit the digest/done sections — a truncated copy must
+    // never carry a checksum that presents it as complete. md5Hex() stays
+    // empty after abort().
+    bool abort();
+
     bool isOpen() const { return outFile_.is_open(); }
     // MD5 over the image data (hex). Populated by finish(); empty before.
     std::string md5Hex() const { return finishedMd5Hex_; }
@@ -64,6 +71,7 @@ private:
     bool startSegment(int number, bool first);
     bool closeSegment(bool last);
     bool rotateSegment();
+    void patchAllSegmentHeaders();
     std::string segmentPathFor(int number) const;
     void patchSegmentFileHeader(const std::string& path, uint16_t number, uint16_t total);
 

@@ -45,10 +45,12 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
   const [page, setPage] = useState(0)
   const [filter, setFilter] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   const fetchTimeline = useCallback(async (p: number, f: string) => {
     if (scanId < 0) return
     setLoading(true)
+    setLoadError('')
     try {
       if (window.api?.getTimelineEvents) {
         const res = await window.api.getTimelineEvents(scanId, p * PAGE_SIZE, PAGE_SIZE, f)
@@ -57,10 +59,11 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
       }
     } catch (err) {
       console.error(err)
+      setLoadError(t('tl.loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [scanId])
+  }, [scanId, t])
 
   useEffect(() => {
     setPage(0)
@@ -119,9 +122,13 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
 
       <div className="timeline-content glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
         {loading ? (
-          <div style={{ padding: '60px', textAlign: 'center' }}>
+          <div role="status" style={{ padding: '60px', textAlign: 'center' }}>
             <RefreshCw size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
             <p style={{ color: 'var(--text-muted)' }}>{t('tl.loading')}</p>
+          </div>
+        ) : loadError ? (
+          <div role="alert" style={{ padding: '60px', textAlign: 'center', color: 'var(--alert-red)' }}>
+            {loadError}
           </div>
         ) : events.length === 0 ? (
           <div style={{ padding: '60px', textAlign: 'center' }}>

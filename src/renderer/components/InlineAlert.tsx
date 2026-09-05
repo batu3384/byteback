@@ -1,5 +1,6 @@
 import React from 'react'
 import { AlertCircle, CheckCircle, AlertTriangle, X } from 'lucide-react'
+import { useI18n } from '../i18n'
 
 type AlertVariant = 'error' | 'warning' | 'success' | 'info'
 
@@ -32,6 +33,7 @@ export default function InlineAlert({
   onDismiss,
   role = variant === 'error' ? 'alert' : 'status',
 }: InlineAlertProps): React.ReactElement {
+  const { t } = useI18n()
   const c = colors[variant]
   return (
     <div
@@ -57,7 +59,7 @@ export default function InlineAlert({
         <button
           type="button"
           className="icon-btn"
-          aria-label="Kapat"
+          aria-label={t('common.close')}
           onClick={onDismiss}
           style={{ flexShrink: 0, padding: '4px' }}
         >

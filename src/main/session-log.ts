@@ -1,7 +1,10 @@
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'fs'
+import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { powerSaveBlocker } from 'electron'
 import { summarizeSessionLines } from '../shared/session-log'
+
+// Long forensic scans run for days; without a cap session.log grows forever.
+const MAX_SESSION_LOG_BYTES = 5 * 1024 * 1024
 
 let logPath = ''
 let scanLive = false
@@ -52,6 +55,13 @@ export function appendSessionLog(event: string, detail = ''): void {
   const line = `${new Date().toISOString()} ${event}${detail ? ` ${detail}` : ''}\n`
   try {
     mkdirSync(dirname(path), { recursive: true })
+    try {
+      if (existsSync(path) && statSync(path).size > MAX_SESSION_LOG_BYTES) {
+        renameSync(path, `${path}.old`)
+      }
+    } catch {
+      /* rotation best-effort — never block logging */
+    }
     appendFileSync(path, line)
   } catch {
     /* disk full / locked — do not throw from logging */

@@ -33,7 +33,10 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           capacity: `${(d.sizeBytes / (1024 ** 3)).toFixed(2)} GB`
         }));
         setAvailableDisks(disks);
-      }).catch(console.error);
+      }).catch((e: unknown) => {
+        console.error(e);
+        setRaidNotice({ variant: 'error', message: t('raid.drivesFailed') });
+      });
     }
   }, []);
 
@@ -69,16 +72,23 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const buildRaid = async () => {
     if (raidArray.length < 2) return;
     setIsBuilding(true);
-    if (window.api && window.api.reconstructRaid) {
-      // Map the UI selection to the numeric RaidLevel enum used by the native
-      // engine (virtual_raid.h: RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4).
-      // Pass the drives in their user-ordered slot order, since stripe/parity
-      // layout depends on it.
-      const raidLevelMap: Record<string, number> = { 'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2, 'RAID 6': 3, 'RAID 10': 4 };
-      const raidLevel = raidLevelMap[raidType] ?? 2;
-      const driveIndices = raidArray.map(d => Number(d.id));
-      const res = await window.api.reconstructRaid(driveIndices, raidLevel);
+    // Map the UI selection to the numeric RaidLevel enum used by the native
+    // engine (virtual_raid.h: RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4).
+    // Pass the drives in their user-ordered slot order, since stripe/parity
+    // layout depends on it.
+    const raidLevelMap: Record<string, number> = { 'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2, 'RAID 6': 3, 'RAID 10': 4 };
+    const raidLevel = raidLevelMap[raidType] ?? 2;
+    const driveIndices = raidArray.map(d => Number(d.id));
+    if (!(window.api && window.api.reconstructRaid)) {
       setIsBuilding(false);
+      setRaidNotice({
+        variant: 'error',
+        message: t('raid.noBackend'),
+      });
+      return;
+    }
+    try {
+      const res = await window.api.reconstructRaid(driveIndices, raidLevel);
       if (res && res.success) {
         setAssembled(true);
         setFailedSlots(new Set());
@@ -96,12 +106,15 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           message: tFormat('raid.buildFailed', { type: raidType }) + why,
         });
       }
-    } else {
-      setIsBuilding(false);
+    } catch (e: unknown) {
+      setAssembled(false);
+      const msg = e instanceof Error ? e.message : String(e);
       setRaidNotice({
         variant: 'error',
-        message: t('raid.noBackend'),
+        message: tFormat('raid.buildFailed', { type: raidType }) + tFormat('raid.errorSuffix', { err: msg }),
       });
+    } finally {
+      setIsBuilding(false);
     }
   };
 
@@ -188,11 +201,11 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 onChange={(e) => setRaidType(e.target.value)}
                 style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '6px 12px', borderRadius: '6px' }}
               >
-                <option value="RAID 0">RAID 0 (Stripe)</option>
-                <option value="RAID 1">RAID 1 (Mirror)</option>
-                <option value="RAID 5">RAID 5 (Parity)</option>
+                <option value="RAID 0">{t('raid.raid0')}</option>
+                <option value="RAID 1">{t('raid.raid1')}</option>
+                <option value="RAID 5">{t('raid.raid5')}</option>
                 <option value="RAID 6">{t('raid.raid6')}</option>
-                <option value="RAID 10">RAID 10 (Mirror+Stripe)</option>
+                <option value="RAID 10">{t('raid.raid10')}</option>
               </select>
             </div>
           </div>
@@ -209,7 +222,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   borderRadius: '8px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: '16px'
                 }}
               >
-                <div style={{ background: '#b700ff', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>Slot {index}</div>
+                <div style={{ background: '#b700ff', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>{tFormat('raid.slot', { n: String(index) })}</div>
                 <HardDrive size={24} color="white" />
                 <div className="disk-info" style={{ flex: 1 }}>
                   <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
@@ -224,8 +237,14 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                       disabled={failedSlots.has(index)}
                       onChange={async () => {
                         if (!window.api?.failRaidDisk) return;
-                        const ok = await window.api.failRaidDisk(index);
-                        if (ok) setFailedSlots(prev => new Set(prev).add(index));
+                        try {
+                          const ok = await window.api.failRaidDisk(index);
+                          if (ok) setFailedSlots(prev => new Set(prev).add(index));
+                          else setRaidNotice({ variant: 'error', message: t('raid.failMemberFailed') });
+                        } catch (e: unknown) {
+                          console.error(e);
+                          setRaidNotice({ variant: 'error', message: t('raid.failMemberFailed') });
+                        }
                       }}
                     />
                     {t('raid.failedMember')}

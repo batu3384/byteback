@@ -588,6 +588,7 @@ bool readRecordPrefix(DiskReader& reader, const FileRecord& record, std::vector<
 
     auto appendFromRuns = [&](const std::vector<FileRecord::DataRun>& runs) -> bool {
         uint64_t filled = 0;
+        bool firstRun = true;
         for (const auto& run : runs) {
             if (filled >= want) break;
             if (run.startSector == UINT64_MAX) {
@@ -597,12 +598,23 @@ bool readRecordPrefix(DiskReader& reader, const FileRecord& record, std::vector<
                 filled += take;
                 continue;
             }
+            uint64_t runStartBytes = run.startSector * sectorSize;
             uint64_t runBytes = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+            // BGC/carve records start startByteOffset bytes into the first
+            // run (same skip recoverFile applies) or the preview shows the
+            // sector-floor garbage the validated stitch does not contain.
+            if (firstRun && record.startByteOffset > 0) {
+                const uint64_t skip = std::min<uint64_t>(record.startByteOffset, runBytes);
+                runStartBytes += skip;
+                runBytes -= skip;
+            }
+            firstRun = false;
             uint64_t take = std::min(runBytes, want - filled);
             if (take == 0) continue;
             uint32_t readSize = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
             std::vector<uint8_t> buf(readSize);
-            auto res = reader.readSectors(run.startSector * sectorSize, readSize, buf.data());
+            // readBytes: byte-exact starts (mid-sector carves) included.
+            auto res = reader.readBytes(runStartBytes, readSize, buf.data());
             if (!res.success || res.bytesRead == 0) return false;
             size_t copy = std::min(static_cast<size_t>(take), static_cast<size_t>(res.bytesRead));
             out.insert(out.end(), buf.begin(), buf.begin() + copy);
@@ -616,10 +628,11 @@ bool readRecordPrefix(DiskReader& reader, const FileRecord& record, std::vector<
     }
 
     if (record.startSector > 0 || record.sizeBytes > 0) {
-        uint64_t start = record.startSector * sectorSize;
+        // Carved records: byte-exact start = sector floor + startByteOffset.
+        uint64_t start = record.startSector * sectorSize + record.startByteOffset;
         uint32_t readSize = static_cast<uint32_t>(((want + sectorSize - 1) / sectorSize) * sectorSize);
         std::vector<uint8_t> buf(readSize);
-        auto res = reader.readSectors(start, readSize, buf.data());
+        auto res = reader.readBytes(start, readSize, buf.data());
         if (!res.success || res.bytesRead == 0) return false;
         size_t copy = std::min(static_cast<size_t>(want), static_cast<size_t>(res.bytesRead));
         out.assign(buf.begin(), buf.begin() + copy);

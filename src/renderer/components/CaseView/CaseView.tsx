@@ -22,8 +22,13 @@ function CaseView(): React.ReactElement {
   const [nsrlError, setNsrlError] = useState('')
 
   const reload = async () => {
-    if (window.api?.getCaseInfo) setInfo(await window.api.getCaseInfo())
-    if (window.api?.getNsrlStats) setNsrl(await window.api.getNsrlStats())
+    try {
+      if (window.api?.getCaseInfo) setInfo(await window.api.getCaseInfo())
+      if (window.api?.getNsrlStats) setNsrl(await window.api.getNsrlStats())
+    } catch (err) {
+      console.error(err)
+      setNsrlError(t('case.loadFailed'))
+    }
   }
 
   useEffect(() => {
@@ -37,18 +42,23 @@ function CaseView(): React.ReactElement {
       setSaveError(t('case.engineNotReady'))
       return
     }
-    const ok = await window.api.setCaseInfo({
-      caseNumber: info.caseNumber,
-      investigator: info.investigator,
-      agency: info.agency,
-      notes: info.notes,
-    })
-    if (!ok) {
+    try {
+      const ok = await window.api.setCaseInfo({
+        caseNumber: info.caseNumber,
+        investigator: info.investigator,
+        agency: info.agency,
+        notes: info.notes,
+      })
+      if (!ok) {
+        setSaveError(t('case.saveFailed'))
+        return
+      }
+      setSaved(true)
+      await reload()
+    } catch (err) {
+      console.error(err)
       setSaveError(t('case.saveFailed'))
-      return
     }
-    setSaved(true)
-    await reload()
   }
 
   const handleNsrl = async () => {
@@ -57,7 +67,14 @@ function CaseView(): React.ReactElement {
       setNsrlError(t('case.engineNotReady'))
       return
     }
-    const result = await window.api.pickAndLoadNsrl()
+    let result
+    try {
+      result = await window.api.pickAndLoadNsrl()
+    } catch (err) {
+      console.error(err)
+      setNsrlError(t('case.nsrlLoadFailed'))
+      return
+    }
     if (!result) return
     if (!result.ok) {
       setNsrlError(t('case.nsrlLoadFailed'))
@@ -121,7 +138,7 @@ function CaseView(): React.ReactElement {
 
         <div className="case-actions">
           <button type="submit" className="btn-primary">{t('case.save')}</button>
-          {saved && <span className="case-saved">{t('case.saved')}</span>}
+          {saved && <span className="case-saved" role="status">{t('case.saved')}</span>}
         </div>
       </form>
 

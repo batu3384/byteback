@@ -36,6 +36,9 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
       }
     } catch (err) {
       console.error(err)
+      // Drop stale readings so the read-failed panel becomes the visible
+      // error surface instead of silently showing old data.
+      setSmartData(null)
     } finally {
       setLoading(false)
     }
@@ -96,7 +99,7 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
               </p>
             </div>
             <div style={{ fontSize: '2rem', fontWeight: 700, color: isHealthy && !hasWarnings ? 'var(--success-green)' : hasWarnings ? 'var(--warning-yellow)' : 'var(--alert-red)' }}>
-              {smartData.healthScore || 'N/A'}
+              {smartData.healthScore || t('smart.na')}
             </div>
           </div>
           {!smartData.isNvme && (

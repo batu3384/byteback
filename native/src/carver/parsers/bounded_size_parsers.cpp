@@ -74,7 +74,9 @@ StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
             const uint32_t cnt = rd32(ent + 4, le);
             if (type != 3 && type != 4) continue; // SHORT / LONG only
             const size_t vsz = (type == 3) ? 2u : 4u;
-            const uint64_t total = 4ull * cnt;
+            // TIFF 6.0: the value is stored inline in bytes 8..11 when it fits
+            // in 4 bytes — for SHORT that means count <= 2, not count <= 1.
+            const uint64_t total = vsz * 1ull * cnt;
             if (total > size) return r;
             const uint8_t* val = (total <= 4) ? ent + 8 : data + rd32(ent + 8, le);
             if (val + total > data + size) return r;
@@ -95,8 +97,8 @@ StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
                     const uint32_t c2 = rd32(e2 + 4, le);
                     if (c2 > 4096) continue;
                     const size_t vsz2 = (ty2 == 3) ? 2u : 4u;
-                    const uint8_t* v2 = (4ull * c2 <= 4) ? e2 + 8 : data + rd32(e2 + 8, le);
-                    if (v2 + 4ull * c2 > data + size) continue;
+                    const uint8_t* v2 = (vsz2 * 1ull * c2 <= 4) ? e2 + 8 : data + rd32(e2 + 8, le);
+                    if (v2 + vsz2 * 1ull * c2 > data + size) continue;
                     for (uint32_t k = 0; k < c2; ++k)
                         counts[k] = (vsz2 == 2) ? rd16(v2 + 2 * k, le) : rd32(v2 + 4 * k, le);
                     ncounts = c2;
@@ -252,9 +254,12 @@ uint32_t oggCrc32(const uint8_t* data, size_t len) {
 
 // OGG: walk pages until the EOS flag or a broken capture. Every page's CRC
 // is verified — junk after a magic must not validate as a "page walk".
-// W2: at most three bulk fetches per page (header+lacing in one read, body
-// in one read) under a global fetch budget — per-byte lacing reads turned a
-// large stream into millions of sector reads.
+// W2: at most three bulk fetches per page (header, lacing, body in separate
+// exact-size reads) under a global fetch budget — per-byte lacing reads
+// turned a large stream into millions of sector reads. NB: the header and
+// lacing are fetched separately so a valid page flush against the image end
+// never needs an overfetch past the end (past-end reads fail on raw/physical
+// backends and would drop the trailing page).
 StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
                                       uint64_t probeAbsOffset, uint64_t maxBytes,
                                       const BoxHeaderReader& readAt) {
@@ -267,16 +272,18 @@ StructuralParseResult parseOggBounded(const uint8_t* probe, size_t probeSize,
     uint64_t off = 0;
     uint64_t end = 0;
     while (off + 27 <= maxBytes) {
-        // Header + maximal lacing table in one fetch.
+        // Header, then lacing table, in exact-size fetches.
         uint8_t head[27 + 255];
         if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
-                     probeAbsOffset + off, sizeof(head), head)) break;
+                     probeAbsOffset + off, 27, head)) break;
         const uint8_t* hdr = head;
         if (std::memcmp(hdr, "OggS", 4) != 0) break; // slack or garbage after the stream
         if (hdr[4] != 0) break;                      // stream structure version
         if (hdr[5] & 0xF8) break;                    // reserved flag bits set
         const uint32_t nseg = hdr[26];
         if (nseg == 0) break;
+        if (!fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                     probeAbsOffset + off + 27, nseg, head + 27)) break;
         uint64_t body = 0;
         for (uint32_t i = 0; i < nseg; ++i) body += head[27 + i];
         const uint64_t pageLen = 27 + nseg + body;

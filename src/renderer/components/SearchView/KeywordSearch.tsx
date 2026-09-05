@@ -180,7 +180,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         </div>
 
         {regexError && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--alert-red)', fontSize: '0.85rem' }}>
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--alert-red)', fontSize: '0.85rem' }}>
             <AlertCircle size={16} /> {regexError}
           </div>
         )}

@@ -77,3 +77,28 @@ test('language toggle switches the sidebar labels and back', async () => {
   await expect(win.getByTestId('nav-results')).toContainText('Sonuçlar')
   await closeApp(launched)
 })
+
+test('report page shows the audit chain verification status', async () => {
+  const launched = await launchApp()
+  const { win } = launched
+
+  const scanId = await win.evaluate(() => window.api.seedScanFixture([
+    { name: 'evidence.docx', path: 'Users/bat/Documents/evidence.docx', sizeBytes: 120_000, confidence: 90, status: 0, source: 'ntfs_mft', category: 'Document', startSector: 100, endSector: 300 },
+  ]))
+  expect(scanId).toBeGreaterThan(0)
+
+  await win.reload()
+  await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
+
+  // Completed scan unlocks the report page.
+  await expect(win.getByTestId('nav-report')).toBeEnabled()
+  await win.getByTestId('nav-report').click()
+
+  // The custody/verify card must resolve to a real chain verdict, not stay
+  // stuck on "Doğrulanıyor…".
+  const status = win.getByTestId('report-chain-status')
+  await expect(status).toBeVisible()
+  await expect(status).toContainText(/Doğrulandı|BOZULDU/)
+
+  await closeApp(launched)
+})

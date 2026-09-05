@@ -204,6 +204,9 @@ function App(): React.ReactElement {
     setActivePage('scan')
 
     if (!window.api?.startScan) {
+      // Release the hydration gate — a failed attempt must not block startup
+      // hydration of the last usable scan for the rest of the session.
+      scanStartAttemptRef.current--
       failScan('Tarama API\'si kullanılamıyor. Native backend yüklü mü kontrol edin.')
       return
     }
@@ -214,10 +217,14 @@ function App(): React.ReactElement {
           setActiveScanId(id)
           startScanTimer()
         } else {
+          scanStartAttemptRef.current--
           failScan('Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.')
         }
       })
-      .catch((e: Error) => failScan(`Tarama hatası: ${e.message}`))
+      .catch((e: Error) => {
+        scanStartAttemptRef.current--
+        failScan(`Tarama hatası: ${e.message}`)
+      })
   }
 
   const handleStartRaidScan = (scanType: string) => {
@@ -234,6 +241,7 @@ function App(): React.ReactElement {
     setScanElapsed(0)
     setActivePage('scan')
     if (!window.api?.startScan) {
+      scanStartAttemptRef.current--
       failScan('RAID tarama API\'si kullanılamıyor.')
       return
     }
@@ -243,10 +251,14 @@ function App(): React.ReactElement {
           setActiveScanId(id)
           startScanTimer()
         } else {
+          scanStartAttemptRef.current--
           failScan('RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.')
         }
       })
-      .catch((e: Error) => failScan(`RAID tarama hatası: ${e.message}`))
+      .catch((e: Error) => {
+        scanStartAttemptRef.current--
+        failScan(`RAID tarama hatası: ${e.message}`)
+      })
   }
 
   const handleOpenPausedResults = (state: ScanState) => {

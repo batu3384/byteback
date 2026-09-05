@@ -167,6 +167,9 @@ export function getEngine(): BytebackEngine {
     }
     return engine
   } catch (e: any) {
+    // If the addon loaded but failed validation (getVersion check), `engine` is
+    // already assigned — reset it so callers get loadError, not a broken engine.
+    engine = null
     loadError = new Error(
       `Native engine yüklenemedi. Önce "npm run build:native" komutunu çalıştırdığınızdan emin olun. Detay: ${e?.message ?? e}`,
     )

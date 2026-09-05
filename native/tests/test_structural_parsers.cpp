@@ -116,3 +116,31 @@ TEST(StructuralParsers, Mp4RejectsGarbage) {
     auto r = parseMp4Mov(g, sizeof(g));
     EXPECT_FALSE(r.valid);
 }
+
+// Two-strip TIFF whose StripOffsets/StripByteCounts are SHORT arrays with
+// count=2: per TIFF 6.0 the 2-SHORT value (4 bytes) is stored INLINE in the
+// entry, not at an offset. The parser must size the value field by the TYPE
+// (2 bytes for SHORT), not always 4.
+TEST(StructuralParsers, TiffInlineShortStripArraysBoundSize) {
+    std::vector<uint8_t> b;
+    // Header: II, 42, IFD0 at 8.
+    b.insert(b.end(), {'I', 'I', 0x2A, 0x00});
+    appendLe32(b, 8);
+    b.push_back(2); b.push_back(0); // 2 entries
+    auto entry = [&](uint16_t tag, uint16_t type, uint32_t count,
+                     uint16_t v0, uint16_t v1) {
+        appendLe16(b, tag);
+        appendLe16(b, type);
+        appendLe32(b, count);
+        appendLe16(b, v0);
+        appendLe16(b, v1); // inline SHORT[2] fills bytes 8..11
+    };
+    entry(273, 3, 2, 100, 50); // StripOffsets SHORT[2] inline
+    entry(279, 3, 2, 40, 30);  // StripByteCounts SHORT[2] inline
+    appendLe32(b, 0);          // next IFD
+    b.resize(140, 0xAB);       // strip payload the offsets point into
+
+    auto r = parseTiff(b.data(), b.size());
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.size, 140u); // max(100+40, 50+30)
+}
