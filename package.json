@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:native": "cmake --build native/build --config Release --target byteback_tests && ctest --test-dir native/build -C Release --output-on-failure",
+    "test:native": "cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON && cmake --build native/build --config Release --target byteback_tests && ctest --test-dir native/build -C Release --output-on-failure",
     "test:e2e": "playwright test",
     "dist": "npm run build && electron-builder --win nsis --x64"
   },
