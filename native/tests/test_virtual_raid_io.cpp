@@ -98,3 +98,49 @@ TEST(VirtualRaidIo, Raid6RecoversAfterTwoDataDiskFailures) {
     raid.fail_disk(3);
     EXPECT_ANY_THROW(raid.read(0, logicalSize));
 }
+
+// AR2 follow-up: P-disk-only failure must route through the Q-syndrome
+// branch (D = gfDiv(Q', g^slot)) for the stripe(s) where the failed member
+// is P — previously that threw. A single failed physical disk is P in some
+// stripes, a data member in others, and Q in the rest: all three paths must
+// produce byte-identical reads.
+TEST(VirtualRaidIo, Raid6RecoversWhenPDiskFailsAlone) {
+    constexpr size_t N = 4;
+    constexpr size_t BS = 4096;
+    constexpr size_t STRIPES = 6;
+    const size_t logicalSize = (N - 2) * STRIPES * BS;
+
+    std::vector<std::vector<uint8_t>> images(N, std::vector<uint8_t>(STRIPES * BS, 0));
+    std::vector<uint8_t> logical(logicalSize);
+
+    for (uint64_t s = 0; s < STRIPES; ++s) {
+        const auto pq = raid_layout::raid6Disks(s, static_cast<uint32_t>(N));
+        std::vector<std::vector<uint8_t>> data(N - 2, std::vector<uint8_t>(BS));
+        for (size_t j = 0; j < N - 2; ++j) {
+            const uint32_t disk = raid_layout::raid6DataDisk(s, static_cast<uint32_t>(j), static_cast<uint32_t>(N));
+            for (size_t b = 0; b < BS; ++b) {
+                data[j][b] = static_cast<uint8_t>((s * 41 + j * 13 + b * 3) & 0xFF);
+            }
+            std::memcpy(images[disk].data() + s * BS, data[j].data(), BS);
+            std::memcpy(logical.data() + (s * (N - 2) + j) * BS, data[j].data(), BS);
+        }
+        for (size_t b = 0; b < BS; ++b) {
+            uint8_t p = 0, q = 0;
+            for (size_t j = 0; j < N - 2; ++j) {
+                p ^= data[j][b];
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+            }
+            images[pq.pDisk][s * BS + b] = p;
+            images[pq.qDisk][s * BS + b] = q;
+        }
+    }
+
+    VirtualRaid raid = VirtualRaid::fromImages(RaidLevel::RAID6, images, BS);
+
+    // One physical disk failed: across the rotation it plays P, data and Q.
+    raid.fail_disk(0);
+    EXPECT_FALSE(raid.is_disk_active(0));
+    auto out = raid.read(0, logicalSize);
+    ASSERT_EQ(out.size(), logicalSize);
+    EXPECT_EQ(out, logical);
+}

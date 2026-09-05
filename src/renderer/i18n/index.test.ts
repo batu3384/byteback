@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll } from 'vitest'
-import { localizeNote, setLang, getLang, t } from './index'
+import { localizeNote, setLang, getLang, t, tFormat } from './index'
 
 // CA-052: native machine codes must localize; unknown text passes through.
 describe('localizeNote', () => {
@@ -29,5 +29,17 @@ describe('localizeNote', () => {
     setLang('en')
     expect(t('nav.results')).toBe('Results')
     expect(getLang()).toBe('en')
+  })
+
+  it('tFormat interpolates tokens', () => {
+    setLang('en')
+    expect(tFormat('report.chainOk', { n: '12' })).toBe('Verified — 12 entries intact (SHA-256 chain)')
+  })
+
+  it('tFormat replaces repeated tokens (N2 regression)', () => {
+    setLang('en')
+    const out = tFormat('results.confirmDestOnDrive', { a: 'x' })
+    // The sentence mentions the drive warning more than once; every {a} must go.
+    expect(out).not.toContain('{a}')
   })
 })

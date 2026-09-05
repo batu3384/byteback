@@ -194,6 +194,8 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_carve_policy.cpp
     tests/test_process_util.cpp
     tests/test_aes_ccm.cpp
+    tests/test_disk_imager.cpp
+    tests/test_memory_pool.cpp
     tests/test_ntfs_thumbcache.cpp
     tests/test_structural_parsers.cpp
     tests/test_carve_parallel.cpp
@@ -225,6 +227,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/crypto/sha256.cpp
     src/imager/ewf_writer.cpp
     src/imager/ewf_reader.cpp
+    src/imager/disk_imager.cpp
     src/io/byte_source.cpp
     src/carver/content_classifier.cpp
     src/db/runs_codec.cpp

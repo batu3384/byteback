@@ -49,6 +49,16 @@ test('seeded scan flows into results triage and unlocks the report nav', async (
   await expect(win.getByTestId('result-row')).toHaveCount(1)
   await win.getByLabel('Dosya adı ara').fill('')
 
+  // Size/date filter inputs (P0-4) narrow the page live. Fixture sizes:
+  // 4MB, 2MB, 0.5MB, 0.12MB and 900MB — min 5MB leaves only the video.
+  await win.getByLabel('En küçük boyut MB').fill('5')
+  await expect(win.getByTestId('result-row')).toHaveCount(1)
+  await win.getByRole('button', { name: 'Süzgeçleri temizle' }).click()
+  await expect(win.getByTestId('result-row')).toHaveCount(5)
+
+  // Preserve-paths checkbox (P0-1) toggles next to the recover button.
+  await expect(win.getByTestId('preserve-paths')).toBeChecked()
+
   // Selection counter follows the checkbox.
   await win.locator('tbody input[type="checkbox"]').first().check()
   await expect(win.getByRole('button', { name: /Seçilenleri Kurtar \(1\)/ })).toBeVisible()
