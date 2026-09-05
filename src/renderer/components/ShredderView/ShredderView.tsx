@@ -15,11 +15,12 @@ const ShredderView: React.FC = () => {
 
   React.useEffect(() => {
     if (!window.api?.listDrives) return
-    void window.api.listDrives().then((list) => {
+    window.api.listDrives().then((list) => {
       setDrives(list)
       setSsdWarning(list.some((d: { type?: string }) => d.type === 'SSD'))
     }).catch((e: unknown) => {
       console.error('listDrives failed', e)
+      setWipeError(t('shred.drivesFailed'))
     })
   }, [])
 
@@ -148,7 +149,7 @@ const ShredderView: React.FC = () => {
               />
               {selectedDrive && (
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  {tFormat('shred.target', { model: selectedDrive.model || t('dash.diskFallback'), serial: selectedDrive.serial || t('shred.noSerial'), type: selectedDrive.type || 'Unknown' })}
+                  {tFormat('shred.target', { model: selectedDrive.model || t('dash.diskFallback'), serial: selectedDrive.serial || t('shred.noSerial'), type: selectedDrive.type || t('scan.unknown') })}
                 </p>
               )}
               <button

@@ -103,6 +103,8 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
               defaultValue={sector}
               key={sector}
               onBlur={(e) => {
+                // Number('') is 0 — an emptied field must not jump to sector 0.
+                if (e.target.value === '') return
                 const pending = Number(e.target.value)
                 if (Number.isFinite(pending) && pending >= 0) setSector(pending)
               }}

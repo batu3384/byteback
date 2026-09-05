@@ -250,3 +250,51 @@ TEST(PreviewReader, MkvEmbeddedJpegFrame) {
     EXPECT_EQ(preview.kind, "image");
     EXPECT_EQ(preview.mime, "image/jpeg");
 }
+
+// Carved records start startByteOffset bytes into their start sector. The
+// preview must read from the byte-exact start (like recovery does), not from
+// the sector floor — shifted data misclassifies and renders garbage.
+TEST(PreviewReader, CarvedRecordPreviewHonorsStartByteOffset) {
+    const auto jpeg = minimalJpeg();
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512 + 300, jpeg.data(), jpeg.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "carved_0_1.jpg";
+    rec.source = "carver";
+    rec.sizeBytes = static_cast<int64_t>(jpeg.size());
+    rec.startSector = 1;
+    rec.startByteOffset = 300;
+
+    FilePreviewResult preview = readFilePreview(reader, rec);
+    EXPECT_TRUE(preview.success) << preview.error;
+    EXPECT_EQ(preview.mime, "image/jpeg");
+    EXPECT_EQ(preview.data, jpeg);
+}
+
+// Same for run-backed (BGC-stitched) records: the first run's data begins
+// startByteOffset bytes in.
+TEST(PreviewReader, RunBackedPreviewHonorsStartByteOffset) {
+    const auto jpeg = minimalJpeg();
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512 + 300, jpeg.data(), jpeg.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "carved_0_1.jpg";
+    rec.source = "carver_bgc";
+    rec.sizeBytes = static_cast<int64_t>(jpeg.size());
+    rec.startSector = 1;
+    rec.startByteOffset = 300;
+    rec.runs.push_back({1, 1});
+
+    FilePreviewResult preview = readFilePreview(reader, rec);
+    EXPECT_TRUE(preview.success) << preview.error;
+    EXPECT_EQ(preview.mime, "image/jpeg");
+    EXPECT_EQ(preview.data, jpeg);
+}

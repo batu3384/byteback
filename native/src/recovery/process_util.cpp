@@ -110,14 +110,20 @@ std::wstring resolveOnPathW(const std::wstring& exe) {
     std::wstringstream ss(pathEnv);
     std::wstring dir;
     while (std::getline(ss, dir, L';')) {
-        // Strip surrounding quotes; skip empty/relative entries (CWD).
+        // Strip surrounding quotes; skip empty and non-absolute entries.
+        // The '.' prefix check is not enough: a bare relative entry like
+        // "plant" also resolves against the CWD and re-opens the planting
+        // hole, so require drive-letter or UNC syntax.
         if (!dir.empty() && dir.front() == L'"') dir.erase(0, 1);
         if (!dir.empty() && dir.back() == L'"') dir.pop_back();
         if (dir.empty() || dir.front() == L'.') continue;
+        const bool absolute = (dir.size() >= 2 && dir[1] == L':') ||
+                              (dir.size() >= 2 && dir[0] == L'\\' && dir[1] == L'\\');
+        if (!absolute) continue;
         std::wstring full = dir;
-        if (full.back() != L'\\') full.push_back(L'\\');
+        if (full.back() != L'\\' && full.back() != L'/') full.push_back(L'\\');
         full += exe;
-        full += L".exe";
+        if (!endsWithExe(exe)) full += L".exe";
         if (isFile(full)) return full;
     }
     return {};

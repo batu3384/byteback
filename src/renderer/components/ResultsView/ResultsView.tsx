@@ -49,6 +49,13 @@ function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
 }): React.ReactElement {
   const [visible, setVisible] = useState(false)
   const imgRef = useRef<HTMLDivElement | null>(null)
+  // W4 cap eviction can drop an already-loaded thumb (clear-all at 1000);
+  // re-arm the lazy observer, or visible stays true and the card spins forever.
+  const prevThumbRef = useRef<FilePreviewResult | undefined>(thumb)
+  if (prevThumbRef.current !== thumb) {
+    prevThumbRef.current = thumb
+    if (!thumb) setVisible(false)
+  }
   useEffect(() => {
     const el = imgRef.current
     if (!el || visible) return
@@ -169,11 +176,33 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     }
   }
 
-  // P0-4: derived numeric filter values (MB inputs -> bytes; date inputs -> unix).
-  const sizeMin = sizeMinInput.trim() ? Math.round(parseFloat(sizeMinInput) * 1024 * 1024) : 0
-  const sizeMax = sizeMaxInput.trim() ? Math.round(parseFloat(sizeMaxInput) * 1024 * 1024) : 0
-  const dateFrom = dateFromInput.trim() ? Math.floor(new Date(dateFromInput).getTime() / 1000) : 0
-  const dateTo = dateToInput.trim() ? Math.floor(new Date(dateToInput).getTime() / 1000) + 86399 : 0
+  // P0-4: numeric filter values (MB inputs -> bytes; date inputs -> unix),
+  // debounced like nameQuery — deriving them directly re-fetched the page on
+  // every keystroke in the size inputs.
+  const [sizeMin, setSizeMin] = useState(0)
+  const [sizeMax, setSizeMax] = useState(0)
+  const [dateFrom, setDateFrom] = useState(0)
+  const [dateTo, setDateTo] = useState(0)
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const size = (input: string) => {
+        if (!input.trim()) return 0
+        const bytes = Math.round(parseFloat(input) * 1024 * 1024)
+        return Number.isFinite(bytes) ? bytes : 0
+      }
+      const date = (input: string, endOfDay: boolean) => {
+        if (!input.trim()) return 0
+        const sec = Math.floor(new Date(input).getTime() / 1000)
+        return Number.isFinite(sec) && sec > 0 ? sec + (endOfDay ? 86399 : 0) : 0
+      }
+      setSizeMin(size(sizeMinInput))
+      setSizeMax(size(sizeMaxInput))
+      setDateFrom(date(dateFromInput, false))
+      setDateTo(date(dateToInput, true))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [sizeMinInput, sizeMaxInput, dateFromInput, dateToInput])
 
   const loadPage = useCallback(async (scan: number, pageIndex: number) => {
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
@@ -506,7 +535,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         }
         if ((chunk?.length ?? 0) < batch) break
       }
-      const blob = new Blob(['\uFEFF' + chunks.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+      // Blob takes string parts — no final join of every row into one string.
+      const blob = new Blob(['\uFEFF', ...chunks.map((c) => c + '\r\n')], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -753,7 +783,14 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           preview={preview}
           previewLoading={previewLoading}
           previewRecord={previewRecord}
-          onClose={() => { setPreview(null); setPreviewTargetId(null) }}
+          onClose={() => {
+            // Invalidate any in-flight preview request — otherwise a slow
+            // response re-opens the panel the user just closed (CA-028 gen).
+            previewReqRef.current++
+            setPreview(null)
+            setPreviewTargetId(null)
+            setPreviewLoading(false)
+          }}
         />
       )}
       {hfsTruncated && (
@@ -846,7 +883,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               min="0"
               step="0.1"
               value={sizeMinInput}
-              onChange={(e) => { setSizeMinInput(e.target.value); setPage(0) }}
+              onChange={(e) => setSizeMinInput(e.target.value)}
               placeholder={t('results.sizeMinPlaceholder')}
               aria-label={t('results.sizeMinAria')}
               className="name-search"
@@ -858,7 +895,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               min="0"
               step="0.1"
               value={sizeMaxInput}
-              onChange={(e) => { setSizeMaxInput(e.target.value); setPage(0) }}
+              onChange={(e) => setSizeMaxInput(e.target.value)}
               placeholder={t('results.sizeMaxPlaceholder')}
               aria-label={t('results.sizeMaxAria')}
               className="name-search"
@@ -868,7 +905,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             <input
               type="date"
               value={dateFromInput}
-              onChange={(e) => { setDateFromInput(e.target.value); setPage(0) }}
+              onChange={(e) => setDateFromInput(e.target.value)}
               aria-label={t('results.dateFromAria')}
               style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
             />
@@ -876,7 +913,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             <input
               type="date"
               value={dateToInput}
-              onChange={(e) => { setDateToInput(e.target.value); setPage(0) }}
+              onChange={(e) => setDateToInput(e.target.value)}
               aria-label={t('results.dateToAria')}
               style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
             />
@@ -885,7 +922,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                 type="button"
                 className="btn-secondary"
                 style={{ padding: '4px 10px' }}
-                onClick={() => { setSizeMinInput(''); setSizeMaxInput(''); setDateFromInput(''); setDateToInput(''); setPage(0) }}
+                onClick={() => { setSizeMinInput(''); setSizeMaxInput(''); setDateFromInput(''); setDateToInput('') }}
               >
                 {t('results.clearFilters')}
               </button>

@@ -244,14 +244,25 @@ bool EwfWriter::write(const uint8_t* data, size_t length) {
     return true;
 }
 
-bool EwfWriter::finish() {
-    if (!outFile_.is_open() && segmentPaths_.empty()) return false;
-    if (outFile_.is_open() && !closeSegment(true)) return false;
+void EwfWriter::patchAllSegmentHeaders() {
     const uint16_t total = static_cast<uint16_t>(segmentPaths_.size());
     for (size_t i = 0; i < segmentPaths_.size(); ++i) {
         patchSegmentFileHeader(segmentPaths_[static_cast<size_t>(i)],
                                static_cast<uint16_t>(i + 1), total);
     }
+}
+
+bool EwfWriter::finish() {
+    if (!outFile_.is_open() && segmentPaths_.empty()) return false;
+    if (outFile_.is_open() && !closeSegment(true)) return false;
+    patchAllSegmentHeaders();
+    return true;
+}
+
+bool EwfWriter::abort() {
+    if (!outFile_.is_open() && segmentPaths_.empty()) return false;
+    if (outFile_.is_open() && !closeSegment(false)) return false;
+    patchAllSegmentHeaders();
     return true;
 }
 

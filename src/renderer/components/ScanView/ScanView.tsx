@@ -153,9 +153,12 @@ function ScanView({
   useEffect(() => {
     if (driveIndex === null || activeScanId <= 0) return
     void loadLivePage()
+    // Terminal phases get one final refresh — polling a finished scan burns
+    // IPC forever and lets a tick land after the completion event.
+    if (phase === 'complete' || phase === 'stopped' || phase === 'paused' || phase === 'failed') return
     const id = setInterval(() => { void loadLivePage() }, 3000)
     return () => clearInterval(id)
-  }, [driveIndex, activeScanId, page, typeChip, loadLivePage])
+  }, [driveIndex, activeScanId, page, typeChip, loadLivePage, phase])
 
   useEffect(() => {
     const maxPage = listCount <= 0 ? 0 : Math.max(0, Math.ceil(listCount / limit) - 1)

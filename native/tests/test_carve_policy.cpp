@@ -284,6 +284,53 @@ TEST(CarvePolicy, OggPageWalkBoundsTheCarve) {
     EXPECT_EQ(found[0].sizeBytes, off);
 }
 
+// Three CRC-valid pages ending flush with the image end; the reader rejects
+// any read past the end (raw-file behavior). The page walk must fetch only
+// exact-size header/lacing/body chunks — a fixed 282-byte header-window
+// overfetch past the end would drop the trailing page and truncate the carve.
+TEST(CarvePolicy, OggTrailingPageAtImageEndSurvivesExactSizeReads) {
+    auto oggCrc = [](const std::vector<uint8_t>& d) {
+        uint32_t crc = 0;
+        for (uint8_t byte : d) {
+            crc ^= static_cast<uint32_t>(byte) << 24;
+            for (int b = 0; b < 8; ++b) {
+                crc = (crc & 0x80000000u) ? ((crc << 1) ^ 0x04c11db7u) : (crc << 1);
+            }
+        }
+        return crc;
+    };
+
+    std::vector<uint8_t> buf;
+    auto page = [&](uint8_t flags, const std::vector<uint8_t>& lacing) {
+        uint32_t total = 0;
+        for (uint8_t l : lacing) total += l;
+        std::vector<uint8_t> p(27 + lacing.size() + total, 0);
+        p[0] = 'O'; p[1] = 'g'; p[2] = 'g'; p[3] = 'S';
+        p[4] = 0;       // version
+        p[5] = flags;   // 0x02 BOS / 0x04 EOS
+        p[26] = static_cast<uint8_t>(lacing.size());
+        for (size_t i = 0; i < lacing.size(); ++i) p[27 + i] = lacing[i];
+        const uint32_t crc = oggCrc(p);
+        for (int i = 0; i < 4; ++i) p[22 + i] = static_cast<uint8_t>((crc >> (8 * i)) & 0xFF);
+        buf.insert(buf.end(), p.begin(), p.end());
+    };
+    page(0x02, {100});
+    page(0x00, {100, 100}); // multi-segment page: [hdr27][lacing2][payload 200]
+    page(0x04, {50});       // EOS page flush with the buffer end
+
+    auto readAt = [&](uint64_t off, uint32_t len, uint8_t* out) {
+        if (off + len > buf.size()) return false; // past-end reads fail
+        std::memcpy(out, buf.data() + off, len);
+        return true;
+    };
+
+    // 27-byte probe: every page header/lacing/body comes through readAt.
+    auto pr = byteback::carver::parseOggBounded(buf.data(), 27, 0, 1ull << 20, readAt);
+    ASSERT_TRUE(pr.valid);
+    EXPECT_EQ(pr.size, buf.size());
+    EXPECT_GE(pr.confidence, 80);
+}
+
 // Unfinalized recording (mdat size 0, "extends to end of file"): the classic
 // power-loss dashcam/phone case. No discoverable end -> the bounded-emission
 // policy must DROP it, never emit a 24-byte phantom.

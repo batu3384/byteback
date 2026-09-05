@@ -76,3 +76,46 @@ TEST(DiskImagerTest, EwfImageCarriesDigestAndRereadsIdentical) {
     ASSERT_TRUE(res.success);
     EXPECT_EQ(out, vol);
 }
+
+// Cancelled acquisition: the partial E01 must stay readable (tables written)
+// but carry NO digest and NO MD5 — a truncated copy can never claim to be a
+// verified image. requestStop from the first progress callback deterministically
+// stops the run after chunk 1 (the loop re-checks the stop flag before chunk 2).
+TEST(DiskImagerTest, CancelledEwfIsReadableButUnverified) {
+    constexpr size_t kSectors = 131072; // 64 MiB = 4 x 16 MiB chunks
+    const auto vol = makeVolume(kSectors, 0x33);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+
+    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_cancel.E01").string();
+    DiskImager imager;
+    std::atomic<bool> finished{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) finished = true;
+        else imager.requestStop(); // first chunk done -> cancel
+    }, ImageFormat::Ewf);
+    // Wait for the worker's completion tick before joining: a stopImaging()
+    // from here could otherwise land before chunk 1 even starts.
+    for (int i = 0; i < 400 && !finished; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    imager.stopImaging();
+    ASSERT_TRUE(finished.load());
+
+    EXPECT_TRUE(imager.lastImageMd5().empty());
+
+    {
+        DiskReader back;
+        std::string err;
+        ASSERT_TRUE(back.attachEwfImage(dest, &err)) << err;
+        constexpr size_t kChunkBytes = 16u * 1024u * 1024u;
+        std::vector<uint8_t> out(kChunkBytes);
+        auto res = back.readSectors(0, kChunkBytes, out.data());
+        ASSERT_TRUE(res.success);
+        EXPECT_EQ(out, std::vector<uint8_t>(vol.begin(), vol.begin() + kChunkBytes));
+        // The image ends where the cancel landed — no phantom bytes.
+        EXPECT_FALSE(back.readSectors(kChunkBytes, 512, out.data()).success);
+    }
+    std::filesystem::remove(dest);
+}

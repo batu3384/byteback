@@ -550,7 +550,7 @@ const STRINGS: Record<string, Entry> = {
   'report.metricTh': { tr: 'Metrik', en: 'Metric' },
   'report.totalFilesTd': { tr: 'Bulunan Toplam Dosya', en: 'Total Files Found' },
   'report.deletedTd': { tr: 'Silinmiş / unallocated (status=0)', en: 'Deleted / unallocated (status=0)' },
-  'report.allocatedTd': { tr: 'Allocated / in-use (status=1)', en: 'Allocated / in-use (status=1)' },
+  'report.allocatedTd': { tr: 'Tahsisli / kullanımda (status=1)', en: 'Allocated / in-use (status=1)' },
   'report.scanDurationTd': { tr: 'Tarama Süresi', en: 'Scan Duration' },
   'report.secondsSuffix': { tr: 'sn', en: 's' },
   'report.timelineEventsTd': { tr: 'USN Zaman Çizelgesi Olayları', en: 'USN Timeline Events' },
@@ -713,6 +713,21 @@ const STRINGS: Record<string, Entry> = {
   'source.usn_journal': { tr: 'USN zaman çizelgesi', en: 'USN timeline' },
   'source.ntfs_logfile': { tr: 'LogFile ipucu (kurtarılamaz)', en: 'LogFile hint (unrecoverable)' },
   'source.carver_duplicate': { tr: 'Carve tekrarı (MFT ile çakışıyor)', en: 'Carve duplicate (overlaps MFT)' },
+
+  // Lane-5 sweep: shared chrome + error surfaces in owned components.
+  'common.close': { tr: 'Kapat', en: 'Close' },
+  'smart.na': { tr: 'Yok', en: 'N/A' },
+  'tl.loadFailed': { tr: 'Zaman çizelgesi yüklenemedi.', en: 'Could not load the timeline.' },
+  'case.loadFailed': { tr: 'Dava kaydı okunamadı.', en: 'Could not read the case record.' },
+  'shred.drivesFailed': { tr: 'Sürücü listesi alınamadı.', en: 'Could not get the drive list.' },
+  'raid.drivesFailed': { tr: 'Disk listesi alınamadı.', en: 'Could not get the disk list.' },
+  'raid.failMemberFailed': { tr: 'Bozuk üye işaretlenemedi.', en: 'Could not mark the member as failed.' },
+  'raid.slot': { tr: 'Yuva {n}', en: 'Slot {n}' },
+  'raid.raid0': { tr: 'RAID 0 (Şeritleme)', en: 'RAID 0 (Stripe)' },
+  'raid.raid1': { tr: 'RAID 1 (Ayna)', en: 'RAID 1 (Mirror)' },
+  'raid.raid5': { tr: 'RAID 5 (Parite)', en: 'RAID 5 (Parity)' },
+  'raid.raid10': { tr: 'RAID 10 (Ayna+Şerit)', en: 'RAID 10 (Mirror+Stripe)' },
+  'report.generateFailed': { tr: 'Rapor oluşturulamadı: {err}', en: 'Could not generate the report: {err}' },
 
   // Audit chain verification (runtime SHA-256 re-walk).
   'report.chainLabel': { tr: 'Denetim zinciri:', en: 'Audit chain:' },

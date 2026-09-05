@@ -108,6 +108,14 @@ bool VirtualRaid::readMemberAligned(size_t disk_idx, uint64_t offset, size_t len
 
 std::vector<uint8_t> VirtualRaid::read(size_t offset, size_t length) const {
     if (length == 0) return std::vector<uint8_t>();
+    // Uniform capacity guard: RAID5/6/10 used to return silent zeros for
+    // out-of-capacity reads (members zero-fill on I/O failure and parity
+    // reconstruction then throws — or worse, RAID6 "succeeds" with a
+    // zero-filled buffer). Reject up front, overflow-safe.
+    const uint64_t cap = capacity();
+    if (offset > cap || length > cap - offset) {
+        throw std::out_of_range("Read exceeds RAID capacity");
+    }
     switch (level_) {
         case RaidLevel::RAID0: return read_raid0(offset, length);
         case RaidLevel::RAID1: return read_raid1(offset, length);
@@ -146,11 +154,15 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
         size_t block_on_disk = block_index / num_disks_;
         uint64_t disk_offset = static_cast<uint64_t>(block_on_disk) * block_size_ + offset_in_block;
 
-        if (disk_offset + (block_size_ - offset_in_block) > disk_size_) {
+        size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
+        // Bounds-check the bytes actually requested, not the rest of the
+        // block: when a member's size is not a multiple of block_size_, the
+        // old full-block check rejected reads of valid tail bytes (last
+        // member sector is not the last stripe byte).
+        if (disk_offset + read_len > disk_size_) {
             throw std::out_of_range("Read exceeds RAID capacity");
         }
 
-        size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
         if (!disk_active_[disk_idx] ||
             !readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx])) {
             std::memset(&result[res_idx], 0, read_len);
@@ -275,19 +287,30 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
                 // failed disk is P itself, D = Q' / g^slot from the Q syndrome.
                 // Previously the P-lost case threw even though Q alone fully
                 // reconstructs one missing block.
+                //
+                // Integrity guard: zero-fill-on-failure is fine for direct
+                // data hits, but a member read that fails DURING reconstruction
+                // silently poisons the rebuilt block (0 XOR garbage). Treat a
+                // failed member read as another unreadable disk — same policy
+                // as the RAID 5 path below.
                 std::vector<uint8_t> acc(block_size_, 0), temp(block_size_);
-                if (disk_active_[p_disk]) {
+                bool pOk = disk_active_[p_disk] &&
                     readMemberAligned(p_disk, stripe_base, block_size_, acc.data());
+                if (pOk) {
                     for (size_t i = 0; i < num_disks_; ++i) {
                         if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
-                        readMemberAligned(i, stripe_base, block_size_, temp.data());
+                        if (!readMemberAligned(i, stripe_base, block_size_, temp.data())) {
+                            throw std::runtime_error("RAID 6 read failed: member unreadable during reconstruction");
+                        }
                         for (size_t b = 0; b < block_size_; ++b) acc[b] ^= temp[b];
                     }
-                } else if (disk_active_[q_disk]) {
-                    readMemberAligned(q_disk, stripe_base, block_size_, acc.data());
+                } else if (disk_active_[q_disk] &&
+                           readMemberAligned(q_disk, stripe_base, block_size_, acc.data())) {
                     for (size_t i = 0; i < num_disks_; ++i) {
                         if (i == p_disk || i == q_disk || i == failed[0] || !disk_active_[i]) continue;
-                        readMemberAligned(i, stripe_base, block_size_, temp.data());
+                        if (!readMemberAligned(i, stripe_base, block_size_, temp.data())) {
+                            throw std::runtime_error("RAID 6 read failed: member unreadable during reconstruction");
+                        }
                         for (size_t b = 0; b < block_size_; ++b) {
                             acc[b] ^= raid6_math::gfMul(temp[b], raid6_math::gfPow(slotOf(i)));
                         }
@@ -310,11 +333,15 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
                 if (!disk_active_[p_disk] || !disk_active_[q_disk]) {
                     throw std::runtime_error("RAID 6: too many failures (P or Q also lost)");
                 }
-                readMemberAligned(p_disk, stripe_base, block_size_, pAcc.data());
-                readMemberAligned(q_disk, stripe_base, block_size_, qAcc.data());
+                if (!readMemberAligned(p_disk, stripe_base, block_size_, pAcc.data()) ||
+                    !readMemberAligned(q_disk, stripe_base, block_size_, qAcc.data())) {
+                    throw std::runtime_error("RAID 6 read failed: parity unreadable during reconstruction");
+                }
                 for (size_t i = 0; i < num_disks_; ++i) {
                     if (i == p_disk || i == q_disk || !disk_active_[i]) continue;
-                    readMemberAligned(i, stripe_base, block_size_, temp.data());
+                    if (!readMemberAligned(i, stripe_base, block_size_, temp.data())) {
+                        throw std::runtime_error("RAID 6 read failed: member unreadable during reconstruction");
+                    }
                     for (size_t b = 0; b < block_size_; ++b) {
                         pAcc[b] ^= temp[b];
                         qAcc[b] ^= raid6_math::gfMul(temp[b], raid6_math::gfPow(slotOf(i)));

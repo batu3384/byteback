@@ -104,6 +104,14 @@ export function registerIpcHandlers(): void {
     if (!dbReady) {
       throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor — tarama başlatılamaz')
     }
+    // Trust boundary: native std::stoi failure silently defaults to drive 0,
+    // so garbage drivePath would scan the wrong disk without error.
+    if (typeof driveIndex !== 'number' || !Number.isFinite(driveIndex)) {
+      throw new Error('Geçersiz sürücü indeksi')
+    }
+    if (typeof scanType !== 'string' || !scanType) {
+      throw new Error('Geçersiz tarama tipi')
+    }
     try {
       const engine = getEngine()
       const token = ++activeScanToken
@@ -203,17 +211,20 @@ export function registerIpcHandlers(): void {
         show: false,
         webPreferences: { offscreen: true, sandbox: true },
       })
-      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-      const pdf = await win.webContents.printToPDF({
-        printBackground: true,
-        margins: { marginType: 'default' },
-        pageSize: 'A4',
-      })
-      win.destroy()
-
-      const fs = await import('node:fs/promises')
-      await fs.writeFile(target.filePath, pdf)
-      return { success: true, path: target.filePath }
+      try {
+        await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+        const pdf = await win.webContents.printToPDF({
+          printBackground: true,
+          margins: { marginType: 'default' },
+          pageSize: 'A4',
+        })
+        const fs = await import('node:fs/promises')
+        await fs.writeFile(target.filePath, pdf)
+        return { success: true, path: target.filePath }
+      } finally {
+        // Never leak a hidden window when loadURL/printToPDF throws.
+        win.destroy()
+      }
     } catch (err) {
       console.error('[IPC] export-report-pdf error:', err)
       return { success: false, error: String(err) }
@@ -285,7 +296,11 @@ export function registerIpcHandlers(): void {
       }
 
       console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath, 'format:', format ?? 'raw')
-      engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
+      const started = engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
+      if (!started) {
+        // Renderer treats {total: 0, error} as failure — reply or it waits forever.
+        event.reply('imaging-progress', { current: 0, total: 0, error: 'İmajlama başlatılamadı (disk meşgul olabilir)' })
+      }
 
     } catch (err) {
       console.error('[IPC] start-imaging error:', err)
@@ -539,12 +554,17 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
     try {
+      if (!Array.isArray(driveIndices) || driveIndices.some((d) => !Number.isFinite(d)) || typeof raidLevel !== 'number') {
+        return { success: false, capacity: 0, numDisks: 0, error: 'Geçersiz RAID argümanları' }
+      }
       const engine = getEngine()
       console.log('[IPC] reconstruct-raid drives:', driveIndices, 'level:', raidLevel)
-      return engine.reconstructRaid(driveIndices ?? [], raidLevel ?? 0)
+      return engine.reconstructRaid(driveIndices, raidLevel)
     } catch (err) {
       console.error('[IPC] reconstruct-raid error:', err)
-      return false
+      // Renderer expects RaidAssemblyResult, never a bare boolean.
+      const msg = err instanceof Error ? err.message : String(err)
+      return { success: false, capacity: 0, numDisks: 0, error: msg }
     }
   })
 

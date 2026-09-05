@@ -145,6 +145,10 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
     return d?.type === 'SSD'
   }
 
+  // P0-2: the lost-partition input is free numeric — only enable the scan for
+  // an index that exists in the drive list (NaN/negative/out-of-range disable).
+  const lostDriveValid = drives.some((d) => d.index === lostScanDrive)
+
   const startVolumeScan = (resolved: ResolvedVolume, scanType: ScanProfile, extra?: ScanOptions) => {
     if (!onStartScan) return
     setVolumeResolveStatus(
@@ -415,7 +419,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
-            disabled={!isAdmin || lostScanning || scanBusy}
+            disabled={!isAdmin || lostScanning || scanBusy || !lostDriveValid}
             data-testid="lost-partitions-btn"
             onClick={async () => {
               if (!window.api?.scanLostPartitions) {

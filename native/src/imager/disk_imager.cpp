@@ -3,6 +3,7 @@
 #include "crypto/byteback_md5.h"
 #include <fstream>
 #include <chrono>
+#include <cstring>
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -29,6 +30,11 @@ void DiskImager::startImagingFromReader(DiskReader& reader, const std::string& d
     stopImaging();
     isRunning_ = true;
     lastImageMd5_.clear();
+    // Lifetime contract: `reader` is captured by reference and MUST outlive
+    // the imaging thread (until stopImaging() joins it or the run completes).
+    // The production path (bridge_imager.cpp) only uses startImaging(driveIndex),
+    // which opens its own reader inside the worker — this overload is for
+    // tests/pre-loaded images whose caller keeps the reader alive.
     imagingThread_ = std::thread([this, &reader, destPath, onProgress, format, ewfOpts]() {
         imagingRun(reader, destPath, onProgress, format, ewfOpts);
     });
@@ -42,6 +48,10 @@ void DiskImager::stopImaging() {
     requestStop();
     if (!imagingThread_.joinable()) return;
     if (imagingThread_.get_id() == std::this_thread::get_id()) {
+        // Self-stop from a progress callback: joining would deadlock, so the
+        // thread detaches and finishes the current chunk on its own. Caveat:
+        // the DiskImager and any captured reader must therefore outlive that
+        // detached run — do not destroy the imager from inside its own callback.
         imagingThread_.detach();
         return;
     }
@@ -107,15 +117,22 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
 
         const uint8_t* outPtr = poolBuf->data();
         size_t outLen = bytesToRead;
-        std::vector<uint8_t> zeros;
         if (!res.success || res.bytesRead == 0) {
             badSectorReads_.fetch_add(sectorsToRead);
-            zeros.assign(bytesToRead, 0);
-            outPtr = zeros.data();
-            outLen = bytesToRead;
+            std::memset(poolBuf->data(), 0, bytesToRead);
         } else {
             outLen = static_cast<size_t>(res.bytesRead);
             if (res.paddedZeros) badSectorReads_.fetch_add(1);
+            if (outLen < bytesToRead) {
+                // Short-but-successful read (device EOD, flaky link): the
+                // loop advances a full chunk regardless, so the tail must be
+                // zero-padded — writing only bytesRead would shift every
+                // following byte and silently corrupt the rest of the image.
+                const size_t missing = bytesToRead - outLen;
+                std::memset(poolBuf->data() + outLen, 0, missing);
+                outLen = bytesToRead;
+                badSectorReads_.fetch_add(missing / sectorSize);
+            }
         }
 
         if (ewf) {
@@ -133,7 +150,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         }
 
         sector += sectorsToRead;
-        onProgress(sector, totalSectors);
+        if (onProgress) onProgress(sector, totalSectors);
     }
 
     if (!writeOk) {
@@ -141,18 +158,32 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         return;
     }
 
+    // requestStop mid-image: sector never reached totalSectors. Close the
+    // output honestly — a partial EWF keeps its tables (still readable) but
+    // gets NO digest/done section and NO MD5, so a truncated acquisition can
+    // never present itself as a verified image.
+    const bool stoppedEarly = sector < totalSectors;
+
     if (ewf) {
-        if (!ewf->finish()) {
+        if (stoppedEarly) {
+            if (!ewf->abort()) {
+                fail();
+                return;
+            }
+        } else if (!ewf->finish()) {
             fail();
             return;
         }
-        lastImageMd5_ = ewf->md5Hex();
+        if (!stoppedEarly) lastImageMd5_ = ewf->md5Hex();
     } else {
         rawOut.close();
-        lastImageMd5_ = rawMd5.finalHex();
+        if (!stoppedEarly) lastImageMd5_ = rawMd5.finalHex();
     }
 
-    onProgress(totalSectors, totalSectors);
+    // Completion tick (current == total) is the caller's end-of-job signal
+    // (the NAPI bridge releases its ThreadSafeFunction on it), so it is sent
+    // even for a cancelled run — the empty lastImageMd5() marks it unverified.
+    if (onProgress) onProgress(totalSectors, totalSectors);
     isRunning_ = false;
 }
 

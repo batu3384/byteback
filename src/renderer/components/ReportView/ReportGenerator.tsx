@@ -6,7 +6,7 @@ import { APP_VERSION } from '../../../shared/app-version';
 import { htmlEscape } from '../../../shared/html-escape';
 import { canGenerateReport } from '../../../shared/scan-required';
 import InlineAlert from '../InlineAlert';
-import { useI18n, tFormat } from '../../i18n';
+import { useI18n, tFormat, getLang } from '../../i18n';
 
 interface ReportGeneratorProps {
   scanId: number;
@@ -156,7 +156,7 @@ ${chainLine}
   <tr><th>${t('report.fieldTh')}</th><th>${t('report.valueTh')}</th></tr>
   <tr><td>${t('report.caseNumberTd')}</td><td>${htmlEscape(caseNumber || t('report.noCaseNumber'))}</td></tr>
   <tr><td>${t('report.agencyTd')}</td><td>${htmlEscape(agency || '—')}</td></tr>
-  <tr><td>${t('report.reportDateTd')}</td><td>${htmlEscape(now.toLocaleString('tr-TR'))}</td></tr>
+  <tr><td>${t('report.reportDateTd')}</td><td>${htmlEscape(now.toLocaleString(getLang() === 'en' ? 'en-US' : 'tr-TR'))}</td></tr>
   <tr><td>${t('report.softwareVersionTd')}</td><td>Byteback ${htmlEscape(APP_VERSION)} (Native C++ Engine)</td></tr>
   <tr><td>${t('report.osTd')}</td><td>Windows</td></tr>
 </table>
@@ -190,7 +190,7 @@ ${auditSection}
 
       const hash = await sha256Hex(body);
       const finalHtml = `<!DOCTYPE html>
-<html lang="tr"><head><meta charset="utf-8"><title>${t('report.docTitle')}</title>
+<html lang="${getLang()}"><head><meta charset="utf-8"><title>${t('report.docTitle')}</title>
 <style>
   body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 40px; background: #f8f9fa; color: #1a1a2e; }
   h1 { color: #0B0F19; border-bottom: 3px solid #2962FF; padding-bottom: 10px; }
@@ -215,6 +215,8 @@ ${body}
       setReportHash(hash);
     } catch (err) {
       console.error('Rapor oluşturma hatası:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setFormError(tFormat('report.generateFailed', { err: msg }));
     } finally {
       setGenerating(false);
     }
@@ -247,6 +249,8 @@ ${body}
       }
     } catch (err) {
       console.error(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      setFormError(tFormat('report.pdfFailed', { err: msg }))
     } finally {
       setPdfBusy(false)
     }
@@ -302,7 +306,7 @@ ${body}
             </div>
           </div>
 
-          <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div data-testid="report-chain-status" role="status" style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Clock size={24} color="var(--accent-blue)" />
             <div>
               <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.verifyTitle')}</h4>

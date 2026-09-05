@@ -144,3 +144,82 @@ TEST(VirtualRaidIo, Raid6RecoversWhenPDiskFailsAlone) {
     ASSERT_EQ(out.size(), logicalSize);
     EXPECT_EQ(out, logical);
 }
+
+// Third adversarial pass: the Q-syndrome branch (D = gfDiv(Q', g^slot)) was
+// never executed by the tests above — a failed data disk always paired with a
+// live P there. Fail P + one data disk of the SAME stripe: P is dead, so the
+// single-failure solve must route through Q.
+TEST(VirtualRaidIo, Raid6QSyndromeReconstructsWhenPAndDataFail) {
+    constexpr size_t N = 4;
+    constexpr size_t BS = 4096;
+    constexpr size_t STRIPES = 6;
+    const size_t logicalSize = (N - 2) * STRIPES * BS;
+
+    std::vector<std::vector<uint8_t>> images(N, std::vector<uint8_t>(STRIPES * BS, 0));
+    std::vector<uint8_t> logical(logicalSize);
+    for (uint64_t s = 0; s < STRIPES; ++s) {
+        const auto pq = raid_layout::raid6Disks(s, static_cast<uint32_t>(N));
+        std::vector<std::vector<uint8_t>> data(N - 2, std::vector<uint8_t>(BS));
+        for (size_t j = 0; j < N - 2; ++j) {
+            const uint32_t disk = raid_layout::raid6DataDisk(s, static_cast<uint32_t>(j), static_cast<uint32_t>(N));
+            for (size_t b = 0; b < BS; ++b) {
+                data[j][b] = static_cast<uint8_t>((s * 53 + j * 29 + b * 7) & 0xFF);
+            }
+            std::memcpy(images[disk].data() + s * BS, data[j].data(), BS);
+            std::memcpy(logical.data() + (s * (N - 2) + j) * BS, data[j].data(), BS);
+        }
+        for (size_t b = 0; b < BS; ++b) {
+            uint8_t p = 0, q = 0;
+            for (size_t j = 0; j < N - 2; ++j) {
+                p ^= data[j][b];
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+            }
+            images[pq.pDisk][s * BS + b] = p;
+            images[pq.qDisk][s * BS + b] = q;
+        }
+    }
+
+    VirtualRaid raid = VirtualRaid::fromImages(RaidLevel::RAID6, images, BS);
+    // Stripe 0: P = disk 3, data = disks 0 (slot 0) and 1 (slot 1). Striping
+    // the same two physical failures across all stripes also exercises the
+    // P-XOR path (disk 1 is a data member of stripe 3) and direct hits.
+    raid.fail_disk(3);
+    raid.fail_disk(1);
+    auto out = raid.read(0, logicalSize);
+    ASSERT_EQ(out.size(), logicalSize);
+    EXPECT_EQ(out, logical);
+}
+
+// RAID0 tail: when a member's size is not a multiple of block_size_, reads of
+// valid tail bytes used to throw "Read exceeds RAID capacity" because the
+// guard tested the whole remaining block instead of the requested length.
+TEST(VirtualRaidIo, Raid0ReadsLastTailByteWithoutFalseThrow) {
+    constexpr size_t kMember = 3 * 512;  // 1536, not a multiple of kBlock
+    constexpr size_t kBlock = 1024;
+    std::vector<uint8_t> m0(kMember), m1(kMember);
+    for (size_t i = 0; i < kMember; ++i) {
+        m0[i] = static_cast<uint8_t>(i & 0xFF);
+        m1[i] = static_cast<uint8_t>((i + 0x80) & 0xFF);
+    }
+    auto raid = VirtualRaid::fromImages(RaidLevel::RAID0, {m0, m1}, kBlock);
+    // Last valid logical byte = block 2 slot 0, offset 511 = member 0 [1535].
+    auto out = raid.read(2 * kBlock + 511, 1);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0], static_cast<uint8_t>(511));
+    // Two bytes would cross the member end — that must still throw.
+    EXPECT_ANY_THROW((raid.read(2 * kBlock + 511, 2)));
+}
+
+// Out-of-capacity reads must throw on every level; RAID6 previously returned
+// silent zeros (data zero-filled, reconstruction "succeeded" against zeros).
+TEST(VirtualRaidIo, ReadPastCapacityThrows) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto r0 = VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536);
+    EXPECT_ANY_THROW(r0.read(r0.capacity(), 1));
+    EXPECT_ANY_THROW(r0.read(r0.capacity() - 1, 2));
+
+    constexpr size_t N = 4, BS = 4096, STRIPES = 2;
+    std::vector<std::vector<uint8_t>> imgs(N, std::vector<uint8_t>(STRIPES * BS, 0));
+    auto r6 = VirtualRaid::fromImages(RaidLevel::RAID6, imgs, BS);
+    EXPECT_ANY_THROW(r6.read(r6.capacity(), 1));
+}
