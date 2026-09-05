@@ -122,6 +122,13 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [previewTargetId, setPreviewTargetId] = useState<number | null>(null)
   const [sortField, setSortField] = useState<SortField>('confidence')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  // P0-1: restore the original folder tree under destDir.
+  const [preservePaths, setPreservePaths] = useState(true)
+  // P0-4: size (bytes) and date (unix seconds) filter state.
+  const [sizeMinInput, setSizeMinInput] = useState('')
+  const [sizeMaxInput, setSizeMaxInput] = useState('')
+  const [dateFromInput, setDateFromInput] = useState('')
+  const [dateToInput, setDateToInput] = useState('')
   const [thumbs, setThumbs] = useState<Map<number, FilePreviewResult>>(new Map())
   const thumbsRef = useRef(thumbs)
   thumbsRef.current = thumbs
@@ -162,11 +169,19 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     }
   }
 
+  // P0-4: derived numeric filter values (MB inputs -> bytes; date inputs -> unix).
+  const sizeMin = sizeMinInput.trim() ? Math.round(parseFloat(sizeMinInput) * 1024 * 1024) : 0
+  const sizeMax = sizeMaxInput.trim() ? Math.round(parseFloat(sizeMaxInput) * 1024 * 1024) : 0
+  const dateFrom = dateFromInput.trim() ? Math.floor(new Date(dateFromInput).getTime() / 1000) : 0
+  const dateTo = dateToInput.trim() ? Math.floor(new Date(dateToInput).getTime() / 1000) + 86399 : 0
+
   const loadPage = useCallback(async (scan: number, pageIndex: number) => {
     if (!window.api?.getFilesPage || !window.api?.getFileCount || scan <= 0) return
     const gen = ++loadGenRef.current
     setLoading(true)
-    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir))
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir),
+      { sizeMin: sizeMin > 0 ? sizeMin : undefined, sizeMax: sizeMax > 0 ? sizeMax : undefined,
+        dateFrom: dateFrom > 0 ? dateFrom : undefined, dateTo: dateTo > 0 ? dateTo : undefined })
     try {
       const [count, pageData, sum] = await Promise.all([
         window.api.getFileCount(scan, listFilter),
@@ -195,7 +210,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     } finally {
       if (gen === loadGenRef.current) setLoading(false)
     }
-  }, [statusFilter, typeFilter, nameQuery, showDuplicates, sortField, sortDir])
+  }, [statusFilter, typeFilter, nameQuery, showDuplicates, sortField, sortDir, sizeMin, sizeMax, dateFrom, dateTo])
 
   useEffect(() => {
     const t = setTimeout(() => setNameQuery(nameInput.trim()), 300)
@@ -205,7 +220,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   useEffect(() => {
     setPage(0)
     setSelectedFiles(new Set())
-  }, [statusFilter, typeFilter, nameQuery, showDuplicates])
+  }, [statusFilter, typeFilter, nameQuery, showDuplicates, sizeMin, sizeMax, dateFrom, dateTo])
 
   useEffect(() => {
     const maxPage = totalCount <= 0 ? 0 : Math.max(0, Math.ceil(totalCount / PAGE_SIZE) - 1)
@@ -326,6 +341,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           fileIds,
           destDir,
           effectiveScanId,
+          preservePaths,
         )
         if (res.error) errors.push(diskBusyMessage(res.error) ?? res.error)
         for (let i = 0; i < (res.results ?? []).length; ++i) {
@@ -346,6 +362,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             fileId,
             destDir,
             effectiveScanId,
+            preservePaths,
           )
           await noteResult(res, fileId)
         } catch {
@@ -680,6 +697,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0 || csvExporting}>
             <Download size={16} /> {csvExporting ? t('results.exporting') : t('results.exportCsv')}
           </button>
+          <label className="dup-toggle" title={t('results.preservePathsTitle')} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            <input type="checkbox" checked={preservePaths} onChange={(e) => setPreservePaths(e.target.checked)} data-testid="preserve-paths" />
+            {t('results.preservePaths')}
+          </label>
           <button
             className="btn-primary"
             style={{ display: 'flex', gap: '8px', opacity: selectedFiles.size === 0 ? 0.5 : 1, cursor: selectedFiles.size === 0 ? 'not-allowed' : 'pointer' }}
@@ -816,6 +837,59 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               {viewMode === 'tree' ? <List size={16} /> : <ListTree size={16} />}
               {viewMode === 'tree' ? t('results.list') : t('results.tree')}
             </button>
+          </div>
+          {/* P0-4: size/date filters — MB inputs and date range map to SQL bounds. */}
+          <div className="filter-row" style={{ alignItems: 'center', gap: '8px' }}>
+            <span className="filter-label">{t('results.sizeFilterLabel')}</span>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={sizeMinInput}
+              onChange={(e) => { setSizeMinInput(e.target.value); setPage(0) }}
+              placeholder={t('results.sizeMinPlaceholder')}
+              aria-label={t('results.sizeMinAria')}
+              className="name-search"
+              style={{ width: '110px', padding: '4px 8px' }}
+            />
+            <span aria-hidden="true">–</span>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={sizeMaxInput}
+              onChange={(e) => { setSizeMaxInput(e.target.value); setPage(0) }}
+              placeholder={t('results.sizeMaxPlaceholder')}
+              aria-label={t('results.sizeMaxAria')}
+              className="name-search"
+              style={{ width: '110px', padding: '4px 8px' }}
+            />
+            <span className="filter-label" style={{ marginLeft: '12px' }}>{t('results.dateFilterLabel')}</span>
+            <input
+              type="date"
+              value={dateFromInput}
+              onChange={(e) => { setDateFromInput(e.target.value); setPage(0) }}
+              aria-label={t('results.dateFromAria')}
+              style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
+            />
+            <span aria-hidden="true">–</span>
+            <input
+              type="date"
+              value={dateToInput}
+              onChange={(e) => { setDateToInput(e.target.value); setPage(0) }}
+              aria-label={t('results.dateToAria')}
+              style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
+            />
+            {(sizeMinInput || sizeMaxInput || dateFromInput || dateToInput) && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: '4px 10px' }}
+                onClick={() => { setSizeMinInput(''); setSizeMaxInput(''); setDateFromInput(''); setDateToInput(''); setPage(0) }}
+              >
+                {t('results.clearFilters')}
+              </button>
+            )}
           </div>
         </div>
 

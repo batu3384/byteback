@@ -599,7 +599,7 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number) => {
+  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) => {
     try {
       assertDbReady()
       if (!destDir || !destDir.trim()) {
@@ -608,7 +608,7 @@ export function registerIpcHandlers(): void {
       const parsed = parseRecoverIds(scanId, fileId)
       if (!parsed.ok) return { success: false, error: parsed.error }
       const engine = getEngine()
-      return await engine.recoverFile(driveIndex, parsed.fileId, destDir, parsed.scanId)
+      return await engine.recoverFile(driveIndex, parsed.fileId, destDir, parsed.scanId, preservePaths)
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
       const raw = err instanceof Error ? err.message : String(err)
@@ -616,7 +616,7 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number) => {
+  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number, preservePaths?: boolean) => {
     try {
       assertDbReady()
       if (!destDir || !destDir.trim()) {
@@ -625,13 +625,25 @@ export function registerIpcHandlers(): void {
       const parsed = parseRecoverIdList(scanId, fileIds)
       if (!parsed.ok) return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: parsed.error }
       const engine = getEngine()
-      return await engine.recoverFilesBatch(driveIndex, parsed.fileIds, destDir, parsed.scanId)
+      return await engine.recoverFilesBatch(driveIndex, parsed.fileIds, destDir, parsed.scanId, preservePaths)
     } catch (err) {
       console.error('[IPC] recover-files-batch error:', err)
       const raw = err instanceof Error ? err.message : String(err)
       return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: diskBusyMessage(raw) ?? raw }
     }
   })
+
+  // P0-2: TestDisk-style lost partition search (async, heavyOp-gated native).
+  ipcMain.handle('scan-lost-partitions', (_event, driveIndex: number, stepSectors?: number) =>
+    callNative('scan-lost-partitions', () =>
+      (getEngine() as unknown as { scanLostPartitions: (d: number, s?: number) => Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>> })
+        .scanLostPartitions(driveIndex, stepSectors))
+  )
+
+  // P0-3: user signature overlay (resource-format JSON).
+  ipcMain.handle('set-signature-overlay', (_event, path: string) =>
+    callNative('set-signature-overlay', () => (getEngine() as unknown as { setSignatureOverlay: (p: string) => boolean }).setSignatureOverlay(path ?? ''))
+  )
 
   ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {
     try {

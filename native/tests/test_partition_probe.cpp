@@ -1,5 +1,6 @@
 #include "fs/partition_scanner.h"
 #include "fs/volume_identity.h"
+#include "fixtures/volume_fixtures.h"
 #include "byteback_io.h"
 #include <gtest/gtest.h>
 #include <cstring>
@@ -117,4 +118,24 @@ TEST(VolumeIdentity, SerialSizeMismatchRejected) {
     EXPECT_TRUE(volumeIdentityMatches(ev, 0xAABBCCDD, 0));
     EXPECT_FALSE(volumeIdentityMatches(ev, 0xAABBCCDD, 2000));
     EXPECT_FALSE(volumeIdentityMatches(ev, 0x1, 1000));
+}
+
+// P0-2: the lost-partition whole-disk search must find a volume whose boot
+// sector sits at an arbitrary aligned offset (TestDisk-style search).
+TEST(PartitionScan, FindsVolumeAtOddAlignedOffset) {
+    constexpr uint64_t kOffsetSector = 2048; // 1 MiB
+    auto fat = byteback::testfix::buildFat16Volume();
+    std::vector<uint8_t> disk((kOffsetSector + fat.size() / 512 + 64) * 512, 0);
+    std::memcpy(disk.data() + kOffsetSector * 512, fat.data(), fat.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    PartitionScanner scanner(&reader);
+    auto found = scanner.scanForPartitions(64); // 32 KiB steps for test speed
+    ASSERT_FALSE(found.empty());
+    bool hit = false;
+    for (const auto& p : found) {
+        if (p.startSector == kOffsetSector) hit = true;
+    }
+    EXPECT_TRUE(hit);
 }

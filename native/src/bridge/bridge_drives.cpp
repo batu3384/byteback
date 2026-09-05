@@ -4,6 +4,111 @@
 #include "byteback_carver.h"
 #include "io/volume_mapper_win.h"
 
+namespace {
+
+// Whole-disk boot-sector search off the JS thread (TestDisk-style lost
+// partition search). Progress rides a ThreadSafeFunction; the promise
+// resolves with candidates incl. estimated sizes (start -> next candidate
+// or disk end).
+class LostPartitionsWorker : public Napi::AsyncWorker {
+public:
+    LostPartitionsWorker(Napi::Env& env, byteback::Engine* engine, int driveIndex,
+                         uint32_t stepSectors, BridgeData* bdata,
+                         Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
+          stepSectors_(stepSectors ? stepSectors : 512), bdata_(bdata), deferred_(deferred),
+          tsfn_(Napi::ThreadSafeFunction::New(env, Napi::Function::New(env, [](const Napi::CallbackInfo&) { return; }),
+                                              "LostPartitionsProgress", 0, 1, [](Napi::Env) {})) {}
+
+    void Execute() override {
+        try {
+            byteback::DiskReader reader;
+            if (!reader.openDrive(driveIndex_)) {
+                error_ = "could not open PhysicalDrive";
+                return;
+            }
+            byteback::PartitionScanner scanner(&reader);
+            found_ = scanner.scanForPartitions(stepSectors_, [this](uint64_t cur, uint64_t total) {
+                tsfn_.NonBlockingCall([cur, total](Napi::Env env, Napi::Function js) {
+                    js.Call({Napi::Number::New(env, static_cast<double>(cur)),
+                             Napi::Number::New(env, static_cast<double>(total))});
+                });
+            });
+            diskSectors_ = reader.getDiskSize() / (reader.getSectorSize() ? reader.getSectorSize() : 512);
+        } catch (const std::exception& e) {
+            error_ = e.what();
+        } catch (...) {
+            error_ = "unknown partition scan error";
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        tsfn_.Release();
+        if (bdata_) bdata_->endHeavyOp();
+        if (!error_.empty()) {
+            deferred_.Reject(Napi::String::New(env, error_));
+            return;
+        }
+        std::vector<byteback::PartitionInfo> sorted = found_;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const auto& a, const auto& b) { return a.startSector < b.startSector; });
+        Napi::Array arr = Napi::Array::New(env, sorted.size());
+        for (size_t i = 0; i < sorted.size(); ++i) {
+            const uint64_t next = (i + 1 < sorted.size()) ? sorted[i + 1].startSector : diskSectors_;
+            const uint64_t size = next > sorted[i].startSector ? next - sorted[i].startSector : 0;
+            Napi::Object p = Napi::Object::New(env);
+            p.Set("startSector", Napi::Number::New(env, static_cast<double>(sorted[i].startSector)));
+            p.Set("sizeSectors", Napi::Number::New(env, static_cast<double>(size)));
+            p.Set("fs", Napi::String::New(env, sorted[i].type.empty() ? "unknown" : sorted[i].type));
+            arr[i] = p;
+        }
+        deferred_.Resolve(arr);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        tsfn_.Release();
+        if (bdata_) bdata_->endHeavyOp();
+        deferred_.Reject(Napi::String::New(Env(), e.what()));
+    }
+
+private:
+    byteback::Engine* engine_;
+    int driveIndex_;
+    uint32_t stepSectors_;
+    BridgeData* bdata_;
+    Napi::Promise::Deferred deferred_;
+    Napi::ThreadSafeFunction tsfn_;
+    std::vector<byteback::PartitionInfo> found_;
+    uint64_t diskSectors_ = 0;
+    std::string error_;
+};
+
+} // namespace
+
+Napi::Value ScanLostPartitions(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 1 || !info[0].IsNumber()) return env.Undefined();
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    const uint32_t stepSectors =
+        (info.Length() >= 2 && info[1].IsNumber() && info[1].As<Napi::Number>().Uint32Value() > 0)
+            ? info[1].As<Napi::Number>().Uint32Value()
+            : 512;
+
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    auto* worker = new LostPartitionsWorker(env, &bdata->engine, driveIndex, stepSectors, bdata, deferred);
+    worker->Queue();
+    return deferred.Promise();
+    NAPI_CATCH
+}
+
 Napi::Value GetCarveSignatureCount(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY

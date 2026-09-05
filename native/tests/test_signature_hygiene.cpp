@@ -8,6 +8,8 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <fstream>
 
 using namespace byteback;
 
@@ -80,4 +82,27 @@ TEST(SignatureHygiene, TextDiskYieldsNoCarves) {
         if (fr.id != -1) ++records;
     }, &running));
     EXPECT_EQ(records, 0);
+}
+
+// P0-3: the user overlay loads on top of built-ins and resets cleanly.
+TEST(SignatureHygiene, OverlayLoadsAndResets) {
+    const std::string dir = (std::filesystem::temp_directory_path() / "bb_overlay_sig").string();
+    std::filesystem::create_directories(dir);
+    const std::string file = dir + "/overlay.json";
+    {
+        std::ofstream f(file, std::ios::binary);
+        f << R"([{"format":"Overlay Probe","extension":".bbprobe","category":"Document","header":"cafebabe1234","footer":"","max_size":1048576}])";
+    }
+    CarvingEngine::setSignatureOverlay(file);
+    {
+        CarvingEngine carver;
+        ASSERT_TRUE(carver.loadSignatures(""));
+        const size_t withOverlay = carver.signatureCount();
+        CarvingEngine::setSignatureOverlay("");
+        CarvingEngine plain;
+        ASSERT_TRUE(plain.loadSignatures(""));
+        EXPECT_EQ(withOverlay, plain.signatureCount() + 1);
+    }
+    CarvingEngine::setSignatureOverlay("");
+    std::filesystem::remove_all(dir);
 }

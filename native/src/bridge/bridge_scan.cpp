@@ -48,6 +48,18 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     if (o.Has("orderBy") && o.Get("orderBy").IsString()) {
         f.orderBy = o.Get("orderBy").As<Napi::String>().Utf8Value();
     }
+    if (o.Has("sizeMin") && o.Get("sizeMin").IsNumber()) {
+        f.sizeMin = static_cast<uint64_t>(o.Get("sizeMin").As<Napi::Number>().DoubleValue());
+    }
+    if (o.Has("sizeMax") && o.Get("sizeMax").IsNumber()) {
+        f.sizeMax = static_cast<uint64_t>(o.Get("sizeMax").As<Napi::Number>().DoubleValue());
+    }
+    if (o.Has("dateFrom") && o.Get("dateFrom").IsNumber()) {
+        f.dateFrom = o.Get("dateFrom").As<Napi::Number>().Int64Value();
+    }
+    if (o.Has("dateTo") && o.Get("dateTo").IsNumber()) {
+        f.dateTo = o.Get("dateTo").As<Napi::Number>().Int64Value();
+    }
     return f;
 }
 

@@ -89,13 +89,20 @@ interface BytebackEngine {
     fileId: number,
     destDir: string,
     scanId: number,
+    preservePaths?: boolean,
   ): Promise<RecoverResult>
   recoverFilesBatch(
     driveIndex: number,
     fileIds: number[],
     destDir: string,
     scanId: number,
+    preservePaths?: boolean,
   ): Promise<{ succeeded: number; failed: number; results: RecoverResult[] }>
+  scanLostPartitions(
+    driveIndex: number,
+    stepSectors?: number,
+  ): Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>>
+  setSignatureOverlay(path: string): boolean
   readFilePreview(driveIndex: number, scanId: number, fileId: number): FilePreviewResult
   getCaseInfo(): {
     caseNumber: string

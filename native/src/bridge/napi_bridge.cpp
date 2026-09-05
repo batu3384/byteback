@@ -63,6 +63,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("lookupNsrl", Napi::Function::New(env, LookupNsrl));
     exports.Set("getNsrlStats", Napi::Function::New(env, GetNsrlStats));
     exports.Set("setSignaturesDir", Napi::Function::New(env, SetSignaturesDir));
+    exports.Set("setSignatureOverlay", Napi::Function::New(env, SetSignatureOverlay));
+    exports.Set("scanLostPartitions", Napi::Function::New(env, ScanLostPartitions));
 
     return exports;
 }

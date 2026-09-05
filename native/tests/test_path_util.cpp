@@ -37,3 +37,16 @@ TEST(PathUtil, DestDirRejectsDotDot) {
     EXPECT_TRUE(destDirIsSafe("D:\\case..lab\\out"));
     EXPECT_FALSE(destDirIsSafe("C:\\Windows\\Temp"));
 }
+
+// P0-1: folder-tree recovery needs a traversal-proof relative dir extractor.
+TEST(PathUtil, SafeRelativeDirStripsTraversalAndDrivePrefixes) {
+    EXPECT_EQ(safeRelativeDir("/Users/bat/Documents"), "Users/bat/Documents");
+    EXPECT_EQ(safeRelativeDir("C:\\Users\\bat\\Docs"), "Users/bat/Docs");
+    EXPECT_EQ(safeRelativeDir("/a/../../b/c"), "a/b/c");
+    EXPECT_EQ(safeRelativeDir(""), "");
+    EXPECT_EQ(safeRelativeDir("/"), "");
+    EXPECT_EQ(safeRelativeDir("/CON/x"), "CON_dir/x"); // reserved device name
+    EXPECT_EQ(safeRelativeDir("/a<b/c:d"), "a_b/c_d"); // per-segment sanitize
+    EXPECT_EQ(joinDestDir("D:\\out", "a/b"), (std::filesystem::path("D:\\out") / "a" / "b").lexically_normal().string());
+    EXPECT_EQ(joinDestDir("D:\\out", ""), "D:\\out");
+}
