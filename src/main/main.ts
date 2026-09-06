@@ -44,7 +44,9 @@ function createWindow(): void {
   })
 
   const isDev = !!process.env.ELECTRON_RENDERER_URL
-  if (isDev) {
+  // DevTools yalnız elle açılır (F12 / Ctrl+Shift+I) — her açılışta otomatik
+  // açılması geliştirme modunda bile kafa karıştırıcıydı.
+  if (isDev && process.env.BYTEBACK_DEVTOOLS === '1') {
     mainWindow.webContents.openDevTools()
   }
 
