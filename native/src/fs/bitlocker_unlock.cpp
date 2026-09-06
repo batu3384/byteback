@@ -26,7 +26,7 @@ constexpr uint16_t kValueStretch = 0x0003;
 constexpr uint16_t kValueAesCcm = 0x0005;
 constexpr uint32_t kKeyTypeVmk = 0x00000001;
 constexpr uint32_t kKeyTypeFvek = 0x00000002;
-constexpr size_t kStretchIterations = 1'000'000;
+constexpr size_t kStretchIterations = 1u << 20; // 0x100000 per MS-BITLOCKER / libbde
 
 uint32_t le32(const uint8_t* p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -69,6 +69,7 @@ void stretchRecoveryPassword(const std::string& passwordUtf8, uint8_t out[32]) {
         crypto::sha256(out, 32, out);
     }
 }
+
 
 void hashPasswordUtf8(const std::string& passwordUtf8, uint8_t out[32]) {
     std::vector<uint8_t> wide;
@@ -296,6 +297,17 @@ BitLockerUnlockResult unlockWithProtector(DiskReader& reader, const std::string&
         result.error = "empty password";
         return result;
     }
+    // Recovery passwords are 48 digits in 8 groups of 6; the KDF hashes the
+    // digit string only. Users type (and the UI shows) groups joined by
+    // hyphens/spaces — strip those separators, then validate the shape.
+    std::string keyPhrase = passwordUtf8;
+    if (protectType == kProtectRecovery) {
+        keyPhrase = normalizeBitLockerRecoveryPassword(passwordUtf8);
+        if (keyPhrase.size() != 48) {
+            result.error = "recovery password must be 48 digits";
+            return result;
+        }
+    }
     std::vector<uint8_t> meta;
     if (!readMetadata(reader, volumeOffsetBytes, meta)) {
         result.error = "FVE metadata not found";
@@ -309,7 +321,7 @@ BitLockerUnlockResult unlockWithProtector(DiskReader& reader, const std::string&
     }
 
     uint8_t derived[32];
-    if (!deriveKeyFromPassword(passwordUtf8, material, derived)) {
+    if (!deriveKeyFromPassword(keyPhrase, material, derived)) {
         result.error = "password key derivation failed";
         return result;
     }
@@ -383,6 +395,19 @@ void deriveBitLockerPasswordKey(const std::string& passwordUtf8, const uint8_t s
     }
     data.count = 0xfffff;
     crypto::sha256(reinterpret_cast<const uint8_t*>(&data), sizeof(data), out);
+}
+
+void stretchBitLockerRecoveryKey(const std::string& recoveryDigits, uint8_t out[32]) {
+    stretchRecoveryPassword(recoveryDigits, out);
+}
+
+std::string normalizeBitLockerRecoveryPassword(const std::string& typed) {
+    std::string digits;
+    digits.reserve(typed.size());
+    for (char c : typed) {
+        if (c >= '0' && c <= '9') digits.push_back(c);
+    }
+    return digits;
 }
 
 BitLockerUnlockResult unlockBitLockerWithPassword(DiskReader& reader, const std::string& passwordUtf8,

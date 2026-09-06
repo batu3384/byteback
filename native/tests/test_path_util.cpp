@@ -10,8 +10,23 @@ TEST(PathUtil, SafeBasenameStripsTraversal) {
     EXPECT_EQ(safeBasename("../../etc/passwd"), "passwd");
     EXPECT_EQ(safeBasename(""), "recovered_file.bin");
     EXPECT_EQ(safeBasename("."), "recovered_file.bin");
-    EXPECT_EQ(safeBasename("con"), "con");
     EXPECT_EQ(safeBasename("bad:name?.txt"), "bad_name_.txt");
+}
+
+// Win32 cannot create names ending in dots/spaces (silently stripped ->
+// recovered tree diverges from the record) and resolves reserved device
+// names (CON/NUL/COM1..., also with an extension, e.g. "nul.bin") to
+// devices instead of files — recovery would write nowhere.
+TEST(PathUtil, SafeBasenameReservedAndTrailingDots) {
+    EXPECT_EQ(safeBasename("foo."), "foo");
+    EXPECT_EQ(safeBasename("foo "), "foo");
+    EXPECT_EQ(safeBasename("foo.. .."), "foo");
+    EXPECT_EQ(safeBasename("..."), "recovered_file.bin");
+    EXPECT_NE(safeBasename("con"), "con");
+    EXPECT_NE(safeBasename("NUL.bin"), "NUL.bin");
+    EXPECT_NE(safeBasename("com1.old.jpg"), "com1.old.jpg");
+    EXPECT_EQ(safeBasename("normal.jpg"), "normal.jpg");
+    EXPECT_EQ(safeBasename("console.log"), "console.log"); // stem != reserved
 }
 
 TEST(PathUtil, UniqueDestPathAppendsSuffix) {
@@ -47,6 +62,11 @@ TEST(PathUtil, SafeRelativeDirStripsTraversalAndDrivePrefixes) {
     EXPECT_EQ(safeRelativeDir("/"), "");
     EXPECT_EQ(safeRelativeDir("/CON/x"), "CON_dir/x"); // reserved device name
     EXPECT_EQ(safeRelativeDir("/a<b/c:d"), "a_b/c_d"); // per-segment sanitize
+    // Trailing dots/spaces are stripped per segment (Win32 would otherwise
+    // create a different directory name than requested); all-dot segments
+    // vanish instead of collapsing onto the parent.
+    EXPECT_EQ(safeRelativeDir("/foo./bar /baz"), "foo/bar/baz");
+    EXPECT_EQ(safeRelativeDir("/a/.../b"), "a/b");
     EXPECT_EQ(joinDestDir("D:\\out", "a/b"), (std::filesystem::path("D:\\out") / "a" / "b").lexically_normal().string());
     EXPECT_EQ(joinDestDir("D:\\out", ""), "D:\\out");
 }

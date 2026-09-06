@@ -219,7 +219,7 @@ const STRINGS: Record<string, Entry> = {
   'scan.sectorPerSec': { tr: 'sektör/s', en: 'sectors/s' },
   'scan.hfsLimit': { tr: 'HFS+ katalog limit sentinel kaydı var. Varsayılan yürüyüş sınırsız; bu uyarı yalnız limit verilmiş taramada çıkar.', en: 'An HFS+ catalog-limit sentinel record is present. The default walk is unlimited; this warning only appears in scans launched with a limit.' },
   'scan.badSectors': { tr: '{n} sektör okunamadı (bozuk). Bu bölgelerdeki veriler kurtarılamamış olabilir.', en: '{n} sectors could not be read (bad). Data in these regions may not have been recovered.' },
-  'scan.carveSkipped': { tr: 'Oyma atlandı — bu dosya sistemi için boş alan haritası yok (APFS/HFS/ReFS). Tam disk carve veya carve_only profilini dene.', en: 'Carving skipped — this file system has no free-space map (APFS/HFS/ReFS). Try the full-disk carve or carve_only profile.' },
+  'scan.carveSkipped': { tr: 'Oyma atlandı — okunabilir boş alan aralığı kalmadı (disk okunamıyor ya da bölüm boyutu sıfır). Desteklenmeyen dosya sistemlerinde oyma, CA-022 sonrası tüm bölümü kapsar ve atlanmaz.', en: 'Carving skipped — no readable free-space ranges left (disk unreadable or zero-size partition). On unsupported file systems carving now covers the whole partition (CA-022) and is not skipped.' },
   'scan.stepOf': { tr: 'Adım {step}/{of}', en: 'Step {step}/{of}' },
   'scan.sigs': { tr: '{n} imza.', en: '{n} signatures.' },
   'scan.noteCarveOnly': { tr: 'Adım {step}/{of}: {phase}. {sigs} Dosya sistemi atlandı — yalnız imza carve. Sonuçlara istediğin zaman geç.', en: 'Step {step}/{of}: {phase}. {sigs} File systems skipped — signature carve only. You can open the results at any time.' },
@@ -734,6 +734,18 @@ const STRINGS: Record<string, Entry> = {
   'report.chainChecking': { tr: 'Doğrulanıyor…', en: 'Verifying…' },
   'report.chainOk': { tr: 'Doğrulandı — {n} kayıt bozulmamış (SHA-256 zinciri)', en: 'Verified — {n} entries intact (SHA-256 chain)' },
   'report.chainBroken': { tr: 'BOZULDU — satır {line} ({detail})', en: 'BROKEN — line {line} ({detail})' },
+
+  // Lane-C sweep: engine phase labels (shared/scan-eta's labels are TR-only),
+  // disk-map strings, results load-error surface.
+  'scan.phase.metadata': { tr: 'Metadata — dosya tablosu', en: 'Metadata — file table' },
+  'scan.phase.carve': { tr: 'Oyma — boş alan imza taraması', en: 'Carve — free-space signature scan' },
+  'scan.phase.carveOnly': { tr: 'İmza carve — dosya sistemi atlandı', en: 'Signature carve — file system skipped' },
+  'scan.phase.carveSkipped': { tr: 'Oyma atlandı', en: 'Carving skipped' },
+  'diskmap.title': { tr: 'Tarama ilerlemesi', en: 'Scan progress' },
+  'diskmap.records': { tr: '{n} kayıt', en: '{n} records' },
+  'diskmap.deleted': { tr: 'silinmiş: {n}', en: 'deleted: {n}' },
+  'results.loadErrorTitle': { tr: 'Sonuç listesi okunamadı', en: 'Could not read the results list' },
+  'results.loadErrorBody': { tr: 'Veritabanı sorgusu başarısız oldu; liste boş gösteriliyor. Süzgeçleri değiştirip yeniden deneyin; sorun sürerse uygulamayı yeniden başlatın.', en: 'The database query failed, so the list is shown empty. Change the filters to retry; if the problem persists, restart the app.' },
 }
 
 /**

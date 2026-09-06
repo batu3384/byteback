@@ -582,7 +582,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
 
       <div className="dashboard-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '24px', marginTop: '32px' }}>
         <div className="stat-card glass-panel" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div style={{ background: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '12px' }}><HardDrive size={28} color="var(--text-main)" /></div>
+          <div style={{ background: 'var(--surface-overlay)', padding: '16px', borderRadius: '12px' }}><HardDrive size={28} color="var(--text-main)" /></div>
           <div>
             <div style={{ fontSize: '1.8rem', fontWeight: 600 }}>{drives.length}</div>
             <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('dash.statDisks')}</div>

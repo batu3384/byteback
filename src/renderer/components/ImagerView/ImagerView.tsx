@@ -193,7 +193,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
           </label>
           <select
             className="form-select"
-            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
+            style={{ width: '100%', padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             value={selectedDrive}
             onChange={(e) => setSelectedDrive(e.target.value === '' ? '' : Number(e.target.value))}
             disabled={imaging}
@@ -213,7 +213,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             value={format}
             onChange={(e) => setFormat(e.target.value as 'raw' | 'ewf')}
             className="form-select"
-            style={{ width: '100%', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
+            style={{ width: '100%', padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             disabled={imaging}
           >
             <option value="raw" style={{ background: 'var(--bg-surface)' }}>{t('imager.formatRaw')}</option>
@@ -232,7 +232,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             <input 
               type="text" 
               className="form-input"
-              style={{ flex: 1, padding: '12px 16px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
+              style={{ flex: 1, padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
               placeholder={t('imager.destPlaceholder')}
               value={destPath}
               readOnly
@@ -267,7 +267,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         </div>
 
         {(imaging || status) && (
-          <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'rgba(255,255,255,0.02)' }}>
+          <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'var(--surface-overlay)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
               <span style={{ fontWeight: 500, color: status.includes(t('imager.doneMarker')) ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 {status.includes(t('imager.doneMarker')) ? <CheckCircle size={18} /> : <Activity size={18} />} {status}
@@ -279,7 +279,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
               <span>{tFormat('imager.sectorProgress', { cur: progress.current.toLocaleString(), total: progress.total ? progress.total.toLocaleString() : '?' })}</span>
               <span>%{percent}</span>
             </div>
-            <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+            <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'var(--surface-overlay-strong)', borderRadius: '4px', overflow: 'hidden' }}>
               <div className="progress-bar-fill" style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
             </div>
 
@@ -295,7 +295,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             )}
 
             {/* Predictive Latency Pulse Chart */}
-            <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+            <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'var(--well-bg)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '0.85rem' }}>
                 <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Activity size={14} /> {t('imager.latencyChart')}

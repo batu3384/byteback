@@ -429,16 +429,14 @@ inline std::vector<uint8_t> buildExFatUnallocatedVolume() {
     img[de + 1] = 2;
     writeLe16(img, de + 2, chk);
     de += 32;
-    img[de] = 0xC5;
-    writeLe16(img, de + 2, chk);
-    img[de + 6] = 8;
+    img[de] = 0xC0; // File Stream Extension entry (spec type 0xC0)
+    img[de + 3] = 8; // FileNameLength (spec offset 3)
     writeLe32(img, de + 20, 3);
-    writeLe64(img, de + 32, 17);
+    writeLe64(img, de + 24, 17); // DataLength (spec offset 24, LE64)
     de += 32;
     img[de] = 0xC1;
-    writeLe16(img, de + 2, chk);
     static const uint8_t lostName[] = {'L',0,'O',0,'S',0,'T',0,'.',0,'D',0,'A',0,'T',0};
-    std::memcpy(img.data() + de + 4, lostName, sizeof(lostName));
+    std::memcpy(img.data() + de + 2, lostName, sizeof(lostName));
     std::memcpy(img.data() + (heapOff + 1) * ss, "recovered!", 10);
     return img;
 }

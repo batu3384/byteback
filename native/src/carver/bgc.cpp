@@ -96,7 +96,10 @@ BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                  g2Start += stepBytes) {
                 for (size_t g2Len = stepBytes; g2Len <= gapLimit && g2Start + g2Len <= footerOffset;
                      g2Len += stepBytes) {
-                    ++attempts;
+                    // CA-021: check the budget in the innermost loop too —
+                    // without this the sweep runs one full gap-length series
+                    // past the budget before an outer condition re-checks.
+                    if (++attempts >= attemptBudget) return out;
                     reassembled.clear();
                     reassembled.insert(reassembled.end(), disk + headerOffset, disk + g1Start);
                     reassembled.insert(reassembled.end(), disk + afterG1, disk + g2Start);

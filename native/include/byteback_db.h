@@ -10,14 +10,17 @@ struct sqlite3;
 namespace byteback {
 
 struct FileRecord {
-    int64_t id;
-    int64_t parentId;
+    // All numeric fields default-initialized: a default-constructed record
+    // with indeterminate sizeBytes/status silently poisoned downstream
+    // comparisons (found by the dedup hash+size test).
+    int64_t id = 0;
+    int64_t parentId = -1;
     std::string name;
     std::string extension;
     std::string path;
-    uint64_t sizeBytes;
-    uint64_t startSector;
-    uint64_t endSector;
+    uint64_t sizeBytes = 0;
+    uint64_t startSector = 0;
+    uint64_t endSector = 0;
     // CA-004/CA-005: byte offset of the file start inside the start sector.
     // 0 for sector-aligned records (NTFS/FAT runs); carve records carry the
     // real in-sector offset so recovery reads the exact header, not the floor.
@@ -34,12 +37,12 @@ struct FileRecord {
     std::vector<uint8_t> residentData; // NTFS resident $DATA bytes (no runs)
     bool compressed = false; // NTFS: $DATA has a compression unit (LZNT1)
     uint64_t integrityChecksum = 0; // ReFS integrity stream CRC64-ECMA; 0 = not checked
-    int status;            // 0=deleted/unallocated, 1=in-use/allocated, 2=encrypted/other
-    int confidence;        // 0-100
+    int status = 0;       // 0=deleted/unallocated, 1=in-use/allocated, 2=encrypted/other
+    int confidence = 0;   // 0-100
     std::string category;  // "Image", "Document", "Video", etc.
     std::string source;    // "mft", "fat", "carve", "fragment"
-    int64_t createdAt;
-    int64_t modifiedAt;
+    int64_t createdAt = 0;
+    int64_t modifiedAt = 0;
 };
 
 // One point on the unified timeline: a file event observed in the USN

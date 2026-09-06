@@ -51,10 +51,12 @@ bool parseFork(const uint8_t* data, HfsFork& fork) {
     fork.logicalSize = be64(data);
     fork.extents.clear();
     const uint8_t* ext = data + 16;
+    // HFSPlusExtentDescriptor is 8 bytes (startBlock u32 + blockCount u32);
+    // HFSPlusForkData holds 8 of them (80 bytes total).
     for (int i = 0; i < 8; ++i) {
         HfsExtent e;
-        e.startBlock = be32(ext + i * 12);
-        e.blockCount = be32(ext + i * 12 + 4);
+        e.startBlock = be32(ext + i * 8);
+        e.blockCount = be32(ext + i * 8 + 4);
         if (e.blockCount > 0) fork.extents.push_back(e);
     }
     return !fork.extents.empty() || fork.logicalSize > 0;
@@ -104,7 +106,12 @@ struct CatalogCtx {
     int fileCount = 0;
     int maxFiles = 0;
     bool emittedLimit = false;
+    // ponytail: hard node-visit budget instead of a visited set; a crafted
+    // B-tree can otherwise fan out exponentially within the depth cap.
+    size_t nodesVisited = 0;
 };
+
+constexpr size_t kHfsMaxNodeVisits = 1u << 20;
 
 bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
                     uint32_t fileId, uint16_t forkType, HfsFork& fork);
@@ -131,16 +138,17 @@ bool parseExtentRecord(const uint8_t* rec, uint16_t recLen,
     if (recLen < 8) return true;
     uint16_t keyLen = be16(rec);
     if (keyLen < 6 || keyLen + 2 > recLen) return true;
-    uint16_t recFork = be16(rec + 2);
+    // HFSPlusExtentKey: forkType u8, pad u8, fileID u32, startBlock u32.
+    uint8_t recFork = rec[2];
     uint32_t recFile = be32(rec + 4);
-    if (recFile != fileId || recFork != forkType) return true;
+    if (recFile != fileId || recFork != (forkType & 0xFF)) return true;
     const uint8_t* val = rec + 2 + keyLen;
     uint16_t valLen = recLen - (2 + keyLen);
-    if (valLen < 96) return true;
+    if (valLen < 64) return true; // HFSPlusExtentRecord = 8 descriptors x 8 bytes
     for (int i = 0; i < 8; ++i) {
         HfsExtent e;
-        e.startBlock = be32(val + i * 12);
-        e.blockCount = be32(val + i * 12 + 4);
+        e.startBlock = be32(val + i * 8);
+        e.blockCount = be32(val + i * 8 + 4);
         if (e.blockCount > 0) fork.extents.push_back(e);
     }
     return true;
@@ -150,13 +158,14 @@ bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
                     uint32_t fileId, uint16_t forkType, HfsFork& fork) {
     if (ctx.isRunning && !(*ctx.isRunning)) return false;
     if (depth > 24) return true;
+    if (++ctx.nodesVisited > kHfsMaxNodeVisits) return false;
 
     std::vector<uint8_t> node;
     uint64_t off = ctx.partitionOffset + static_cast<uint64_t>(block) * ctx.blockSize;
     if (!readAt(*ctx.reader, off, ctx.blockSize, node)) return true;
 
-    uint8_t kind = node[0];
-    uint16_t numRecords = be16(node.data() + 4);
+    uint8_t kind = node[8];  // BTNodeDescriptor: forwardLink(4) backLink(4) kind(1) height(1) numRecords(2)
+    uint16_t numRecords = be16(node.data() + 10);
     if (numRecords == 0) return true;
     if (!hfsOffsetTableFits(ctx.blockSize, numRecords)) return true;
 
@@ -205,7 +214,7 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
     uint16_t valLen = recLen - (2 + keyLen);
     if (valLen < 2) return true;
     uint16_t recType = be16(val);
-    if (recType != 1 && recType != 2) return true;
+    if (recType != 1 && recType != 2 && recType != 4) return true;
     if (ctx.maxFiles > 0 && recType == 2 && ctx.fileCount >= ctx.maxFiles) {
         if (!ctx.emittedLimit && ctx.callback) {
             FileRecord sentinel{};
@@ -234,15 +243,37 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
     fullPath += name;
 
     if (recType == 1) {
-        ctx.paths[be32(val + 8)] = fullPath;
+        // Folder thread record: the key's "parent" IS the folder CNID and the
+        // value carries the real parent + name. Register the folder's path
+        // from the value so files key'd under it resolve.
+        if (valLen < 8 + 2) return true;
+        uint32_t realParent = be32(val + 4);
+        uint16_t vNameLen = be16(val + 8);
+        if (10 + vNameLen > valLen || vNameLen == 0) return true;
+        std::string vName = utf16BeToUtf8(val + 10, static_cast<uint16_t>(vNameLen / 2));
+        if (vName.empty()) return true;
+        std::string vp = ctx.paths.count(realParent) ? ctx.paths[realParent] : "/";
+        if (!vp.empty() && vp.back() != '/') vp += '/';
+        ctx.paths[parentId] = vp + vName; // parentId here = folder CNID from the key
         return true;
     }
 
-    // File record — data fork at offset 0x50 from value start (HFSPlusCatalogFile).
-    if (valLen < 0x50 + 80) return true;
-    uint32_t fileId = be32(val + 8);
+    // HFSPlusCatalogFolder (4) / HFSPlusCatalogFile (2): recordType(2)
+    // reserved(2) flags(4) reserved(4) fileID u32 @12.
+    if (valLen < 16) return true;
+
+    if (recType == 4) {
+        // Folder record: register its path so descendants rebuild full paths.
+        ctx.paths[be32(val + 12)] = fullPath;
+        return true;
+    }
+
+    // File record — data fork at offset 92 (0x5C) from value start
+    // (HFSPlusCatalogFile: 92-byte header, then HFSPlusForkData 80 bytes).
+    if (valLen < 92 + 80) return true;
+    uint32_t fileId = be32(val + 12);
     HfsFork dataFork;
-    if (!parseFork(val + 0x50, dataFork)) return true;
+    if (!parseFork(val + 92, dataFork)) return true;
     appendOverflowExtents(ctx, fileId, kHfsDataForkType, dataFork);
 
     FileRecord fr;
@@ -279,13 +310,14 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
 bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
     if (ctx.isRunning && !(*ctx.isRunning)) return false;
     if (depth > 24) return true;
+    if (++ctx.nodesVisited > kHfsMaxNodeVisits) return false;
 
     std::vector<uint8_t> node;
     uint64_t off = ctx.partitionOffset + static_cast<uint64_t>(block) * ctx.blockSize;
     if (!readAt(*ctx.reader, off, ctx.blockSize, node)) return true;
 
-    uint8_t kind = node[0];
-    uint16_t numRecords = be16(node.data() + 4);
+    uint8_t kind = node[8];  // BTNodeDescriptor: kind at 8, numRecords at 10
+    uint16_t numRecords = be16(node.data() + 10);
     if (numRecords == 0) return true;
     if (!hfsOffsetTableFits(ctx.blockSize, numRecords)) return true;
 

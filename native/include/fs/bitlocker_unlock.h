@@ -27,4 +27,14 @@ BitLockerUnlockResult unlockBitLockerWithRecoveryPassword(DiskReader& reader,
 void deriveBitLockerPasswordKey(const std::string& passwordUtf8, const uint8_t salt[16],
                                 uint8_t out[32]);
 
+// Recovery-password stretch: SHA-256 over UTF-16LE of the 48-digit string,
+// then 0x100000 further SHA-256 rounds (MS-BITLOCKER / libbde). Input here
+// must already be digits-only; unlockBitLockerWithRecoveryPassword strips
+// group separators before calling this.
+void stretchBitLockerRecoveryKey(const std::string& recoveryDigits, uint8_t out[32]);
+
+// Strip non-digits from a typed recovery password (groups are joined by
+// hyphens/spaces in the UI but the KDF hashes the bare digit string).
+std::string normalizeBitLockerRecoveryPassword(const std::string& typed);
+
 } // namespace byteback

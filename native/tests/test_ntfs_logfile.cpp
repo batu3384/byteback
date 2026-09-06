@@ -37,8 +37,8 @@ std::vector<uint8_t> buildLogfileHintDisk() {
     std::vector<uint8_t> img(logMft + mftSize, 0);
     std::memcpy(img.data() + 3, "NTFS    ", 8);
     img[0x0D] = static_cast<uint8_t>(spc);
-    writeLe64(img, 44, 1); // mftCluster
-    img[60] = static_cast<uint8_t>(0xF6); // clustersPerMftRecord = -10 => 1024 bytes
+    writeLe64(img, 0x30, 1); // $MFT LCN at its spec offset 0x30
+    img[0x40] = static_cast<uint8_t>(0xF6); // clustersPerMftRecord at spec offset 0x40
     img[510] = 0x55;
     img[511] = 0xAA;
 
@@ -126,8 +126,8 @@ TEST(NtfsLogfile, RestartPageEmitsLsn) {
     std::vector<uint8_t> img(logMft + mftSize, 0);
     std::memcpy(img.data() + 3, "NTFS    ", 8);
     img[0x0D] = static_cast<uint8_t>(spc);
-    writeLe64(img, 44, 1);
-    img[60] = static_cast<uint8_t>(0xF6);
+    writeLe64(img, 0x30, 1);
+    img[0x40] = static_cast<uint8_t>(0xF6);
     img[510] = 0x55;
     img[511] = 0xAA;
 

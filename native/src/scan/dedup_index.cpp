@@ -65,6 +65,9 @@ void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
             e.name = fr.name;
             carveEntries_.push_back(std::move(e));
             carveSorted_ = false;
+            // Rehydrate exact-content dedup too: without the persisted hashes a
+            // re-carved identical payload at disjoint sectors is stored twice.
+            if (!fr.contentHash.empty()) contentHashes_.emplace(fr.contentHash, fr.sizeBytes);
         } else {
             observe(fr);
         }
@@ -139,11 +142,17 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
     ensureSorted();
     // P0-6: exact-content dedup beats sector-overlap heuristics — identical
     // payloads at different sectors are duplicates regardless of layout.
-    if (!fr.contentHash.empty() && contentHashes_.count(fr.contentHash)) {
-        fr.source = "carver_duplicate";
-        fr.path = "/dup_of/content";
-        fr.confidence = std::min(fr.confidence, 30);
-        return true;
+    // Hash AND size must match: the hash covers the first min(64KB, size)
+    // bytes, so a prefix collision between two different-sized files (shared
+    // EXIF headers, zero-padded DB pages) must not demote a distinct file.
+    if (!fr.contentHash.empty()) {
+        auto it = contentHashes_.find(fr.contentHash);
+        if (it != contentHashes_.end() && it->second == fr.sizeBytes) {
+            fr.source = "carver_duplicate";
+            fr.path = "/dup_of/content";
+            fr.confidence = std::min(fr.confidence, 30);
+            return true;
+        }
     }
     if (overlapsExistingCarve(fr)) {
         fr.source = "carver_duplicate";
@@ -174,7 +183,7 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
     tracked.name = fr.name;
     carveEntries_.push_back(std::move(tracked));
     carveSorted_ = false;
-    if (!fr.contentHash.empty()) contentHashes_.insert(fr.contentHash);
+    if (!fr.contentHash.empty()) contentHashes_.emplace(fr.contentHash, fr.sizeBytes);
     return false;
 }
 

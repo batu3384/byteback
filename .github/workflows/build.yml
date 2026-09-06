@@ -24,11 +24,8 @@ jobs:
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-      - name: Type-check renderer
-        run: npx tsc --noEmit -p tsconfig.web.json
-
-      - name: Type-check main process
-        run: npx tsc --noEmit -p tsconfig.node.json
+      - name: Type-check (renderer + main + e2e helpers)
+        run: npm run typecheck
 
   build-windows:
     name: Build (Windows, native + Electron)

@@ -163,11 +163,44 @@ TEST(DedupIndex, SameContentHashAtDisjointSectorsIsDuplicate) {
     DedupIndex idx;
     FileRecord first = makeRec("carver", 1000, 1010);
     first.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    first.sizeBytes = 4096;
     EXPECT_FALSE(idx.markDuplicate(first));
 
     FileRecord second = makeRec("carver", 5000, 5010);
     second.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    second.sizeBytes = 4096;
     EXPECT_TRUE(idx.markDuplicate(second));
     EXPECT_EQ(second.source, "carver_duplicate");
     EXPECT_EQ(second.path, "/dup_of/content");
+}
+
+// Prefix-collision guard: the hash covers first min(64KB, size) bytes, so two
+// files sharing a prefix (same EXIF header, zero-padded DB pages) but with
+// DIFFERENT sizes are distinct — hash alone must not demote a real file.
+TEST(DedupIndex, SameHashDifferentSizeIsNotDuplicate) {
+    DedupIndex idx;
+    FileRecord first = makeRec("carver", 1000, 1010);
+    first.contentHash = "prefixcollision";
+    first.sizeBytes = 65536;
+    EXPECT_FALSE(idx.markDuplicate(first));
+
+    FileRecord second = makeRec("carver", 5000, 5010);
+    second.contentHash = "prefixcollision";
+    second.sizeBytes = 900000; // same 64KB prefix, different real size
+    EXPECT_FALSE(idx.markDuplicate(second));
+    EXPECT_EQ(second.source, "carver");
+}
+
+// Resume (loadFromRecords) must rehydrate content hashes too — an identical
+// payload re-carved after resume at disjoint sectors is still a duplicate.
+TEST(DedupIndex, LoadFromRecordsRehydratesContentHashes) {
+    DedupIndex idx;
+    FileRecord persisted = makeRec("carver", 1000, 1010);
+    persisted.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    idx.loadFromRecords({persisted});
+
+    FileRecord again = makeRec("carver", 5000, 5010);
+    again.contentHash = "d41d8cd98f00b204e9800998ecf8427e";
+    EXPECT_TRUE(idx.markDuplicate(again));
+    EXPECT_EQ(again.source, "carver_duplicate");
 }

@@ -419,7 +419,9 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     if (records.empty()) return true;
     if (!db_) return false;
 
-    sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
+    if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
 
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
@@ -447,7 +449,13 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     }
 
     sqlite3_finalize(stmt);
-    sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+    // A failed COMMIT (disk full / IO error) leaves the transaction open and
+    // the batch un-persisted — reporting success here would silently clear the
+    // caller's buffer of records that never reached the DB.
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
     return true;
 }
 
@@ -610,6 +618,10 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         return searchFiles(scanId, filter.query, offset, limit, false, filter);
     }
     std::lock_guard<std::recursive_mutex> lock(mu_);
+    // Negative LIMIT in SQLite means "no upper bound": a wrapped-negative IPC
+    // page size would materialize the entire table. Clamp at the trust boundary.
+    if (limit < 0) limit = 0;
+    if (offset < 0) offset = 0;
     std::string sql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
@@ -840,6 +852,8 @@ int64_t MetadataStore::insertTimelineEvent(int64_t scanId, const TimelineEvent& 
 std::vector<TimelineEvent> MetadataStore::getTimelineEvents(int64_t scanId, int offset, int limit,
                                                             const std::string& eventTypeFilter) {
     std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (limit < 0) limit = 0;  // negative LIMIT = unbounded in SQLite
+    if (offset < 0) offset = 0;
     std::vector<TimelineEvent> out;
     std::string sql =
         "SELECT id, scan_id, timestamp, event_type, file_name, mft_ref, source "
@@ -1109,16 +1123,20 @@ int64_t MetadataStore::searchFilesCount(int64_t scanId, const std::string& query
         )";
         appendListFilter(sql, filter, "f.");
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return 0;
-        int bind = 1;
-        sqlite3_bind_int64(stmt, bind++, scanId);
-        sqlite3_bind_int64(stmt, bind++, scanId);
-        sqlite3_bind_text(stmt, bind++, match.c_str(), -1, SQLITE_TRANSIENT);
-        bindListFilter(stmt, bind, filter);
-        int64_t n = 0;
-        if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
-        sqlite3_finalize(stmt);
-        if (n > 0) return n;
+        // An unparseable MATCH (e.g. a lone quote tokenizes to nothing) fails
+        // at PREPARE here but at STEP inside searchFiles — returning 0 would
+        // disagree with the LIKE fallback results. Skip to the page-count path.
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            int bind = 1;
+            sqlite3_bind_int64(stmt, bind++, scanId);
+            sqlite3_bind_int64(stmt, bind++, scanId);
+            sqlite3_bind_text(stmt, bind++, match.c_str(), -1, SQLITE_TRANSIENT);
+            bindListFilter(stmt, bind, filter);
+            int64_t n = 0;
+            if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int64(stmt, 0);
+            sqlite3_finalize(stmt);
+            if (n > 0) return n;
+        }
     }
 
     auto page = searchFiles(scanId, query, 0, 10000, useRegex, filter);

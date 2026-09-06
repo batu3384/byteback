@@ -75,7 +75,7 @@ function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
   return (
     <div
       ref={imgRef}
-      style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'rgba(255,255,255,0.02)', cursor: 'pointer' }}
+      style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'var(--surface-overlay)', cursor: 'pointer' }}
       onClick={() => onOpen(f.id)}
       role="button"
       tabIndex={0}
@@ -84,7 +84,7 @@ function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
       }}
       aria-label={ariaLabel}
     >
-      <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
+      <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--well-bg)' }}>
         {dataUrl ? (
           <img src={dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
         ) : thumb ? (
@@ -120,6 +120,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [totalCount, setTotalCount] = useState(0)
   const [page, setPage] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [listError, setListError] = useState(false)
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
   const [hfsTruncated, setHfsTruncated] = useState(false)
   const [recoverReport, setRecoverReport] = useState<string | null>(null)
@@ -220,6 +221,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       if (gen !== loadGenRef.current) return
       setTotalCount(typeof count === 'number' && count >= 0 ? count : 0)
       setDbFiles(pageData ?? [])
+      setListError(false)
       if (sum) {
         setSummary({
           totalFiles: sum.totalFiles ?? 0,
@@ -234,8 +236,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       })
     } catch {
       if (gen !== loadGenRef.current) return
+      // A DB failure must surface as an error, not as an empty-but-healthy
+      // list that reads as "the scan found nothing".
       setDbFiles([])
       setTotalCount(0)
+      setListError(true)
     } finally {
       if (gen === loadGenRef.current) setLoading(false)
     }
@@ -651,7 +656,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             setExpandedDirs(next)
           }}
           style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', cursor: 'pointer', marginLeft: depth * 16, borderRadius: '4px', width: 'calc(100% - ' + (depth * 16) + 'px)', background: 'transparent', border: 'none', color: 'inherit', textAlign: 'left' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-overlay)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           {isOpen ? <FolderOpen size={16} color="var(--accent-blue)" /> : <Folder size={16} color="var(--accent-blue)" />}
@@ -798,6 +803,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           {t('results.hfsLimit')}
         </div>
       )}
+      {listError && (
+        <InlineAlert variant="error" title={t('results.loadErrorTitle')}>
+          {t('results.loadErrorBody')}
+        </InlineAlert>
+      )}
 
           {effectiveScanId > 0 && totalPages > 1 ? (
             <div className="pager" role="navigation" aria-label={t('results.pageLabel')}>
@@ -807,15 +817,23 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               </span>
               <label className="pager-jump">
                 {t('results.pageLabel')}
+                {/* Commit on blur/Enter only — an onChange per keystroke fired a
+                    DB page load for every digit typed. key={page} resyncs the
+                    draft after prev/next moves the page. */}
                 <input
                   type="number"
                   min={1}
                   max={totalPages}
-                  value={page + 1}
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
+                  key={page}
+                  defaultValue={page + 1}
+                  onBlur={(e) => {
+                    if (e.target.value === '') return
+                    const n = Math.floor(Number(e.target.value))
                     if (!Number.isFinite(n)) return
-                    setPage(Math.min(totalPages, Math.max(1, Math.floor(n))) - 1)
+                    setPage(Math.min(totalPages, Math.max(1, n)) - 1)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
                   }}
                   aria-label={t('results.pageNumberAria')}
                 />

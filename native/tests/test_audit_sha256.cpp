@@ -161,3 +161,45 @@ TEST(AuditChain, VerifierAcceptsValidChainAndRejectsTampering) {
 
     ::remove(path.c_str());
 }
+
+// Lane E sweep: the writer appends+flushes line by line while a scan runs, so
+// a verify during ACTIVE writing can observe a torn FINAL line (no ChainHash
+// or a truncated hash). That must read as "incomplete tail", not BOGUS — the
+// chain up to the last complete entry is intact. A torn-looking line that has
+// lines AFTER it is still a genuine break.
+TEST(AuditChain, TornFinalLineIsIncompleteNotBroken) {
+    const auto calc = [](const std::string& s) {
+        return AuditLogger::CalculateSHA256(
+            reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    };
+    const std::string path = "test_audit_torn.log";
+    std::string prev(64, '0');
+    std::vector<std::string> lines;
+    for (const char* m : {"EVENT | T_ONE", "EVENT | T_TWO"}) {
+        const std::string h = calc(prev + m);
+        lines.push_back(std::string(m) + " | ChainHash: " + h);
+        prev = h;
+    }
+    // Line 3 is mid-write: message present, hash truncated.
+    const std::string torn = "EVENT | T_THREE | ChainHash: abcdef";
+
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        f << lines[0] << "\n" << lines[1] << "\n" << torn; // no trailing \n
+    }
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(r.ok);            // first two links verified
+    EXPECT_EQ(r.entries, 2);
+    EXPECT_EQ(r.brokenAt, 0);
+
+    // Same torn line, but more lines follow it: genuine corruption.
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        f << lines[0] << "\n" << torn << "\n" << lines[1] << "\n";
+    }
+    auto bad = forensic::VerifyAuditChainFile(path);
+    EXPECT_FALSE(bad.ok);
+    EXPECT_EQ(bad.brokenAt, 2);
+
+    ::remove(path.c_str());
+}

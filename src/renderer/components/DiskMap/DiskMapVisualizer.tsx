@@ -1,5 +1,6 @@
 import React from 'react'
 import './DiskMap.css'
+import { useI18n, tFormat } from '../../i18n'
 
 interface DiskMapProps {
   totalSectors: number
@@ -16,19 +17,21 @@ const DiskMapVisualizer: React.FC<DiskMapProps> = ({
   filesFound = 0,
   deletedCount = 0,
 }) => {
+  const { t, lang } = useI18n()
+  const locale = lang === 'tr' ? 'tr-TR' : 'en-US'
   const ratio = totalSectors > 0 ? Math.min(1, currentSector / totalSectors) : 0
   const pct = Math.floor(ratio * 100)
-  const phaseLabel = phase === 'carve' ? 'Oyma (imza)' : 'Metadata'
+  const phaseLabel = t(phase === 'carve' || phase === 'carve_skipped' || phase === 'carve_only' ? 'scan.phase.carve' : 'scan.phase.metadata')
   const countLabel =
     filesFound > 0
-      ? `${phaseLabel} · ${filesFound.toLocaleString('tr-TR')} kayıt` +
-        (deletedCount > 0 ? ` (silinmiş: ${deletedCount.toLocaleString('tr-TR')})` : '')
+      ? `${phaseLabel} · ${tFormat('diskmap.records', { n: filesFound.toLocaleString(locale) })}` +
+        (deletedCount > 0 ? ` (${tFormat('diskmap.deleted', { n: deletedCount.toLocaleString(locale) })})` : '')
       : phaseLabel
 
   return (
     <div className="disk-map-container glass-panel">
       <div className="disk-map-header">
-        <h3>Tarama ilerlemesi</h3>
+        <h3>{t('diskmap.title')}</h3>
         <span className="disk-map-phase">{countLabel}</span>
       </div>
       <div

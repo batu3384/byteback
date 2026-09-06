@@ -51,34 +51,45 @@ void writeHfsVolumeHeader(std::vector<uint8_t>& img, uint32_t catalogBlock, uint
     writeFork(img.data() + hdrOff + 272, catalogBlock, 1);
 }
 
+// BTNodeDescriptor is 14 bytes: forwardLink(4) backLink(4) kind(1) height(1)
+// numRecords(2) reserved(2). Leaf records start after it, at offset 14.
+void writeNodeHeader(uint8_t* node, uint16_t numRecords) {
+    node[8] = 0xFF; // kind = leaf
+    node[10] = static_cast<uint8_t>(numRecords >> 8);
+    node[11] = static_cast<uint8_t>(numRecords);
+}
+
 void writeExtentOverflowLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uint32_t fileId,
                              uint32_t extraStart, uint32_t extraCount, uint32_t blockSize = 4096) {
     const size_t off = blockOffset(blockIndex, blockSize);
     if (img.size() < off + blockSize) img.resize(off + blockSize, 0);
     uint8_t* node = img.data() + off;
-    node[0] = 0xFF;
-    writeBe16(node + 4, 1);
+    writeNodeHeader(node, 1);
     const uint16_t recStart = 14;
     uint8_t* rec = node + recStart;
-    writeBe16(rec, 10);
-    writeBe16(rec + 2, 0);
+    writeBe16(rec, 10);        // keyLength: forkType(1) pad(1) fileID(4) startBlock(4)
+    rec[2] = 0;                // forkType = data fork
+    rec[3] = 0;                // pad
     writeBe32(rec + 4, fileId);
-    uint8_t* val = rec + 12;
+    uint8_t* val = rec + 12;   // HFSPlusExtentRecord: 8 descriptors x 8 bytes
     writeBe32(val, extraStart);
     writeBe32(val + 4, extraCount);
-    const uint16_t recEnd = static_cast<uint16_t>(recStart + 12 + 96);
+    const uint16_t recEnd = static_cast<uint16_t>(recStart + 12 + 64);
     const size_t offTable = blockSize - 4;
     writeBe16(node + offTable, recStart);
     writeBe16(node + offTable + 2, recEnd);
 }
+
+// HFSPlusCatalogFile: fileID u32 at value+12, dataFork (HFSPlusForkData, 80
+// bytes) at value+92; fork extents are 8-byte descriptors.
+const uint16_t kCatalogFileValueLen = 92 + 80;
 
 void writeCatalogFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uint32_t fileId,
                           uint64_t logicalSize, uint32_t blockSize = 4096) {
     const size_t off = blockOffset(blockIndex, blockSize);
     if (img.size() < off + blockSize) img.resize(off + blockSize, 0);
     uint8_t* node = img.data() + off;
-    node[0] = 0xFF;
-    writeBe16(node + 4, 1);
+    writeNodeHeader(node, 1);
     const uint16_t recStart = 14;
     uint8_t* rec = node + recStart;
     const uint8_t nameUtf16[] = {
@@ -92,13 +103,13 @@ void writeCatalogFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uint32
     std::memcpy(rec + 8, nameUtf16, nameBytes);
     uint8_t* val = rec + 2 + keyLen;
     writeBe16(val, 2);
-    writeBe32(val + 8, fileId);
-    writeBe64(val + 0x50, logicalSize);
+    writeBe32(val + 12, fileId);
+    writeBe64(val + 92, logicalSize);
     for (int i = 0; i < 8; ++i) {
-        writeBe32(val + 0x50 + 16 + i * 12, 10 + static_cast<uint32_t>(i));
-        writeBe32(val + 0x50 + 16 + i * 12 + 4, 1);
+        writeBe32(val + 92 + 16 + i * 8, 10 + static_cast<uint32_t>(i));
+        writeBe32(val + 92 + 16 + i * 8 + 4, 1);
     }
-    const uint16_t recEnd = static_cast<uint16_t>(recStart + 2 + keyLen + 0xA0);
+    const uint16_t recEnd = static_cast<uint16_t>(recStart + 2 + keyLen + kCatalogFileValueLen);
     const size_t offTable = blockSize - 4;
     writeBe16(node + offTable, recStart);
     writeBe16(node + offTable + 2, recEnd);
@@ -109,8 +120,7 @@ void writeCatalogFileLeafNoExtents(std::vector<uint8_t>& img, uint32_t blockInde
     const size_t off = blockOffset(blockIndex, blockSize);
     if (img.size() < off + blockSize) img.resize(off + blockSize, 0);
     uint8_t* node = img.data() + off;
-    node[0] = 0xFF;
-    writeBe16(node + 4, 1);
+    writeNodeHeader(node, 1);
     const uint16_t recStart = 14;
     uint8_t* rec = node + recStart;
     const uint8_t nameUtf16[] = {
@@ -124,9 +134,9 @@ void writeCatalogFileLeafNoExtents(std::vector<uint8_t>& img, uint32_t blockInde
     std::memcpy(rec + 8, nameUtf16, nameBytes);
     uint8_t* val = rec + 2 + keyLen;
     writeBe16(val, 2);
-    writeBe32(val + 8, fileId);
-    writeBe64(val + 0x50, logicalSize);
-    const uint16_t recEnd = static_cast<uint16_t>(recStart + 2 + keyLen + 0xA0);
+    writeBe32(val + 12, fileId);
+    writeBe64(val + 92, logicalSize);
+    const uint16_t recEnd = static_cast<uint16_t>(recStart + 2 + keyLen + kCatalogFileValueLen);
     const size_t offTable = blockSize - 4;
     writeBe16(node + offTable, recStart);
     writeBe16(node + offTable + 2, recEnd);
@@ -209,8 +219,7 @@ void writeCatalogTwoFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uin
     const size_t off = blockOffset(blockIndex, blockSize);
     if (img.size() < off + blockSize) img.resize(off + blockSize, 0);
     uint8_t* node = img.data() + off;
-    node[0] = 0xFF;
-    writeBe16(node + 4, 2);
+    writeNodeHeader(node, 2);
 
     auto writeFileRec = [&](uint8_t* rec, const uint8_t* nameUtf16, uint16_t nameBytes, uint32_t fileId) -> uint16_t {
         const uint16_t keyLen = static_cast<uint16_t>(4 + 2 + nameBytes);
@@ -220,11 +229,11 @@ void writeCatalogTwoFileLeaf(std::vector<uint8_t>& img, uint32_t blockIndex, uin
         std::memcpy(rec + 8, nameUtf16, nameBytes);
         uint8_t* val = rec + 2 + keyLen;
         writeBe16(val, 2);
-        writeBe32(val + 8, fileId);
-        writeBe64(val + 0x50, blockSize);
-        writeBe32(val + 0x50 + 16, 20);
-        writeBe32(val + 0x50 + 20, 1);
-        return static_cast<uint16_t>(2 + keyLen + 0xA0);
+        writeBe32(val + 12, fileId);
+        writeBe64(val + 92, blockSize);
+        writeBe32(val + 92 + 16, 20);
+        writeBe32(val + 92 + 20, 1);
+        return static_cast<uint16_t>(2 + keyLen + kCatalogFileValueLen);
     };
 
     const uint8_t nameA[] = { 0x00, 'a', 0x00, '.', 0x00, 'b', 0x00, 'i', 0x00, 'n' };
@@ -436,4 +445,110 @@ TEST(HfsCatalog, OffsetTableFitsRejectsUnderflow) {
     EXPECT_FALSE(hfsOffsetTableFits(13, 0));
     EXPECT_FALSE(hfsOffsetTableFits(4096, 65535));
     EXPECT_FALSE(hfsOffsetTableFits(16, 8));
+}
+
+// Regression: folder records (recType 4) were skipped entirely, so files
+// key'd under a folder resolved their path against "/" instead of the folder.
+TEST(HfsCatalog, FolderRecordBuildsNestedFilePath) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(64 * bs, 0);
+    writeHfsVolumeHeader(img, 4, 5, bs);
+
+    const size_t off = blockOffset(4, bs);
+    uint8_t* node = img.data() + off;
+    writeNodeHeader(node, 2);
+    const uint16_t recStart0 = 14;
+
+    // Folder record: key parent=2 (root), name "Sub"; value fileID = 20.
+    const uint8_t dirName[] = { 0x00, 'S', 0x00, 'u', 0x00, 'b' };
+    const uint16_t dirKeyLen = static_cast<uint16_t>(4 + 2 + sizeof(dirName));
+    uint8_t* rec0 = node + recStart0;
+    writeBe16(rec0, dirKeyLen);
+    writeBe32(rec0 + 2, 2);
+    writeBe16(rec0 + 6, static_cast<uint16_t>(sizeof(dirName)));
+    std::memcpy(rec0 + 8, dirName, sizeof(dirName));
+    uint8_t* val0 = rec0 + 2 + dirKeyLen;
+    writeBe16(val0, 4); // folder record
+    writeBe32(val0 + 12, 20);
+    const uint16_t len0 = static_cast<uint16_t>(2 + dirKeyLen + 16);
+
+    // File record: key parent=20, name "nested.txt"; fork extent 30..30.
+    const uint8_t fileName[] = {
+        0x00, 'n', 0x00, 'e', 0x00, 's', 0x00, 't', 0x00, 'e', 0x00, 'd',
+        0x00, '.', 0x00, 't', 0x00, 'x', 0x00, 't',
+    };
+    const uint16_t fileKeyLen = static_cast<uint16_t>(4 + 2 + sizeof(fileName));
+    const uint16_t recStart1 = static_cast<uint16_t>(recStart0 + len0);
+    uint8_t* rec1 = node + recStart1;
+    writeBe16(rec1, fileKeyLen);
+    writeBe32(rec1 + 2, 20);
+    writeBe16(rec1 + 6, static_cast<uint16_t>(sizeof(fileName)));
+    std::memcpy(rec1 + 8, fileName, sizeof(fileName));
+    uint8_t* val1 = rec1 + 2 + fileKeyLen;
+    writeBe16(val1, 2); // file record
+    writeBe32(val1 + 12, 21);
+    writeBe64(val1 + 92, 16);
+    writeBe32(val1 + 92 + 16, 30);
+    writeBe32(val1 + 92 + 16 + 4, 1);
+    const uint16_t len1 = static_cast<uint16_t>(2 + fileKeyLen + kCatalogFileValueLen);
+    const uint16_t recEnd1 = static_cast<uint16_t>(recStart1 + len1);
+
+    const size_t offTable = bs - 6;
+    writeBe16(node + offTable, recStart0);
+    writeBe16(node + offTable + 2, recStart1);
+    writeBe16(node + offTable + 4, recEnd1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::string path;
+    std::atomic<bool> running{true};
+    scanHfsPlusCatalog(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.name == "nested.txt") path = fr.path;
+    }, &running);
+    EXPECT_EQ(path, "/Sub/nested.txt");
+}
+
+// Regression: NXSB block count and omap oid must be read from their spec
+// offsets (nx_max_file_system_blocks @48, nx_omap_oid @64), not the legacy
+// probe offsets.
+TEST(ApfsContainer, SpecOffsetsResolveOmapAndVolumes) {
+    const uint32_t bs = 4096;
+    const uint64_t blocks = 320;
+    std::vector<uint8_t> img(static_cast<size_t>(blocks * bs), 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);       // nx_blocksize (valid, no legacy fallback)
+    writeLe64At(img.data() + 48, blocks); // nx_max_file_system_blocks (spec)
+    writeLe64At(img.data() + 0x40, 5);    // nx_omap_oid (spec)
+
+    uint8_t* omap = img.data() + 5 * bs;
+    writeLe64At(omap + 48, 6); // b-tree root block
+
+    uint8_t* tree = img.data() + 6 * bs;
+    writeLe32(tree + 24, 2);  // object type: B-tree node
+    writeLe32(tree + 36, 1);  // 1 key
+    writeLe64At(tree + 56, 1);
+    writeLe64At(tree + 64, 1);
+    writeLe64At(tree + 72, 300); // leaf paddr past the 256-block probe
+
+    uint8_t* node = img.data() + 300 * bs;
+    writeLe32(node + 24, 2);
+    node[32] = 2;
+    writeLe32(node + 36, 1);
+    const uint64_t hdr = (9ull << 48) | 7ull;
+    writeLe64At(node + 56, hdr);
+    const char* name = "far.txt";
+    const uint32_t nlen = 8;
+    writeLe32(node + 64, nlen);
+    std::memcpy(node + 68, name, 7);
+    node[68 + 7] = 0;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawFile = false;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_file" && fr.name == "far.txt") sawFile = true;
+    }, &running);
+    EXPECT_TRUE(sawFile);
 }

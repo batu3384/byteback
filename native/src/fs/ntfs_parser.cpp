@@ -162,6 +162,9 @@ std::vector<FileRecord::DataRun> unnamedDataRunsFromRecord(
         if (attr->type == ntfs::ATTR_DATA && attr->nonResidentFlag != 0 && attr->nameLength == 0) {
             if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) > recordSize)
                 break;
+            // Length must fit inside the record, or attrOffset += length can wrap
+            // uint32 and cycle the loop forever on a crafted record.
+            if (static_cast<uint64_t>(attrOffset) + attr->length > recordSize) break;
             const auto* nonRes = reinterpret_cast<const NTFS_NonResidentHeader*>(
                 rec + attrOffset + sizeof(NTFS_AttributeHeader));
             size_t currentRunPos = attrOffset + nonRes->dataRunOffset;
@@ -198,6 +201,7 @@ std::vector<FileRecord::DataRun> unnamedDataRunsFromRecord(
             break;
         }
         if (attr->length < sizeof(NTFS_AttributeHeader)) break;
+        if (static_cast<uint64_t>(attrOffset) + attr->length > recordSize) break; // no uint32 wrap
         attrOffset += attr->length;
     }
     return out;
@@ -572,7 +576,11 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                         }
                     }
 
-                    if (attr->length < sizeof(NTFS_AttributeHeader)) break; // Corrupt attribute, prevent infinite loop
+                    // Corrupt attribute: too short to hold a header, or long
+                    // enough to wrap uint32 attrOffset back into the record
+                    // (attrOffset += length cycles forever otherwise).
+                    if (attr->length < sizeof(NTFS_AttributeHeader)) break;
+                    if (static_cast<uint64_t>(attrOffset) + attr->length > recordSize) break;
                     attrOffset += attr->length;
                 }
                 

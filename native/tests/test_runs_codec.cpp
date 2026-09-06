@@ -54,3 +54,10 @@ TEST(RunsCodec, OverflowRejected) {
     std::string huge = "[[999999999999999999999999999999,1]]";
     EXPECT_TRUE(deserializeRuns(huge).empty());
 }
+
+// Negative numbers are not u64 — minus must be rejected, not wrapped.
+TEST(RunsCodec, NegativeNumbersRejected) {
+    EXPECT_TRUE(deserializeRuns("[[-5,3]]").empty());
+    EXPECT_TRUE(deserializeRuns("[[1,-3]]").empty());
+    EXPECT_TRUE(deserializeRuns("[[-1,-1]]").empty());
+}
