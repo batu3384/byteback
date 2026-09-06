@@ -128,6 +128,9 @@ export type ProgressCallback = (data: {
   total: number
   badSectors?: number[]
   phase?: string
+  /** P0-progress: phase-local counters (raw work units of the active phase). */
+  phaseCurrent?: number
+  phaseTotal?: number
 }) => void
 export type ScanCompleteCallback = (data: { scanId: number; status: number }) => void
 

@@ -42,12 +42,14 @@ TEST(DiskImagerTest, RawImageMatchesSourceAndMd5) {
 
     std::ifstream in(dest, std::ios::binary);
     std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
     EXPECT_EQ(out.size(), vol.size());
     EXPECT_EQ(out, vol);
 
     crypto::Md5 md5;
     md5.update(vol.data(), vol.size());
     EXPECT_EQ(imager.lastImageMd5(), md5.finalHex());
+    std::filesystem::remove(dest);
 }
 
 TEST(DiskImagerTest, EwfImageCarriesDigestAndRereadsIdentical) {
@@ -75,6 +77,7 @@ TEST(DiskImagerTest, EwfImageCarriesDigestAndRereadsIdentical) {
     auto res = back.readSectors(0, static_cast<uint32_t>(vol.size()), out.data());
     ASSERT_TRUE(res.success);
     EXPECT_EQ(out, vol);
+    back.detachImageBackend();
 }
 
 // Cancelled acquisition: the partial E01 must stay readable (tables written)

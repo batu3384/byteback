@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   seedScanFixture: (files: Array<Record<string, unknown>>) =>
     ipcRenderer.invoke('seed-scan-fixture', files),
   
-  onScanProgress: (callback: (data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => void) => {
+  onScanProgress: (callback: (data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string, phaseCurrent?: number, phaseTotal?: number }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
     ipcRenderer.on('scan-progress', handler)
     return () => ipcRenderer.removeListener('scan-progress', handler)

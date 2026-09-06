@@ -1,14 +1,16 @@
 #include "scan/dedup_index.h"
 #include <algorithm>
+#include <unordered_map>
 
 namespace byteback {
 
 void DedupIndex::clear() {
     entries_.clear();
     carveEntries_.clear();
+    metaPending_.clear();
+    carvePending_.clear();
     metaPrefixMaxEnd_.clear();
     carvePrefixMaxEnd_.clear();
-    contentHashes_.clear();
     sorted_ = true;
     carveSorted_ = true;
 }
@@ -39,6 +41,8 @@ uint64_t DedupIndex::overlapSectorCount(uint64_t aStart, uint64_t aEnd, uint64_t
     return end >= start ? (end - start + 1) : 0;
 }
 
+// AR2-perf: O(1) append. Sorting happens only when the pending tail is merged
+// (threshold) or when a query explicitly requires the merged view.
 void DedupIndex::observe(const FileRecord& fr) {
     if (!isMetadataSource(fr.source)) return;
     if (fr.startSector == 0 && fr.endSector == 0 && fr.sizeBytes == 0) return;
@@ -49,8 +53,8 @@ void DedupIndex::observe(const FileRecord& fr) {
     e.confidence = fr.confidence;
     e.path = fr.path;
     e.name = fr.name;
-    entries_.push_back(std::move(e));
-    sorted_ = false;
+    metaPending_.push_back(std::move(e));
+    if (metaPending_.size() >= kMergeThreshold) mergeMetaPending();
 }
 
 void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
@@ -72,40 +76,75 @@ void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
             observe(fr);
         }
     }
-    ensureSorted();
+    mergeMetaPending();
+    mergeCarvePending();
 }
 
-void DedupIndex::ensureSorted() {
-    if (sorted_) return;
-    std::sort(entries_.begin(), entries_.end(),
+// Merge the (sorted) pending tail into the sorted base and rebuild the
+// prefix-max-end array.
+void DedupIndex::mergeSorted(std::vector<Entry>& base, std::vector<uint64_t>& prefixMaxEnd,
+                             std::vector<Entry> pending) {
+    if (pending.empty()) return;
+    std::sort(pending.begin(), pending.end(),
               [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
-    metaPrefixMaxEnd_.resize(entries_.size());
-    uint64_t runningMax = 0;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        runningMax = std::max(runningMax, entries_[i].endSector);
-        metaPrefixMaxEnd_[i] = runningMax;
+    if (base.empty()) {
+        base = std::move(pending);
+    } else {
+        // Both sorted: append pending then inplace_merge keeps O(n) moves.
+        const size_t mid = base.size();
+        base.insert(base.end(), pending.begin(), pending.end());
+        std::inplace_merge(base.begin(), base.begin() + static_cast<long>(mid), base.end(),
+                           [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
     }
+    prefixMaxEnd.resize(base.size());
+    uint64_t runningMax = 0;
+    for (size_t i = 0; i < base.size(); ++i) {
+        runningMax = std::max(runningMax, base[i].endSector);
+        prefixMaxEnd[i] = runningMax;
+    }
+}
+
+void DedupIndex::mergeMetaPending() {
+    if (metaPending_.empty()) { sorted_ = true; return; }
+    mergeSorted(entries_, metaPrefixMaxEnd_, std::move(metaPending_));
+    metaPending_.clear();
     sorted_ = true;
 }
 
-void DedupIndex::ensureCarveSorted() {
-    if (carveSorted_) return;
-    std::sort(carveEntries_.begin(), carveEntries_.end(),
-              [](const Entry& a, const Entry& b) { return a.startSector < b.startSector; });
-    carvePrefixMaxEnd_.resize(carveEntries_.size());
-    uint64_t runningMax = 0;
-    for (size_t i = 0; i < carveEntries_.size(); ++i) {
-        runningMax = std::max(runningMax, carveEntries_[i].endSector);
-        carvePrefixMaxEnd_[i] = runningMax;
-    }
+void DedupIndex::mergeCarvePending() {
+    if (carvePending_.empty()) { carveSorted_ = true; return; }
+    mergeSorted(carveEntries_, carvePrefixMaxEnd_, std::move(carvePending_));
+    carvePending_.clear();
     carveSorted_ = true;
 }
 
+void DedupIndex::ensureSorted() {
+    if (!sorted_) mergeMetaPending();
+}
+
+void DedupIndex::ensureCarveSorted() {
+    if (!carveSorted_) mergeCarvePending();
+}
+
 // First entry satisfying overlap*2 >= min(span) against [frStart, frEnd], or
-// nullptr. `entries` must be sorted by startSector with a matching prefixMaxEnd.
+// nullptr. Checks BOTH the merged base (binary-searched window) and the
+// unmerged pending tail (linear) so a query never misses a recent record.
 const DedupIndex::Entry* DedupIndex::findOverlap(const std::vector<Entry>& entries,
                                                  const std::vector<uint64_t>& prefixMaxEnd,
-                                                 uint64_t frStart, uint64_t frEnd, uint64_t frSpan) {
+                                                 uint64_t frStart, uint64_t frEnd, uint64_t frSpan,
+                                                 const std::vector<Entry>& pending) {
+    // Pending tail first: linear, small by construction. Must run even when
+    // the merged base is empty — an observe() record lives here until the
+    // threshold merge runs.
+    for (const auto& e : pending) {
+        if (e.endSector < frStart) continue;
+        if (!sectorsOverlap(e.startSector, e.endSector, frStart, frEnd)) continue;
+        const uint64_t overlap = overlapSectorCount(e.startSector, e.endSector, frStart, frEnd);
+        const uint64_t priorSpan = e.endSector >= e.startSector ? (e.endSector - e.startSector + 1) : 1;
+        const uint64_t minSpan = std::max<uint64_t>(1, std::min(frSpan, priorSpan));
+        if (overlap * 2 >= minSpan) return &e;
+    }
+
     if (entries.empty() || prefixMaxEnd.size() != entries.size()) return nullptr;
 
     // Candidates all live in [0, hi]: startSector <= frEnd.
@@ -115,8 +154,6 @@ const DedupIndex::Entry* DedupIndex::findOverlap(const std::vector<Entry>& entri
     if (hi < 0) return nullptr;
     if (prefixMaxEnd[hi] < frStart) return nullptr; // nothing reaches back to the query
 
-    // Entries before j0 all have endSector < frStart (prefixMaxEnd is
-    // monotone), so they cannot overlap; scan only [j0, hi].
     auto j0It = std::lower_bound(prefixMaxEnd.begin(), prefixMaxEnd.begin() + hi + 1, frStart);
     for (int idx = static_cast<int>(j0It - prefixMaxEnd.begin()); idx <= hi; ++idx) {
         const Entry& e = entries[idx];
@@ -134,12 +171,21 @@ bool DedupIndex::overlapsExistingCarve(const FileRecord& fr) {
     ensureCarveSorted();
     const uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
     const uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
-    return findOverlap(carveEntries_, carvePrefixMaxEnd_, fr.startSector, carveEnd, carveSpan) != nullptr;
+    const Entry* hit = findOverlap(carveEntries_, carvePrefixMaxEnd_, fr.startSector, carveEnd,
+                                   carveSpan, carvePending_);
+    if (!hit) return false;
+    return true;
 }
 
 bool DedupIndex::markDuplicate(FileRecord& fr) {
     if (!isCarveSource(fr.source)) return false;
-    ensureSorted();
+
+    // Merge only at threshold — the linear pending check keeps queries correct
+    // between merges, so a 500K-record scan does ~500 cheap merges instead of
+    // 500K full sorts.
+    if (carvePending_.size() >= kMergeThreshold) mergeCarvePending();
+    if (metaPending_.size() >= kMergeThreshold) mergeMetaPending();
+
     // P0-6: exact-content dedup beats sector-overlap heuristics — identical
     // payloads at different sectors are duplicates regardless of layout.
     // Hash AND size must match: the hash covers the first min(64KB, size)
@@ -163,7 +209,8 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
 
     const uint64_t carveEnd = fr.endSector > 0 ? fr.endSector : fr.startSector;
     const uint64_t carveSpan = carveEnd >= fr.startSector ? (carveEnd - fr.startSector + 1) : 1;
-    const Entry* meta = findOverlap(entries_, metaPrefixMaxEnd_, fr.startSector, carveEnd, carveSpan);
+    const Entry* meta = findOverlap(entries_, metaPrefixMaxEnd_, fr.startSector, carveEnd, carveSpan,
+                                    metaPending_);
     if (meta) {
         // Metadata wins on substantial sector overlap. Carve confidence can be
         // inflated (header-only / weak validators) and must not keep a second
@@ -181,9 +228,9 @@ bool DedupIndex::markDuplicate(FileRecord& fr) {
     tracked.confidence = fr.confidence;
     tracked.path = fr.path;
     tracked.name = fr.name;
-    carveEntries_.push_back(std::move(tracked));
-    carveSorted_ = false;
+    carvePending_.push_back(std::move(tracked));
     if (!fr.contentHash.empty()) contentHashes_.emplace(fr.contentHash, fr.sizeBytes);
+    if (carvePending_.size() >= kMergeThreshold) mergeCarvePending();
     return false;
 }
 

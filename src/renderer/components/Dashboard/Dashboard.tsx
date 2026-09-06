@@ -231,7 +231,13 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         </ul>
       </div>
 
-      <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {/* P0-UX: advanced tools collapsed by default — the home screen shows
+          the primary scan flow first; expert panels stay one click away. */}
+      <details className="glass-panel" style={{ padding: '16px 24px' }}>
+        <summary style={{ fontSize: '0.9rem', fontWeight: 600, cursor: 'pointer', userSelect: 'none' }}>
+          {t('dash.advancedTools')}
+        </summary>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '16px' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
           <label htmlFor="fvek-hex" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('dash.fvekLabel')}</label>
           <input
@@ -464,7 +470,8 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             </tbody>
           </table>
         )}
-      </div>
+        </div>
+      </details>
 
       {pausedSession && (
         <div className="resume-banner glass-panel" data-testid="paused-scan-banner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)', background: 'rgba(245, 158, 11, 0.05)' }}>
