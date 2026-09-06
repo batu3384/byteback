@@ -57,4 +57,10 @@ inline uint64_t mapWorkToBudget(uint64_t done, uint64_t estimatedTotal, uint64_t
 // Process-wide: carve workers must not read a thread_local leftover "metadata".
 extern std::atomic<const char*> g_scanPhase;
 
+// Progress-v2: phase-local counters so the renderer can show "metadata %x"
+// and "carve %y" separately while the main bar stays monotonic over the whole
+// scan. Reset by the coordinator at each phase switch.
+extern std::atomic<uint64_t> g_phaseCurrent;
+extern std::atomic<uint64_t> g_phaseTotal;
+
 } // namespace byteback

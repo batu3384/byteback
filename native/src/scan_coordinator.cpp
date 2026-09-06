@@ -18,6 +18,8 @@
 namespace byteback {
 
 std::atomic<const char*> g_scanPhase{"metadata"};
+std::atomic<uint64_t> g_phaseCurrent{0};
+std::atomic<uint64_t> g_phaseTotal{0};
 
 namespace {
 
@@ -106,6 +108,8 @@ void runQuickScan(DiskReader& reader,
     auto emitProgress = [&](uint64_t done, uint64_t estimated) {
         uint64_t mapped = mapWorkToBudget(done, estimated, progressTotal);
         if (done > 0 && mapped == 0) mapped = 1;
+        g_phaseCurrent.store(mapped, std::memory_order_relaxed);
+        g_phaseTotal.store(progressTotal, std::memory_order_relaxed);
         onProgress(meter.tick(mapped), progressTotal);
     };
 
@@ -318,6 +322,8 @@ void runCarveScan(DiskReader& reader,
     uint64_t totalCarveSectors = totalSectorCount(carveRanges);
     const uint64_t progressTotal = totalCarveSectors > 0 ? totalCarveSectors : 1;
     MonotonicMeter meter;
+    g_phaseCurrent.store(0, std::memory_order_relaxed);
+    g_phaseTotal.store(progressTotal, std::memory_order_relaxed);
 
     auto callbackWrapper = [&](const FileRecord& fr) {
         if (isRunning && !(*isRunning)) return;
@@ -401,6 +407,8 @@ void runDeepScan(DiskReader& reader,
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
+            g_phaseCurrent.store(current, std::memory_order_relaxed);
+            g_phaseTotal.store(denom, std::memory_order_relaxed);
             emit(mulDivU64(current, metaBudget, denom));
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
@@ -411,6 +419,8 @@ void runDeepScan(DiskReader& reader,
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
+        g_phaseCurrent.store(current, std::memory_order_relaxed);
+        g_phaseTotal.store(denom, std::memory_order_relaxed);
         uint64_t slice = carveBudget > 0 ? mulDivU64(current, carveBudget, denom) : current;
         emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);
@@ -453,6 +463,8 @@ void runFullCarveScan(DiskReader& reader,
     if (!target.metadataComplete) {
         auto quickProgress = [&](uint64_t current, uint64_t total) {
             uint64_t denom = total > 0 ? total : 1;
+            g_phaseCurrent.store(current, std::memory_order_relaxed);
+            g_phaseTotal.store(denom, std::memory_order_relaxed);
             emit(mulDivU64(current, metaBudget, denom));
         };
         runQuickScan(reader, onFileFound, quickProgress, isRunning, badSectorOut, true, bounds);
@@ -463,6 +475,8 @@ void runFullCarveScan(DiskReader& reader,
 
     auto carveProgress = [&](uint64_t current, uint64_t total) {
         uint64_t denom = total > 0 ? total : 1;
+        g_phaseCurrent.store(current, std::memory_order_relaxed);
+        g_phaseTotal.store(denom, std::memory_order_relaxed);
         uint64_t slice = carveBudget > 0 ? mulDivU64(current, carveBudget, denom) : current;
         emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);

@@ -16,7 +16,7 @@ import { useI18n, tFormat } from '../../i18n'
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
-  progress: { current: number; total: number; badSectors?: number[]; phase?: string }
+  progress: { current: number; total: number; badSectors?: number[]; phase?: string; phaseCurrent?: number; phaseTotal?: number }
   status: string
   phase: ScanPhase
   elapsed: number
@@ -312,8 +312,14 @@ function ScanView({
         <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
-        <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-          {tFormat('scan.sectorRange', { cur: progress.current.toLocaleString('tr-TR'), total: progress.total ? progress.total.toLocaleString('tr-TR') : '—' })}
+        <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
+          <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
+        </div>
+        <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+          <span>{tFormat('scan.sectorRange', { cur: progress.current.toLocaleString('tr-TR'), total: progress.total ? progress.total.toLocaleString('tr-TR') : '—' })}</span>
+          {progress.phaseCurrent != null && progress.phaseTotal != null && progress.phaseTotal > 0 && (
+            <span>{tFormat('scan.phaseProgress', { pct: String(Math.min(100, Math.floor(progress.phaseCurrent * 100 / progress.phaseTotal))) })}</span>
+          )}
         </div>
       </div>
 

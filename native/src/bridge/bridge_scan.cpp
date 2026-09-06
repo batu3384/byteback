@@ -658,13 +658,17 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         *lastProgress = now;
 
         const char* phasePtr = byteback::g_scanPhase.load(std::memory_order_relaxed);
+        const uint64_t pc = byteback::g_phaseCurrent.load(std::memory_order_relaxed);
+        const uint64_t pt = byteback::g_phaseTotal.load(std::memory_order_relaxed);
         auto callback = [current, total, phase = std::string(phasePtr ? phasePtr : "metadata"),
-                         bad = context->badSectors](Napi::Env env, Napi::Function jsCallback) {
+                         pc, pt, bad = context->badSectors](Napi::Env env, Napi::Function jsCallback) {
             Napi::Object obj = Napi::Object::New(env);
             obj.Set("type", Napi::String::New(env, "progress"));
             obj.Set("current", Napi::Number::New(env, static_cast<double>(current)));
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             obj.Set("phase", Napi::String::New(env, phase));
+            obj.Set("phaseCurrent", Napi::Number::New(env, static_cast<double>(pc)));
+            obj.Set("phaseTotal", Napi::Number::New(env, static_cast<double>(pt)));
             Napi::Array badArr = Napi::Array::New(env, bad.size());
             for (size_t i = 0; i < bad.size(); ++i) {
                 badArr[i] = Napi::Number::New(env, static_cast<double>(bad[i]));
