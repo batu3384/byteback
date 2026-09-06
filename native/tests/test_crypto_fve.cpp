@@ -1,6 +1,7 @@
 #include "fs/volume_identity.h"
 #include "crypto/byteback_aes.h"
 #include "crypto/byteback_aes_ccm.h"
+#include "crypto/byteback_sha256.h"
 #include "fs/bitlocker_fve.h"
 #include "fs/bitlocker_unlock.h"
 #include "byteback_io.h"
@@ -238,4 +239,52 @@ TEST(BitLockerPassword, StretchKeyOpenwallVector) {
         0x03, 0xd6, 0x00, 0x4a, 0x96, 0xa8, 0x55, 0x8a,
     };
     EXPECT_EQ(std::memcmp(key, expect, 32), 0);
+}
+
+namespace {
+
+// Reference stretch: SHA-256 over UTF-16LE digits, then 0x100000 rounds total.
+void referenceStretch(const std::string& digits, uint8_t out[32]) {
+    std::vector<uint8_t> wide;
+    wide.reserve(digits.size() * 2);
+    for (char c : digits) { wide.push_back(static_cast<uint8_t>(c)); wide.push_back(0); }
+    crypto::sha256(wide.data(), wide.size(), out);
+    for (uint64_t i = 1; i < 0x100000; ++i) crypto::sha256(out, 32, out);
+}
+
+} // namespace
+
+TEST(BitLockerRecovery, StretchMatchesSpecIterationCount) {
+    // Regression: the stretch loop ran 1'000'000 rounds instead of the
+    // MS-BITLOCKER/libbde 0x100000; a real recovery key could never derive.
+    const std::string digits = "123456234567345678456789567890678901789012890123";
+    ASSERT_EQ(digits.size(), 48u);
+    uint8_t got[32] = {}, expect[32] = {};
+    stretchBitLockerRecoveryKey(digits, got);
+    referenceStretch(digits, expect);
+    EXPECT_EQ(std::memcmp(got, expect, 32), 0);
+}
+
+TEST(BitLockerRecovery, NormalizationStripsGroupSeparators) {
+    const std::string grouped = "123456-234567 345678-456789 567890-678901 789012-890123";
+    EXPECT_EQ(normalizeBitLockerRecoveryPassword(grouped).size(), 48u);
+    uint8_t a[32] = {}, b[32] = {};
+    stretchBitLockerRecoveryKey(normalizeBitLockerRecoveryPassword(grouped), a);
+    stretchBitLockerRecoveryKey("123456234567345678456789567890678901789012890123", b);
+    EXPECT_EQ(std::memcmp(a, b, 32), 0);
+}
+
+TEST(BitLockerRecovery, UnlockRejectsNon48DigitPasswordBeforeMetadata) {
+    std::vector<uint8_t> img(512 * 64, 0); // no FVE metadata anywhere
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    auto shortResult = unlockBitLockerWithRecoveryPassword(reader, "1234");
+    EXPECT_FALSE(shortResult.success);
+    EXPECT_EQ(shortResult.error, "recovery password must be 48 digits");
+
+    auto longResult = unlockBitLockerWithRecoveryPassword(reader,
+        "123456-234567-345678-456789-567890-678901-789012-890123-123456");
+    EXPECT_FALSE(longResult.success);
+    EXPECT_EQ(longResult.error, "recovery password must be 48 digits");
 }

@@ -23,7 +23,10 @@ struct BootSector {
     uint16_t sectorsPerTrack;
     uint16_t numHeads;
     uint32_t hiddenSectors;
-    uint32_t reserved3;
+    // 0x20 = BPB_TotSec32, 0x24 = unused: both must be present so the fields
+    // below land on their real NTFS offsets ($MFT LCN 0x30, record size 0x40).
+    uint32_t totalSectors32;
+    uint32_t unused24;
     uint64_t totalSectors;
     uint64_t mftCluster;
     uint64_t mftMirrorCluster;

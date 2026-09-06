@@ -283,8 +283,8 @@ std::vector<uint8_t> buildNtfsMftLogfileBoostDisk() {
     std::vector<uint8_t> img(logMft + mftSize, 0);
     std::memcpy(img.data() + 3, "NTFS    ", 8);
     img[0x0D] = static_cast<uint8_t>(spc);
-    writeLe64(img, 44, 1);
-    img[60] = static_cast<uint8_t>(0xF6);
+    writeLe64(img, 0x30, 1); // $MFT LCN (spec offset)
+    img[0x40] = static_cast<uint8_t>(0xF6); // clusters per MFT record (spec offset)
     img[510] = 0x55;
     img[511] = 0xAA;
 
@@ -533,4 +533,23 @@ TEST(NtfsParser, AdsSurvivesParentDedup) {
     }, &running, 0, 0, false));
     EXPECT_TRUE(parent);
     EXPECT_TRUE(ads);
+}
+
+TEST(NtfsParser, OversizedAttributeLengthDoesNotLoopForever) {
+    // Regression: an attribute whose declared length wraps uint32 attrOffset
+    // back into the record used to cycle the attribute loop forever.
+    auto img = buildNtfsMftCarveDisk();
+    // First attribute at 0x38: type $FILE_NAME marker bytes replaced by a
+    // crafted pair that returns to the same offset:
+    //   attr@0x38 length 16 -> next 0x48, attr@0x48 length 0xFFFFFFF0 -> 0x38.
+    writeLe32(img, 8 * 512 + 0x38 + 0, 0x10);
+    writeLe32(img, 8 * 512 + 0x38 + 4, 16);
+    writeLe32(img, 8 * 512 + 0x48 + 0, 0x90);
+    writeLe32(img, 8 * 512 + 0x48 + 4, 0xFFFFFFF0);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    EXPECT_TRUE(ntfs.scan(reader, [](const FileRecord&) {}, &running));
 }

@@ -155,6 +155,25 @@ TEST(Bgc, BifragmentedHonorsAttemptBudget) {
     EXPECT_LE(calls.load(), 100);
 }
 
+// CA-021: the tri-fragmented search must respect the attempt budget in its
+// INNERMOST loop — the sweep used to run one full gap-length series past the
+// budget before an outer condition re-checked.
+TEST(Bgc, TriFragmentedHonorsAttemptBudget) {
+    std::vector<uint8_t> disk(16 * 1024, 0x42);
+    BgcResult r = triFragmentedGapCarve(disk.data(), disk.size(),
+                                        0, disk.size(),
+                                        /*maxGap=*/1024, validateJpeg, /*step=*/1,
+                                        /*attemptBudget=*/100);
+    EXPECT_FALSE(r.found);
+    std::atomic<int> calls{0};
+    auto counting = [&](const uint8_t*, size_t) {
+        ++calls;
+        return 0;
+    };
+    triFragmentedGapCarve(disk.data(), disk.size(), 0, disk.size(), 1024, counting, 1, 100);
+    EXPECT_LE(calls.load(), 100);
+}
+
 TEST(Bgc, HonorsMaxGapAbove64KiB) {
     auto s = buildSplitJpeg(/*splitAt=*/8, /*gapLen=*/10);
     BgcResult r = bifragmentedGapCarve(s.disk.data(), s.disk.size(),

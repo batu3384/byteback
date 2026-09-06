@@ -94,3 +94,41 @@ describe('lane-5 sweep keys', () => {
     expect(t('report.allocatedTd')).toContain('Allocated')
   })
 })
+
+// Lane-C sweep: engine phase labels + disk map + results load-error keys.
+describe('lane-C sweep keys', () => {
+  const keys = [
+    'scan.phase.metadata',
+    'scan.phase.carve',
+    'scan.phase.carveOnly',
+    'scan.phase.carveSkipped',
+    'scan.carveSkipped',
+    'diskmap.title',
+    'diskmap.records',
+    'diskmap.deleted',
+    'results.loadErrorTitle',
+    'results.loadErrorBody',
+  ] as const
+
+  it.each(keys)('resolves %s in tr and en', (key) => {
+    setLang('tr')
+    expect(t(key)).not.toBe(key)
+    setLang('en')
+    expect(t(key)).not.toBe(key)
+  })
+
+  it('carveSkipped copy no longer blames unsupported file systems (CA-022)', () => {
+    setLang('tr')
+    expect(t('scan.carveSkipped')).not.toContain('APFS')
+    setLang('en')
+    expect(t('scan.carveSkipped')).not.toContain('APFS')
+  })
+
+  it('formats the disk map record counts', () => {
+    setLang('tr')
+    expect(tFormat('diskmap.records', { n: '5' })).toBe('5 kayıt')
+    expect(tFormat('diskmap.deleted', { n: '2' })).toBe('silinmiş: 2')
+    setLang('en')
+    expect(tFormat('diskmap.records', { n: '5' })).toBe('5 records')
+  })
+})

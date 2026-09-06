@@ -1,13 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
-import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square } from 'lucide-react'
+import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square, Pause, AlertTriangle } from 'lucide-react'
 import { scanProfileLabel } from '../../../shared/scan-profiles'
 import { formatSize } from '../ResultsView/results-view-utils'
 import {
   etaFromMonotonicWindow,
   formatEtaClock,
-  scanPhaseLabel,
   scanStepIndex,
   type EtaSample,
 } from '../../../shared/scan-eta'
@@ -35,6 +34,14 @@ const TYPE_CHIPS: { id: string; labelKey: string; category: string }[] = [
   { id: 'doc', labelKey: 'scan.document', category: 'Document' },
   { id: 'archive', labelKey: 'scan.archive', category: 'Archive' },
 ]
+
+/** i18n key for the engine phase — shared/scan-eta's label is TR-only. */
+function phaseLabelKey(phase?: string): string {
+  if (phase === 'carve') return 'scan.phase.carve'
+  if (phase === 'carve_skipped') return 'scan.phase.carveSkipped'
+  if (phase === 'carve_only') return 'scan.phase.carveOnly'
+  return 'scan.phase.metadata'
+}
 
 function ScanView({
   driveIndex, scanType,
@@ -87,7 +94,7 @@ function ScanView({
       speedHistoryRef.current = []
       emaRef.current = 0
     }
-    if (phase === 'complete' || phase === 'stopped') {
+    if (phase === 'complete' || phase === 'stopped' || phase === 'paused' || phase === 'failed') {
       setEtaSeconds(-1)
       setCurrentSpeed(0)
       setEtaStalled(false)
@@ -215,8 +222,8 @@ function ScanView({
           ? t('scan.failed')
           : tFormat('scan.driveScanning', { drive: driveIndex === -1 ? t('scan.raid') : String(driveIndex) })
   const step = scanStepIndex(progress.phase, scanType)
-  const remainingLabel = isFinished
-    ? formatElapsed(0)
+  const remainingLabel = isTerminal
+    ? '—'
     : etaStalled
       ? t('scan.noProgress')
       : etaSeconds < 0
@@ -231,11 +238,11 @@ function ScanView({
       <div className="scan-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-xl)' }}>
         <div className="scan-info" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
           <div className="scan-icon" style={{ 
-            background: isFinished ? 'rgba(16, 185, 129, 0.1)' : 'rgba(59, 130, 246, 0.1)', 
+            background: isFinished ? 'rgba(16, 185, 129, 0.1)' : isFailed ? 'rgba(239, 68, 68, 0.1)' : isPaused ? 'rgba(245, 158, 11, 0.1)' : 'rgba(59, 130, 246, 0.1)', 
             padding: '16px', borderRadius: '12px',
-            color: isFinished ? 'var(--success-green)' : 'var(--accent-blue)'
+            color: isFinished ? 'var(--success-green)' : isFailed ? 'var(--alert-red)' : isPaused ? 'var(--warning-yellow)' : 'var(--accent-blue)'
           }}>
-            {isFinished ? <CheckCircle size={32} /> : <Search size={32} className="spinner" />}
+            {isFinished ? <CheckCircle size={32} /> : isFailed ? <AlertTriangle size={32} /> : isPaused ? <Pause size={32} /> : <Search size={32} className="spinner" />}
           </div>
           <div>
             <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>
@@ -259,7 +266,7 @@ function ScanView({
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.elapsed')}</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatElapsed(elapsed)}</span>
           </div>
-          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isFinished ? 0.3 : 1 }}>
+          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isTerminal ? 0.3 : 1 }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.remaining')}</span>
             <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 && !etaStalled ? 'var(--accent-blue)' : 'inherit' }}>
               {remainingLabel}
@@ -283,9 +290,9 @@ function ScanView({
         {progress.phase === 'carve_skipped'
           ? t('scan.carveSkipped')
           : scanType === 'carve_only'
-          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: scanPhaseLabel(progress.phase), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
+          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
           : scanType === 'deep' || scanType === 'full_carve'
-          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: scanPhaseLabel(progress.phase), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
+          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
           : t('scan.noteQuick')}
       </div>
 
@@ -298,7 +305,7 @@ function ScanView({
           deletedCount={deletedCount}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-          <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {scanPhaseLabel(progress.phase)}</span>
+          <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {t(phaseLabelKey(progress.phase))}</span>
           <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
           <span>%{percent}</span>
         </div>

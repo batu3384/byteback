@@ -8,6 +8,7 @@
 #include <string>
 #include <array>
 #include <map>
+#include <unordered_set>
 
 #pragma pack(push, 1)
 
@@ -236,6 +237,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
     
     uint16_t bps = bpb->bytesPerSector;
     if (bps == 0 || (bps & (bps - 1)) != 0) return; // Invalid BPS
+    if (bpb->sectorsPerCluster == 0) return; // div-by-zero on malformed BPB
     
     uint32_t rootDirSectors = ((bpb->rootEntryCount * 32) + (bps - 1)) / bps;
     uint32_t fatSize = (bpb->fatSize16 != 0) ? bpb->fatSize16 : bpb->fatSize32;
@@ -365,12 +367,20 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
         std::map<uint8_t, std::array<uint16_t, 13>> lfnFragments;
         uint8_t lfnChecksumSeen = 0;
 
+        // A cyclic FAT chain (corrupt/deliberate) must not loop this walk
+        // forever: remember the clusters of the chain we are already in, and
+        // never enter a directory cluster we processed before.
+        std::unordered_set<uint32_t> visitedDirs;
         while (!dirClusters.empty()) {
             uint32_t currentCluster = dirClusters.back();
             dirClusters.pop_back();
+            if (!visitedDirs.insert(currentCluster).second) continue;
 
+            std::vector<uint32_t> chainSeen;
             uint32_t clus = currentCluster;
             while (clus >= 2 && clus < 0x0FFFFFF8) {
+                if (std::find(chainSeen.begin(), chainSeen.end(), clus) != chainSeen.end()) break;
+                chainSeen.push_back(clus);
                 uint64_t sec = dataStartSector + (clus - 2) * bpb->sectorsPerCluster;
                 if (!reader.readSectors(sec * bps, bytesPerCluster, clusterBuf.data()).success) break;
 
@@ -455,22 +465,29 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
     reader.readSectors(partitionOffset * sectorSize, sectorSize, buffer.data());
     
     ExFAT_BPB* bpb = reinterpret_cast<ExFAT_BPB*>(buffer.data());
-    
-    uint32_t bytesPerSector = 1 << bpb->bytesPerSectorShift;
+
+    // Shift fields are attacker-controlled bytes; shifts >= 32 are UB and a
+    // combined shift past ~25 makes clusterBuf absurdly large.
+    if (bpb->bytesPerSectorShift > 12 || bpb->sectorsPerClusterShift > 25 ||
+        bpb->bytesPerSectorShift + bpb->sectorsPerClusterShift > 25) {
+        return;
+    }
+
+    uint32_t bytesPerSector = 1u << bpb->bytesPerSectorShift;
     uint32_t bytesPerCluster = bytesPerSector << bpb->sectorsPerClusterShift;
-    
+
     uint64_t fatStartSector = partitionOffset + bpb->fatOffset;
     uint64_t dataStartSector = partitionOffset + bpb->clusterHeapOffset;
-    
+
     auto getNextCluster = [&](uint32_t cluster) -> uint32_t {
         if (cluster < 2) return 0xFFFFFFFF;
-        uint32_t fatOffset = cluster * 4;
-        uint32_t fatSector = fatStartSector + (fatOffset / bytesPerSector);
-        uint32_t entOffset = fatOffset % bytesPerSector;
-        
+        uint64_t fatOffset = static_cast<uint64_t>(cluster) * 4;
+        uint64_t fatSector = fatStartSector + (fatOffset / bytesPerSector);
+        uint32_t entOffset = static_cast<uint32_t>(fatOffset % bytesPerSector);
+
         std::vector<uint8_t> secBuf(bytesPerSector);
         if (!reader.readSectors(fatSector * bytesPerSector, bytesPerSector, secBuf.data()).success) return 0xFFFFFFFF;
-        
+
         return *reinterpret_cast<uint32_t*>(secBuf.data() + entOffset);
     };
     
@@ -543,19 +560,22 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
         pending = ExfatPending{};
     };
 
-    auto setChecksumMatches = [](const uint8_t* e, uint16_t expected) {
-        uint16_t chk = static_cast<uint16_t>(e[2]) | (static_cast<uint16_t>(e[3]) << 8);
-        return chk == expected;
-    };
-
     std::string currentPath = "/";
 
+    // Same cyclic-chain guards as the FAT32 walk: a corrupt FAT that loops a
+    // directory chain (or two directories pointing at each other) must not
+    // spin this loop forever.
+    std::unordered_set<uint32_t> visitedDirs;
     while (!dirClusters.empty()) {
         uint32_t currentCluster = dirClusters.back();
         dirClusters.pop_back();
+        if (!visitedDirs.insert(currentCluster).second) continue;
 
+        std::vector<uint32_t> chainSeen;
         uint32_t clus = currentCluster;
         while (clus >= 2 && clus <= 0xFFFFFFF6) {
+            if (std::find(chainSeen.begin(), chainSeen.end(), clus) != chainSeen.end()) break;
+            chainSeen.push_back(clus);
             uint64_t sec = dataStartSector + (clus - 2) * (1u << bpb->sectorsPerClusterShift);
             if (!reader.readSectors(sec * bytesPerSector, bytesPerCluster, clusterBuf.data()).success) break;
 
@@ -598,23 +618,26 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                     pending.modified = dosTimestampToUnix(
                         static_cast<uint16_t>(e[12]) | (static_cast<uint16_t>(e[13]) << 8),
                         static_cast<uint16_t>(e[14]) | (static_cast<uint16_t>(e[15]) << 8));
-                } else if (typeCode == 0x45 && pending.active &&
-                           setChecksumMatches(e, pending.setChecksum)) {
-                    pending.nameLength = e[6];
+                } else if (typeCode == 0x40 && pending.active) {
+                    // File Stream Extension dentry (0xC0 in-use / 0x40 deleted).
+                    // Secondary entries carry no SetChecksum; per spec:
+                    // FileNameLength is byte 3, FirstCluster 20..23, DataLength
+                    // (LE64) 24..31.
+                    pending.nameLength = e[3];
                     pending.firstCluster = static_cast<uint32_t>(e[20]) |
                                            (static_cast<uint32_t>(e[21]) << 8) |
                                            (static_cast<uint32_t>(e[22]) << 16) |
                                            (static_cast<uint32_t>(e[23]) << 24);
                     uint64_t len = 0;
-                    for (int i = 7; i >= 0; --i) len = (len << 8) | e[32 + i];
+                    for (int i = 7; i >= 0; --i) len = (len << 8) | e[24 + i];
                     pending.dataLength = len;
                     pending.haveStream = true;
-                } else if (typeCode == 0x41 && pending.active &&
-                           setChecksumMatches(e, pending.setChecksum)) {
+                } else if (typeCode == 0x41 && pending.active) {
+                    // File Name dentry (0xC1/0x41): 15 UTF-16LE chars at byte 2.
                     for (int i = 0; i < 15; ++i) {
                         if (pending.nameLength > 0 && pending.name.size() >= pending.nameLength) break;
-                        uint16_t ch = static_cast<uint16_t>(e[4 + i * 2]) |
-                                      (static_cast<uint16_t>(e[5 + i * 2]) << 8);
+                        uint16_t ch = static_cast<uint16_t>(e[2 + i * 2]) |
+                                      (static_cast<uint16_t>(e[3 + i * 2]) << 8);
                         if (ch == 0) break;
                         pending.name.push_back(ch);
                     }

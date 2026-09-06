@@ -3,7 +3,7 @@
 #include "byteback_db.h"
 #include <cstdint>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace byteback {
@@ -48,8 +48,10 @@ private:
     std::vector<Entry> carveEntries_;
     std::vector<uint64_t> metaPrefixMaxEnd_;
     std::vector<uint64_t> carvePrefixMaxEnd_;
-    // P0-6: content hashes of accepted carve records, for exact-payload dedup.
-    std::unordered_set<std::string> contentHashes_;
+    // P0-6: content hash -> size of accepted carve records, for exact-payload
+    // dedup. Size must match too: the hash covers first min(64KB, size) bytes,
+    // so equal prefixes of different-sized files are NOT duplicates.
+    std::unordered_map<std::string, uint64_t> contentHashes_;
 };
 
 } // namespace byteback

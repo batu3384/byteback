@@ -53,6 +53,11 @@ function App(): React.ReactElement {
     setScanRowState(state)
     setSelectedDrive(state.driveIndex)
     setScanConfig({ driveIndex: state.driveIndex, scanType: state.scanType })
+    // Restart/resume: the elapsed clock must not reset to 00:00:00 for a
+    // session that already ran — both columns are unix seconds in SQLite.
+    if (state.startedAt && state.updatedAt && state.updatedAt > state.startedAt) {
+      setScanElapsed(state.updatedAt - state.startedAt)
+    }
     setScanProgress({
       current: state.scannedSectors,
       total: state.totalSectors > 0 ? state.totalSectors : 1,

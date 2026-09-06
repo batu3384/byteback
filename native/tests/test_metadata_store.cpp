@@ -413,6 +413,122 @@ TEST_F(MetadataStoreTest, SizeAndDateFilters) {
     EXPECT_EQ(store_.getFileCount(scanId, f), 3);
 }
 
+// Negative LIMIT in SQLite means "no upper bound" — an IPC caller passing a
+// wrapped negative (e.g. JS 3e9 -> Int32) would materialize the whole table.
+TEST_F(MetadataStoreTest, GetFilesNegativeLimitReturnsNoRows) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    std::vector<FileRecord> batch(3);
+    for (int i = 0; i < 3; ++i) {
+        batch[i].name = "f" + std::to_string(i);
+        batch[i].status = 0;
+    }
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    EXPECT_TRUE(store_.getFiles(scanId, 0, -1).empty());
+    EXPECT_EQ(store_.getFiles(scanId, -5, 10).size(), 3u); // negative offset clamps to 0
+}
+
+TEST_F(MetadataStoreTest, TimelineNegativeLimitReturnsNoRows) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    TimelineEvent ev;
+    ev.eventType = "create";
+    ev.fileName = "a.txt";
+    ASSERT_GT(store_.insertTimelineEvent(scanId, ev), 0);
+    ASSERT_GT(store_.insertTimelineEvent(scanId, ev), 0);
+
+    EXPECT_TRUE(store_.getTimelineEvents(scanId, 0, -1).empty());
+}
+
+// Hunt: carve_only sets metadata_complete early (checkpoint fires as soon as
+// carving starts). An orphaned carve_only scan mid-carve must stay paused, not
+// be marked complete; one that actually reached total is complete.
+TEST_F(MetadataStoreTest, CarveOnlyOrphanMidCarveStaysPaused) {
+    int64_t mid = store_.createScan(0, "carve_only", 0);
+    ASSERT_TRUE(store_.setScanTotalSectors(mid, 100));
+    ASSERT_TRUE(store_.updateScanCheckpoint(mid, true, 40)); // carve started
+    ASSERT_TRUE(store_.updateScanProgress(mid, 50));          // halfway
+
+    int64_t done = store_.createScan(0, "carve_only", 0);
+    ASSERT_TRUE(store_.setScanTotalSectors(done, 100));
+    ASSERT_TRUE(store_.updateScanCheckpoint(done, true, 100));
+    ASSERT_TRUE(store_.updateScanProgress(done, 100));
+
+    EXPECT_EQ(store_.reclaimOrphanRunningScans(), 2);
+    EXPECT_EQ(store_.getScanState(mid).status, 4);
+    EXPECT_EQ(store_.getScanState(done).status, 1);
+}
+
+// Failed batch must not leave an open transaction that breaks the next batch.
+TEST_F(MetadataStoreTest, BatchInsertStepFailureLeavesNoOpenTransaction) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "x.bin";
+    r.status = 0;
+    ASSERT_FALSE(store_.insertFilesBatch(scanId + 999, {r})); // FK violation
+
+    FileRecord ok = r;
+    ok.name = "ok.bin";
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {ok}));
+    EXPECT_EQ(store_.getFileCount(scanId), 1);
+}
+
+// Schema stamping: open() is idempotent and upgrades a v2 database in place.
+TEST_F(MetadataStoreTest, OpenUpgradesV2AndIsIdempotent) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "keep.bin";
+    r.status = 0;
+    ASSERT_TRUE(store_.insertFile(scanId, r));
+    store_.close();
+
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.c_str(), &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db, "PRAGMA user_version=2;", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(db);
+
+    for (int i = 0; i < 2; ++i) { // migrate once, reopen again: both must hold
+        ASSERT_TRUE(store_.open(path_)) << "open pass " << i;
+        EXPECT_EQ(store_.getFileCount(scanId), 1);
+        EXPECT_EQ(store_.getScanState(scanId).status, 0);
+
+        sqlite3* chk = nullptr;
+        ASSERT_EQ(sqlite3_open(path_.c_str(), &chk), SQLITE_OK);
+        sqlite3_stmt* ver = nullptr;
+        ASSERT_EQ(sqlite3_prepare_v2(chk, "PRAGMA user_version;", -1, &ver, nullptr), SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(ver), SQLITE_ROW);
+        EXPECT_EQ(sqlite3_column_int(ver, 0), 3);
+        sqlite3_finalize(ver);
+        sqlite3_close(chk);
+        store_.close();
+    }
+}
+
+// FTS5 query building must tolerate embedded double quotes (graceful fallback,
+// never a crash / never a full-table dump).
+TEST_F(MetadataStoreTest, SearchFilesEmbeddedDoubleQuote) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord q;
+    q.name = "say\"hi.txt";
+    q.path = "/docs/say\"hi.txt";
+    q.status = 0;
+    ASSERT_TRUE(store_.insertFile(scanId, q));
+    FileRecord plain;
+    plain.name = "plain.txt";
+    plain.path = "/docs/plain.txt";
+    plain.status = 0;
+    ASSERT_TRUE(store_.insertFile(scanId, plain));
+
+    auto hits = store_.searchFiles(scanId, "say\"hi", 0, 10, false);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].name, "say\"hi.txt");
+
+    // A lone quote is a legal substring: matches only the quoted name, no crash.
+    auto lone = store_.searchFiles(scanId, "\"", 0, 10, false);
+    ASSERT_EQ(lone.size(), 1u);
+    EXPECT_EQ(lone[0].name, "say\"hi.txt");
+    EXPECT_EQ(store_.searchFilesCount(scanId, "\"", false), 1);
+}
+
 // P0-6: content hash must survive a DB round trip.
 TEST_F(MetadataStoreTest, ContentHashRoundTrip) {
     int64_t scanId = store_.createScan(0, "quick", 10);

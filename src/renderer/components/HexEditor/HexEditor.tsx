@@ -96,7 +96,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
         </div>
         <div className="sector-navigation" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} disabled={sector <= 0} style={{ padding: '6px 12px' }}><ChevronLeft size={16} /> {t('scan.prev')}</button>
-          <div className="sector-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+          <div className="sector-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--well-bg)', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
             <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('scan.sector')}</label>
             <input
               type="number"

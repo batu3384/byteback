@@ -118,6 +118,11 @@ h1, h2, h3, h4, h5, h6 {
   --shadow-color: rgba(9, 9, 11, 0.12);
   --scrollbar-thumb: rgba(9, 9, 11, 0.18);
   --scrollbar-thumb-hover: rgba(9, 9, 11, 0.3);
+  /* Status accents drop to their -700 shades in light mode — the 500/600
+     shades used on dark fail contrast as text on light tinted chips. */
+  --alert-red: #B91C1C;
+  --success-green: #047857;
+  --warning-yellow: #B45309;
 }
 
 [data-theme='light'] body {
@@ -183,7 +188,7 @@ h1, h2, h3, h4, h5, h6 {
   border: none;
   cursor: pointer;
   transition: var(--transition-smooth);
-  box-shadow: 0 2px 8px rgba(255,255,255,0.1);
+  box-shadow: 0 2px 8px var(--shadow-color);
 }
 
 .btn-primary:hover {

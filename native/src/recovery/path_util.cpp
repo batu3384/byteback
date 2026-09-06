@@ -5,15 +5,45 @@
 
 namespace byteback {
 
+namespace {
+
+// Win32 reserves CON/PRN/AUX/NUL/COM1-9/LPT1-9 as device names — including
+// names with an extension ("nul.bin" opens the NUL device), matched on the
+// part before the first dot. true => must not be used as a file/dir name.
+bool isReservedWindowsName(const std::string& name) {
+    static const char* kReserved[] = {"CON",  "PRN",  "AUX",  "NUL",
+                                      "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                                      "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
+    const size_t dot = name.find('.');
+    const std::string stem = name.substr(0, dot);
+    if (stem.empty()) return false;
+    std::string upper;
+    upper.reserve(stem.size());
+    for (char c : stem) upper += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    for (const char* r : kReserved) {
+        if (upper == r) return true;
+    }
+    return false;
+}
+
+} // namespace
+
 std::string safeBasename(const std::string& name) {
     std::filesystem::path p(name);
     std::string base = p.filename().string();
-    if (base.empty() || base == "." || base == "..") base = "recovered_file.bin";
     for (char& c : base) {
         if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
             c == '"' || c == '<' || c == '>' || c == '|') {
             c = '_';
         }
+    }
+    // Win32 strips trailing dots/spaces on create — the recovered file would
+    // silently get a different name than the record claims.
+    while (!base.empty() && (base.back() == '.' || base.back() == ' ')) base.pop_back();
+    if (base.empty() || base == "." || base == "..") return "recovered_file.bin";
+    if (isReservedWindowsName(base)) {
+        const size_t dot = base.find('.');
+        base = base.substr(0, dot) + "_file" + (dot == std::string::npos ? "" : base.substr(dot));
     }
     return base;
 }
@@ -42,16 +72,12 @@ std::string safeRelativeDir(const std::string& fsPath) {
                 c = '_';
             }
         }
-        static const char* kReserved[] = {"CON",  "PRN",  "AUX",  "NUL",
-                                          "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-                                          "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"};
-        std::string upper = seg;
-        for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        bool reserved = false;
-        for (const char* r : kReserved) {
-            if (upper == r) reserved = true;
-        }
-        if (reserved) seg += "_dir";
+        // Win32 strips trailing dots/spaces on create — the directory on disk
+        // would diverge from the rebuilt tree. An all-dot/space segment
+        // collapses away instead of onto the parent.
+        while (!seg.empty() && (seg.back() == '.' || seg.back() == ' ')) seg.pop_back();
+        if (seg.empty()) continue;
+        if (isReservedWindowsName(seg)) seg += "_dir";
         if (!out.empty()) out += '/';
         out += seg;
     }

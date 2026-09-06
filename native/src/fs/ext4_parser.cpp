@@ -253,19 +253,25 @@ static void collectLegacyBlockRuns(DiskReader& reader, const uint32_t* i_block,
 
 // Walk an extent tree rooted in i_block[] and append physical runs to `runs`.
 // depth>0 nodes are read from disk recursively (bounded to prevent cycles on
-// corrupt trees). Physical runs are converted to sector units.
-static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
+// corrupt trees). Physical runs are converted to sector units. nodeLen is the
+// capacity of nodeBytes (60 for the i_block root, blockSize for disk nodes):
+// eh_entries is attacker-controlled and is clamped to fit before any array
+// access — otherwise a crafted header reads past the node buffer.
+static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes, size_t nodeLen,
                               uint32_t blockSize, uint32_t sectorSize,
                               uint64_t volumeOffsetBytes,
                               std::vector<FileRecord::DataRun>& runs,
                               int depthBudget) {
+    if (nodeLen < sizeof(Ext4_ExtentHeader) + sizeof(Ext4_Extent)) return;
     const Ext4_ExtentHeader* hdr = reinterpret_cast<const Ext4_ExtentHeader*>(nodeBytes);
     if (hdr->eh_magic != EXT4_EXT_MAGIC) return;
     if (depthBudget <= 0) return; // corrupt/deep tree guard
+    size_t maxEntries = (nodeLen - sizeof(Ext4_ExtentHeader)) / 12; // extent & idx are 12 bytes
+    size_t entries = hdr->eh_entries > maxEntries ? maxEntries : hdr->eh_entries;
 
     if (hdr->eh_depth == 0) {
         const Ext4_Extent* ext = reinterpret_cast<const Ext4_Extent*>(nodeBytes + sizeof(Ext4_ExtentHeader));
-        for (uint16_t i = 0; i < hdr->eh_entries; ++i) {
+        for (size_t i = 0; i < entries; ++i) {
             uint64_t physBlock = (static_cast<uint64_t>(ext[i].ee_start_hi) << 32) | ext[i].ee_start_lo;
             uint64_t len = ext[i].ee_len & 0x7FFF; // mask the unwritten bit
             if (len == 0 || physBlock == 0) continue;
@@ -279,14 +285,14 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes,
 
     // Internal node: read each child block and recurse.
     const Ext4_ExtentIdx* idx = reinterpret_cast<const Ext4_ExtentIdx*>(nodeBytes + sizeof(Ext4_ExtentHeader));
-    for (uint16_t i = 0; i < hdr->eh_entries; ++i) {
+    for (size_t i = 0; i < entries; ++i) {
         uint64_t childBlock = (static_cast<uint64_t>(idx[i].ei_leaf_hi) << 32) | idx[i].ei_leaf_lo;
         if (childBlock == 0) continue;
         std::vector<uint8_t> child(blockSize);
         // Read via the aligned helper pattern: block offsets are sector-
         // aligned in practice (blockSize >= 1024, multiple of 512).
         if (!reader.readSectors(volumeOffsetBytes + childBlock * blockSize, blockSize, child.data()).success) continue;
-        collectExtentRuns(reader, child.data(), blockSize, sectorSize, volumeOffsetBytes, runs, depthBudget - 1);
+        collectExtentRuns(reader, child.data(), child.size(), blockSize, sectorSize, volumeOffsetBytes, runs, depthBudget - 1);
     }
 }
 
@@ -312,8 +318,9 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         std::vector<uint8_t> search_buf(search_len);
         if (reader.readSectors(volumeOffsetBytes, search_len, search_buf.data()).success) {
             for (uint32_t i = 1024; i < search_len - 1024; i += 512) {
-                sb = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
-                if (sb->s_magic == 0xEF53) {
+                Ext4_SuperBlock* cand = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
+                if (cand->s_magic == 0xEF53 && cand->s_log_block_size <= 6) {
+                    sb = cand;
                     found = true;
                     break;
                 }
@@ -321,6 +328,9 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         }
         if (!found) return false;
     }
+    // s_log_block_size is validated (0..6 => 1K..64K blocks); a larger value
+    // would be a shift UB and an absurd block size.
+    if (sb->s_log_block_size > 6) return false;
 
     uint32_t block_size = 1024 << sb->s_log_block_size;
     uint32_t inodes_per_group = sb->s_inodes_per_group;
@@ -331,6 +341,13 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     uint32_t blocks_per_group = sb->s_blocks_per_group;
 
     if (blocks_per_group == 0 || inodes_per_group == 0) return false;
+
+    // Clamp to what the underlying reader can actually hold: a corrupt 64-bit
+    // block count would otherwise size the group-descriptor buffer in TiB.
+    const uint64_t spanBytes = reader.getDiskSize() > volumeOffsetBytes
+        ? reader.getDiskSize() - volumeOffsetBytes : 0;
+    const uint64_t maxBlocksBySpan = spanBytes / block_size;
+    if (blocks_count > maxBlocksBySpan) blocks_count = maxBlocksBySpan;
 
     uint32_t num_groups = (blocks_count + blocks_per_group - 1) / blocks_per_group;
 
@@ -416,6 +433,7 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
                 if (inode->i_flags & EXT4_EXTENTS_FLAG) {
                     collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
+                                      sizeof(inode->i_block),
                                       block_size, sectorSize, volumeOffsetBytes, meta.runs, 5);
                 } else if (inode->i_block[0] != 0) {
                     collectLegacyBlockRuns(reader, inode->i_block, block_size, sectorSize,

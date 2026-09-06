@@ -116,6 +116,11 @@ export interface FileListFilter {
   includeDiscovery?: boolean
   /** CA-030: whitelisted sort key (e.g. "confidence_desc"); native maps it to SQL. */
   orderBy?: string
+  /** P0-4: byte-size and unix-time range filters (native SQL, 0/undefined = off). */
+  sizeMin?: number
+  sizeMax?: number
+  dateFrom?: number
+  dateTo?: number
 }
 
 export type ProgressCallback = (data: {
@@ -125,7 +130,6 @@ export type ProgressCallback = (data: {
   phase?: string
 }) => void
 export type ScanCompleteCallback = (data: { scanId: number; status: number }) => void
-export type FileFoundCallback = (data: FileRecord & { type?: string; size?: number }) => void
 
 export interface RaidAssemblyResult {
   success: boolean

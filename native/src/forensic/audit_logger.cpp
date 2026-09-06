@@ -288,25 +288,35 @@ AuditChainVerifyResult VerifyAuditChainFile(const std::string& path) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         const size_t pos = line.rfind(marker);
-        if (pos == std::string::npos) {
+        bool lineOk = false;
+        std::string stored;
+        if (pos != std::string::npos) {
+            const std::string message = line.substr(0, pos);
+            stored = line.substr(pos + marker.size());
+            const std::string toHash = prev + message;
+            const std::string expected = AuditLogger::CalculateSHA256(
+                reinterpret_cast<const uint8_t*>(toHash.c_str()), toHash.size());
+            lineOk = (expected == stored);
+        }
+        if (lineOk) {
+            prev = stored;
             res.entries = lineNo;
-            res.brokenAt = lineNo;
-            res.detail = "missing ChainHash";
+            continue;
+        }
+        // The writer appends whole lines (flush per entry); a verify racing
+        // an ACTIVE writer can observe a torn FINAL line — half a message or
+        // a truncated hash. If nothing follows the torn line, report an
+        // incomplete tail (chain intact so far) instead of a false "broken".
+        std::string next;
+        if (!std::getline(in, next)) {
+            res.ok = res.entries > 0;
+            res.detail = res.ok ? "incomplete tail (writer active?)" : "incomplete tail";
             return res;
         }
-        const std::string message = line.substr(0, pos);
-        const std::string stored = line.substr(pos + marker.size());
-        const std::string toHash = prev + message;
-        const std::string expected = AuditLogger::CalculateSHA256(
-            reinterpret_cast<const uint8_t*>(toHash.c_str()), toHash.size());
-        if (expected != stored) {
-            res.entries = lineNo;
-            res.brokenAt = lineNo;
-            res.detail = "hash mismatch";
-            return res;
-        }
-        prev = stored;
         res.entries = lineNo;
+        res.brokenAt = lineNo;
+        res.detail = (pos == std::string::npos) ? "missing ChainHash" : "hash mismatch";
+        return res;
     }
     res.ok = res.entries > 0;
     res.detail = res.ok ? "ok" : "empty";

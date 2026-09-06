@@ -241,10 +241,10 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
         uint64_t legacy = readLe64(nx.data() + 40);
         blockSize = (legacy >= 4096 && legacy <= 1024 * 1024) ? legacy : 4096;
     }
-    uint64_t blockCount = readLe64(nx.data() + 40);
-    if (blockSize32 >= 4096 && blockSize32 <= 1024 * 1024) {
-        blockCount = readLe64(nx.data() + 40);
-    }
+    // nx_max_file_system_blocks lives at NXSB+48 (offset 40 is nx_xid);
+    // keep the legacy read for images written before the spec offset landed.
+    uint64_t blockCount = (nx.size() >= 56) ? readLe64(nx.data() + 48) : 0;
+    if (blockCount == 0) blockCount = readLe64(nx.data() + 40);
     uint64_t maxBlocks = (spanBytes - partitionOffsetBytes) / blockSize;
     if (blockCount == 0 || blockCount > maxBlocks) blockCount = maxBlocks;
     if (blockCount == 0) return false;
@@ -292,7 +292,12 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                                 off, sectorSize, fileIndex, callback, seenNames);
     }
 
-    uint64_t omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
+    // nx_omap_oid is at NXSB+64; 0xA0 was the pre-spec probe offset — keep it
+    // as a fallback so previously-carved images still resolve their omap.
+    uint64_t omapOid = (nx.size() >= 0x48) ? readLe64(nx.data() + 0x40) : 0;
+    if (omapOid == 0 || omapOid >= blockCount) {
+        omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
+    }
     uint64_t oidTreeOid = (nx.size() >= 0xB0) ? readLe64(nx.data() + 0xA8) : 0;
     auto walkBtreeRoot = [&](uint64_t rootOid) {
         if (rootOid == 0 || rootOid >= blockCount) return;

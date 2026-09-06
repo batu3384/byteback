@@ -118,6 +118,17 @@ bool refineBmpCarve(const uint8_t* data, size_t size, std::string& filename,
     return true;
 }
 
+// P0-6 content dedup: MD5 of the first 64 KB of the probe, CLAMPED to
+// actualSize — probes are sector-aligned reads and can extend past the file
+// end; two identical files must hash equal at any offset or alignment.
+void stampContentHash(FileRecord& fr, const uint8_t* probe, size_t probeLen, uint64_t actualSize) {
+    if (!probe || probeLen == 0 || actualSize == 0) return;
+    const size_t n = std::min<size_t>({probeLen, size_t{64 * 1024}, static_cast<size_t>(actualSize)});
+    crypto::Md5 ch;
+    ch.update(probe, n);
+    fr.contentHash = ch.finalHex();
+}
+
 // Carve records store EXIF in modifiedAt; UI labels as EXIF not FS date.
 void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reader,
                     uint64_t startOff, uint64_t fileSize, const uint8_t* cached, size_t cachedLen) {
@@ -865,6 +876,18 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                     }
                                 }
                             }
+                            // P0-6: the probe above only runs for bounded-parse
+                            // formats; fetch a 64 KB prefix for everything else
+                            // so content dedup covers jpg/png/pdf/... carves too.
+                            if (probeBuf.empty() && actualSize > 0) {
+                                uint32_t hashProbe = static_cast<uint32_t>(
+                                    std::min<uint64_t>(actualSize, 64 * 1024));
+                                hashProbe = ((hashProbe + sectorSize - 1) / sectorSize) * sectorSize;
+                                probeBuf.resize(hashProbe);
+                                if (!reader.readBytes(it->startOffset, hashProbe, probeBuf.data()).success) {
+                                    probeBuf.clear();
+                                }
+                            }
                             if (bgcRescued) {
                                 std::string effExtBgc = effExt;
                                 std::string effNameBgc = effName; // already subtype-resolved above
@@ -917,13 +940,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             fr.sizeBytes = actualSize;
                             fr.startSector = it->startSector;
                             fr.startByteOffset = it->startOffset % sectorSize;
-                            // P0-6 content dedup: MD5 of the first 64 KB of the already-in-memory probe.
-                            if (!probeBuf.empty()) {
-                                crypto::Md5 ch;
-                                const size_t n = std::min<size_t>(probeBuf.size(), 64 * 1024);
-                                ch.update(probeBuf.data(), n);
-                                fr.contentHash = ch.finalHex();
-                            }
+                            stampContentHash(fr, probeBuf.data(), probeBuf.size(), actualSize);
                             fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                             fr.status = 0;
                             fr.confidence = confidence;
@@ -987,13 +1004,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 fr.sizeBytes = actualSize;
                 fr.startSector = it->startSector;
                 fr.startByteOffset = it->startOffset % sectorSize;
-                // P0-6 content dedup: MD5 of the first 64 KB of the already-in-memory probe.
-                if (!probeBuf.empty()) {
-                    crypto::Md5 ch;
-                    const size_t n = std::min<size_t>(probeBuf.size(), 64 * 1024);
-                    ch.update(probeBuf.data(), n);
-                    fr.contentHash = ch.finalHex();
-                }
+                stampContentHash(fr, probeBuf.data(), probeBuf.size(), actualSize);
                 fr.endSector = (it->startOffset + actualSize + sectorSize - 1) / sectorSize;
                 fr.status = 0;
                 fr.confidence = confidence;
@@ -1049,13 +1060,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         fr.sizeBytes = actualSize;
         fr.startSector = ac.startSector;
         fr.startByteOffset = ac.startOffset % sectorSize;
-        // P0-6 content dedup: MD5 of the first 64 KB of the already-in-memory probe.
-        if (!probeBuf.empty()) {
-            crypto::Md5 ch;
-            const size_t n = std::min<size_t>(probeBuf.size(), 64 * 1024);
-            ch.update(probeBuf.data(), n);
-            fr.contentHash = ch.finalHex();
-        }
+        stampContentHash(fr, probeBuf.data(), probeBuf.size(), actualSize);
         fr.endSector = (ac.startOffset + actualSize + sectorSize - 1) / sectorSize;
         fr.status = 0;
         fr.confidence = confidence;

@@ -17,7 +17,6 @@ export type {
   TimelineEvent,
   TimelineResult,
   ProgressCallback,
-  FileFoundCallback,
   ScanCompleteCallback,
   CaseInfo,
   NsrlStats,
@@ -43,7 +42,6 @@ import type {
   TimelineEvent,
   TimelineResult,
   ProgressCallback,
-  FileFoundCallback,
   ScanCompleteCallback,
   CaseInfo,
   NsrlStats,
@@ -66,7 +64,6 @@ declare global {
       startScan: (driveIndex: number, scanType: string, scanOptions?: ScanOptions) => Promise<number>
       stopScan: () => void
       onScanProgress: (callback: ProgressCallback) => () => void
-      onScanFileFound: (callback: FileFoundCallback) => () => void
       onScanComplete: (callback: ScanCompleteCallback) => () => void
       removeAllScanListeners: () => void
       /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
@@ -74,7 +71,7 @@ declare global {
 
       startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') => void
       stopImaging: () => void
-      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string }) => void) => () => void
+      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>

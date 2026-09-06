@@ -101,17 +101,15 @@ std::vector<uint8_t> buildExFatWithGappedDeletedSet() {
     writeLe16(img, de + 2, 0x0001);
 
     de += 32;
-    img[de] = 0xC5; // stream
-    writeLe16(img, de + 2, chk);
-    img[de + 6] = 8; // name length (LOST.DAT)
+    img[de] = 0xC0; // stream (spec entry type; secondaries carry no checksum)
+    img[de + 3] = 8; // name length (LOST.DAT)
     writeLe32(img, de + 20, 3); // first cluster
-    writeLe64(img, de + 32, 17); // data length
+    writeLe64(img, de + 24, 17); // data length (spec offset 24)
 
     de += 32;
     img[de] = 0xC1; // name
-    writeLe16(img, de + 2, chk);
     static const uint8_t lostName[] = {'L',0,'O',0,'S',0,'T',0,'.',0,'D',0,'A',0,'T',0};
-    std::memcpy(img.data() + de + 4, lostName, sizeof(lostName));
+    std::memcpy(img.data() + de + 2, lostName, sizeof(lostName)); // chars start at byte 2
 
     const char payload[] = "recovered!";
     std::memcpy(img.data() + (heapOff + 1) * ss, payload, sizeof(payload) - 1);
@@ -148,16 +146,14 @@ std::vector<uint8_t> buildExFatPartialDeletedChain() {
     writeLe16(img, de + 2, chk);
 
     de += 32;
-    img[de] = 0x45; // deleted stream (no in-use bit)
-    writeLe16(img, de + 2, chk);
+    img[de] = 0x40; // deleted stream (0xC0 minus the in-use bit)
     writeLe32(img, de + 20, 3);
-    writeLe64(img, de + 32, 50000); // logical size >> one cluster
+    writeLe64(img, de + 24, 50000); // logical size >> one cluster (spec offset 24)
 
     de += 32;
     img[de] = 0xC1;
-    writeLe16(img, de + 2, chk);
     static const uint8_t name[] = {'B',0,'I',0,'G',0,'.',0,'D',0,'A',0,'T',0};
-    std::memcpy(img.data() + de + 4, name, sizeof(name));
+    std::memcpy(img.data() + de + 2, name, sizeof(name));
     return img;
 }
 
@@ -191,4 +187,83 @@ TEST(FatParser, ExFatPartialDeletedChainCapsConfidence) {
     EXPECT_EQ(hit.status, 0);
     EXPECT_LE(hit.confidence, 35);
     EXPECT_GT(hit.sizeBytes, hit.runs.size() ? hit.runs[0].sectorCount * 512 : 0u);
+}
+
+TEST(FatParser, ExFatSpecStreamEntryYieldsRealSize) {
+    // Regression: the stream dentry must be recognized by its spec type
+    // (0xC0) with FileNameLength at byte 3 and DataLength at 24..31.
+    auto img = buildExFatWithGappedDeletedSet();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord hit{};
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "LOST.DAT") hit = fr;
+    }, &running));
+    ASSERT_FALSE(hit.runs.empty());
+    EXPECT_EQ(hit.sizeBytes, 17u);
+    EXPECT_EQ(hit.runs[0].startSector, 25u + 1u); // cluster 3 in heap starting at sector 25
+}
+
+TEST(FatParser, ZeroSectorsPerClusterReturnsCleanly) {
+    // Regression: sectorsPerCluster == 0 used to divide by zero.
+    auto img = byteback::testfix::buildFat16Volume();
+    img[0x0D] = 0; // BPB_SecPerClus = 0
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::atomic<bool> running{true};
+    FATParser fat;
+    EXPECT_TRUE(fat.scan(reader, [](const FileRecord&) {}, &running));
+}
+
+namespace {
+
+// FAT32 with a cyclic directory chain: FAT[2] = 3 and FAT[3] = 2.
+std::vector<uint8_t> buildFat32CyclicRootChainVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t reserved = 1;
+    constexpr uint32_t fatSectors = 2;
+    constexpr uint32_t numFats = 1;
+    // countOfClusters >= 65525 => FAT32. spc=1 keeps the image at ~32 MB.
+    const uint32_t dataSectors = 65530;
+    const uint32_t totalSectors = reserved + numFats * fatSectors + dataSectors;
+
+    std::vector<uint8_t> img(static_cast<size_t>(totalSectors) * ss, 0);
+    const uint32_t fatStart = reserved;
+    const uint32_t dataStart = fatStart + numFats * fatSectors;
+
+    img[0] = 0xEB; img[1] = 0x3C; img[2] = 0x90;
+    writeLe16(img, 0x0B, static_cast<uint16_t>(ss));
+    img[0x0D] = 1;               // sectors per cluster
+    writeLe16(img, 0x0E, static_cast<uint16_t>(reserved));
+    img[0x10] = static_cast<uint8_t>(numFats);
+    writeLe16(img, 0x11, 0);     // rootEntryCount (FAT32: 0)
+    writeLe16(img, 0x16, static_cast<uint16_t>(fatSectors)); // FAT size 16 (0 => 32)
+    writeLe32(img, 0x20, totalSectors);
+    writeLe32(img, 0x24, fatSectors);  // FAT size 32
+    writeLe32(img, 0x2C, 2);           // root cluster
+    std::memcpy(img.data() + 0x52, "FAT32   ", 8);
+
+    // Cyclic chain: cluster 2 -> 3 -> 2.
+    writeLe32(img, static_cast<size_t>(fatStart) * ss + 2 * 4, 3);
+    writeLe32(img, static_cast<size_t>(fatStart) * ss + 3 * 4, 2);
+    (void)dataStart;
+    return img;
+}
+
+} // namespace
+
+TEST(FatParser, CyclicFat32RootChainTerminates) {
+    // Regression: a cyclic FAT chain used to spin the FAT32 directory walk
+    // forever; the scan must return.
+    auto img = buildFat32CyclicRootChainVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::atomic<bool> running{true};
+    FATParser fat;
+    EXPECT_TRUE(fat.scan(reader, [](const FileRecord&) {}, &running));
 }

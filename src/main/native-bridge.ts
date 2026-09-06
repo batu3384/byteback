@@ -10,7 +10,6 @@ export type {
   TimelineEvent,
   TimelineResult,
   ProgressCallback,
-  FileFoundCallback,
 } from '../shared/ipc-contract'
 
 import { existsSync } from 'fs'

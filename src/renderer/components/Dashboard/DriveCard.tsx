@@ -115,7 +115,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
       <div className="drive-card glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', transition: 'transform 0.2s ease, border-color 0.2s ease' }}>
         <div className="drive-card-header" style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
           <div className="drive-icon-container" style={{ 
-            background: drive.type === 'SSD' || isSsd ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255,255,255,0.05)', 
+            background: drive.type === 'SSD' || isSsd ? 'rgba(59, 130, 246, 0.1)' : 'var(--surface-overlay)', 
             padding: '16px', borderRadius: '12px',
             color: drive.type === 'SSD' || isSsd ? 'var(--accent-blue)' : 'var(--text-main)'
           }}>
@@ -126,7 +126,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
               {tFormat('drive.physical', { n: String(drive.index) })}
               <span className={`drive-type-badge`} style={{ 
                 fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px',
-                background: (drive.type === 'SSD' || isSsd) ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255,255,255,0.1)',
+                background: (drive.type === 'SSD' || isSsd) ? 'rgba(59, 130, 246, 0.1)' : 'var(--surface-overlay-strong)',
                 color: (drive.type === 'SSD' || isSsd) ? 'var(--accent-blue)' : 'var(--text-muted)',
                 border: '1px solid currentColor',
                 opacity: 0.8,
@@ -137,7 +137,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           </div>
         </div>
         
-        <div className="drive-details" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'rgba(0,0,0,0.2)', padding: '16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
+        <div className="drive-details" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'var(--well-bg)', padding: '16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
           <div className="detail-row" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <span className="detail-label" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{t('drive.capacity')}</span>
             <span className="detail-value highlight" style={{ fontSize: '1.2rem', fontWeight: 600, color: 'var(--text-main)' }}>{formatBytes(drive.sizeBytes)}</span>
@@ -160,7 +160,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
             <select
               value={partitionIndex}
               onChange={(e) => setPartitionIndex(Number(e.target.value))}
-              style={{ padding: '8px', borderRadius: '6px', background: 'rgba(0,0,0,0.25)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+              style={{ padding: '8px', borderRadius: '6px', background: 'var(--well-bg)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
             >
               <option value={-1}>{t('drive.wholeDisk')}</option>
               {partitions.map((p, i) => (
