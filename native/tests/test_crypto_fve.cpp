@@ -190,6 +190,57 @@ TEST(XtsAes256, DecryptRoundTrip) {
     EXPECT_EQ(std::memcmp(pt, back, 32), 0);
 }
 
+// Key-half contract for the key64 path (BitLocker FVEK / IEEE 1619): first
+// 32 bytes = data key, second 32 bytes (offset 32) = tweak key. Mirrors the
+// AES-128 multi-block composition test using AES-256 primitives.
+TEST(XtsAes256, MultiBlockMatchesIndependentGf128Composition) {
+    uint8_t key[64];
+    for (int i = 0; i < 64; ++i) key[i] = static_cast<uint8_t>(i + 3);
+    uint8_t tweak[16] = {0x2A};
+    std::vector<uint8_t> pt(64);
+    for (int i = 0; i < 64; ++i) pt[i] = static_cast<uint8_t>(0xC0 ^ i);
+    std::vector<uint8_t> ct(64);
+    ASSERT_TRUE(byteback::crypto::xtsAes256Crypt(key, tweak, pt.data(), ct.data(), 64, true));
+
+    // Independent composition: t = AES_K2(tweak) with K2 = key[32..63];
+    // block i uses t advanced by i doublings; C_i = AES_K1(P_i ^ t_i) ^ t_i.
+    uint8_t t[16];
+    byteback::crypto::aes256EncryptBlock(key + 32, tweak, t);
+    for (int blk = 0; blk < 4; ++blk) {
+        uint8_t x[16], c[16];
+        for (int i = 0; i < 16; ++i) x[i] = static_cast<uint8_t>(pt[blk * 16 + i] ^ t[i]);
+        byteback::crypto::aes256EncryptBlock(key, x, c);
+        for (int i = 0; i < 16; ++i) {
+            EXPECT_EQ(ct[blk * 16 + i], static_cast<uint8_t>(c[i] ^ t[i]))
+                << "block " << blk << " byte " << i;
+        }
+        gf128DoubleRef(t);
+    }
+
+    std::vector<uint8_t> back(64);
+    ASSERT_TRUE(byteback::crypto::xtsAes256Crypt(key, tweak, ct.data(), back.data(), 64, false));
+    EXPECT_EQ(back, pt);
+}
+
+// XTS operates on whole 16-byte blocks only; a length that is not a multiple
+// of 16 (and specifically a decrypt tail) must be rejected, not half-decrypted.
+TEST(XtsLength, RejectsLengthNotMultipleOf16) {
+    uint8_t key32[32] = {};
+    uint8_t key64[64] = {};
+    uint8_t tweak[16] = {};
+    uint8_t in[33] = {};
+    uint8_t out[33] = {};
+    for (size_t len : {size_t(1), size_t(15), size_t(17), size_t(31), size_t(33)}) {
+        EXPECT_FALSE(byteback::crypto::xtsAes128Crypt(key32, tweak, in, out, len, true)) << len;
+        EXPECT_FALSE(byteback::crypto::xtsAes128Crypt(key32, tweak, in, out, len, false)) << len;
+        EXPECT_FALSE(byteback::crypto::xtsAes256Crypt(key64, tweak, in, out, len, true)) << len;
+        EXPECT_FALSE(byteback::crypto::xtsAes256Crypt(key64, tweak, in, out, len, false)) << len;
+    }
+    // len == 0 is a no-op success.
+    EXPECT_TRUE(byteback::crypto::xtsAes128Crypt(key32, tweak, in, out, 0, true));
+    EXPECT_TRUE(byteback::crypto::xtsAes256Crypt(key64, tweak, in, out, 0, false));
+}
+
 TEST(DiskReaderXts, Aes256FvekDecryptsSector) {
     uint8_t key[64] = {};
     uint8_t tweak[16] = {};

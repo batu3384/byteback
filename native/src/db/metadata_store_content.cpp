@@ -69,6 +69,14 @@ bool MetadataStore::replaceContentChunks(int64_t fileId, const std::vector<std::
     ensureContentFtsIndex(db_);
     deleteChunks(db_, fileId);
     if (chunks.empty()) return true;
+    return appendContentChunks(fileId, chunks);
+}
+
+bool MetadataStore::appendContentChunks(int64_t fileId, const std::vector<std::string>& chunks) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_ || fileId <= 0) return false;
+    ensureContentFtsIndex(db_);
+    if (chunks.empty()) return true;
     const char* ins = "INSERT INTO content_chunk_fts(body, file_id) VALUES(?, ?)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, ins, -1, &stmt, nullptr) != SQLITE_OK) return false;

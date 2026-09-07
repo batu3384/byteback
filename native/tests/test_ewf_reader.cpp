@@ -71,6 +71,56 @@ TEST(EwfReader, MultiSegmentLinearRead) {
     ::remove(p2);
 }
 
+namespace {
+// Writes `sectors` sectors of a counter pattern, then aborts mid-stream and
+// checks every WRITTEN segment stays readable (no digest/done, headers patched).
+void abortAndVerifyReadable(int expectedSegments, uint64_t writtenSectors) {
+    const char* p1 = "abort_ewf.E01";
+    const char* p2 = "abort_ewf.E02";
+    ::remove(p1);
+    ::remove(p2);
+
+    EwfOptions opts;
+    opts.sectorsPerChunk = 1;
+    EwfWriter w;
+    w.setMaxSectorsSectionBytes(8 * 512); // 8 sectors per segment
+    const uint64_t kSectors = 16;         // declared (full) image size
+    ASSERT_TRUE(w.open(p1, kSectors, 512, opts));
+
+    std::vector<uint8_t> img(static_cast<size_t>(writtenSectors) * 512);
+    for (size_t i = 0; i < img.size(); ++i) img[i] = static_cast<uint8_t>(i & 0xFF);
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.abort());
+    EXPECT_EQ(w.segmentCount(), expectedSegments);
+    // An aborted acquisition must never present a verification digest.
+    EXPECT_TRUE(w.md5Hex().empty());
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(p1, err)) << err;
+    EXPECT_TRUE(r.md5Hex().empty());
+    std::vector<uint8_t> out(img.size());
+    ASSERT_TRUE(r.read(0, out.data(), out.size(), err)) << err;
+    EXPECT_EQ(std::memcmp(out.data(), img.data(), img.size()), 0);
+    // Reads past the written data must fail, not hand back garbage.
+    std::vector<uint8_t> tail(512);
+    EXPECT_FALSE(r.read(img.size(), tail.data(), tail.size(), err));
+
+    ::remove(p1);
+    ::remove(p2);
+}
+} // namespace
+
+TEST(EwfAbort, SingleSegmentStaysReadable) {
+    abortAndVerifyReadable(1, 3);
+}
+
+// 2+ segment rotation + abort: the second segment must be patched, present,
+// and readable together with the first (regression for the abort() path).
+TEST(EwfAbort, MultiSegmentStaysReadable) {
+    abortAndVerifyReadable(2, 12);
+}
+
 TEST(DiskReader, RawFileBackend) {
     const char* path = "reader_raw.dd";
     std::vector<uint8_t> img(2048, 0xAB);

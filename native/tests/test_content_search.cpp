@@ -124,3 +124,79 @@ TEST_F(ContentSearchTest, IndexesPastFirst256KiB) {
     ASSERT_EQ(hits.size(), 1u);
     EXPECT_EQ(hits[0].name, "big.bin");
 }
+
+// A query whose bytes straddle a chunk boundary (here "SECRET" split into
+// "SEC"+"RET" at offset 512) must still match — live path and FTS path.
+TEST_F(ContentSearchTest, FindsQuerySpanningChunkBoundary) {
+    std::vector<uint8_t> img(512 * 64, 0);
+    const char payload[] = "SECRET";
+    std::memcpy(img.data() + 509, payload, 6); // straddles the 512-byte boundary
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "span.bin";
+    r.sizeBytes = 1024;
+    r.startSector = 0;
+    r.endSector = 2;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.chunkBytes = 512;
+
+    std::vector<FileRecord> liveHits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "SECRET", opts, [&](const FileRecord& f) {
+        liveHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(liveHits.size(), 1u);
+    EXPECT_EQ(liveHits[0].name, "span.bin");
+
+    // Once the index is complete, the FTS path must find it too.
+    ASSERT_TRUE(store_.isContentIndexComplete(scanId));
+    std::vector<FileRecord> ftsHits;
+    runContentSearch(store_, reader, scanId, "SECRET", opts, [&](const FileRecord& f) {
+        ftsHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(ftsHits.size(), 1u);
+    EXPECT_EQ(ftsHits[0].name, "span.bin");
+}
+
+// Many chunks must be flushed to the store in bounded batches (memory safety
+// on huge files) without losing content near the end of the file.
+TEST_F(ContentSearchTest, LargeFileBatchedFlushKeepsTailFindable) {
+    const size_t ss = 512;
+    const size_t sectors = 512; // 256 KiB image
+    std::vector<uint8_t> img(ss * sectors, 0);
+    const char payload[] = "BATCH_TAIL_TOKEN";
+    std::memcpy(img.data() + ss * sectors - 64, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "many.bin";
+    r.sizeBytes = ss * sectors;
+    r.startSector = 0;
+    r.endSector = sectors;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.chunkBytes = 1024; // 256 chunks -> multiple internal flush batches
+
+    std::vector<FileRecord> liveHits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "BATCH_TAIL", opts, [&](const FileRecord& f) {
+        liveHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(liveHits.size(), 1u);
+
+    ASSERT_TRUE(store_.isContentIndexComplete(scanId));
+    auto ids = store_.searchContentFts(scanId, "BATCH_TAIL", 0, 10);
+    ASSERT_EQ(ids.size(), 1u);
+}

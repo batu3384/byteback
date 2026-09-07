@@ -25,7 +25,10 @@ public:
                               const std::string& actualSerial, uint64_t sizeBytes);
 
 private:
-    bool overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random);
+    bool overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern,
+                        bool is_random, uint32_t randomSeed = 0);
+    bool verify_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern,
+                     bool is_random, uint32_t randomSeed);
     std::size_t get_file_size(const std::string& file_path);
 };
 
