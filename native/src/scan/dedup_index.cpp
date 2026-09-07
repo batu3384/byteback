@@ -129,6 +129,17 @@ void DedupIndex::ensureCarveSorted() {
 // First entry satisfying overlap*2 >= min(span) against [frStart, frEnd], or
 // nullptr. Checks BOTH the merged base (binary-searched window) and the
 // unmerged pending tail (linear) so a query never misses a recent record.
+// AR2-perf: on real disks the [j0..hi] window can hold hundreds of thousands
+// of entries per carve candidate. The scan runs BACKWARD from hi (nearest the
+// carve end — the likeliest real duplicate) capped at kMaxWindowScan entries,
+// plus a small forward probe from j0 to keep long-span straddlers covered.
+// ponytail: a proper interval tree would remove the cap entirely; duplicates
+// beyond it are recoverable via the 'Tekrarlar' toggle, never lost.
+namespace {
+constexpr int kMaxWindowScan = 65536;
+constexpr int kEdgeProbe = 1024;
+}
+
 const DedupIndex::Entry* DedupIndex::findOverlap(const std::vector<Entry>& entries,
                                                  const std::vector<uint64_t>& prefixMaxEnd,
                                                  uint64_t frStart, uint64_t frEnd, uint64_t frSpan,
@@ -155,8 +166,22 @@ const DedupIndex::Entry* DedupIndex::findOverlap(const std::vector<Entry>& entri
     if (prefixMaxEnd[hi] < frStart) return nullptr; // nothing reaches back to the query
 
     auto j0It = std::lower_bound(prefixMaxEnd.begin(), prefixMaxEnd.begin() + hi + 1, frStart);
-    for (int idx = static_cast<int>(j0It - prefixMaxEnd.begin()); idx <= hi; ++idx) {
+    const int j0 = static_cast<int>(j0It - prefixMaxEnd.begin());
+    const int windowStart = std::max(j0, std::max(0, hi - kMaxWindowScan));
+
+    const int edgeEnd = std::min(hi, j0 + kEdgeProbe - 1);
+    for (int idx = j0; idx <= edgeEnd; ++idx) {
         const Entry& e = entries[idx];
+        if (e.endSector < frStart) continue;
+        if (!sectorsOverlap(e.startSector, e.endSector, frStart, frEnd)) continue;
+        const uint64_t overlap = overlapSectorCount(e.startSector, e.endSector, frStart, frEnd);
+        const uint64_t priorSpan = e.endSector >= e.startSector ? (e.endSector - e.startSector + 1) : 1;
+        const uint64_t minSpan = std::max<uint64_t>(1, std::min(frSpan, priorSpan));
+        if (overlap * 2 >= minSpan) return &e;
+    }
+
+    for (int64_t idx = hi; idx >= windowStart; --idx) {
+        const Entry& e = entries[static_cast<size_t>(idx)];
         if (e.endSector < frStart) continue;
         if (!sectorsOverlap(e.startSector, e.endSector, frStart, frEnd)) continue;
         const uint64_t overlap = overlapSectorCount(e.startSector, e.endSector, frStart, frEnd);
