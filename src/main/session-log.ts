@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { powerSaveBlocker } from 'electron'
-import { summarizeSessionLines } from '../shared/session-log'
+import { sessionLogCode, summarizeSessionLines, SessionLogCode } from '../shared/session-log'
 
 // Long forensic scans run for days; without a cap session.log grows forever.
 const MAX_SESSION_LOG_BYTES = 5 * 1024 * 1024
@@ -75,18 +75,18 @@ export function appendProgressLog(current: number, total: number, phase?: string
   appendSessionLog('SCAN_PROGRESS', `current=${current} total=${total} phase=${phase ?? ''}`)
 }
 
-export function readSessionLog(maxLines = 80): { path: string; lines: string[]; summary: string } {
+export function readSessionLog(maxLines = 80): { path: string; lines: string[]; summary: string; code: SessionLogCode } {
   const path = logPath
   if (!path || !existsSync(path)) {
-    return { path: path || '', lines: [], summary: 'Günlük dosyası yok.' }
+    return { path: path || '', lines: [], summary: 'Günlük dosyası yok.', code: 'no_scan' }
   }
   let text = ''
   try {
     text = readFileSync(path, 'utf8')
   } catch {
-    return { path, lines: [], summary: 'Günlük okunamadı.' }
+    return { path, lines: [], summary: 'Günlük okunamadı.', code: 'no_scan' }
   }
   const lines = text.split(/\r?\n/).filter(Boolean)
   const tail = lines.slice(Math.max(0, lines.length - maxLines))
-  return { path, lines: tail, summary: summarizeSessionLines(tail) }
+  return { path, lines: tail, summary: summarizeSessionLines(tail), code: sessionLogCode(tail) }
 }

@@ -18,24 +18,30 @@ import InlineAlert from './components/InlineAlert'
 import { hasValidScanId, isLiveScanPhase, isScanDependentPage, isDiskBusyPage, scanPhaseFromStatusCode, type ScanPhase } from '../shared/scan-required'
 import { SCAN_STATUS, scanPhaseFromState } from '../shared/scan-session'
 import type { ScanState } from '../shared/ipc-contract'
+import { t, tFormat, useI18n } from './i18n'
 
 type Page = 'dashboard' | 'scan' | 'results' | 'hex' | 'imager' | 'smart' | 'shredder' | 'raid' | 'report' | 'search' | 'timeline' | 'case'
 
+/** Status line text as an i18n key (+ optional engine error detail) so the
+ *  active-scan screen translates instead of carrying hardcoded TR strings. */
+export interface ScanStatusMessage { key: string; err?: string }
+
 function App(): React.ReactElement {
+  const { t } = useI18n() // re-renders on language switch so keyed status text updates
   const [activePage, setActivePage] = useState<Page>('dashboard')
   const [scanConfig, setScanConfig] = useState<{ driveIndex: number | null, scanType: string }>({ driveIndex: null, scanType: 'quick' })
   const [selectedDrive, setSelectedDrive] = useState<number | null>(null)
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
-  
+
   // Global Scan State (Persists across tab changes)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, badSectors: [] as number[], phase: 'metadata' })
-  const [scanStatus, setScanStatus] = useState('Bekleniyor...')
+  const [scanStatus, setScanStatus] = useState<ScanStatusMessage>({ key: 'scan.waiting' })
   const [scanPhase, setScanPhase] = useState<ScanPhase>('idle')
   const [scanElapsed, setScanElapsed] = useState(0)
   const [activeScanId, setActiveScanId] = useState<number>(-1)
   const [scanRowState, setScanRowState] = useState<ScanState | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
-  const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[] } | null>(null)
+  const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[]; code: string } | null>(null)
   // CA-032: imaging runs in the main process; the flag survives navigation so
   // the progress card re-appears when the user returns to the imager page.
   const [imagingActive, setImagingActive] = useState(false)
@@ -73,12 +79,12 @@ function App(): React.ReactElement {
   useEffect(() => {
     window.api?.getDbStatus?.()
       .then((s) => {
-        if (!s.ready) setDbError(s.error ?? 'Veritabanı başlatılamadı')
+        if (!s.ready) setDbError(s.error ?? t('dash.dbInitError'))
       })
-      .catch(() => setDbError('Veritabanı durumu okunamadı'))
+      .catch(() => setDbError(t('dash.dbStatusError')))
     window.api?.getSessionLog?.(60)
       .then((log) => {
-        if (log?.summary) setSessionNote({ summary: log.summary, path: log.path, lines: log.lines ?? [] })
+        if (log?.summary) setSessionNote({ summary: log.summary, path: log.path, lines: log.lines ?? [], code: log.code ?? 'incomplete' })
       })
       .catch(() => { /* günlük yoksa sessiz */ })
 
@@ -95,10 +101,10 @@ function App(): React.ReactElement {
         if (scanStartAttemptRef.current > 0) return
         hydrateFromScanState(state)
         if (state.status === SCAN_STATUS.paused) {
-          setScanStatus('Tarama Duraklatıldı — devam edilebilir')
+          setScanStatus({ key: 'scan.pausedResumable' })
           setScanPhase('paused')
         } else if (state.status === SCAN_STATUS.complete) {
-          setScanStatus('Tarama Tamamlandı')
+          setScanStatus({ key: 'scan.finished' })
           setScanPhase('complete')
         }
       })
@@ -160,10 +166,10 @@ function App(): React.ReactElement {
         if (scanId > 0 && activeScanIdRef.current > 0 && scanId !== activeScanIdRef.current) return
         if (scanId > 0) setActiveScanId(scanId)
         setScanPhase(scanPhaseFromStatusCode(status))
-        if (status === 1) setScanStatus('Tarama Tamamlandı')
-        else if (status === 2) setScanStatus('Tarama İptal Edildi')
-        else if (status === 4) setScanStatus('Tarama Duraklatıldı — devam edilebilir')
-        else setScanStatus('Tarama Başarısız')
+        if (status === 1) setScanStatus({ key: 'scan.finished' })
+        else if (status === 2) setScanStatus({ key: 'scan.cancelled' })
+        else if (status === 4) setScanStatus({ key: 'scan.pausedResumable' })
+        else setScanStatus({ key: 'scan.failed' })
         if (timerRef.current) clearInterval(timerRef.current)
         // A pending throttled progress flush would repaint the bar with stale
         // values after completion — drop it.
@@ -199,8 +205,8 @@ function App(): React.ReactElement {
     }
   }, [])
 
-  const failScan = (message: string) => {
-    setScanStatus(message)
+  const failScan = (key: string, err?: string) => {
+    setScanStatus({ key, err })
     setScanPhase('failed')
     if (timerRef.current) {
       clearInterval(timerRef.current)
@@ -217,7 +223,7 @@ function App(): React.ReactElement {
 
   const handleStartScan = (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
     if (dbError) {
-      failScan(`Veritabanı kullanılamıyor: ${dbError}`)
+      failScan('scan.failedDb', dbError)
       return
     }
     scanStartAttemptRef.current++
@@ -233,7 +239,7 @@ function App(): React.ReactElement {
         .then((state) => { if (state?.id > 0) hydrateFromScanState(state) })
         .catch(() => { /* resume yine de dener */ })
     }
-    setScanStatus(isResume ? 'Tarama Devam Ediyor...' : 'Tarama Sürüyor...')
+    setScanStatus({ key: isResume ? 'scan.resuming' : 'scan.running' })
     setScanPhase('starting')
     setActivePage('scan')
 
@@ -241,7 +247,7 @@ function App(): React.ReactElement {
       // Release the hydration gate — a failed attempt must not block startup
       // hydration of the last usable scan for the rest of the session.
       scanStartAttemptRef.current--
-      failScan('Tarama API\'si kullanılamıyor. Native backend yüklü mü kontrol edin.')
+      failScan('scan.apiMissing')
       return
     }
 
@@ -252,31 +258,31 @@ function App(): React.ReactElement {
           startScanTimer()
         } else {
           scanStartAttemptRef.current--
-          failScan('Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.')
+          failScan('scan.startFailed')
         }
       })
       .catch((e: Error) => {
         scanStartAttemptRef.current--
-        failScan(`Tarama hatası: ${e.message}`)
+        failScan('scan.failedWith', e.message)
       })
   }
 
   const handleStartRaidScan = (scanType: string) => {
     if (dbError) {
-      failScan(`Veritabanı kullanılamıyor: ${dbError}`)
+      failScan('scan.failedDb', dbError)
       return
     }
     scanStartAttemptRef.current++
     setSelectedDrive(-1)
     setScanConfig({ driveIndex: -1, scanType })
     setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
-    setScanStatus('RAID Taraması Sürüyor...')
+    setScanStatus({ key: 'scan.raidRunning' })
     setScanPhase('starting')
     setScanElapsed(0)
     setActivePage('scan')
     if (!window.api?.startScan) {
       scanStartAttemptRef.current--
-      failScan('RAID tarama API\'si kullanılamıyor.')
+      failScan('scan.raidApiMissing')
       return
     }
     window.api.startScan(-1, scanType)
@@ -286,18 +292,18 @@ function App(): React.ReactElement {
           startScanTimer()
         } else {
           scanStartAttemptRef.current--
-          failScan('RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.')
+          failScan('scan.raidStartFailed')
         }
       })
       .catch((e: Error) => {
         scanStartAttemptRef.current--
-        failScan(`RAID tarama hatası: ${e.message}`)
+        failScan('scan.raidFailedWith', e.message)
       })
   }
 
   const handleOpenPausedResults = (state: ScanState) => {
     hydrateFromScanState(state)
-    setScanStatus('Tarama Duraklatıldı — devam edilebilir')
+    setScanStatus({ key: 'scan.pausedResumable' })
     setScanPhase('paused')
     setActivePage('results')
   }
@@ -309,7 +315,7 @@ function App(): React.ReactElement {
       setActiveScanId(-1)
       setScanRowState(null)
       setScanProgress({ current: 0, total: 0, badSectors: [], phase: 'metadata' })
-      setScanStatus('Bekleniyor...')
+      setScanStatus({ key: 'scan.waiting' })
       setScanPhase('idle')
       setScanElapsed(0)
       setScanConfig({ driveIndex: null, scanType: 'quick' })
@@ -322,7 +328,7 @@ function App(): React.ReactElement {
     if (window.api && window.api.stopScan) {
       window.api.stopScan()
     }
-    setScanStatus('Durduruluyor...')
+    setScanStatus({ key: 'scan.stoppingStatus' })
     setScanPhase('stopping')
   }
 
@@ -423,20 +429,20 @@ function App(): React.ReactElement {
         />
         <main className="app-content">
           {dbError && (
-            <InlineAlert variant="error" title="Veritabanı kullanılamıyor">
-              Tarama, kurtarma ve rapor SQLite&apos;a bağlıdır. Hata: {dbError}. Uygulamayı yeniden başlatın.
+            <InlineAlert variant="error" title={t('dash.dbAlertTitle')}>
+              {tFormat('dash.dbAlertBody', { err: dbError })}
             </InlineAlert>
           )}
-          {sessionNote && !sessionNote.summary.includes('tarama kaydı yok') && !sessionNote.summary.includes('tamamlandı') && (
+          {sessionNote && sessionNote.code !== 'no_scan' && sessionNote.code !== 'complete' && (
             <InlineAlert
-              variant={sessionNote.summary.includes('çöktü') || sessionNote.summary.includes('hata') ? 'error' : 'warning'}
-              title="Son tarama"
+              variant={sessionNote.code === 'crash' || sessionNote.code === 'crash_during_scan' || sessionNote.code === 'fail' ? 'error' : 'warning'}
+              title={t('dash.lastScanTitle')}
               onDismiss={() => setSessionNote(null)}
             >
               <div>{sessionNote.summary}</div>
               {sessionNote.path ? (
                 <div style={{ marginTop: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                  Günlük: {sessionNote.path}
+                  {tFormat('dash.logPrefix', { path: sessionNote.path })}
                 </div>
               ) : null}
               {sessionNote.lines.length > 0 ? (

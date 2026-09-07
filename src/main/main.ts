@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, powerMonitor } from 'electron'
 import { join } from 'path'
-import { registerIpcHandlers, broadcastScanComplete } from './ipc-handlers'
+import { broadcastScanComplete, isImagingLive, registerIpcHandlers } from './ipc-handlers'
 import { getEngine } from './native-bridge'
 import {
   appendSessionLog,
@@ -17,6 +17,20 @@ let allowClose = false
 // only — a packaged forensic build must never relocate its evidence store (F4).
 if (process.env.BYTEBACK_USER_DATA && !app.isPackaged) {
   app.setPath('userData', process.env.BYTEBACK_USER_DATA)
+}
+
+// Forensic exclusivity: two instances would fight over the same SQLite store and
+// PhysicalDrive handles. The loser quits; the winner focuses its window.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
 }
 
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
@@ -67,22 +81,27 @@ function createWindow(): void {
   })
 
   mainWindow.on('close', (event) => {
-    appendSessionLog('WINDOW_CLOSE', `scan_live=${isScanLive() ? 1 : 0}`)
-    if (allowClose || !isScanLive() || !mainWindow) return
+    appendSessionLog('WINDOW_CLOSE', `scan_live=${isScanLive() ? 1 : 0} imaging_live=${isImagingLive() ? 1 : 0}`)
+    if (allowClose || (!isScanLive() && !isImagingLive()) || !mainWindow) return
     event.preventDefault()
     void dialog.showMessageBox(mainWindow, {
       type: 'warning',
-      buttons: ['Taramayı durdur ve çık', 'İptal'],
+      buttons: ['İşlemi durdur ve çık', 'İptal'],
       defaultId: 1,
       cancelId: 1,
-      message: 'Tarama sürüyor',
-      detail: 'Pencereyi kapatmak taramayı öldürür. Kaldığın yer SQLite\'ta kalır; sonraki açılışta Devam et.',
+      message: 'İşlem sürüyor',
+      detail: 'Pencereyi kapatmak taramayı/imajlamayı öldürür. Tarama SQLite\'ta kaldığı yerden sürer; imaj yarım kalır.',
     }).then((r) => {
       if (r.response !== 0) return
       try {
         getEngine().stopScan()
       } catch (e) {
         appendSessionLog('SCAN_STOP', `stop_failed ${e instanceof Error ? e.message : String(e)}`)
+      }
+      try {
+        getEngine().stopImaging()
+      } catch (e) {
+        appendSessionLog('SCAN_STOP', `imaging_stop_failed ${e instanceof Error ? e.message : String(e)}`)
       }
       appendSessionLog('SCAN_STOP', 'window_close')
       setScanLive(false)
@@ -137,9 +156,14 @@ app.whenReady().then(() => {
 
 function stopScanForSignal(sig: string): void {
   appendSessionLog('SIGNAL', sig)
-  if (isScanLive()) {
+  if (isScanLive() || isImagingLive()) {
     try {
       getEngine().stopScan()
+    } catch {
+      /* */
+    }
+    try {
+      getEngine().stopImaging()
     } catch {
       /* */
     }
@@ -163,10 +187,15 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 app.on('before-quit', () => {
-  appendSessionLog('APP_QUIT', `scan_live=${isScanLive() ? 1 : 0}`)
-  if (!isScanLive()) return
+  appendSessionLog('APP_QUIT', `scan_live=${isScanLive() ? 1 : 0} imaging_live=${isImagingLive() ? 1 : 0}`)
+  if (!isScanLive() && !isImagingLive()) return
   try {
     getEngine().stopScan()
+  } catch {
+    /* quitting anyway */
+  }
+  try {
+    getEngine().stopImaging()
   } catch {
     /* quitting anyway */
   }

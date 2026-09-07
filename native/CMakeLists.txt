@@ -76,6 +76,8 @@ set(SOURCES
   src/fs/raid6_math.cpp
   src/fs/fat_chain.cpp
   src/fs/raid_layout.cpp
+  src/fs/raid_detect.cpp
+  src/fs/xfs_parser.cpp
   src/imager/disk_imager.cpp
   src/crypto/md5.cpp
   src/crypto/aes_xts.cpp
@@ -188,6 +190,8 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_case_info.cpp
     tests/test_fuzz_runs_codec.cpp
     tests/test_virtual_raid_io.cpp
+    tests/test_xfs_parser.cpp
+    tests/test_raid_detect.cpp
     tests/test_signature_carve.cpp
     tests/test_signature_coverage.cpp
     tests/test_signature_hygiene.cpp
@@ -258,6 +262,8 @@ if(BYTEBACK_BUILD_TESTS)
     src/search/content_search.cpp
     src/fs/ntfs_parser.cpp
     src/fs/virtual_raid.cpp
+    src/fs/raid_detect.cpp
+    src/fs/xfs_parser.cpp
     src/scan_coordinator.cpp
     src/scan/dedup_index.cpp
     src/carver/signature_engine.cpp

@@ -153,6 +153,21 @@ void stampCarveExif(FileRecord& fr, const std::string& effExt, DiskReader& reade
     if (t > 0) fr.modifiedAt = t;
 }
 
+// Clamp a probe so the read never crosses the disk end. Byte-exact: readBytes
+// handles mid-sector starts internally.
+uint32_t clampProbeToDisk(uint64_t probe, uint64_t startOffset, uint64_t diskSize) {
+    if (diskSize > startOffset) probe = std::min<uint64_t>(probe, diskSize - startOffset);
+    return static_cast<uint32_t>(probe);
+}
+
+// Same, rounded DOWN to a sector multiple: raw-file and physical backends
+// reject the aligned overread readBytes performs, which used to silently drop
+// every candidate expiring near the image end.
+uint32_t clampProbeSectorsToDisk(uint64_t probe, uint64_t startOffset, uint64_t diskSize,
+                                 uint32_t sectorSize) {
+    return (clampProbeToDisk(probe, startOffset, diskSize) / sectorSize) * sectorSize;
+}
+
 // Expire / disk-end carves without a footer match: validate before emit.
 // CA-001 policy: the size must be bounded by a structural parser (zip EOCD,
 // mp4 atoms, TIFF strips, RIFF chunk size, ...). Candidates still sitting at
@@ -700,6 +715,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         struct SubRead { uint64_t sector; uint32_t sectors; };
         std::vector<SubRead> subReads{{sector, static_cast<uint32_t>(sectorsToRead)}};
         while (!subReads.empty()) {
+        // CA-007's retry stack can fan one chunk into thousands of
+        // single-sector reads on a degraded region; cancel must not wait for
+        // the whole fan-out, only for the current sub-read.
+        if (isRunning && !(*isRunning)) break;
         const auto sub = subReads.back();
         subReads.pop_back();
         const uint32_t wantBytes = sub.sectors * sectorSize;
@@ -880,12 +899,24 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             // formats; fetch a 64 KB prefix for everything else
                             // so content dedup covers jpg/png/pdf/... carves too.
                             if (probeBuf.empty() && actualSize > 0) {
-                                uint32_t hashProbe = static_cast<uint32_t>(
-                                    std::min<uint64_t>(actualSize, 64 * 1024));
-                                hashProbe = ((hashProbe + sectorSize - 1) / sectorSize) * sectorSize;
-                                probeBuf.resize(hashProbe);
-                                if (!reader.readBytes(it->startOffset, hashProbe, probeBuf.data()).success) {
-                                    probeBuf.clear();
+                                const uint32_t hashProbe = clampProbeToDisk(
+                                    std::min<uint64_t>(actualSize, 64 * 1024),
+                                    it->startOffset, diskSize);
+                                if (hashProbe > 0) {
+                                    probeBuf.resize(hashProbe);
+                                    if (!reader.readBytes(it->startOffset, hashProbe, probeBuf.data()).success) {
+                                        // Raw/physical backends reject the aligned
+                                        // overread of a partial final sector: retry
+                                        // sector-rounded so tail carves still hash.
+                                        probeBuf.clear();
+                                        const uint32_t aligned = (hashProbe / sectorSize) * sectorSize;
+                                        if (aligned > 0) {
+                                            probeBuf.resize(aligned);
+                                            if (!reader.readBytes(it->startOffset, aligned, probeBuf.data()).success) {
+                                                probeBuf.clear();
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             if (bgcRescued) {
@@ -923,6 +954,12 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 fr.source = "carver_bgc";
                                 fr.createdAt = 0;
                                 fr.modifiedAt = 0;
+                                // P0-6 invariant: every emit site carries a content
+                                // hash. ponytail: the prefix spans frag1 and (when
+                                // the gap sits below 64 KiB) gap bytes, so equal
+                                // reassemblies over different gap junk hash apart —
+                                // a dedup miss, never a false duplicate.
+                                stampContentHash(fr, probeBuf.data(), probeBuf.size(), fr.sizeBytes);
                                 stampCarveExif(fr, effExtBgc, reader, it->startOffset, fr.sizeBytes, nullptr, 0);
 
                                 emit(fr);
@@ -966,13 +1003,13 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         uint64_t currentOffsetEndOfChunk = baseOffset + res.bytesRead;
         auto it = activeCarves.begin();
         while (it != activeCarves.end()) {
-            if (currentOffsetEndOfChunk > it->endOffsetLimit) {
-                const auto& sig = signatures[it->sigId];
-                std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
-                uint64_t actualSize = sig.maxSize;
-                int confidence = sig.footer.empty() ? 55 : 70;
-                uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(sig.maxSize, 1u << 20));
-                probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+        if (currentOffsetEndOfChunk > it->endOffsetLimit) {
+            const auto& sig = signatures[it->sigId];
+            std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
+            uint64_t actualSize = sig.maxSize;
+            int confidence = sig.footer.empty() ? 55 : 70;
+            const uint32_t probe = clampProbeSectorsToDisk(
+                std::min<uint64_t>(sig.maxSize, 1u << 20), it->startOffset, diskSize, sectorSize);
                     std::vector<uint8_t> probeBuf;
                     if (probe > 0) {
                         probeBuf.resize(probe);
@@ -1038,8 +1075,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         uint64_t actualSize = std::min(sig.maxSize, endOfDiskOffset > ac.startOffset ? endOfDiskOffset - ac.startOffset : 0);
         std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
         int confidence = sig.footer.empty() ? 55 : 70;
-        uint32_t probe = static_cast<uint32_t>(std::min<uint64_t>(actualSize, 1u << 20));
-        probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
+        const uint32_t probe = clampProbeSectorsToDisk(
+            std::min<uint64_t>(actualSize, 1u << 20), ac.startOffset, diskSize, sectorSize);
         std::vector<uint8_t> probeBuf;
         if (probe == 0) continue;
         probeBuf.resize(probe);

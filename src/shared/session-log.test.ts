@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSessionEvent, summarizeSessionLines } from './session-log'
+import { parseSessionEvent, sessionLogCode, summarizeSessionLines } from './session-log'
 
 describe('session-log', () => {
   it('parses event token after timestamp', () => {
@@ -33,5 +33,19 @@ describe('session-log', () => {
   it('explains process restart after live scan', () => {
     const lines = ['t SCAN_START', 't SCAN_PROGRESS', 't APP_START']
     expect(summarizeSessionLines(lines)).toContain('tarama bitmeden kapandı')
+  })
+
+  it('classifies sessions with machine codes (renderer keys off these, not TR substrings)', () => {
+    expect(sessionLogCode([])).toBe('no_scan')
+    expect(sessionLogCode(['t RENDER_GONE'])).toBe('crash')
+    expect(sessionLogCode(['t SCAN_START', 't SCAN_COMPLETE'])).toBe('complete')
+    expect(sessionLogCode(['t SCAN_START', 't SCAN_FAIL'])).toBe('fail')
+    expect(sessionLogCode(['t SCAN_START', 't SCAN_STOP'])).toBe('stopped')
+    expect(sessionLogCode(['t SCAN_START', 't SCAN_PROGRESS'])).toBe('running')
+    expect(sessionLogCode(['t SCAN_START', 't CRASH'])).toBe('crash_during_scan')
+    expect(sessionLogCode(['t SCAN_START', 't OS_SLEEP'])).toBe('sleep')
+    expect(sessionLogCode(['t SCAN_START', 't WINDOW_CLOSE'])).toBe('quit_early')
+    expect(sessionLogCode(['t SCAN_START'])).toBe('running')
+    expect(sessionLogCode(['t SCAN_START', 't MYSTERY_EVENT'])).toBe('incomplete')
   })
 })

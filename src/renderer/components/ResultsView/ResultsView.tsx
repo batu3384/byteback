@@ -7,7 +7,7 @@ import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import { previewDataUrl } from '../../../shared/preview-utils'
-import { useI18n, tFormat } from '../../i18n'
+import { useI18n, tFormat, formatInt } from '../../i18n'
 import InlineAlert from '../InlineAlert'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
 import {
@@ -143,6 +143,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const thumbLoadingRef = useRef<Set<number>>(new Set())
   const previewReqRef = useRef(0)
   const [csvExporting, setCsvExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const loadGenRef = useRef(0)
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
@@ -514,6 +515,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     if (effectiveScanId <= 0 || !window.api?.getFilesPage || !window.api?.getFileCount || csvExporting) return
     const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir))
     setCsvExporting(true)
+    setExportError(null)
     try {
       const total = await window.api.getFileCount(effectiveScanId, listFilter)
       // CA-038: build the CSV per batch and hand Blob the chunk array — no
@@ -549,7 +551,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       a.click()
       URL.revokeObjectURL(url)
     } catch {
-      window.alert(t('results.csvFailed'))
+      // In-app error surface — window.alert would break the modal pattern.
+      setExportError(t('results.csvFailed'))
     } finally {
       setCsvExporting(false)
     }
@@ -600,6 +603,19 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   }
 
   const sortIndicator = (field: SortField) => (sortField === field ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
+
+  // Sortable column headers are keyboard-operable and expose aria-sort.
+  const sortableTh = (field: SortField) => ({
+    tabIndex: 0 as const,
+    'aria-sort': (sortField === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none') as 'ascending' | 'descending' | 'none',
+    onClick: () => toggleSort(field),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        toggleSort(field)
+      }
+    },
+  })
 
   const loadThumb = useCallback(async (id: number) => {
     if (thumbsRef.current.has(id) || thumbLoadingRef.current.has(id)) return
@@ -706,16 +722,16 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         <div className="results-info">
           <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('results.title')}</h2>
           <p style={{ color: 'var(--text-muted)' }}>
-            {tFormat('results.inFilterCount', { n: displayTotal.toLocaleString('tr-TR') })}
+            {tFormat('results.inFilterCount', { n: formatInt(displayTotal) })}
             {effectiveScanId > 0 && totalPages > 1 ? tFormat('results.pageOf', { cur: String(page + 1), total: String(totalPages) }) : ''}
             {loading ? t('results.loadingShort') : ''}
           </p>
           {effectiveScanId > 0 && (
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
-              {tFormat('results.deletedCount', { n: summary.deletedFiles.toLocaleString('tr-TR') })}
-              {' · '}{tFormat('results.allocatedCount', { n: Math.max(0, summary.totalFiles - summary.deletedFiles - (summary.carvedFiles ?? 0)).toLocaleString('tr-TR') })}
-              {' · '}{tFormat('results.carvedCount', { n: (summary.carvedFiles ?? 0).toLocaleString('tr-TR') })}
-              {' · '}{tFormat('results.totalCount', { n: summary.totalFiles.toLocaleString('tr-TR') })}
+              {tFormat('results.deletedCount', { n: formatInt(summary.deletedFiles) })}
+              {' · '}{tFormat('results.allocatedCount', { n: formatInt(Math.max(0, summary.totalFiles - summary.deletedFiles - (summary.carvedFiles ?? 0))) })}
+              {' · '}{tFormat('results.carvedCount', { n: formatInt(summary.carvedFiles ?? 0) })}
+              {' · '}{tFormat('results.totalCount', { n: formatInt(summary.totalFiles) })}
             </p>
           )}
         </div>
@@ -808,12 +824,17 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           {t('results.loadErrorBody')}
         </InlineAlert>
       )}
+      {exportError && (
+        <InlineAlert variant="error" onDismiss={() => setExportError(null)}>
+          {exportError}
+        </InlineAlert>
+      )}
 
           {effectiveScanId > 0 && totalPages > 1 ? (
             <div className="pager" role="navigation" aria-label={t('results.pageLabel')}>
               <button type="button" className="btn-secondary" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>{t('results.prev')}</button>
               <span className="pager-status">
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, displayTotal)} / {displayTotal.toLocaleString('tr-TR')}
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, displayTotal)} / {formatInt(displayTotal)}
               </span>
               <label className="pager-jump">
                 {t('results.pageLabel')}
@@ -951,7 +972,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''}>
           {viewMode === 'tree' && totalCount > PAGE_SIZE && (
             <p style={{ padding: '8px 0', color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
-              {tFormat('results.treePageNote', { n: String(filteredFiles.length), total: totalCount.toLocaleString('tr-TR') })}
+              {tFormat('results.treePageNote', { n: String(filteredFiles.length), total: formatInt(totalCount) })}
             </p>
           )}
           {viewMode === 'gallery' ? (
@@ -967,7 +988,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                       key={f.id}
                       f={f}
                       thumb={thumbs.get(f.id)}
-                      onVisible={(id) => void loadThumb(id)}
+                      onVisible={loadThumb}
                       onOpen={(id) => {
                         setSelectedFiles(new Set([id]))
                         void loadPreview(id)
@@ -999,12 +1020,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   [t('results.col.size'), 'size'],
                   [t('results.col.date'), 'date'],
                 ] as const).map(([label, field]) => (
-                  <th key={field} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort(field)}>
+                  <th key={field} {...sortableTh(field)} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
                     {label}
                     <span aria-hidden="true">{sortIndicator(field)}</span>
                   </th>
                 ))}
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort('confidence')}>
+                <th {...sortableTh('confidence')} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
                   {t('results.col.confidence')}<span aria-hidden="true">{sortIndicator('confidence')}</span>
                 </th>
                 <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.source')}</th>

@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('start-imaging', driveIndex, destPath, format),
   stopImaging: () => ipcRenderer.send('stop-imaging'),
 
-  onImagingProgress: (callback: (data: { current: number, total: number, md5?: string, error?: string }) => void) => {
+  onImagingProgress: (callback: (data: { current: number, total: number, md5?: string, error?: string, status?: 'cancelled' }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
     ipcRenderer.on('imaging-progress', handler)
     return () => ipcRenderer.removeListener('imaging-progress', handler)
@@ -75,7 +75,7 @@ contextBridge.exposeInMainWorld('api', {
   verifyAuditLog: () =>
     ipcRenderer.invoke('verify-audit-log') as Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>,
   getSessionLog: (maxLines?: number) =>
-    ipcRenderer.invoke('get-session-log', maxLines) as Promise<{ path: string; lines: string[]; summary: string }>,
+    ipcRenderer.invoke('get-session-log', maxLines) as Promise<{ path: string; lines: string[]; summary: string; code: string }>,
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
 
   pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),

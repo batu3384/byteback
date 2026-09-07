@@ -3,7 +3,7 @@ import './Sidebar.css'
 import { LayoutDashboard, Search, FolderSearch, FileSearch, Binary, HardDriveDownload, Activity, ShieldAlert, Database, FileText, Clock, Briefcase, Shield } from 'lucide-react'
 import { APP_VERSION } from '../../../shared/app-version'
 import { hasValidScanId, isScanDependentPage, isDiskBusyPage, canGenerateReport } from '../../../shared/scan-required'
-import { useI18n } from '../../i18n'
+import { useI18n, tFormat } from '../../i18n'
 import type { ScanState } from '../../../shared/ipc-contract'
 
 interface SidebarProps {
@@ -103,7 +103,7 @@ function Sidebar({ activePage, activeScanId, scanState, scanBusy, onNavigate }: 
 
       <div className="sidebar-footer">
         <div className="pro-badge">{t('nav.forensicBadge')}</div>
-        <div className="version-info">Sürüm v{APP_VERSION}</div>
+        <div className="version-info">{tFormat('sidebar.version', { v: APP_VERSION })}</div>
       </div>
     </aside>
   )

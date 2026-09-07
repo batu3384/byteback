@@ -3,7 +3,7 @@ import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
 import InlineAlert from '../InlineAlert'
-import { useI18n, tFormat } from '../../i18n'
+import { useI18n, tFormat, formatInt } from '../../i18n'
 
 interface DriveInfo {
   index: number
@@ -38,6 +38,9 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
 
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const lastProgressTimeRef = useRef<number>(0)
+  // A trailing progress event after the user cancelled must not flip the
+  // status back to "complete"/"failed" — the cancel message stays.
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
     // Load drives
@@ -49,7 +52,18 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   useEffect(() => {
     let cleanupProgress: (() => void) | undefined
     if (window.api && window.api.onImagingProgress) {
-      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string }) => {
+      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string, status?: 'cancelled' }) => {
+        if (data.status === 'cancelled') {
+          // Explicit terminal marker from main on stop — the native abort path
+          // emits no completion tick, so this is the authoritative end event.
+          cancelledRef.current = false
+          setStatus(t('imager.cancelled'))
+          setImaging(false)
+          onImagingStateChange(false)
+          if (timerRef.current) clearInterval(timerRef.current)
+          return
+        }
+        if (cancelledRef.current) return
         if (data.total === 0) {
           // CA-034: surface the real reason when the main process sent one.
           setStatus(data.error ? tFormat('imager.failedWith', { err: data.error }) : t('imager.failed'))
@@ -110,6 +124,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
       setFormError(t('imager.selectDrive'))
       return
     }
+    cancelledRef.current = false
     setImaging(true)
     setStatus(t('imager.starting'))
     onImagingStateChange(true)
@@ -142,6 +157,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   }
   
   const handleStopImaging = () => {
+    cancelledRef.current = true
     if (window.api && window.api.stopImaging) {
       window.api.stopImaging()
     }
@@ -276,8 +292,8 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
             </div>
             
             <div className="progress-labels" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-              <span>{tFormat('imager.sectorProgress', { cur: progress.current.toLocaleString(), total: progress.total ? progress.total.toLocaleString() : '?' })}</span>
-              <span>%{percent}</span>
+              <span>{tFormat('imager.sectorProgress', { cur: formatInt(progress.current), total: progress.total ? formatInt(progress.total) : '?' })}</span>
+              <span>{tFormat('common.percent', { n: String(percent) })}</span>
             </div>
             <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'var(--surface-overlay-strong)', borderRadius: '4px', overflow: 'hidden' }}>
               <div className="progress-bar-fill" style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>

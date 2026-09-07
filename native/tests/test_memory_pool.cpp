@@ -14,7 +14,11 @@ TEST(MemoryPool, AcquireGivesAtLeastRequestedSize) {
     auto buf = MemoryPool::getInstance().acquireBuffer(4096);
     ASSERT_NE(buf, nullptr);
     EXPECT_GE(buf->size(), 4096u);
-    EXPECT_EQ(buf->size(), buf->capacity());
+    // Contract is "at least the requested size" (byteback_memory.h). After the
+    // concurrent test repopulates the pool, a reused buffer's capacity can
+    // exceed its resized size — capacity is a pool-internal detail consumers
+    // must not rely on.
+    EXPECT_GE(buf->capacity(), buf->size());
 }
 
 TEST(MemoryPool, ReleaseThenAcquireReusesBacking) {

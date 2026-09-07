@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const root = path.join(__dirname, '..')
-const mainJs = path.join(root, 'out', 'main', 'main.js')
+export const mainJs = path.join(root, 'out', 'main', 'main.js')
 
 export interface LaunchedApp {
   app: ElectronApplication

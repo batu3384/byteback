@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll } from 'vitest'
-import { localizeNote, setLang, getLang, t, tFormat } from './index'
+import { localizeNote, setLang, getLang, t, tFormat, localeTag, formatInt } from './index'
 
 // CA-052: native machine codes must localize; unknown text passes through.
 describe('localizeNote', () => {
@@ -130,5 +130,61 @@ describe('lane-C sweep keys', () => {
     expect(tFormat('diskmap.deleted', { n: '2' })).toBe('silinmiş: 2')
     setLang('en')
     expect(tFormat('diskmap.records', { n: '5' })).toBe('5 records')
+  })
+})
+
+// Renderer sweep: App-level scan status keys, percent convention, chrome.
+describe('renderer sweep keys', () => {
+  const keys = [
+    'scan.waiting',
+    'scan.running',
+    'scan.resuming',
+    'scan.raidRunning',
+    'scan.stoppingStatus',
+    'scan.pausedResumable',
+    'scan.failedDb',
+    'scan.apiMissing',
+    'scan.startFailed',
+    'scan.failedWith',
+    'scan.raidApiMissing',
+    'scan.raidStartFailed',
+    'scan.raidFailedWith',
+    'common.percent',
+    'sidebar.version',
+    'dash.lastScanTitle',
+    'dash.logPrefix',
+    'dash.clearConfirmTitle',
+    'dash.clearConfirmYes',
+  ] as const
+
+  it.each(keys)('resolves %s in tr and en', (key) => {
+    setLang('tr')
+    expect(t(key)).not.toBe(key)
+    setLang('en')
+    expect(t(key)).not.toBe(key)
+  })
+
+  it('percent follows each locale convention (TR prefix, EN suffix)', () => {
+    setLang('tr')
+    expect(tFormat('common.percent', { n: '42' })).toBe('%42')
+    setLang('en')
+    expect(tFormat('common.percent', { n: '42' })).toBe('42%')
+  })
+
+  it('interpolates engine error detail into scan failure statuses', () => {
+    setLang('en')
+    expect(tFormat('scan.failedDb', { err: 'disk I/O' })).toBe('Database unavailable: disk I/O')
+    expect(tFormat('scan.failedWith', { err: 'EACCES' })).toBe('Scan error: EACCES')
+    setLang('tr')
+    expect(tFormat('scan.failedDb', { err: 'disk I/O' })).toBe('Veritabanı kullanılamıyor: disk I/O')
+  })
+
+  it('localeTag/formatInt follow the active language', () => {
+    setLang('en')
+    expect(localeTag()).toBe('en-US')
+    expect(formatInt(12345)).toBe('12,345')
+    setLang('tr')
+    expect(localeTag()).toBe('tr-TR')
+    expect(formatInt(12345)).toBe('12.345')
   })
 })

@@ -202,14 +202,15 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               ))}
             </select>
           </label>
+          {/* Single label wrapping the input — a nested <label htmlFor> made
+              clicks on the text toggle the checkbox twice (net no-op). */}
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={searchContent}
               onChange={(e) => { setSearchContent(e.target.checked); if (e.target.checked) setUseRegex(false); }}
-              id="content-toggle"
             />
-            <label htmlFor="content-toggle" style={{ cursor: 'pointer' }}>{t('kw.contentSearch')}</label>
+            {t('kw.contentSearch')}
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: useRegex ? 'pointer' : 'not-allowed', opacity: searchContent ? 0.5 : 1 }}>
             <input
@@ -217,9 +218,8 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               checked={useRegex}
               disabled={searchContent}
               onChange={(e) => { setUseRegex(e.target.checked); setRegexError(''); }}
-              id="regex-toggle"
             />
-            <label htmlFor="regex-toggle" style={{ cursor: 'pointer' }}>{t('kw.regex')}</label>
+            {t('kw.regex')}
           </label>
         </div>
       </div>

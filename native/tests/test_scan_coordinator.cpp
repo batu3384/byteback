@@ -364,3 +364,26 @@ TEST(ScanCoordinator, CarveUnallocatedOnlyFallsBackWhenNoBitmap) {
     EXPECT_GE(carved, 1u);
     EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve");
 }
+
+// A previous scan that errored/cancelled mid-carve must not leak its
+// phase-local progress ("carve @ 777/1000") into the next scan: scanWorker
+// resets the process-global phase atoms before anything else.
+TEST(ScanCoordinator, NewScanResetsStalePhaseState) {
+    g_scanPhase.store("carve", std::memory_order_relaxed);
+    g_phaseCurrent.store(777, std::memory_order_relaxed);
+    g_phaseTotal.store(1000, std::memory_order_relaxed);
+
+    ScanCoordinator coord;
+    std::atomic<int> finished{-1};
+    coord.startScan("not-a-number", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, nullptr,
+                    [&](int s) { finished = s; });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(finished.load(), 3);
+    EXPECT_STREQ(g_scanPhase.load(), "metadata");
+    EXPECT_EQ(g_phaseCurrent.load(), 0u);
+    EXPECT_EQ(g_phaseTotal.load(), 0u);
+}

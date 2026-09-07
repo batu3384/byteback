@@ -12,6 +12,7 @@ function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '—'
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 ** 2) return (bytes / 1024).toFixed(2) + ' KB'
+  if (bytes < 1024 ** 3) return (bytes / 1024 ** 2).toFixed(2) + ' MB'
   if (bytes < 1024 ** 4) return (bytes / 1024 ** 3).toFixed(2) + ' GB'
   return (bytes / 1024 ** 4).toFixed(2) + ' TB'
 }
@@ -192,10 +193,10 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
                   <Zap size={18} /> {t('smart.endurance')}
                 </div>
                 <div style={{ fontSize: '1.8rem', fontWeight: 600, color: (smartData.percentageUsed ?? 0) > 90 ? 'var(--warning-yellow)' : 'inherit' }}>
-                  %{smartData.percentageUsed}
+                  {tFormat('common.percent', { n: String(smartData.percentageUsed) })}
                 </div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {tFormat('smart.spare', { v: smartData.availableSpare !== undefined && smartData.availableSpare >= 0 ? `%${smartData.availableSpare}` : '—' })}
+                  {tFormat('smart.spare', { v: smartData.availableSpare !== undefined && smartData.availableSpare >= 0 ? tFormat('common.percent', { n: String(smartData.availableSpare) }) : '—' })}
                 </div>
               </div>
             )}
