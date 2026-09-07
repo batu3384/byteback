@@ -11,13 +11,13 @@ import {
   type EtaSample,
 } from '../../../shared/scan-eta'
 import type { ScanPhase } from '../../../shared/scan-required'
-import { useI18n, tFormat } from '../../i18n'
+import { useI18n, tFormat, formatInt, localeTag } from '../../i18n'
 
 interface ScanViewProps {
   driveIndex: number | null
   scanType: string
   progress: { current: number; total: number; badSectors?: number[]; phase?: string; phaseCurrent?: number; phaseTotal?: number }
-  status: string
+  status: { key: string; err?: string }
   phase: ScanPhase
   elapsed: number
   activeScanId: number
@@ -221,6 +221,11 @@ function ScanView({
         : isFailed
           ? t('scan.failed')
           : tFormat('scan.driveScanning', { drive: driveIndex === -1 ? t('scan.raid') : String(driveIndex) })
+  // Profile name: i18n key when the profile exists in the dictionary, engine
+  // label otherwise (shared/scan-profiles labels are TR-only).
+  const profileKey = `profile.${scanType}.label`
+  const profileLabel = t(profileKey) === profileKey ? scanProfileLabel(scanType) : t(profileKey)
+  const statusLabel = tFormat(status.key, status.err != null ? { err: status.err } : {})
   const step = scanStepIndex(progress.phase, scanType)
   const remainingLabel = isTerminal
     ? '—'
@@ -249,17 +254,17 @@ function ScanView({
               {scanTitle}
             </h2>
             <p style={{ color: 'var(--text-muted)' }}>
-              {scanProfileLabel(scanType)} • {status}
+              {profileLabel} • {statusLabel}
             </p>
           </div>
         </div>
         <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
           <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
             <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.records')}</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{totalFiles.toLocaleString('tr-TR')}</span>
+            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatInt(totalFiles)}</span>
             <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-              {tFormat('scan.deletedOf', { n: deletedCount.toLocaleString('tr-TR') })}
-              {carvedCount > 0 ? ` · ${tFormat('scan.carvedOf', { n: carvedCount.toLocaleString('tr-TR') })}` : ''}
+              {tFormat('scan.deletedOf', { n: formatInt(deletedCount) })}
+              {carvedCount > 0 ? ` · ${tFormat('scan.carvedOf', { n: formatInt(carvedCount) })}` : ''}
             </span>
           </div>
           <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
@@ -283,16 +288,16 @@ function ScanView({
       {/* CA-041: bad-sector telemetry from failed reads, surfaced at last. */}
       {progress.badSectors && progress.badSectors.length > 0 && (
         <div className="glass-panel" role="alert" style={{ padding: '12px 24px', borderLeft: '4px solid var(--alert-red)', fontSize: '0.85rem' }}>
-          {tFormat('scan.badSectors', { n: progress.badSectors.length.toLocaleString('tr-TR') })}
+          {tFormat('scan.badSectors', { n: formatInt(progress.badSectors.length) })}
         </div>
       )}
       <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
         {progress.phase === 'carve_skipped'
           ? t('scan.carveSkipped')
           : scanType === 'carve_only'
-          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
+          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
           : scanType === 'deep' || scanType === 'full_carve'
-          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: carveSignatureCount.toLocaleString('tr-TR') }) : '' })
+          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
           : t('scan.noteQuick')}
       </div>
 
@@ -307,16 +312,13 @@ function ScanView({
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
           <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {t(phaseLabelKey(progress.phase))}</span>
           <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
-          <span>%{percent}</span>
-        </div>
-        <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
-          <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
+          <span>{tFormat('common.percent', { n: String(percent) })}</span>
         </div>
         <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
           <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
         </div>
         <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
-          <span>{tFormat('scan.sectorRange', { cur: progress.current.toLocaleString('tr-TR'), total: progress.total ? progress.total.toLocaleString('tr-TR') : '—' })}</span>
+          <span>{tFormat('scan.sectorRange', { cur: formatInt(progress.current), total: progress.total ? formatInt(progress.total) : '—' })}</span>
           {progress.phaseCurrent != null && progress.phaseTotal != null && progress.phaseTotal > 0 && (
             <span>{tFormat('scan.phaseProgress', { pct: String(Math.min(100, Math.floor(progress.phaseCurrent * 100 / progress.phaseTotal))) })}</span>
           )}
@@ -326,7 +328,7 @@ function ScanView({
       <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)', flexWrap: 'wrap', gap: '8px' }}>
           <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>
-            {tFormat('scan.deletedRange', { range: rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${listCount.toLocaleString('tr-TR')}` : '0' })}
+            {tFormat('scan.deletedRange', { range: rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${formatInt(listCount)}` : '0' })}
             {listLoading ? ' …' : ''}
           </h3>
           <div className="filter-chips" role="group" aria-label={t('scan.fileTypeAria')}>
@@ -362,8 +364,8 @@ function ScanView({
                   ? t('scan.listLoading')
                   : typeChip !== 'all'
                     ? t('scan.noDeletedOfType')
-                    : totalFiles > 0
-                      ? tFormat('scan.recordSummary', { total: totalFiles.toLocaleString('tr-TR'), deleted: deletedCount.toLocaleString('tr-TR') })
+                      : totalFiles > 0
+                      ? tFormat('scan.recordSummary', { total: formatInt(totalFiles), deleted: formatInt(deletedCount) })
                       : t('scan.noFiles')}
               </div>
             ) : (
@@ -402,7 +404,7 @@ function ScanView({
             <div style={{ width: '320px', flexShrink: 0, background: 'var(--well-bg)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
                 <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.fileDetail')}</h4>
-                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)}>✕</button>
+                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)} aria-label={t('common.close')}>✕</button>
               </div>
               <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', marginBottom: 'var(--space-md)', color: 'var(--text-main)' }}>
                 {selectedFile.name}
@@ -410,14 +412,14 @@ function ScanView({
               {[
                 [t('scan.category'), selectedFile.category ?? '—'],
                 [t('scan.size'), formatSize(selectedFile.sizeBytes ?? 0)],
-                [t('scan.startSector'), selectedFile.startSector?.toLocaleString() ?? '—'],
-                [t('scan.endSector'), selectedFile.endSector?.toLocaleString() ?? '—'],
+                [t('scan.startSector'), selectedFile.startSector?.toLocaleString(localeTag()) ?? '—'],
+                [t('scan.endSector'), selectedFile.endSector?.toLocaleString(localeTag()) ?? '—'],
                 [t('scan.confidence'), selectedFile.confidence != null ? `${selectedFile.confidence}%` : '—'],
                 [t('scan.statusLabel'), selectedFile.status === 0 ? t('scan.deleted') : selectedFile.status === 1 ? t('scan.active') : t('scan.unknown')],
                 [t('scan.source'), selectedFile.source ?? '—'],
                 [t('scan.runCount'), selectedFile.runs?.length ?? 0],
-                [t('scan.created'), selectedFile.createdAt ? new Date(selectedFile.createdAt * 1000).toLocaleString('tr-TR') : '—'],
-                [t('scan.modified'), selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString('tr-TR') : '—'],
+                [t('scan.created'), selectedFile.createdAt ? new Date(selectedFile.createdAt * 1000).toLocaleString(localeTag()) : '—'],
+                [t('scan.modified'), selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString(localeTag()) : '—'],
                 [t('scan.path'), selectedFile.path ?? '—'],
               ].map(([k, v]) => (
                 <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid var(--surface-overlay)', fontSize: '0.8rem' }}>

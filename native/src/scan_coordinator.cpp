@@ -6,6 +6,7 @@
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_fve.h"
+#include "fs/xfs_parser.h"
 #include "byteback_fs.h"
 #include <iostream>
 #include <exception>
@@ -28,6 +29,44 @@ using ProgressCallback = ScanCoordinator::ProgressCallback;
 void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
     if (!badSectorOut) return;
     *badSectorOut = reader.getBadSectors();
+}
+
+// XfsParser emits (path, ino, size, isDir, runs) with runs as byte offsets
+// relative to the partition — adapt to FileRecord like the other FS parsers.
+// No progress ticks: the file records themselves drive emitProgress via
+// callbackWrapper (XFS metadata walks are fast; a tick-per-N-files hook would
+// need parser plumbing for little gain).
+void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes, bool isDirectory,
+                   const std::vector<std::pair<uint64_t, uint64_t>>& runs,
+                   uint64_t partitionOffsetBytes, uint32_t sectorSize,
+                   const FileSystemParser::FileRecordCallback& cb) {
+    if (isDirectory) return;
+    FileRecord fr;
+    fr.id = static_cast<int64_t>(inodeNo & 0x7FFFFFFFFFFFFFFFLL);
+    const size_t slash = path.find_last_of('/');
+    fr.name = slash == std::string::npos ? path : path.substr(slash + 1);
+    fr.path = path;
+    const size_t dotPos = fr.name.find_last_of('.');
+    fr.extension = (dotPos != std::string::npos && dotPos + 1 < fr.name.size())
+                       ? fr.name.substr(dotPos + 1)
+                       : "";
+    fr.sizeBytes = sizeBytes;
+    for (const auto& [byteOff, len] : runs) {
+        FileRecord::DataRun r;
+        r.startSector = (partitionOffsetBytes + byteOff) / sectorSize;
+        r.sectorCount = (len + sectorSize - 1) / sectorSize;
+        fr.runs.push_back(r);
+    }
+    if (!fr.runs.empty()) {
+        fr.startSector = fr.runs.front().startSector;
+        fr.endSector = fr.runs.back().startSector + fr.runs.back().sectorCount;
+        fr.startByteOffset = (partitionOffsetBytes + runs.front().first) % sectorSize;
+    }
+    fr.status = 1; // live tree
+    fr.confidence = 90;
+    fr.category = "File";
+    fr.source = "xfs_inode";
+    cb(fr);
 }
 
 std::vector<SectorRange> prepareCarveRanges(DiskReader& reader, ScanBounds bounds, bool unallocatedOnly) {
@@ -213,6 +252,18 @@ void runQuickScan(DiskReader& reader,
                 }
                 break;
             }
+            case VolumeFsKind::Xfs: {
+                XfsParser xfs;
+                if (xfs.open(reader, offsetBytes)) {
+                    anyFsScanned = xfs.walkTree([&](const std::string& path, uint64_t inodeNo,
+                                                    uint64_t sizeBytes, bool isDirectory,
+                                                    const std::vector<std::pair<uint64_t, uint64_t>>& runs) {
+                        emitXfsRecord(path, inodeNo, sizeBytes, isDirectory, runs, offsetBytes,
+                                      sectorSize, callbackWrapper);
+                    });
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -284,6 +335,18 @@ void runQuickScan(DiskReader& reader,
             case VolumeFsKind::Refs: {
                 RefsParser refs;
                 refs.scanAt(reader, callbackWrapper, isRunning, 0, 0);
+                break;
+            }
+            case VolumeFsKind::Xfs: {
+                XfsParser xfs;
+                if (xfs.open(reader, 0)) {
+                    xfs.walkTree([&](const std::string& path, uint64_t inodeNo,
+                                     uint64_t sizeBytes, bool isDirectory,
+                                     const std::vector<std::pair<uint64_t, uint64_t>>& runs) {
+                        emitXfsRecord(path, inodeNo, sizeBytes, isDirectory, runs, 0, sectorSize,
+                                      callbackWrapper);
+                    });
+                }
                 break;
             }
             default: {
@@ -572,6 +635,12 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                                 ScanCheckpointCallback onCheckpoint) {
     int status = 3;
     try {
+        // Phase-local progress is process-global; an errored or cancelled
+        // previous scan must not leak "carve @ 736k/1M" into this scan's
+        // first progress event. Reset before any phase runs.
+        g_scanPhase.store("metadata", std::memory_order_relaxed);
+        g_phaseCurrent.store(0, std::memory_order_relaxed);
+        g_phaseTotal.store(0, std::memory_order_relaxed);
         DiskReader reader;
         bool opened = false;
         if (raid) {

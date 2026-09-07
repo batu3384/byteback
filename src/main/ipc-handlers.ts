@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { getEngine } from './native-bridge'
@@ -11,11 +12,45 @@ import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from
 let dbReady = false
 let dbInitError: string | null = null
 let activeScanToken = 0
+let imagingLive = false
 
 function assertDbReady(): void {
   if (!dbReady) {
     throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor')
   }
+}
+
+/** Guard: native converts non-finite numbers to 0, so garbage would silently target drive 0. */
+function assertDriveIndex(v: unknown): void {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+    throw new Error('Geçersiz sürücü indeksi')
+  }
+}
+
+/** Clamp renderer-supplied numeric args to a safe int range (NaN/±Infinity → fallback). */
+export function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(n)))
+}
+
+/** Shape the native progress event for the renderer: stamp the bound scanId and
+ *  forward phase-local counters — dropping them here killed the ScanView phase %. */
+export function scanProgressPayload(scanId: number, data: any): Record<string, unknown> {
+  return {
+    scanId,
+    current: data.current,
+    total: data.total,
+    badSectors: data.badSectors,
+    phase: data.phase,
+    phaseCurrent: data.phaseCurrent,
+    phaseTotal: data.phaseTotal,
+  }
+}
+
+/** True while a native imaging run is in flight (window close / quit must stop it). */
+export function isImagingLive(): boolean {
+  return imagingLive
 }
 
 /** Notify renderer and clear main scan-live when native complete IPC may not arrive. */
@@ -88,9 +123,10 @@ export function registerIpcHandlers(): void {
     })
   )
 
-  ipcMain.handle('list-partitions', (_event, driveIndex: number) =>
-    callNative('list-partitions', () => getEngine().listPartitions(driveIndex))
-  )
+  ipcMain.handle('list-partitions', (_event, driveIndex: number) => {
+    assertDriveIndex(driveIndex)
+    return callNative('list-partitions', () => getEngine().listPartitions(driveIndex))
+  })
 
   ipcMain.handle('resolve-volume', (_event, letter: string) =>
     callNative('resolve-volume', () => getEngine().resolveVolume(letter))
@@ -124,13 +160,7 @@ export function registerIpcHandlers(): void {
         if (token !== activeScanToken) return
         if (data.type === 'progress') {
           appendProgressLog(data.current, data.total, data.phase)
-          event.sender.send('scan-progress', {
-            scanId: boundScanId,
-            current: data.current,
-            total: data.total,
-            badSectors: data.badSectors,
-            phase: data.phase,
-          })
+          event.sender.send('scan-progress', scanProgressPayload(boundScanId, data))
         } else if (data.type === 'complete') {
           setScanLive(false)
           const st = Number(data.status)
@@ -187,7 +217,12 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('get-timeline-events', (_event, scanId: number, offset: number, limit: number, filter?: string) =>
     callNative('get-timeline-events', () =>
-      getEngine().getTimelineEvents(scanId, offset ?? 0, limit ?? 200, filter ?? '')
+      getEngine().getTimelineEvents(
+        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(limit, 1, 1000, 200),
+        filter ?? '',
+      )
     )
   )
 
@@ -232,7 +267,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-audit-log', (_event, maxLines?: number) =>
-    callNative('get-audit-log', () => getEngine().getAuditLog(maxLines))
+    callNative('get-audit-log', () =>
+      getEngine().getAuditLog(maxLines === undefined ? undefined : clampInt(maxLines, 1, 5000, 500))
+    )
   )
 
   ipcMain.handle('verify-audit-log', () =>
@@ -244,9 +281,10 @@ export function registerIpcHandlers(): void {
     return readSessionLog(n)
   })
 
-  ipcMain.handle('get-smart-status', (_event, driveIndex) =>
-    callNative('get-smart-status', () => getEngine().getSmartStatus(driveIndex))
-  )
+  ipcMain.handle('get-smart-status', (_event, driveIndex) => {
+    assertDriveIndex(driveIndex)
+    return callNative('get-smart-status', () => getEngine().getSmartStatus(driveIndex))
+  })
 
   ipcMain.handle('read-hex-data', (_event, driveIndex: number, offset: number, size: number) => {
     try {
@@ -279,6 +317,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string) => {
     try {
+      // Native Int32Value(NaN) is 0 — garbage must not image the wrong disk.
+      if (typeof driveIndex !== 'number' || !Number.isInteger(driveIndex) || driveIndex < 0) {
+        event.reply('imaging-progress', { current: 0, total: 0, error: 'Geçersiz sürücü indeksi' })
+        return
+      }
       if (!destPath || !allowedImageDest.has(destPath)) {
         event.reply('imaging-progress', { current: 0, total: 0, error: 'Destination not in allowlist' })
         return
@@ -287,6 +330,9 @@ export function registerIpcHandlers(): void {
 
       const callback = (data: any) => {
         if (data.type === 'progress') {
+          // total===0 is the native failure tick (0,0); current>=total the
+          // completion tick — both end the run, so window close can rely on it.
+          if (data.total === 0 || data.current >= data.total) imagingLive = false
           event.reply('imaging-progress', {
             current: data.current,
             total: data.total,
@@ -297,19 +343,22 @@ export function registerIpcHandlers(): void {
 
       console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath, 'format:', format ?? 'raw')
       const started = engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
+      imagingLive = !!started
       if (!started) {
         // Renderer treats {total: 0, error} as failure — reply or it waits forever.
         event.reply('imaging-progress', { current: 0, total: 0, error: 'İmajlama başlatılamadı (disk meşgul olabilir)' })
       }
 
     } catch (err) {
+      imagingLive = false
       console.error('[IPC] start-imaging error:', err)
       const msg = err instanceof Error ? err.message : String(err)
       event.reply('imaging-progress', { current: 0, total: 0, error: msg })
     }
   })
-  
-  ipcMain.on('stop-imaging', () => {
+
+  ipcMain.on('stop-imaging', (event: IpcMainEvent) => {
+    imagingLive = false
     try {
       const engine = getEngine()
       engine.stopImaging()
@@ -317,16 +366,29 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] stop-imaging error:', err)
     }
+    // Explicit terminal marker: the native abort path never emits the
+    // completion tick, so without this the renderer would infer "cancelled"
+    // only from the absence of further events.
+    event.reply('imaging-progress', { current: 0, total: 0, status: 'cancelled' })
   })
 
   ipcMain.handle('get-file-count', (_event, scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
     assertDbReady()
-    return callNative('get-file-count', () => getEngine().getFileCount(scanId, filter))
+    return callNative('get-file-count', () =>
+      getEngine().getFileCount(clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0), filter)
+    )
   })
 
   ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
     assertDbReady()
-    return callNative('get-files-page', () => getEngine().getFilesPage(scanId, offset, limit, filter))
+    return callNative('get-files-page', () =>
+      getEngine().getFilesPage(
+        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(limit, 1, 1000, 100),
+        filter,
+      )
+    )
   })
 
   ipcMain.handle('get-latest-scan-id', () =>
@@ -350,7 +412,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('get-scan-state', (_event, scanId: number) =>
-    callNative('get-scan-state', () => getEngine().getScanState(scanId))
+    callNative('get-scan-state', () =>
+      getEngine().getScanState(clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0))
+    )
   )
 
   ipcMain.handle('search-files', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => {
@@ -359,7 +423,14 @@ export function registerIpcHandlers(): void {
         return { rows: [], error: 'Regex sorgusu en fazla 128 karakter olabilir.' }
       }
       const engine = getEngine()
-      const rows = engine.searchFiles(scanId, query, offset ?? 0, limit ?? 100, !!useRegex, category ?? '')
+      const rows = engine.searchFiles(
+        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
+        query,
+        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(limit, 1, 1000, 100),
+        !!useRegex,
+        category ?? '',
+      )
       return { rows }
     } catch (err) {
       console.error('[IPC] search-files error:', err)
@@ -370,7 +441,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number) => {
     try {
       const engine = getEngine()
-      const rows = engine.searchFileContent(scanId, query, offset ?? 0, limit ?? 100)
+      const rows = engine.searchFileContent(
+        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
+        query,
+        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
+        clampInt(limit, 1, 1000, 100),
+      )
       return { rows }
     } catch (err) {
       console.error('[IPC] search-file-content error:', err)
@@ -654,15 +730,20 @@ export function registerIpcHandlers(): void {
   })
 
   // P0-2: TestDisk-style lost partition search (async, heavyOp-gated native).
-  ipcMain.handle('scan-lost-partitions', (_event, driveIndex: number, stepSectors?: number) =>
-    callNative('scan-lost-partitions', () =>
+  ipcMain.handle('scan-lost-partitions', (_event, driveIndex: number, stepSectors?: number) => {
+    assertDriveIndex(driveIndex)
+    return callNative('scan-lost-partitions', () =>
       (getEngine() as unknown as { scanLostPartitions: (d: number, s?: number) => Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>> })
         .scanLostPartitions(driveIndex, stepSectors))
-  )
+  })
 
-  // P0-3: user signature overlay (resource-format JSON).
+  // P0-3: user signature overlay (resource-format JSON). existsSync before the
+  // absolute path crosses into native — a missing file is a silent no-op there.
   ipcMain.handle('set-signature-overlay', (_event, path: string) =>
-    callNative('set-signature-overlay', () => (getEngine() as unknown as { setSignatureOverlay: (p: string) => boolean }).setSignatureOverlay(path ?? ''))
+    callNative('set-signature-overlay', () => {
+      if (typeof path !== 'string' || !path || !existsSync(path)) return false
+      return (getEngine() as unknown as { setSignatureOverlay: (p: string) => boolean }).setSignatureOverlay(path)
+    })
   )
 
   ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {

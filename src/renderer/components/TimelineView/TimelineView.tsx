@@ -12,7 +12,7 @@ import {
   Activity,
 } from 'lucide-react'
 import type { TimelineEvent } from '../../../shared/types'
-import { useI18n, tFormat } from '../../i18n'
+import { useI18n, tFormat, formatInt } from '../../i18n'
 
 interface TimelineViewProps {
   scanId: number
@@ -91,7 +91,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
           <div>
             <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('tl.title')}</h2>
             <p style={{ color: 'var(--text-muted)' }}>
-              {tFormat('tl.subtitle', { n: String(scanId), total: total.toLocaleString('tr-TR') })}
+              {tFormat('tl.subtitle', { n: String(scanId), total: formatInt(total) })}
             </p>
           </div>
         </div>

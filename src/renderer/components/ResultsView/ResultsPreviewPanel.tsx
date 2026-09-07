@@ -3,7 +3,7 @@ import type { FilePreviewResult, FileRecord } from '../../../shared/ipc-contract
 import { formatPreviewHex, previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
 import { extractJpegExifUnix, extractPdfInfo, sniffMediaContainer } from '../../../shared/embedded-metadata'
 import { formatFsTimestamp, getExtension } from './results-view-utils'
-import { localizeNote, t, tFormat } from '../../i18n'
+import { localizeNote, t, tFormat, localeTag } from '../../i18n'
 
 interface ResultsPreviewPanelProps {
   preview: FilePreviewResult | null
@@ -33,7 +33,7 @@ function embeddedDateLine(preview: FilePreviewResult, record: FileRecord | null 
   }
   if (!preview.data?.length) return null
   const exif = extractJpegExifUnix(preview.data)
-  if (exif != null) return `EXIF · ${new Date(exif * 1000).toLocaleString('tr-TR')}`
+  if (exif != null) return `EXIF · ${new Date(exif * 1000).toLocaleString(localeTag())}`
   return null
 }
 

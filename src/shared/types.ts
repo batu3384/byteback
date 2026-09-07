@@ -71,7 +71,7 @@ declare global {
 
       startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') => void
       stopImaging: () => void
-      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string }) => void) => () => void
+      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled' }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>
@@ -93,7 +93,7 @@ declare global {
       getTimelineEvents: (scanId: number, offset: number, limit: number, eventTypeFilter?: string) => Promise<TimelineResult>
       getAuditLog: (maxLines?: number) => Promise<string[]>
       verifyAuditLog: () => Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>
-      getSessionLog: (maxLines?: number) => Promise<{ path: string; lines: string[]; summary: string }>
+      getSessionLog: (maxLines?: number) => Promise<{ path: string; lines: string[]; summary: string; code: string }>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
       pickAndWipeFile: () => Promise<IpcOkResult>

@@ -7,7 +7,8 @@ import type { ScanProfile } from '../../../shared/scan-profiles'
 import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../../../shared/scan-session'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
-import { localizeNote, useI18n, tFormat } from '../../i18n'
+import ConfirmModal from '../ConfirmModal'
+import { localizeNote, useI18n, tFormat, formatInt } from '../../i18n'
 import { formatSize } from '../ResultsView/results-view-utils'
 import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
 
@@ -44,7 +45,10 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
     resolved: ResolvedVolume
     scanType: ScanProfile
   } | null>(null)
-  const [dbError, setDbError] = useState<string | null>(null)
+  // App.tsx owns the global dbError banner — a second fetch here showed the
+  // same failure twice on the dashboard.
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false)
+  const [clearError, setClearError] = useState<string | null>(null)
   // P0-2: lost partition search state.
   const [lostScanDrive, setLostScanDrive] = useState(0)
   const [lostScanning, setLostScanning] = useState(false)
@@ -52,11 +56,17 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   const [lostPartitions, setLostPartitions] = useState<Array<{ startSector: number; sizeSectors: number; fs: string }> | null>(null)
 
   useEffect(() => {
-    window.api?.getDbStatus?.()
-      .then((s) => {
-        if (!s.ready) setDbError(s.error ?? t('dash.dbInitError'))
-      })
-      .catch(() => setDbError(t('dash.dbStatusError')))
+    fetchDrives()
+    checkActiveSession()
+    if (window.api?.listVolumeLetters) {
+      window.api.listVolumeLetters().then((letters) => {
+        if (letters?.length) {
+          setVolumeLetters(letters)
+          if (!letters.includes(volumeLetter)) setVolumeLetter(letters[0])
+        }
+      }).catch((e: unknown) => console.warn('[Dashboard] listVolumeLetters failed', e))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const fetchDrives = async () => {
@@ -109,18 +119,15 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
 
   const handleClearScans = async () => {
     if (!onClearScanData || clearBusy) return
-    const ok = window.confirm(
-      t('dash.clearConfirm'),
-    )
-    if (!ok) return
     setClearBusy(true)
+    setClearError(null)
     try {
       const cleared = await onClearScanData()
       if (cleared) {
         setPausedSession(null)
         setLatestScan(null)
       } else {
-        window.alert(t('dash.clearFailed'))
+        setClearError(t('dash.clearFailed'))
       }
     } finally {
       setClearBusy(false)
@@ -203,6 +210,14 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           setPendingVolumeScan(null)
         }}
       />
+      <ConfirmModal
+        open={confirmClearOpen}
+        title={t('dash.clearConfirmTitle')}
+        body={t('dash.clearConfirm')}
+        confirmLabel={t('dash.clearConfirmYes')}
+        onConfirm={() => { setConfirmClearOpen(false); void handleClearScans() }}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
       {isAdmin === false && (
         <div className="admin-banner glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px 24px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239, 68, 68, 0.05)' }}>
           <ShieldAlert size={24} color="var(--alert-red)" />
@@ -212,9 +227,9 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         </div>
       )}
 
-      {dbError && (
-        <InlineAlert variant="error" title={t('dash.dbAlertTitle')}>
-          {tFormat('dash.dbAlertBody', { err: dbError })}
+      {clearError && (
+        <InlineAlert variant="error" onDismiss={() => setClearError(null)}>
+          {clearError}
         </InlineAlert>
       )}
 
@@ -462,7 +477,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             <tbody>
               {lostPartitions.map((p) => (
                 <tr key={p.startSector}>
-                  <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{p.startSector.toLocaleString('tr-TR')}</td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{formatInt(p.startSector)}</td>
                   <td style={{ padding: '6px 10px', color: 'var(--text-muted)' }}>{formatSize(p.sizeSectors * 512)}</td>
                   <td style={{ padding: '6px 10px' }}>{p.fs}</td>
                 </tr>
@@ -483,7 +498,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
                 {tFormat('dash.pausedMeta', { drive: String(pausedSession.driveIndex), type: pausedSession.scanType, pct: String(scanProgressPercent(pausedSession)), scanned: String(pausedSession.scannedSectors), total: String(pausedSession.totalSectors) })}
                 {!scanShowsMetadataResume(pausedSession) ? '' : ` · ${t('dash.metadataResume')}`}
                 {pausedSession.metadataComplete && (pausedSession.carveResumeSector ?? 0) > 0
-                  ? ` · ${tFormat('dash.carveResume', { sector: pausedSession.carveResumeSector!.toLocaleString('tr-TR') })}`
+                  ? ` · ${tFormat('dash.carveResume', { sector: formatInt(pausedSession.carveResumeSector!) })}`
                   : ''}
               </p>
             </div>
@@ -547,7 +562,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             className="btn-secondary"
             data-testid="clear-scan-data-btn"
             disabled={clearBusy || scanBusy}
-            onClick={handleClearScans}
+            onClick={() => setConfirmClearOpen(true)}
             style={{ display: 'flex', gap: '8px' }}
           >
             <RotateCw size={16} /> {t('dash.clearScans')}

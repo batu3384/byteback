@@ -41,6 +41,11 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
         return VolumeFsKind::Apfs;
     }
 
+    // XFS superblock starts at byte 0 of the partition ("XFSB", xfs_dsb).
+    if (boot.size() >= 4 && std::memcmp(boot.data(), "XFSB", 4) == 0) {
+        return VolumeFsKind::Xfs;
+    }
+
     uint32_t hfsRead = ((1024 + 2 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> hfsBuf(hfsRead);
     if (reader.readSectors(partitionOffsetBytes, hfsRead, hfsBuf.data()).success &&

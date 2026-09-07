@@ -594,3 +594,44 @@ TEST(CarvePolicy, StartByteOffsetRoundTripsThroughDb) {
     store.close();
     std::filesystem::remove(dbPath);
 }
+
+// CA-007 edge: a footer-less candidate expiring near the image end on a raw
+// backend. The old expire probe rounded its size UP to a sector, the raw
+// backend rejects the overread, and the candidate was silently dropped. The
+// probe is now clamped (rounded down) so the candidate still carves.
+TEST(CarvePolicy, ExpireProbeClampedToImageEndEmitsCandidate) {
+    const auto path = (std::filesystem::temp_directory_path() / "byteback_expire_clamp.raw");
+    // Odd size: partial final sector, and the 7z starts mid-sector so the
+    // round-up probe would cross the image end.
+    std::vector<uint8_t> img(5u * 1024 * 1024 + 1537, 0);
+    const size_t start = img.size() - 3973;
+    ASSERT_NE(start % 512, 0u);
+    static const uint8_t magic[6] = {'7', 'z', 0xBC, 0xAF, 0x27, 0x1C};
+    std::memcpy(img.data() + start, magic, sizeof(magic));
+    const uint64_t nho = 64, nhs = 128;
+    for (int i = 0; i < 8; ++i) img[start + 12 + i] = static_cast<uint8_t>(nho >> (8 * i));
+    for (int i = 0; i < 8; ++i) img[start + 20 + i] = static_cast<uint8_t>(nhs >> (8 * i));
+
+    {
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+    }
+
+    DiskReader reader;
+    std::string err;
+    ASSERT_TRUE(reader.attachRawFile(path.string(), &err)) << err;
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    std::vector<FileRecord> found;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension == "7z") found.push_back(fr);
+    }, &running));
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].sizeBytes, 32u + 64 + 128); // StartHeader-bounded size
+    reader.detachImageBackend(); // release the file lock before removal
+    std::filesystem::remove(path);
+}

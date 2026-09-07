@@ -3,6 +3,7 @@
 #include "byteback_db.h"
 #include "carver/file_validators.h"
 #include <gtest/gtest.h>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -336,4 +337,52 @@ TEST_F(RecoveryEngineTest, MetadataPartialRecoveryFailsValidation) {
     auto result = engine.recoverFile(reader, rec, dest_);
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.validationError.empty());
+}
+
+// Cancel honesty: a recovery cut short by StopRecovery must not report
+// success — the partial file on disk is not the payload the record describes.
+// Unknown extension (no structural validator) so nothing else demotes it.
+TEST_F(RecoveryEngineTest, CancelMidRecoveryIsNotSuccess) {
+    std::vector<uint8_t> disk(4u * 1024 * 1024, 0x5A);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    FileRecord rec{};
+    rec.id = 1;
+    rec.name = "big.bin";
+    rec.source = "fat";
+    rec.sizeBytes = 3u * 1024 * 1024;
+    rec.runs.push_back({512, 6144}); // 3 MB — needs three 1 MiB chunk reads
+
+    std::atomic<bool> running{true};
+    RecoveryEngine engine;
+    RecoveryResult res = engine.recoverFile(reader, rec, dest_, [&](uint64_t, uint64_t) {
+        running = false; // cancel right after the first chunk lands
+    }, &running);
+
+    EXPECT_FALSE(res.success);
+    EXPECT_NE(res.error.find("cancel"), std::string::npos);
+    EXPECT_GT(res.bytesRecovered, 0u);
+    EXPECT_LT(res.bytesRecovered, rec.sizeBytes);
+}
+
+// Upfront-cancel produces a zero-byte attempt: also not a success.
+TEST_F(RecoveryEngineTest, CancelBeforeFirstReadIsNotSuccess) {
+    std::vector<uint8_t> disk(1024 * 1024, 0x5A);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    FileRecord rec{};
+    rec.id = 2;
+    rec.name = "gone.bin";
+    rec.source = "fat";
+    rec.sizeBytes = 512 * 1024;
+    rec.runs.push_back({512, 1024});
+
+    std::atomic<bool> running{false};
+    RecoveryEngine engine;
+    RecoveryResult res = engine.recoverFile(reader, rec, dest_, nullptr, &running);
+
+    EXPECT_FALSE(res.success);
+    EXPECT_EQ(res.bytesRecovered, 0u);
 }

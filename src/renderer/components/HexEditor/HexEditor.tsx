@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import './HexEditor.css'
 import { Binary, ChevronLeft, ChevronRight, Search, Server } from 'lucide-react'
 import { calculateEntropy, classifyEntropy } from '../../../shared/entropy'
@@ -21,6 +21,10 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
   const [readError, setReadError] = useState<string | null>(null)
   const [atDiskEnd, setAtDiskEnd] = useState(false)
   const [loading, setLoading] = useState(false)
+  // Generation guard: rapid prev/next clicks fire overlapping reads; only the
+  // latest one may paint the grid (out-of-order IPC would show the wrong
+  // sector's bytes and dead-stale loading state).
+  const fetchGenRef = useRef(0)
 
   // Update cache whenever sector changes
   useEffect(() => {
@@ -29,6 +33,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
 
   const fetchSector = async (secIndex: number) => {
     if (driveIndex === undefined || driveIndex === null) return
+    const gen = ++fetchGenRef.current
     if (scanBusy) {
       setReadFailed(true)
       setReadError(t('hex.busyError'))
@@ -40,6 +45,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
       const offset = secIndex * sectorSize
       if (window.api && window.api.readHexData) {
         const result = await window.api.readHexData(driveIndex, offset, sectorSize)
+        if (gen !== fetchGenRef.current) return
         if (result.data && result.data.length > 0) {
           setReadFailed(false)
           setReadError(null)
@@ -55,11 +61,13 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
       }
     } catch (err) {
       console.error(err)
+      if (gen !== fetchGenRef.current) return
       setReadFailed(true)
+      setReadError(t('hex.readFailedShort'))
       setData([])
       setAtDiskEnd(true)
     } finally {
-      setLoading(false)
+      if (gen === fetchGenRef.current) setLoading(false)
     }
   }
 

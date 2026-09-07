@@ -6,6 +6,7 @@
 #include "fs/partition_scanner.h"
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
@@ -894,8 +895,21 @@ Napi::Value StopContentSearch(const Napi::CallbackInfo& info) {
 // completed scan row and inserts the given records; returns the scanId.
 // AR2-F1: bounded (1000 records, 512-char strings) and audit-logged — an
 // e2e-only surface must not fabricate untraceable evidence even if reached.
+// The IPC layer gates on BYTEBACK_E2E too (ipc-handlers.ts); the native gate
+// is defense in depth — the addon is loadable outside the app shell.
 Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {    Napi::Env env = info.Env();
     NAPI_TRY
+    {
+        const char* e2e = std::getenv("BYTEBACK_E2E");
+        if (!e2e || std::strcmp(e2e, "1") != 0) {
+            static bool warned = false;
+            if (!warned) {
+                std::fprintf(stderr, "[byteback] seedScanFixture refused: BYTEBACK_E2E not set\n");
+                warned = true;
+            }
+            return Napi::Number::New(env, -1);
+        }
+    }
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata || info.Length() < 1 || !info[0].IsArray()) return Napi::Number::New(env, -1);
 

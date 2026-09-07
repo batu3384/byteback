@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import './Header.css'
 import { Sun, Moon } from 'lucide-react'
-import { useI18n } from '../../i18n'
+import { useI18n, tFormat } from '../../i18n'
 
 const pageTitleKeys: Record<string, string> = {
   dashboard: 'title.dashboard',
@@ -44,7 +44,7 @@ function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): Reac
       <div className="header-actions">
         {scanBusy && onOpenScan && title !== 'scan' && (
           <button type="button" className="scan-pill" onClick={onOpenScan}>
-            {t('header.scanRunning')}{typeof scanPercent === 'number' ? ` · %${scanPercent}` : ''}
+            {t('header.scanRunning')}{typeof scanPercent === 'number' ? ` · ${tFormat('common.percent', { n: String(scanPercent) })}` : ''}
           </button>
         )}
         <button

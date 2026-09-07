@@ -34,9 +34,17 @@ bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const s
 }
 
 void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::string& md5,
-                        const FileRecord& record) {
+                        const FileRecord& record, bool cancelled) {
     result.bytesRecovered = bytes;
     result.md5Hash = md5;
+    // A cancel (or a run table that ends short) must not masquerade as a
+    // successful recovery: the partial file on disk is not the payload the
+    // record describes.
+    if (cancelled && bytes < record.sizeBytes) {
+        result.success = false;
+        if (result.error.empty()) result.error = "recovery cancelled; output is incomplete";
+        return;
+    }
     if (result.zeroFilled) {
         result.success = false;
         if (result.error.empty()) result.error = "short or padded read; output is incomplete";
@@ -224,7 +232,8 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
                               static_cast<std::streamsize>(writeLen));
                 md5ctx.update(inflated.data(), static_cast<size_t>(writeLen));
                 outFile.close();
-                finishRecoverWrite(result, writeLen, md5ctx.finalHex(), record);
+                finishRecoverWrite(result, writeLen, md5ctx.finalHex(), record,
+                                   isRunning && !(*isRunning));
                 return result;
             }
             outFile.close();
@@ -314,7 +323,8 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     }
 
     outFile.close();
-    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record);
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record,
+                       isRunning && !(*isRunning));
     return result;
 }
 
@@ -390,7 +400,8 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     }
 
     outFile.close();
-    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record);
+    finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record,
+                       isRunning && !(*isRunning));
     return result;
 }
 

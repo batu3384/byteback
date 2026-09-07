@@ -748,6 +748,28 @@ const STRINGS: Record<string, Entry> = {
   'diskmap.deleted': { tr: 'silinmiş: {n}', en: 'deleted: {n}' },
   'results.loadErrorTitle': { tr: 'Sonuç listesi okunamadı', en: 'Could not read the results list' },
   'results.loadErrorBody': { tr: 'Veritabanı sorgusu başarısız oldu; liste boş gösteriliyor. Süzgeçleri değiştirip yeniden deneyin; sorun sürerse uygulamayı yeniden başlatın.', en: 'The database query failed, so the list is shown empty. Change the filters to retry; if the problem persists, restart the app.' },
+
+  // Renderer sweep: App-level scan status line (was hardcoded TR in App.tsx),
+  // percent convention (TR: %47, EN: 47%), chrome leftovers.
+  'scan.waiting': { tr: 'Bekleniyor...', en: 'Waiting...' },
+  'scan.running': { tr: 'Tarama Sürüyor...', en: 'Scan running...' },
+  'scan.resuming': { tr: 'Tarama Devam Ediyor...', en: 'Resuming scan...' },
+  'scan.raidRunning': { tr: 'RAID Taraması Sürüyor...', en: 'RAID scan running...' },
+  'scan.stoppingStatus': { tr: 'Durduruluyor...', en: 'Stopping...' },
+  'scan.pausedResumable': { tr: 'Tarama Duraklatıldı — devam edilebilir', en: 'Scan paused — you can resume' },
+  'scan.failedDb': { tr: 'Veritabanı kullanılamıyor: {err}', en: 'Database unavailable: {err}' },
+  'scan.apiMissing': { tr: 'Tarama API\'si kullanılamıyor. Native backend yüklü mü kontrol edin.', en: 'Scan API unavailable. Check that the native backend is loaded.' },
+  'scan.startFailed': { tr: 'Tarama başlatılamadı. Yönetici izni ve sürücü seçimini kontrol edin.', en: 'Could not start the scan. Check administrator permission and the drive selection.' },
+  'scan.failedWith': { tr: 'Tarama hatası: {err}', en: 'Scan error: {err}' },
+  'scan.raidApiMissing': { tr: 'RAID tarama API\'si kullanılamıyor.', en: 'RAID scan API unavailable.' },
+  'scan.raidStartFailed': { tr: 'RAID taraması başlatılamadı. Dizi kurulumunu ve Yönetici iznini kontrol edin.', en: 'Could not start the RAID scan. Check the array setup and Administrator permission.' },
+  'scan.raidFailedWith': { tr: 'RAID tarama hatası: {err}', en: 'RAID scan error: {err}' },
+  'common.percent': { tr: '%{n}', en: '{n}%' },
+  'sidebar.version': { tr: 'Sürüm v{v}', en: 'Version v{v}' },
+  'dash.lastScanTitle': { tr: 'Son tarama', en: 'Last scan' },
+  'dash.logPrefix': { tr: 'Günlük: {path}', en: 'Log: {path}' },
+  'dash.clearConfirmTitle': { tr: 'Tarama kayıtları silinsin mi?', en: 'Delete scan records?' },
+  'dash.clearConfirmYes': { tr: 'Evet, sil', en: 'Yes, delete' },
 }
 
 /**
@@ -778,6 +800,16 @@ export function tFormat(key: string, vars: Record<string, string>): string {
 
 export function getLang(): Lang {
   return lang
+}
+
+/** BCP-47 tag for number/date formatting in the active language. */
+export function localeTag(): string {
+  return lang === 'tr' ? 'tr-TR' : 'en-US'
+}
+
+/** toLocaleString with the active language's locale — never hardcode 'tr-TR'. */
+export function formatInt(n: number): string {
+  return n.toLocaleString(localeTag())
 }
 
 /** Subscribe React components to language changes. */
