@@ -157,6 +157,9 @@ public:
     // Content FTS — full-file windows (chunked), indexed during content search.
     bool upsertContentSample(int64_t scanId, int64_t fileId, const std::string& text);
     bool replaceContentChunks(int64_t fileId, const std::vector<std::string>& chunks);
+    /** Inserts chunks without deleting existing ones (batched indexing; call
+     *  replaceContentChunks(fileId, {}) or a first replace to clear first). */
+    bool appendContentChunks(int64_t fileId, const std::vector<std::string>& chunks);
     std::string getContentSample(int64_t fileId);
     int64_t getContentIndexCount(int64_t scanId);
     bool isContentIndexComplete(int64_t scanId);

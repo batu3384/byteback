@@ -13,6 +13,18 @@
 
 namespace byteback {
 
+// Range-read status gate: 206 proves the server honored Range. A 200 carries
+// the object from byte 0, which equals the requested bytes only when the
+// request spans the whole resource.
+bool httpRangeReadStatusOk(unsigned status, uint64_t offset, uint64_t len, uint64_t totalSize) {
+    if (status == 206) return true;
+    return status == 200 && offset == 0 && len == totalSize;
+}
+
+bool httpProbeStatusOk(unsigned status) {
+    return status == 200 || status == 206;
+}
+
 namespace {
 
 class FileByteSource final : public ByteSource {
@@ -73,6 +85,21 @@ public:
         }
         if (!hSession_) return false;
 
+        // One retry: a stalled/flaky link kills only this range, not the job.
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (readAttempt(offset, buf, len)) {
+                err_.clear();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    uint64_t size() const override { return size_; }
+    std::string lastError() const override { return err_; }
+
+private:
+    bool readAttempt(uint64_t offset, uint8_t* buf, size_t len) {
         HINTERNET hRequest = WinHttpOpenRequest(hConnect_, L"GET", path_.c_str(), nullptr,
                                                 WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                                 useTls_ ? WINHTTP_FLAG_SECURE : 0);
@@ -96,6 +123,18 @@ public:
             return false;
         }
 
+        // A 200 to a ranged GET means the server ignored Range and sent the
+        // object from byte 0 — data would be silently wrong at offset > 0.
+        DWORD status = 0, statusSize = sizeof(status);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
+                            WINHTTP_NO_HEADER_INDEX);
+        if (!httpRangeReadStatusOk(status, offset, len, size_)) {
+            err_ = "http range not honored (status " + std::to_string(status) + ")";
+            WinHttpCloseHandle(hRequest);
+            return false;
+        }
+
         size_t written = 0;
         while (written < len) {
             DWORD avail = 0;
@@ -113,10 +152,6 @@ public:
         return true;
     }
 
-    uint64_t size() const override { return size_; }
-    std::string lastError() const override { return err_; }
-
-private:
     void parseUrl(const std::string& url) {
         std::wstring w(url.begin(), url.end());
         URL_COMPONENTS uc{};
@@ -141,6 +176,9 @@ private:
             err_ = "WinHttpOpen failed";
             return;
         }
+        // Bound every phase so a stalled connection errors instead of hanging
+        // on WinHTTP's generous defaults.
+        WinHttpSetTimeouts(hSession_, 15000, 20000, 20000, 30000);
         hConnect_ = WinHttpConnect(hSession_, host_.c_str(), port_, 0);
         if (!hConnect_) err_ = "WinHttpConnect failed";
     }
@@ -159,6 +197,16 @@ private:
             !WinHttpReceiveResponse(hRequest, nullptr)) {
             WinHttpCloseHandle(hRequest);
             err_ = "http HEAD request failed";
+            return;
+        }
+        // Never trust a Content-Length that describes an error/redirect page.
+        DWORD status = 0, statusSize = sizeof(status);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
+                                WINHTTP_NO_HEADER_INDEX) &&
+            !httpProbeStatusOk(status)) {
+            WinHttpCloseHandle(hRequest);
+            err_ = "http HEAD status " + std::to_string(status);
             return;
         }
         wchar_t lenBuf[64] = {};

@@ -46,6 +46,10 @@ function App(): React.ReactElement {
   // W8: set synchronously the moment a scan is requested — the async startup
   // hydration must never overwrite a scan the user just started.
   const scanStartAttemptRef = useRef(0)
+  // PERF: coalesced progress flush state (see onScanProgress below).
+  const pendingProgressRef = useRef<{ current: number, total: number, badSectors: number[], phase: string, phaseCurrent?: number, phaseTotal?: number } | null>(null)
+  const progressFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastProgressFlushRef = useRef(0)
   const scanBusy = isLiveScanPhase(scanPhase)
 
   const hydrateFromScanState = useCallback((state: ScanState) => {
@@ -115,18 +119,39 @@ function App(): React.ReactElement {
     let cleanupImaging: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
-      cleanupProgress = window.api.onScanProgress((data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string }) => {
+      // PERF: native throttles to 250 ms, but every event was a fresh state
+      // object → whole-tree re-render 4×/s (jank on heavy pages). Coalesce to
+      // at most one render per 600 ms; trailing flush keeps the bar live.
+      const flushProgress = () => {
+        const p = pendingProgressRef.current
+        if (!p) return
+        pendingProgressRef.current = null
+        setScanProgress(p)
+        setScanPhase((prev) => (prev === 'starting' ? 'running' : prev))
+      }
+      cleanupProgress = window.api.onScanProgress((data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string, phaseCurrent?: number, phaseTotal?: number }) => {
         // CA-016: progress events carry the scan id; a stale scan can no
         // longer overwrite the active scan's progress bar.
         if (data.scanId && data.scanId > 0 && activeScanIdRef.current > 0 && data.scanId !== activeScanIdRef.current) return
-        setScanProgress({
+        pendingProgressRef.current = {
           current: data.current,
           total: data.total,
           badSectors: data.badSectors ?? [],
           phase: data.phase ?? 'metadata',
-        })
-        // First progress proves the native scan actually started.
-        setScanPhase((p) => (p === 'starting' ? 'running' : p))
+          phaseCurrent: data.phaseCurrent,
+          phaseTotal: data.phaseTotal,
+        }
+        const now = Date.now()
+        if (now - lastProgressFlushRef.current >= 600) {
+          lastProgressFlushRef.current = now
+          flushProgress()
+        } else if (progressFlushTimerRef.current == null) {
+          progressFlushTimerRef.current = setTimeout(() => {
+            progressFlushTimerRef.current = null
+            lastProgressFlushRef.current = Date.now()
+            flushProgress()
+          }, 500)
+        }
       })
     }
 
@@ -140,6 +165,10 @@ function App(): React.ReactElement {
         else if (status === 4) setScanStatus('Tarama Duraklatıldı — devam edilebilir')
         else setScanStatus('Tarama Başarısız')
         if (timerRef.current) clearInterval(timerRef.current)
+        // A pending throttled progress flush would repaint the bar with stale
+        // values after completion — drop it.
+        pendingProgressRef.current = null
+        if (progressFlushTimerRef.current) { clearTimeout(progressFlushTimerRef.current); progressFlushTimerRef.current = null }
         // CA-014: refresh the scan row so the report nav unlocks without an
         // app restart.
         if (scanId > 0 && window.api?.getScanState) {

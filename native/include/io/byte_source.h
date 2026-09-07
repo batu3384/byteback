@@ -24,4 +24,13 @@ bool isHttpUrl(const std::string& s);
 /** Returns false for localhost, link-local, and RFC1918 targets (SSRF guard). */
 bool httpUrlHostAllowed(const std::string& url);
 
+/** True if the HTTP status of a range GET may be treated as range data.
+ *  Requires 206 unless the request spans the whole resource, in which case a
+ *  200 (body starting at offset 0) carries exactly the requested bytes. */
+bool httpRangeReadStatusOk(unsigned status, uint64_t offset, uint64_t len, uint64_t totalSize);
+
+/** True if the HTTP status of a size probe is a success whose Content-Length
+ *  describes the real object (not an error/redirect page body). */
+bool httpProbeStatusOk(unsigned status);
+
 } // namespace byteback

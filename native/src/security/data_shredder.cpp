@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 
 namespace security {
 
@@ -46,7 +47,7 @@ bool DataShredder::shred_physical_drive(int driveIndex, const std::string& typed
 #endif
 }
 
-bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random) {
+bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random, uint32_t randomSeed) {
     HANDLE hFile = CreateFileA(
         file_path.c_str(),
         GENERIC_WRITE,
@@ -64,8 +65,9 @@ bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file
     const DWORD buffer_size = 65536; // 64 KB buffer
     std::vector<uint8_t> buffer(buffer_size);
 
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // randomSeed lets verify_pass() re-derive the exact stream written by the
+    // random pass (0 = seed from the device, write-only use).
+    std::mt19937 gen(randomSeed ? randomSeed : std::random_device{}());
     std::uniform_int_distribution<uint16_t> dis(0, 255);
 
     std::size_t bytes_written_total = 0;
@@ -103,6 +105,41 @@ bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file
     return true;
 }
 
+// Read-back verification: re-derives the pass content (pattern or the seeded
+// PRNG stream) and compares against what the disk actually returned.
+bool DataShredder::verify_pass(const std::string& file_path, std::size_t file_size,
+                               uint8_t pattern, bool is_random, uint32_t randomSeed) {
+    HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                               NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    const DWORD buffer_size = 65536;
+    std::vector<uint8_t> expected(buffer_size);
+    std::vector<uint8_t> actual(buffer_size);
+    std::mt19937 gen(randomSeed);
+    std::uniform_int_distribution<uint16_t> dis(0, 255);
+
+    std::size_t verified = 0;
+    bool ok = true;
+    while (verified < file_size) {
+        DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(buffer_size, file_size - verified));
+        if (is_random) {
+            for (DWORD i = 0; i < to_read; ++i) expected[i] = static_cast<uint8_t>(dis(gen));
+        } else {
+            std::fill(expected.begin(), expected.begin() + to_read, pattern);
+        }
+        DWORD bytes_read = 0;
+        if (!ReadFile(hFile, actual.data(), to_read, &bytes_read, NULL) || bytes_read != to_read ||
+            std::memcmp(actual.data(), expected.data(), to_read) != 0) {
+            ok = false;
+            break;
+        }
+        verified += to_read;
+    }
+    CloseHandle(hFile);
+    return ok;
+}
+
 std::size_t DataShredder::get_file_size(const std::string& file_path) {
     std::error_code ec;
     auto size = std::filesystem::file_size(file_path, ec);
@@ -113,6 +150,11 @@ std::size_t DataShredder::get_file_size(const std::string& file_path) {
 }
 
 bool DataShredder::shred_file(const std::string& file_path) {
+    // A directory must never be "shredded" — for an empty one the fallthrough
+    // below would silently remove() it without any wipe.
+    std::error_code dec;
+    if (std::filesystem::is_directory(file_path, dec)) return false;
+
     std::size_t size = get_file_size(file_path);
     if (size == 0) {
         std::error_code ec;
@@ -130,7 +172,14 @@ bool DataShredder::shred_file(const std::string& file_path) {
         return false;
     }
 
-    if (!overwrite_pass(file_path, size, 0x00, true)) {
+    // Verify the final pass (DoD 5220.22-M): the read-back must equal what was
+    // written. ponytail: only the last pass is verified; a silent mismatch in
+    // pass 1/2 is only caught if it also corrupts pass 3.
+    const uint32_t seed = std::random_device{}();
+    if (!overwrite_pass(file_path, size, 0x00, true, seed)) {
+        return false;
+    }
+    if (!verify_pass(file_path, size, 0x00, true, seed)) {
         return false;
     }
 

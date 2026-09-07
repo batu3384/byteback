@@ -94,6 +94,15 @@ void tagContentMatch(FileRecord& f) {
     f.source = f.source.empty() ? "content_match" : f.source + "+content";
 }
 
+// Overlap between consecutive indexed chunks: a query (or FTS token) whose
+// bytes straddle a chunk boundary must still match. ponytail: fixed 4 KiB
+// overlap — phrases longer than this that straddle a boundary are still
+// missed; upgrade path = query-length overlap at search time.
+constexpr uint64_t kChunkOverlap = 4096;
+// Max chunks held in memory before flushing to the store (bounds RAM on huge
+// files: 32 x 256 KiB default chunks = ~8 MiB per file).
+constexpr size_t kChunkFlushBatch = 32;
+
 } // namespace
 
 std::string sanitizeContentSample(const std::vector<uint8_t>& raw, uint64_t maxLen) {
@@ -180,22 +189,32 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                 fileBytes = (f.endSector - f.startSector) * ss;
             }
 
+            bool hit = false;
             std::vector<std::string> chunks;
+            bool flushed = false;
+            auto flush = [&](bool force) {
+                if (chunks.empty()) return true;
+                if (!force && chunks.size() < kChunkFlushBatch) return true;
+                bool ok = flushed ? store.appendContentChunks(f.id, chunks)
+                                  : store.replaceContentChunks(f.id, chunks);
+                flushed = true;
+                chunks.clear();
+                return ok;
+            };
             if (fileBytes > 0) {
                 for (uint64_t o = 0; o < fileBytes; o += chunk) {
                     if (isRunning && !(*isRunning)) break;
                     std::vector<uint8_t> sample;
-                    if (!readFileRange(*active, f, o, chunk, sample)) break;
-                    std::string t = sanitizeContentSample(sample, chunk);
-                    if (!t.empty()) chunks.push_back(std::move(t));
+                    if (!readFileRange(*active, f, o, chunk + kChunkOverlap, sample)) break;
+                    std::string t = sanitizeContentSample(sample, chunk + kChunkOverlap);
+                    if (!t.empty()) {
+                        if (!hit && icontains(t, query)) hit = true;
+                        chunks.push_back(std::move(t));
+                    }
+                    flush(false);
                 }
             }
-            if (!chunks.empty()) store.replaceContentChunks(f.id, chunks);
-
-            bool hit = false;
-            for (const auto& t : chunks) {
-                if (icontains(t, query)) { hit = true; break; }
-            }
+            flush(true);
             if (hit) {
                 tagContentMatch(f);
                 onMatch(f);
