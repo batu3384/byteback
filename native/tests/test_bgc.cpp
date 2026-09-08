@@ -14,8 +14,10 @@
 #include "carver/file_validators.h"
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 using namespace byteback;
@@ -230,4 +232,31 @@ TEST(Bgc, HugeSpanAttemptsSkipCopyCost) {
                                        /*attemptBudget=*/100000);
     EXPECT_FALSE(r.found);
     EXPECT_EQ(calls.load(), 0); // every attempt skipped: never copied, never validated
+}
+
+// CA-053: the parallel carve phase shares ONE std::atomic<int> budget across
+// workers. The old check-then-decrement handed the last unit to every worker
+// that passed the load() gate (overshoot <= N-1). The acquire primitive must
+// grant it exactly once under contention: N workers, budget 1 — exactly one
+// proceeds, and the counter settles at 0 (losers restore their speculative
+// decrement instead of leaving it negative).
+TEST(BgcBudget, SharedBudgetAcquireExactlyOnceUnderContention) {
+    std::atomic<int> budget{1};
+    std::atomic<int> proceeded{0};
+    constexpr int kWorkers = 8;
+    std::vector<std::thread> workers;
+    workers.reserve(kWorkers);
+    for (int w = 0; w < kWorkers; ++w) {
+        workers.emplace_back([&] {
+            // Same shape as signature_engine.cpp: cheap gate, then atomic
+            // acquire at the commit point.
+            if (budget.load(std::memory_order_relaxed) > 0 &&
+                byteback::bgcBudgetTryAcquire(budget)) {
+                ++proceeded;
+            }
+        });
+    }
+    for (auto& t : workers) t.join();
+    EXPECT_EQ(proceeded.load(), 1);
+    EXPECT_EQ(budget.load(), 0);
 }

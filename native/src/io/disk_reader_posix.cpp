@@ -4,6 +4,7 @@
 #include "imager/ewf_reader.h"
 #include "io/byte_source.h"
 #include "crypto/byteback_aes.h"
+#include "fs/virtual_raid.h" // CA-056: raidBackend_->capacity() needs the complete type
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -56,13 +57,20 @@ void DiskReader::closeDriveUnlocked() {
 }
 
 void DiskReader::setRaidBackend(std::shared_ptr<VirtualRaid> raid) {
+    // Parity with disk_reader_win.cpp: hold ioMutex_, install the backend, and
+    // close ONLY the previous raw handle. The old closeDriveUnlocked() call
+    // reset the raid backend it had JUST assigned and zeroed diskSize_, so the
+    // backend silently vanished right after being set.
     std::lock_guard<std::mutex> lock(ioMutex_);
     raidBackend_ = std::move(raid);
     if (raidBackend_) {
         diskSize_ = raidBackend_->capacity();
         sectorSize_ = 512;
         currentDriveIndex_ = -1;
-        closeDriveUnlocked();
+        if (handle_ != reinterpret_cast<void*>(-1)) {
+            close(static_cast<int>(reinterpret_cast<intptr_t>(handle_)));
+            handle_ = reinterpret_cast<void*>(-1);
+        }
     }
 }
 
@@ -153,6 +161,9 @@ bool DiskReader::hasImageBackend() const {
 }
 
 bool DiskReader::setXtsFvek(const uint8_t* key, size_t keyBytes) {
+    // Parity with disk_reader_win.cpp: key fields are mutated under ioMutex_
+    // (readSectors may run concurrently and reads xtsKeyLen_/xtsKey_).
+    std::lock_guard<std::mutex> lock(ioMutex_);
     if (!key || (keyBytes != 32 && keyBytes != 64)) {
         xtsKeyLen_ = 0;
         return false;
@@ -165,15 +176,23 @@ bool DiskReader::setXtsFvek(const uint8_t* key, size_t keyBytes) {
 bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) { return setXtsFvek(key32, n); }
 
 void DiskReader::clearXtsFvek() {
+    std::lock_guard<std::mutex> lock(ioMutex_); // parity with disk_reader_win.cpp
     xtsKeyLen_ = 0;
     std::memset(xtsKey_, 0, sizeof(xtsKey_));
 }
 
-bool DiskReader::hasXtsFvek() const { return xtsKeyLen_ == 32 || xtsKeyLen_ == 64; }
+bool DiskReader::hasXtsFvek() const {
+    std::lock_guard<std::mutex> lock(ioMutex_); // parity with disk_reader_win.cpp
+    return xtsKeyLen_ == 32 || xtsKeyLen_ == 64;
+}
 
-size_t DiskReader::xtsFvekBytes() const { return xtsKeyLen_; }
+size_t DiskReader::xtsFvekBytes() const {
+    std::lock_guard<std::mutex> lock(ioMutex_); // parity with disk_reader_win.cpp
+    return xtsKeyLen_;
+}
 
 void DiskReader::copyXtsFvekFrom(const DiskReader& src) {
+    if (this == &src) return; // parity with disk_reader_win.cpp: self-copy would deadlock
     uint8_t key[64];
     uint8_t len = 0;
     {
@@ -228,10 +247,20 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.bytesRead = sizeBytes;
         } else {
             result.error = err;
+            noteBadRead(offsetBytes, sizeBytes); // parity with disk_reader_win.cpp
         }
         return result;
     }
-    if (rawBackend_ && rawBackend_->read(offsetBytes, buffer, sizeBytes)) {
+    if (rawBackend_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        if (!rawBackend_->read(offsetBytes, buffer, sizeBytes)) {
+            result.error = rawBackend_->lastError();
+            noteBadRead(offsetBytes, sizeBytes); // parity with disk_reader_win.cpp
+            return result;
+        }
         result.success = true;
         result.bytesRead = sizeBytes;
         return result;
@@ -283,7 +312,22 @@ bool DiskReader::isOpen() const {
            static_cast<bool>(rawBackend_);
 }
 
-void DiskReader::noteBadRead(uint64_t, uint32_t) {}
+void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
+    // Parity with disk_reader_win.cpp: bounded, representative bad-sector
+    // samples behind badSectorMutex_. The POSIX no-op blinded the UI's
+    // bad-sector map for every non-Windows backend.
+    uint32_t ss = sectorSize_ ? sectorSize_ : 512;
+    uint64_t startSector = offsetBytes / ss;
+    uint64_t count = (sizeBytes + ss - 1) / ss;
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    badSectorReads_ += count;
+    // Keep a bounded, representative sample for the map.
+    for (uint64_t i = 0; i < count && badSectorList_.size() < kMaxBadSamples; ++i) {
+        // Sub-sample large failures so one dead region doesn't fill the cap.
+        if (count > kMaxBadSamples && (i % (count / kMaxBadSamples + 1)) != 0) continue;
+        badSectorList_.push_back(startSector + i);
+    }
+}
 
 } // namespace byteback
 #endif

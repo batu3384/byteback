@@ -27,6 +27,96 @@ jobs:
       - name: Type-check (renderer + main + e2e helpers)
         run: npm run typecheck
 
+  native-posix-syntax:
+    name: Native POSIX syntax proof (g++ -fsyntax-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # CA-056: the Windows gate never compiles the POSIX backend, so
+      # posix-only ill-formed code reached main invisibly. This job parses
+      # every platform-independent native TU with g++ on Linux (-fsyntax-only:
+      # full preprocessor + semantic analysis, no codegen, no link, no run).
+      #
+      # Documented exclusions (the rest of src/ IS covered):
+      #   - src/bridge/*.cpp, src/byteback_engine.cpp: need node/N-API headers
+      #   - src/io/disk_reader_win.cpp, src/io/volume_mapper_win.cpp:
+      #     Windows-only by design (if(WIN32) in native/CMakeLists.txt)
+      #   - src/smart/smart_monitor.cpp, src/security/data_shredder.cpp:
+      #     Windows-only TUs (unguarded #include <windows.h>)
+      #   - src/recovery/process_util.cpp: whole body under #ifdef _WIN32 —
+      #     compiles empty on Linux, nothing to prove
+      - name: Syntax-check platform-independent native sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ --version
+          cd native
+          FILES="
+            src/fs/ntfs_parser.cpp
+            src/fs/fat_parser.cpp
+            src/fs/ext4_parser.cpp
+            src/fs/hfs_parser.cpp
+            src/fs/apfs_parser.cpp
+            src/fs/apfs_container.cpp
+            src/fs/refs_parser.cpp
+            src/fs/refs_integrity.cpp
+            src/fs/hfs_catalog.cpp
+            src/fs/ntfs_logfile.cpp
+            src/fs/vss_scanner.cpp
+            src/fs/volume_identity.cpp
+            src/fs/bitlocker_fve.cpp
+            src/fs/bitlocker_unlock.cpp
+            src/fs/partition_scanner.cpp
+            src/fs/unallocated_map.cpp
+            src/fs/ntfs_path_rebuild.cpp
+            src/fs/virtual_raid.cpp
+            src/fs/raid6_math.cpp
+            src/fs/fat_chain.cpp
+            src/fs/raid_layout.cpp
+            src/fs/raid_detect.cpp
+            src/fs/xfs_parser.cpp
+            src/carver/content_classifier.cpp
+            src/carver/signature_engine.cpp
+            src/carver/bgc.cpp
+            src/carver/parsers/zip_family.cpp
+            src/carver/parsers/sqlite_carver.cpp
+            src/carver/parsers/mp4_carver.cpp
+            src/carver/parsers/bounded_size_parsers.cpp
+            src/crypto/md5.cpp
+            src/crypto/aes_xts.cpp
+            src/crypto/aes_ccm.cpp
+            src/crypto/sha256.cpp
+            src/db/metadata_store.cpp
+            src/db/metadata_store_case.cpp
+            src/db/metadata_store_content.cpp
+            src/db/runs_codec.cpp
+            src/imager/ewf_writer.cpp
+            src/imager/ewf_reader.cpp
+            src/imager/disk_imager.cpp
+            src/io/byte_source.cpp
+            src/io/disk_reader_posix.cpp
+            src/math/entropy.cpp
+            src/memory/memory_pool.cpp
+            src/scan/dedup_index.cpp
+            src/search/content_search.cpp
+            src/forensic/audit_logger.cpp
+            src/forensic/nsrl_lookup.cpp
+            src/recovery/recovery_engine.cpp
+            src/recovery/path_util.cpp
+            src/recovery/validation.cpp
+            src/recovery/preview_reader.cpp
+            src/scan_coordinator.cpp
+          "
+          for f in $FILES; do
+            echo "syntax-check: $f"
+            g++ -fsyntax-only -std=c++17 \
+              -DSQLITE_ENABLE_FTS5 -DSQLITE_THREADSAFE=1 \
+              -I include -I third_party -I third_party/zlib \
+              "$f"
+          done
+          echo "POSIX syntax proof passed: all platform-independent TUs parsed."
+
   build-windows:
     name: Build (Windows, native + Electron)
     runs-on: windows-latest

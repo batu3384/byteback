@@ -1,4 +1,5 @@
 #include "search/content_search.h"
+#include "util/utf8_sanitize.h"
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "byteback_recovery.h"
@@ -132,7 +133,14 @@ void attachSnippet(FileRecord& f, const std::string& chunkText, size_t matchPos,
         }
     }
     const size_t len = std::min(kSnippetContextBytes, chunkText.size() - begin);
-    f.snippet = sanitizeSnippetContext(chunkText.substr(begin, len));
+    // CA-055: sanitizeSnippetContext is 1:1 per byte but passes non-aggressive
+    // high bytes through UNVALIDATED — V8 re-encodes invalid sequences
+    // (overlong, surrogate, truncated) as U+FFFD, shifting the byte offsets
+    // the renderer converts and degrading the highlight to no-highlight.
+    // utf8SanitizeLenientPreserving runs after it: every invalid BYTE becomes
+    // one '?', so the snippet is valid UTF-8 at the SAME length and
+    // snippetMatchStart/End survive the JS-side conversion.
+    f.snippet = utf8SanitizeLenientPreserving(sanitizeSnippetContext(chunkText.substr(begin, len)));
     // No span when the caller could not anchor the match (matchLen == 0) or
     // the context window clipped it.
     if (matchLen > 0 && matchPos >= begin && matchPos + matchLen <= begin + len) {

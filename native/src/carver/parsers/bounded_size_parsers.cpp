@@ -73,7 +73,10 @@ StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
     while (ifd != 0 && ifd + 2 <= size && chain < 8) {
         const uint16_t count = rd16(data + ifd, le);
         if (count == 0 || count > 4096 || ifd + 2 + 12ull * count + 4 > size) return r;
-        end = std::max(end, static_cast<uint64_t>(ifd) + 2 + 12ull * count + 4);
+        // CA-056: keep every operand uint64_t — on Linux uint64_t is
+        // `unsigned long`, so mixing in `12ull` (unsigned long long) broke
+        // std::max's template deduction (MSVC has a single 64-bit type).
+        end = std::max(end, static_cast<uint64_t>(ifd) + 2 + 12 * static_cast<uint64_t>(count) + 4);
         const uint8_t* ent = data + ifd + 2;
         for (uint16_t i = 0; i < count; ++i, ent += 12) {
             const uint16_t tag = rd16(ent, le);
