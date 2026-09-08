@@ -12,6 +12,10 @@
 
 namespace byteback {
 
+// CA-007: bounded, representative bad-sector sample list (shared by
+// noteBadRead and mergeBadSectorTelemetryFrom).
+static constexpr size_t kMaxBadSamples = 4096;
+
 DiskReader::DiskReader()
     : handle_(reinterpret_cast<void*>(-1)), diskSize_(0), sectorSize_(512), currentDriveIndex_(-1),
       shareWrite_(false) {}
@@ -94,8 +98,9 @@ bool DiskReader::hasMemoryVolume() const {
 void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     if (!memoryVolume_) return;
-    memoryVolume_->faultStartSector = startSector;
-    memoryVolume_->faultSectorCount = sectorCount;
+    // The range lives in the SHARED state: the write must synchronize against
+    // reads on clones (their ioMutex_ does not order against this one).
+    memoryVolume_->setFaultRange(startSector, sectorCount);
 }
 
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
@@ -191,19 +196,26 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         return result;
     }
     if (memoryMode_) {
-        // Test hook: a read overlapping the injected fault range fails.
-        if (faultSectorCount_ > 0 && sectorSize_ > 0) {
+        if (!memoryVolume_) {
+            result.error = "No drive opened";
+            return result;
+        }
+        const MemoryVolumeState& mv = *memoryVolume_;
+        // Test hook: a read overlapping the injected fault range fails. The
+        // range lives in the shared state (clones included) — snapshot it
+        // under its own lock so (start,count) is consistent.
+        const auto [fStart, fCount] = mv.faultRange();
+        if (fCount > 0 && sectorSize_ > 0) {
             const uint64_t first = offsetBytes / sectorSize_;
             const uint64_t last = first + sizeBytes / sectorSize_ - 1;
-            if (first <= faultStartSector_ + faultSectorCount_ - 1 &&
-                faultStartSector_ <= last) {
+            if (first <= fStart + fCount - 1 && fStart <= last) {
                 result.error = "injected memory fault range";
                 noteBadRead(offsetBytes, sizeBytes);
                 return result;
             }
         }
-        if (offsetBytes + sizeBytes <= memoryImage_.size()) {
-            std::memcpy(buffer, memoryImage_.data() + offsetBytes, sizeBytes);
+        if (offsetBytes + sizeBytes <= mv.data.size()) {
+            std::memcpy(buffer, mv.data.data() + offsetBytes, sizeBytes);
             result.success = true;
             result.bytesRead = sizeBytes;
         }
@@ -243,9 +255,27 @@ int DiskReader::getDriveIndex() const {
     return currentDriveIndex_;
 }
 
-uint64_t DiskReader::getBadSectorReads() const { return badSectorReads_; }
+uint64_t DiskReader::getBadSectorReads() const {
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    return badSectorReads_;
+}
 
-std::vector<uint64_t> DiskReader::getBadSectors() const { return badSectorList_; }
+std::vector<uint64_t> DiskReader::getBadSectors() const {
+    std::lock_guard<std::mutex> lock(badSectorMutex_);
+    return badSectorList_;
+}
+
+void DiskReader::mergeBadSectorTelemetryFrom(const DiskReader& src) {
+    if (this == &src) return;
+    std::lock_guard<std::mutex> lockSrc(src.badSectorMutex_);
+    if (src.badSectorReads_ == 0 && src.badSectorList_.empty()) return;
+    std::lock_guard<std::mutex> lockDst(badSectorMutex_);
+    badSectorReads_ += src.badSectorReads_;
+    for (uint64_t s : src.badSectorList_) {
+        if (badSectorList_.size() >= kMaxBadSamples) break;
+        badSectorList_.push_back(s);
+    }
+}
 
 bool DiskReader::isOpen() const {
     std::lock_guard<std::mutex> lock(ioMutex_);

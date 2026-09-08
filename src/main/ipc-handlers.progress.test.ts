@@ -8,7 +8,7 @@ vi.mock('electron', () => ({
   powerSaveBlocker: { start: () => 1, stop: () => {}, isStarted: () => false },
 }))
 
-import { clampInt, scanProgressPayload } from './ipc-handlers'
+import { clampInt, scanProgressPayload, sanitizeRaidIndices } from './ipc-handlers'
 
 // Main once dropped phaseCurrent/phaseTotal from native progress events, leaving
 // the ScanView phase % dead despite the renderer reading them (bridge_scan.cpp
@@ -50,5 +50,22 @@ describe('clampInt', () => {
     expect(clampInt(3.7, 0, 10, 4)).toBe(3)
     expect(clampInt('12', 0, 10, 4)).toBe(10)
     expect(clampInt(undefined, 1, 5000, 500)).toBe(500)
+  })
+})
+
+// Renderer-supplied RAID member arrays run synchronous native loops on the main
+// process: unbounded arrays froze the app and duplicates corrupted the vote.
+describe('sanitizeRaidIndices', () => {
+  it('drops invalid entries and duplicates, preserving first-occurrence order', () => {
+    expect(sanitizeRaidIndices([2, 0, 2, 1.5, -3, 1, 0], 64)).toEqual([2, 0, 1])
+  })
+  it('returns empty for non-arrays and arrays over the cap', () => {
+    expect(sanitizeRaidIndices('0,1', 64)).toEqual([])
+    expect(sanitizeRaidIndices(null, 64)).toEqual([])
+    expect(sanitizeRaidIndices(Array.from({ length: 65 }, (_, i) => i), 64)).toEqual([])
+  })
+  it('keeps exactly max members and rejects below the pair threshold upstream', () => {
+    expect(sanitizeRaidIndices([0, 1], 64)).toEqual([0, 1])
+    expect(sanitizeRaidIndices([5], 64)).toEqual([5])
   })
 })

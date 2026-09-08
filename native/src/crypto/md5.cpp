@@ -54,6 +54,11 @@ void Md5::transform(const uint8_t block[64]) {
 }
 
 void Md5::update(const uint8_t* data, size_t len) {
+    // B1: a finalized context is closed — feeding bytes into it would
+    // desync the padding/length bookkeeping (double-finalize used to hand
+    // back a garbage second digest). Callers needing to continue must
+    // loadState() a snapshot.
+    if (finalized_) return;
     size_t index = (size_t)(count_ % 64);
     count_ += len;
     size_t i = 0;
@@ -100,27 +105,34 @@ void Md5::finalRaw(uint8_t out[16]) {
     // inputs whose length mod 64 was in [48, 56). Feeding the length bytes
     // directly into the buffer and transforming here closes both that and
     // the update() buffering defect.
-    finalized_ = true;
-    uint64_t bits = count_ * 8;
-    size_t index = (size_t)(count_ % 64);
-    size_t padLen = (index < 56) ? (56 - index) : (120 - index);
+    //
+    // B1: finalize is idempotent — the digest is computed once and cached;
+    // repeat calls return the cached bytes instead of re-padding the already
+    // padded stream (which silently produced a garbage second digest).
+    if (!finalized_) {
+        uint64_t bits = count_ * 8;
+        size_t index = (size_t)(count_ % 64);
+        size_t padLen = (index < 56) ? (56 - index) : (120 - index);
 
-    uint8_t padding[128];
-    memset(padding, 0, sizeof(padding));
-    padding[0] = 0x80;
-    update(padding, padLen);
-    // update() has now left the first 56 bytes of the buffer holding the
-    // padded message tail (guaranteed by the padding length arithmetic).
-    for (int i = 0; i < 8; i++) buffer_[56 + i] = (uint8_t)(bits >> (i * 8));
-    transform(buffer_);
+        uint8_t padding[128];
+        memset(padding, 0, sizeof(padding));
+        padding[0] = 0x80;
+        update(padding, padLen);
+        // update() has now left the first 56 bytes of the buffer holding the
+        // padded message tail (guaranteed by the padding length arithmetic).
+        for (int i = 0; i < 8; i++) buffer_[56 + i] = (uint8_t)(bits >> (i * 8));
+        transform(buffer_);
 
-    for (int i = 0; i < 4; i++) {
-        uint32_t s = state_[i];
-        out[i * 4 + 0] = (uint8_t)(s & 0xFF);
-        out[i * 4 + 1] = (uint8_t)((s >> 8) & 0xFF);
-        out[i * 4 + 2] = (uint8_t)((s >> 16) & 0xFF);
-        out[i * 4 + 3] = (uint8_t)((s >> 24) & 0xFF);
+        for (int i = 0; i < 4; i++) {
+            uint32_t s = state_[i];
+            finalizedDigest_[i * 4 + 0] = (uint8_t)(s & 0xFF);
+            finalizedDigest_[i * 4 + 1] = (uint8_t)((s >> 8) & 0xFF);
+            finalizedDigest_[i * 4 + 2] = (uint8_t)((s >> 16) & 0xFF);
+            finalizedDigest_[i * 4 + 3] = (uint8_t)((s >> 24) & 0xFF);
+        }
+        finalized_ = true;
     }
+    std::memcpy(out, finalizedDigest_, 16);
 }
 
 std::string md5Hex(const uint8_t* data, size_t len) {
@@ -135,6 +147,10 @@ bool Md5::saveState(Md5State& out) const {
     out.count = count_;
     std::memcpy(out.buffer, buffer_, sizeof(buffer_));
     out.bufLen = static_cast<uint32_t>(count_ % 64);
+    // Normalize the bytes beyond bufLen: they are stale block leftovers, not
+    // stream state. A serialized snapshot must be deterministic — imaging
+    // resume byte-compares the sidecar blob against a recomputed state.
+    std::memset(out.buffer + out.bufLen, 0, sizeof(out.buffer) - out.bufLen);
     return true;
 }
 

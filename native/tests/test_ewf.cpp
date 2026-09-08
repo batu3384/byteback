@@ -123,6 +123,37 @@ TEST(Md5, SaveLoadStateResumesExactly) {
     }
 }
 
+// B1 hardening: finalize is idempotent — a second finalHex/finalRaw returns
+// the SAME digest instead of appending padding a second time over the already
+// padded stream (the old code silently produced a garbage second digest), and
+// update() after finalize can no longer desync the cached context.
+TEST(Md5, DoubleFinalizeIsIdempotentAndUpdateAfterFinalIsNoOp) {
+    const char* abc = "abc";
+    const std::string ref = md5Hex(reinterpret_cast<const uint8_t*>(abc), 3);
+
+    crypto::Md5 m;
+    m.update(reinterpret_cast<const uint8_t*>(abc), 3);
+    const std::string h1 = m.finalHex();
+    EXPECT_EQ(h1, ref);
+    EXPECT_EQ(m.finalHex(), h1); // second finalize: cached, not garbage
+
+    uint8_t raw1[16], raw2[16];
+    crypto::Md5 m2;
+    m2.update(reinterpret_cast<const uint8_t*>(abc), 3);
+    m2.finalRaw(raw1);
+    m2.finalRaw(raw2); // second finalRaw: same 16 bytes
+    EXPECT_EQ(0, std::memcmp(raw1, raw2, 16));
+
+    // Late update must not corrupt the finalized digest either.
+    crypto::Md5 m3;
+    m3.update(reinterpret_cast<const uint8_t*>(abc), 3);
+    (void)m3.finalHex();
+    m3.update(reinterpret_cast<const uint8_t*>(abc), 3);
+    EXPECT_EQ(m3.finalHex(), ref);
+    crypto::Md5State st;
+    EXPECT_FALSE(m3.saveState(st)); // still refuses to save a consumed context
+}
+
 TEST(Md5, LoadStateRejectsInconsistentAndFinalized) {
     std::vector<uint8_t> buf(128);
     for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<uint8_t>(i);

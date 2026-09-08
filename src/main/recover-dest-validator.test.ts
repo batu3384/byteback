@@ -77,6 +77,15 @@ describe('validateRecoverDestDir (structural + resolution, Windows host)', () =>
     expect(validateRecoverDestDir('c:\\wInDows\\Temp')).toMatchObject({ ok: false, error: ERR_DEST_BLOCKED })
   })
 
+  it('rejects trailing dots/spaces that Win32 would normalize onto blocked roots', () => {
+    // CreateDirectoryW("C:\Windows.") normalizes onto C:\Windows — the dotted
+    // form must never reach native as an accepted dest.
+    expect(validateRecoverDestDir('C:\\Windows.')).toMatchObject({ ok: false, error: ERR_DEST_NOT_ABSOLUTE })
+    expect(validateRecoverDestDir('C:\\Windows.\\Temp')).toMatchObject({ ok: false, error: ERR_DEST_NOT_ABSOLUTE })
+    expect(validateRecoverDestDir('C:\\Windows \\Temp')).toMatchObject({ ok: false, error: ERR_DEST_NOT_ABSOLUTE })
+    expect(validateRecoverDestDir('C:\\Users\\Public\\.')).toMatchObject({ ok: false, error: ERR_DEST_NOT_ABSOLUTE })
+  })
+
   it('rejects Program Files roots', () => {
     expect(validateRecoverDestDir('C:\\Program Files\\SomeApp')).toMatchObject({ ok: false, error: ERR_DEST_BLOCKED })
     expect(validateRecoverDestDir('C:\\Program Files (x86)\\SomeApp')).toMatchObject({ ok: false, error: ERR_DEST_BLOCKED })

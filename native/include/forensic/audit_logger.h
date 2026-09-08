@@ -7,6 +7,7 @@
 #include <thread>
 #include <queue>
 #include <condition_variable>
+#include <chrono>
 #include <fstream>
 #include <cstdint>
 
@@ -41,6 +42,11 @@ public:
     // payload, <=512 chars, non-empty) and writes the line with a "JS" origin
     // tag in the existing "[ts] EVENT | <payload>" convention:
     //   "[ts] EVENT | JS | <event>"
+    // Flood policy: the renderer is an untrusted audit source and critical
+    // categories flush synchronously per call, so bridge events pass through
+    // a token bucket (burst 60, sustained 20 events/s, per logger instance).
+    // Over-rate events are REJECTED; native LogEvent is rate-limit-free
+    // (trusted in-process callers).
     // Returns false when the event was rejected (nothing written).
     bool LogEventFromBridge(const std::string& event);
 
@@ -67,6 +73,10 @@ public:
 private:
     void ProcessQueue();
 
+    // Caller must hold queueMutex_. Token bucket for the bridge flood cap:
+    // refills continuously at kBridgeEventsPerSecond up to kBridgeEventBurst.
+    bool ConsumeBridgeRateTokenLocked();
+
     struct LogEntry {
         std::string message;
     };
@@ -86,6 +96,12 @@ private:
     std::ofstream logFile_;
 
     std::string previousHash_;
+
+    // Bridge flood-cap bucket (all guarded by queueMutex_).
+    static constexpr double kBridgeEventBurst = 60.0;
+    static constexpr double kBridgeEventsPerSecond = 20.0;
+    double bridgeTokens_ = kBridgeEventBurst;
+    std::chrono::steady_clock::time_point bridgeLastRefill_{};
 };
 
 // Runtime chain verification — re-walks the log file recomputing

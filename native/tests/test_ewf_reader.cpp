@@ -272,7 +272,7 @@ TEST(EwfReaderCompressed, RoundTripsByteExactLevels1And6) {
     // Sprinkle a compressible region so level deltas are visible too.
     std::memset(img.data() + 4096, 0x11, 32 * 1024);
 
-    for (uint32_t level : {1u, 6u}) {
+    for (uint32_t level : {1u, 6u, 9u}) {
         const std::string path = "reader_comp_l" + std::to_string(level) + ".E01";
         ::remove(path.c_str());
         EwfOptions opts;
@@ -467,5 +467,217 @@ TEST(EwfReaderAcquiryErrors, EmptyWhenNoErrorSection) {
     std::string err;
     ASSERT_TRUE(r.open(path, err)) << err;
     EXPECT_TRUE(r.acquiryErrors().empty());
+    ::remove(path);
+}
+
+namespace {
+uint64_t rdU64(const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
+    return v;
+}
+// Locate a section by type in a single-segment container; returns the payload
+// offset (after the 40-byte header) and payload size.
+bool findSection(const std::vector<uint8_t>& f, const char* type,
+                 uint64_t& dataOff, uint64_t& dataLen) {
+    uint64_t off = 76;
+    while (off + 40 <= f.size()) {
+        char t[17] = {0};
+        std::memcpy(t, f.data() + off, 16);
+        const uint64_t size = rdU64(f.data() + off + 24);
+        if (std::string(t) == type) {
+            dataOff = off + 40;
+            dataLen = size - 40;
+            return true;
+        }
+        if (size < 40) return false;
+        off += size;
+    }
+    return false;
+}
+} // namespace
+
+// Hostile container: a compressed chunk whose deflate stream is garbage must
+// fail the read cleanly (non-empty error, no crash, no hang) — and it must
+// never present itself as verified.
+TEST(EwfReaderHostile, CorruptDeflateChunkFailsCleanly) {
+    const char* path = "hostile_badchunk.E01";
+    ::remove(path);
+    const uint64_t kSectors = 64;
+    std::vector<uint8_t> img = pseudoRandomImage(static_cast<size_t>(kSectors) * 512, 31337);
+
+    EwfOptions opts;
+    opts.compression = 6;
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512, opts));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+
+    // Overwrite the first chunk extent with 0xFF bytes: block type 3 is
+    // invalid per RFC 1951, so inflate must reject it outright.
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<uint8_t> f((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        in.close();
+        uint64_t dataOff = 0, dataLen = 0;
+        ASSERT_TRUE(findSection(f, "sectors", dataOff, dataLen));
+        std::memset(f.data() + dataOff, 0xFF, 64);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+        ASSERT_TRUE(out.good());
+    }
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err; // structure still parses
+    std::vector<uint8_t> out(img.size());
+    EXPECT_FALSE(r.read(0, out.data(), out.size(), err));
+    EXPECT_FALSE(err.empty());
+    EXPECT_TRUE(r.md5Hex().empty() == false); // container still carries a digest claim...
+    EXPECT_FALSE(r.verifyDigest());           // ...but verification must refuse
+    ::remove(path);
+}
+
+// Hostile error section: count field claims 0xFFFFFFFF entries while the
+// payload holds one. The parser must bound by the payload size (no loop blow-
+// up, no allocation driven by the count) and keep the image readable.
+TEST(EwfReaderHostile, HugeErrorCountIsBoundedByPayload) {
+    const char* path = "hostile_errcount.E01";
+    ::remove(path);
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, 8, 512));
+    std::vector<uint8_t> img(8 * 512, 0x11);
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    w.setAcquiryErrors({{5, 1}});
+    ASSERT_TRUE(w.finish());
+
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<uint8_t> f((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        in.close();
+        uint64_t dataOff = 0, dataLen = 0;
+        ASSERT_TRUE(findSection(f, "error", dataOff, dataLen));
+        ASSERT_EQ(dataLen, 20u); // u32 count + one {u64,u64} entry
+        f[dataOff + 0] = 0xFF;
+        f[dataOff + 1] = 0xFF;
+        f[dataOff + 2] = 0xFF;
+        f[dataOff + 3] = 0xFF;
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+        ASSERT_TRUE(out.good());
+    }
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err;
+    EXPECT_TRUE(r.acquiryErrors().empty()); // count never trusted over payload
+    std::vector<uint8_t> out(img.size());
+    ASSERT_TRUE(r.read(0, out.data(), out.size(), err)) << err;
+    EXPECT_EQ(out, img);
+    EXPECT_TRUE(r.verifyDigest());
+    ::remove(path);
+}
+
+// A count=0 error section parses to an empty list and leaves the image intact.
+TEST(EwfReaderHostile, ZeroCountErrorSectionParsesEmpty) {
+    const char* path = "hostile_errzero.E01";
+    ::remove(path);
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, 8, 512));
+    std::vector<uint8_t> img(8 * 512, 0x22);
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    w.setAcquiryErrors({{1, 1}});
+    ASSERT_TRUE(w.finish());
+
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<uint8_t> f((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        in.close();
+        uint64_t dataOff = 0, dataLen = 0;
+        ASSERT_TRUE(findSection(f, "error", dataOff, dataLen));
+        f[dataOff + 0] = 0; // count := 0
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
+        ASSERT_TRUE(out.good());
+    }
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err;
+    EXPECT_TRUE(r.acquiryErrors().empty());
+    std::vector<uint8_t> out(img.size());
+    ASSERT_TRUE(r.read(0, out.data(), out.size(), err)) << err;
+    EXPECT_TRUE(r.verifyDigest());
+    ::remove(path);
+}
+
+// Compression and the acquiry-error section must coexist in one container:
+// error entries round-trip, the digest stays over the plaintext, and the
+// compressed chunks still verify.
+TEST(EwfReaderHostile, ErrorSectionAndCompressionTogether) {
+    const char* path = "hostile_err_comp.E01";
+    ::remove(path);
+    const uint64_t kSectors = 64;
+    std::vector<uint8_t> img = pseudoRandomImage(static_cast<size_t>(kSectors) * 512, 2024);
+    std::memset(img.data() + 8192, 0x00, 16384); // compressible region
+
+    EwfOptions opts;
+    opts.compression = 6;
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512, opts));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    w.setAcquiryErrors({{3, 2}, {10, 1}});
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size()));
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err;
+    const auto& errs = r.acquiryErrors();
+    ASSERT_EQ(errs.size(), 2u);
+    EXPECT_EQ(errs[0].first, 3u);
+    EXPECT_EQ(errs[0].second, 2u);
+    EXPECT_EQ(errs[1].first, 10u);
+    EXPECT_EQ(errs[1].second, 1u);
+    std::vector<uint8_t> out(img.size());
+    ASSERT_TRUE(r.read(0, out.data(), out.size(), err)) << err;
+    EXPECT_EQ(out, img);
+    EXPECT_TRUE(r.verifyDigest());
+    ::remove(path);
+}
+
+// Backward seek must invalidate the single-chunk plaintext cache: reading a
+// late chunk, then an early one, then a middle one must return exact bytes
+// (stale-cache regression guard for the compressed path).
+TEST(EwfReaderCompressed, BackwardSeekDoesNotServeStaleChunk) {
+    const char* path = "reader_comp_seek.E01";
+    ::remove(path);
+    const uint64_t kSectors = 512; // 4 full 64 KiB chunks
+    std::vector<uint8_t> img = pseudoRandomImage(static_cast<size_t>(kSectors) * 512, 777);
+
+    EwfOptions opts;
+    opts.compression = 9;
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512, opts));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err;
+    constexpr uint64_t kChunk = 128u * 512u;
+    std::vector<uint8_t> a(kChunk), b(kChunk), c(kChunk - 123);
+    ASSERT_TRUE(r.read(2 * kChunk, a.data(), a.size(), err)) << err; // chunk 2
+    ASSERT_TRUE(r.read(0, b.data(), b.size(), err)) << err;          // backward to chunk 0
+    // Unaligned read ending exactly at the image end (last chunk, stale cache
+    // from the chunk-2 read must not be served).
+    ASSERT_TRUE(r.read(3 * kChunk + 123, c.data(), c.size(), err)) << err;
+    EXPECT_EQ(0, std::memcmp(a.data(), img.data() + 2 * kChunk, a.size()));
+    EXPECT_EQ(0, std::memcmp(b.data(), img.data(), b.size()));
+    EXPECT_EQ(0, std::memcmp(c.data(), img.data() + 3 * kChunk + 123, c.size()));
+    EXPECT_TRUE(r.verifyDigest());
     ::remove(path);
 }

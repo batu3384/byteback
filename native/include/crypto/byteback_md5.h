@@ -30,24 +30,27 @@ class Md5 {
 public:
     Md5();
     void update(const uint8_t* data, size_t len);
-    // Finalize and return the 32-char lowercase hex digest.
+    // Finalize and return the 32-char lowercase hex digest. Idempotent:
+    // repeat calls return the cached digest.
     std::string finalHex();
-    // Finalize and write the 16 raw digest bytes.
+    // Finalize and write the 16 raw digest bytes. Idempotent like finalHex.
     void finalRaw(uint8_t out[16]);
 
     // Snapshot the midstream state. Fails (returns false, out untouched) only
     // after finalHex/finalRaw consumed the context.
     bool saveState(Md5State& out) const;
-    // Restore a snapshot produced by saveState. Fails on an inconsistent
-    // state (bufLen > 64 or bufLen != count % 64), leaving `this` unchanged.
+    // Restore a snapshot produced by saveState (also clears the finalized
+    // flag, so the context is usable again). Fails on an inconsistent state
+    // (bufLen > 64 or bufLen != count % 64), leaving `this` unchanged.
     bool loadState(const Md5State& s);
 
 private:
     void transform(const uint8_t block[64]);
 
     uint32_t state_[4];
-    uint64_t count_;
-    uint8_t buffer_[64];
+    uint64_t count_ = 0;
+    uint8_t buffer_[64] = {0}; // zero-initialized: snapshots must not leak stale bytes
+    uint8_t finalizedDigest_[16] = {0};
     bool finalized_ = false;
 };
 

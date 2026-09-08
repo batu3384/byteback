@@ -31,6 +31,13 @@ using ContentFinishedCallback = std::function<void(int status)>;
 
 std::string sanitizeContentSample(const std::vector<uint8_t>& raw, uint64_t maxLen = 256 * 1024);
 
+// CA-031 snippet-window sanitizer: maps every input byte 1:1 (kept byte or
+// '.') so byte offsets computed before sanitization stay valid after it —
+// the invariant the renderer's byte-offset highlight (highlight.ts
+// byteOffsetToUnitIndex) relies on. Mostly-binary context (<80% printable)
+// also replaces bytes >=128 with '.'.
+std::string sanitizeSnippetContext(const std::string& raw);
+
 std::vector<FileRecord> searchFileContent(MetadataStore& store, DiskReader& reader,
                                           int64_t scanId, const std::string& query,
                                           int offset, int limit,

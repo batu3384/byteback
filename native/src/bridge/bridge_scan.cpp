@@ -85,7 +85,9 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     fileObj.Set("contentHash", jsUtf8(env, fr.contentHash));
     // CA-031 transient content-search snippet: only present on content-match
     // payloads; empty snippet ships no fields at all (never an empty string).
-    // Offsets are byte offsets into `snippet` for renderer-side highlight.
+    // Offsets are byte offsets into `snippet` (post-sanitization); the
+    // renderer converts them to JS string indices before slicing
+    // (highlight.ts byteOffsetToUnitIndex — the single conversion point).
     if (!fr.snippet.empty()) {
         fileObj.Set("snippet", jsUtf8(env, fr.snippet));
         fileObj.Set("snippetMatchStart", Napi::Number::New(env, fr.snippetMatchStart));

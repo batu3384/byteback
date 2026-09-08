@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMatchParts, buildSnippetParts } from './highlight'
+import { buildMatchParts, buildSnippetParts, isSafeHighlightRegex } from './highlight'
 
 describe('buildMatchParts', () => {
   it('splits literal matches case-insensitively', () => {
@@ -83,5 +83,67 @@ describe('buildSnippetParts (native content-search snippet)', () => {
 
   it('returns no parts for an empty snippet', () => {
     expect(buildSnippetParts('', 0, 1)).toEqual([])
+  })
+
+  it('converts native BYTE offsets to UTF-16 indices (Turkish İ is 2 UTF-8 bytes)', () => {
+    // 'İ' = U+0130 = 2 UTF-8 bytes; match 'final' starts at byte 2, ends at 7.
+    // A raw slice would mark 'inal ' (byte drift) — conversion marks 'final'.
+    expect(buildSnippetParts('İfinal x', 2, 7)).toEqual([
+      { text: 'İ', match: false },
+      { text: 'final', match: true },
+      { text: ' x', match: false },
+    ])
+  })
+
+  it('converts offsets past an astral character (emoji = 4 bytes / 2 units)', () => {
+    expect(buildSnippetParts('🎯match end', 4, 9)).toEqual([
+      { text: '🎯', match: false },
+      { text: 'match', match: true },
+      { text: ' end', match: false },
+    ])
+  })
+
+  it('degrades to plain text when a byte offset lands mid-code-point', () => {
+    // byte 1 is inside the 2-byte 'ş' — highlighting would mark the wrong span.
+    expect(buildSnippetParts('şabc', 1, 4)).toEqual([{ text: 'şabc', match: false }])
+  })
+
+  it('degrades to plain text when a byte offset is past the UTF-8 end', () => {
+    // 'şş' encodes to 4 bytes; offsets 5..6 point beyond the context.
+    expect(buildSnippetParts('şş', 5, 6)).toEqual([{ text: 'şş', match: false }])
+  })
+})
+
+describe('isSafeHighlightRegex (renderer ReDoS guard)', () => {
+  it('rejects nested-quantifier backtracking bombs', () => {
+    expect(isSafeHighlightRegex('(a+)+$')).toBe(false)
+    expect(isSafeHighlightRegex('(a*)*')).toBe(false)
+    expect(isSafeHighlightRegex('(a{1,5})+$')).toBe(false)
+    expect(isSafeHighlightRegex('((a+)+b)')).toBe(false)
+  })
+
+  it('rejects quantified ambiguous alternations', () => {
+    expect(isSafeHighlightRegex('(a|aa)+$')).toBe(false)
+    expect(isSafeHighlightRegex('^(a|a?)+$')).toBe(false)
+  })
+
+  it('rejects bombs hidden behind non-capturing group syntax', () => {
+    expect(isSafeHighlightRegex('(?:a+)+$')).toBe(false)
+  })
+
+  it('keeps ordinary regexes highlighted', () => {
+    expect(isSafeHighlightRegex('invoice\\d+')).toBe(true)
+    expect(isSafeHighlightRegex('a*')).toBe(true)
+    expect(isSafeHighlightRegex('(jpg|png)$')).toBe(true) // alternation without outer quantifier
+    expect(isSafeHighlightRegex('(?:abc)+')).toBe(true)
+    expect(isSafeHighlightRegex('[a+]*')).toBe(true) // quantifier chars inside a class are literal
+    expect(isSafeHighlightRegex('draft(_v2)?')).toBe(true)
+  })
+
+  it('degrades bomb queries to no highlighting instead of hanging the renderer', () => {
+    // If the guard regressed, this input backtracks catastrophically (minutes+).
+    const bombText = 'a'.repeat(64) + 'b'
+    expect(buildMatchParts(bombText, '(a+)+$', true)).toEqual([{ text: bombText, match: false }])
+    expect(buildMatchParts(bombText, '(?:a+)+$', true)).toEqual([{ text: bombText, match: false }])
   })
 })

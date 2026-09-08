@@ -627,6 +627,10 @@ void runCarveScanRangesImpl(DiskReader& reader,
             // One shared BGC budget for all workers: same total as the
             // sequential path, and scanRangeSingle's atomic path is race-free.
             std::atomic<int> sharedBgcBudget(32);
+            // Set when the emit consumer dies (callback exception): workers
+            // must stop at the next range boundary instead of scanning on
+            // into a queue nobody drains.
+            std::atomic<bool> consumerGone{false};
 
             auto emitParallelProgress = [&]() {
                 const uint64_t s = std::min<uint64_t>(scannedSectors.load(std::memory_order_relaxed),
@@ -653,6 +657,7 @@ void runCarveScanRangesImpl(DiskReader& reader,
                     LiveWorkersGuard guard{liveWorkers};
                     try {
                         for (;;) {
+                            if (consumerGone.load(std::memory_order_relaxed)) return;
                             if (isRunning && !(*isRunning)) return;
                             const size_t i = nextRange.fetch_add(1, std::memory_order_relaxed);
                             if (i >= work.size()) return;
@@ -666,7 +671,10 @@ void runCarveScanRangesImpl(DiskReader& reader,
                                     scannedSectors.fetch_add(rel, std::memory_order_relaxed);
                                     return;
                                 }
-                                queue.push(fr); // blocks while full; consumer keeps draining
+                                // Blocks while full; returns false once the
+                                // queue is closed (consumer died) — drop, the
+                                // scan outcome is already lost.
+                                if (!queue.push(fr)) return;
                             };
                             carver.scanRangeSingle(*clones[w], wStart, wEnd, sink, isRunning,
                                                    0, 0, &sharedBgcBudget);
@@ -682,36 +690,58 @@ void runCarveScanRangesImpl(DiskReader& reader,
                 });
             }
 
-            // Single consumer: the ONLY thread running the emit path, so
-            // downstream dedup/DB insertion order logic stays single-threaded
-            // exactly as in the sequential path.
-            for (;;) {
-                FileRecord fr;
-                auto st = queue.popFor(fr, 200);
-                if (st == BoundedRecordQueue::PopStatus::Got) {
+            // The consumer runs on THIS thread, so the worker threads and the
+            // queue must be shut down HERE in every path. If the emit callback
+            // throws, unwinding through `workers` while its threads are still
+            // joinable would call std::terminate and take down the process —
+            // the sequential path propagates the same exception cleanly to
+            // ScanCoordinator::scanWorker, and so must this one.
+            try {
+                // Single consumer: the ONLY thread running the emit path, so
+                // downstream dedup/DB insertion order logic stays
+                // single-threaded exactly as in the sequential path.
+                for (;;) {
+                    FileRecord fr;
+                    auto st = queue.popFor(fr, 200);
+                    if (st == BoundedRecordQueue::PopStatus::Got) {
+                        callbackWrapper(fr);
+                        continue;
+                    }
+                    emitParallelProgress();
+                    if (liveWorkers.load(std::memory_order_acquire) == 0 && queue.empty()) break;
+                }
+                for (auto& t : workers) t.join();
+                // A2/B: clone reads recorded bad sectors on the CLONES
+                // (telemetry is per-reader); merge them or the parallel phase
+                // loses every sector its workers hit.
+                for (const auto& c : clones) reader.mergeBadSectorTelemetryFrom(*c);
+                queue.close();
+                // Drain whatever is still queued, then a final progress tick.
+                for (;;) {
+                    FileRecord fr;
+                    if (queue.popFor(fr, 0) != BoundedRecordQueue::PopStatus::Got) break;
                     callbackWrapper(fr);
-                    continue;
+                }
+                if (workerFailed) {
+                    // Ceiling: a worker that died mid-range leaves that range
+                    // partially scanned (matches a cancelled scan's honesty).
+                    std::cerr << "[byteback] parallel carve: a worker failed; "
+                                 "results may be a subset" << std::endl;
                 }
                 emitParallelProgress();
-                if (liveWorkers.load(std::memory_order_acquire) == 0 && queue.empty()) break;
+                onProgress(meter.tick(progressTotal), progressTotal);
+                return;
+            } catch (...) {
+                // Unblock the workers (a full queue would deadlock the join
+                // below), stop them at the next range boundary, join, and let
+                // the exception continue exactly as the sequential path does.
+                consumerGone.store(true, std::memory_order_relaxed);
+                queue.close();
+                for (auto& t : workers) {
+                    if (t.joinable()) t.join();
+                }
+                throw;
             }
-            for (auto& t : workers) t.join();
-            queue.close();
-            // Drain whatever is still queued, then a final progress tick.
-            for (;;) {
-                FileRecord fr;
-                if (queue.popFor(fr, 0) != BoundedRecordQueue::PopStatus::Got) break;
-                callbackWrapper(fr);
-            }
-            if (workerFailed) {
-                // Ceiling: a worker that died mid-range leaves that range
-                // partially scanned (matches a cancelled scan's honesty).
-                std::cerr << "[byteback] parallel carve: a worker failed; "
-                             "results may be a subset" << std::endl;
-            }
-            emitParallelProgress();
-            onProgress(meter.tick(progressTotal), progressTotal);
-            return;
         }
         // Cloning failed after all — fall through to the sequential loop
         // (the resume-skip progress above replays as monotonic no-ops).

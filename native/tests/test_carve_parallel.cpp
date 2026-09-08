@@ -12,6 +12,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -294,4 +295,169 @@ TEST(CarveParallelCoordinator, RaidBackedReaderFallsBackToSequential) {
     const auto par = recordMultiset(reader, ranges, 4); // falls back to sequential
     EXPECT_EQ(par, seq);
     EXPECT_GE(seq.size(), 4u);
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial lane: parallel carve must not LOSE bad-sector telemetry.
+//
+// CA-007 telemetry is per-reader. Parallel carve reads through CLONES, so a
+// faulted region hit by a worker is recorded on the clone and previously
+// evaporated when the clone was destroyed — the UI bad-sector map went blind
+// exactly where the parallel phase ran, while the sequential run on the same
+// image reported the sectors. The runs must be telemetry-equal.
+// ---------------------------------------------------------------------------
+TEST(CarveParallelCoordinator, ParallelCarveKeepsCloneBadSectorTelemetry) {
+    constexpr size_t kDisk = 16u * 1024 * 1024;
+    constexpr uint64_t kFaultStart = 9000;  // inside range 1 (8192..16383)
+    constexpr uint64_t kFaultCount = 16;
+    const std::vector<size_t> offs = {1u << 20, 5u << 20, 9u << 20, 13u << 20};
+    auto img = buildMultiPngDisk(kDisk, offs);
+    auto ranges = evenRanges(kDisk / 512, 4);
+
+    auto runWithTelemetry = [&](DiskReader& reader, unsigned workers) {
+        reader.attachMemoryVolume(img); // copies
+        reader.setMemoryFaultRange(kFaultStart, kFaultCount);
+        byteback::setParallelCarveWorkers(workers);
+        std::atomic<bool> running{true};
+        runCarveScanRanges(reader, [](const FileRecord&) {},
+                           [&](uint64_t, uint64_t) {}, &running, nullptr, ranges, 0, true);
+        std::vector<uint64_t> bad = reader.getBadSectors();
+        std::sort(bad.begin(), bad.end());
+        return std::pair<std::vector<uint64_t>, uint64_t>{bad, reader.getBadSectorReads()};
+    };
+
+    DiskReader seqReader, parReader;
+    const auto seq = runWithTelemetry(seqReader, 1); // sequential: original reader reads
+    const auto par = runWithTelemetry(parReader, 4); // parallel: clones read
+
+    EXPECT_GT(par.second, 0u) << "parallel carve recorded zero bad-sector reads";
+    ASSERT_FALSE(par.first.empty()) << "clone bad-sector telemetry was lost";
+    const bool hasFaultSector = std::any_of(par.first.begin(), par.first.end(), [&](uint64_t s) {
+        return s >= kFaultStart && s < kFaultStart + kFaultCount;
+    });
+    EXPECT_TRUE(hasFaultSector) << "faulted sectors missing from parallel-run telemetry";
+    // Parity: same image, same fault, same read pattern -> identical totals.
+    EXPECT_EQ(par.second, seq.second) << "bad-read counter diverges from sequential";
+    EXPECT_EQ(par.first, seq.first) << "bad-sector sample set diverges from sequential";
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial lane: the emit consumer runs on the CALLER's thread. If the
+// downstream callback throws (bridge/DB failure), the sequential path
+// propagates the exception to ScanCoordinator::scanWorker's catch; the
+// parallel path used to unwind through a std::vector<std::thread> of JOINABLE
+// workers -> std::terminate took down the whole process instead of failing
+// the scan. The exception must propagate AFTER the workers are closed+joined.
+// ---------------------------------------------------------------------------
+TEST(CarveParallelCoordinator, ConsumerThrowPropagatesAfterWorkersJoin) {
+    constexpr size_t kDisk = 16u * 1024 * 1024;
+    std::vector<size_t> offs;
+    for (size_t off = 1u << 20; off < kDisk; off += 1u << 20) offs.push_back(off);
+    auto img = buildMultiPngDisk(kDisk, offs);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    auto ranges = evenRanges(kDisk / 512, 4);
+    setParallelCarveWorkers(4);
+    std::atomic<bool> running{true};
+    bool threw = false;
+    try {
+        runCarveScanRanges(reader, [&](const FileRecord& fr) {
+            if (fr.id == -1 && fr.name.empty()) return; // progress tick
+            throw std::runtime_error("emit-consumer-boom");
+        }, [&](uint64_t, uint64_t) {}, &running, nullptr, ranges, 0, true);
+    } catch (const std::exception& e) {
+        threw = std::string(e.what()).find("emit-consumer-boom") != std::string::npos;
+    }
+    EXPECT_TRUE(threw) << "consumer exception must propagate (not terminate the process)";
+    // Reaching this line at all proves the workers were joined, not abandoned.
+    SUCCEED();
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial lane: the fault range lives in the SHARED MemoryVolumeState but
+// was plain uint64_t mutated under the ORIGINAL's ioMutex_ while clones read
+// it under their OWN mutex — a cross-reader data race (UB). The pair
+// (start,count) must be snapshotted consistently: a read of a sector that
+// overlaps NEITHER configured range may never fail, whichever write the
+// reader races with ("ghost range" from a torn start/count pair).
+// ---------------------------------------------------------------------------
+TEST(CarveParallelCoordinator, FaultRangeInjectDuringCloneReadsStaysPairConsistent) {
+    std::vector<uint8_t> img(8u * 1024 * 1024, 0xAB);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+
+    auto cloneA = reader.clone();
+    auto cloneB = reader.clone();
+    ASSERT_NE(cloneA, nullptr);
+    ASSERT_NE(cloneB, nullptr);
+
+    // Two alternating configurations. A torn (start,count) pair can only
+    // produce the ghost ranges [64,64+4) or [192,192+2); sectors 66..67
+    // belong to NO reachable configuration (legit A faults [64,65], legit B
+    // faults [192,195]), so those reads must ALWAYS succeed.
+    std::atomic<bool> stop{false};
+    std::thread injector([&] {
+        for (int i = 0; i < 4000 && !stop; ++i) {
+            if (i % 2 == 0) reader.setMemoryFaultRange(64, 2);
+            else reader.setMemoryFaultRange(192, 4);
+        }
+    });
+
+    auto ghostReadOk = [&](DiskReader& r, uint64_t sector) {
+        std::vector<uint8_t> buf(512);
+        return r.readSectors(sector * 512, 512, buf.data()).success;
+    };
+    for (int i = 0; i < 300; ++i) {
+        EXPECT_TRUE(ghostReadOk(*cloneA, 66)) << "ghost fault at sector 66 (torn pair)";
+        EXPECT_TRUE(ghostReadOk(*cloneA, 67)) << "ghost fault at sector 67 (torn pair)";
+        EXPECT_TRUE(ghostReadOk(*cloneB, 66));
+        EXPECT_TRUE(ghostReadOk(*cloneB, 67));
+        // Outcomes inside the reachable ranges may vary with timing; the
+        // reads must simply return a defined result without crashing.
+        (void)ghostReadOk(*cloneA, 64);
+        (void)ghostReadOk(*cloneA, 194);
+        (void)ghostReadOk(*cloneB, 192);
+        (void)ghostReadOk(*cloneB, 195);
+    }
+    stop = true;
+    injector.join();
+
+    reader.setMemoryFaultRange(0, 0); // cleared
+    for (uint64_t s : {64ull, 65ull, 66ull, 192ull, 193ull, 194ull, 195ull}) {
+        EXPECT_TRUE(ghostReadOk(*cloneA, s)) << "sector " << s << " failed after fault cleared";
+    }
+}
+
+// A1: the clone must carry the AES-XTS FVEK so an encrypted-volume carve
+// through clones decrypts identically to the original reader.
+TEST(CarveParallelCoordinator, CloneCarriesXtsFvek) {
+    std::vector<uint8_t> cipher(16 * 512);
+    for (size_t i = 0; i < cipher.size(); ++i) cipher[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+    std::vector<uint8_t> key(64);
+    for (size_t i = 0; i < key.size(); ++i) key[i] = static_cast<uint8_t>(0x5A ^ i);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(cipher, 512); // copies
+    ASSERT_TRUE(reader.setXtsFvek(key.data(), key.size()));
+
+    auto clone = reader.clone();
+    ASSERT_NE(clone, nullptr);
+    EXPECT_TRUE(clone->hasXtsFvek());
+    EXPECT_EQ(clone->xtsFvekBytes(), 64u);
+
+    std::vector<uint8_t> a(512), b(512);
+    ASSERT_TRUE(reader.readSectors(512, 512, a.data()).success);
+    ASSERT_TRUE(clone->readSectors(512, 512, b.data()).success);
+    EXPECT_EQ(0, std::memcmp(a.data(), b.data(), 512)) << "clone decrypts differently";
+
+#ifdef _WIN32
+    // The Windows backend implements real XTS: a keyless reader must return
+    // raw ciphertext, proving both readers actually decrypted.
+    DiskReader plain;
+    plain.attachMemoryVolume(cipher, 512);
+    std::vector<uint8_t> raw(512);
+    ASSERT_TRUE(plain.readSectors(512, 512, raw.data()).success);
+    EXPECT_NE(0, std::memcmp(a.data(), raw.data(), 512)) << "XTS decrypt did not run";
+#endif
 }

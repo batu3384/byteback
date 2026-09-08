@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstring>
+#include <chrono>
+#include <atomic>
 
 using namespace byteback;
 
@@ -309,6 +311,183 @@ TEST_F(ContentSearchTest, SnippetRegexQueryFirstMatch) {
         bad.push_back(f);
     }, nullptr, &running);
     EXPECT_TRUE(bad.empty());
+}
+
+// ReDoS guard regression pin: a nested-quantifier pattern ("(a+)+$") must fall
+// back to literal search instead of compiling — the compiled form explodes on
+// an 'a'*N+'b' haystack (renderer's isSafeHighlightRegex policy mirrored).
+TEST_F(ContentSearchTest, BacktrackingRegexFallsBackToLiteral) {
+    std::vector<uint8_t> img(512 * 4, '.');
+    for (int i = 0; i < 64; ++i) img[100 + i] = 'a';
+    img[164] = 'b'; // classic (a+)+$ bomb trigger
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "bomb.bin";
+    r.sizeBytes = img.size();
+    r.startSector = 0;
+    r.endSector = 4;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+    const auto t0 = std::chrono::steady_clock::now();
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "(a+)+$", opts, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    // Literal fallback: the literal string "(a+)+$" does not occur → no hits,
+    // and the scan completes in bounded time (pre-fix: minutes-to-forever).
+    EXPECT_TRUE(hits.empty());
+    EXPECT_LT(elapsedMs, 10000);
+}
+
+// CA-031 regression pin: the snippet window must never ship a WRONG span.
+// A match longer than the ~160B window (regex [A-Z]{300}) cannot fit — the
+// record must carry a snippet with NO span (-1/-1), not a clipped fake span.
+TEST_F(ContentSearchTest, SnippetMatchLongerThanWindowShipsNoSpan) {
+    std::vector<uint8_t> img(512 * 4, '.');
+    std::memset(img.data() + 100, 'A', 300); // match (300B) > window (160B)
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "long.bin";
+    r.sizeBytes = img.size();
+    r.startSector = 0;
+    r.endSector = 4;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "A{300}", opts, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_FALSE(hits[0].snippet.empty());
+    EXPECT_EQ(hits[0].snippetMatchStart, -1);
+    EXPECT_EQ(hits[0].snippetMatchEnd, -1);
+}
+
+// CA-031 regression pin: a zero-width regex (e.g. "Z*") matches the empty
+// string at every position — it must NOT turn every file into a hit (result
+// flood) and must never produce a 0-length span. Parity with the renderer's
+// zero-width guard in buildMatchParts.
+TEST_F(ContentSearchTest, ZeroWidthRegexMatchIsNotAHit) {
+    std::vector<uint8_t> img(512 * 4, 0);
+    const char payload[] = "PLAIN_TEXT_DATA";
+    std::memcpy(img.data() + 512, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "zero.bin";
+    r.sizeBytes = img.size();
+    r.startSector = 0;
+    r.endSector = 4;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "Z*", opts, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    EXPECT_TRUE(hits.empty());
+}
+
+// CA-031 regression pin: when only a LATER chunk matches, the FTS path can
+// only reach chunk 0 through getContentSample — it must ship the head snippet
+// with NO span instead of highlighting a wrong position.
+TEST_F(ContentSearchTest, FtsMatchOnlyInLaterChunkShipsHeadSnippetWithoutSpan) {
+    const size_t ss = 512;
+    const size_t sectors = 1024; // 512 KiB image -> 2 default chunks
+    std::vector<uint8_t> img(ss * sectors, 0x00);
+    const char payload[] = "DEEP_TAIL_TOKEN";
+    std::memcpy(img.data() + 300 * 1024, payload, sizeof(payload) - 1); // chunk 1
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "deep.bin";
+    r.sizeBytes = ss * sectors;
+    r.startSector = 0;
+    r.endSector = sectors;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    // Index the file first (walk once with a neutral literal that cannot hit).
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "NO_SUCH_TOKEN_ANYWHERE", {}, [](const FileRecord&) {},
+                     nullptr, &running);
+    ASSERT_TRUE(store_.isContentIndexComplete(scanId));
+
+    // FTS path now serves the DEEP_TAIL_TOKEN hit.
+    std::vector<FileRecord> hits;
+    runContentSearch(store_, reader, scanId, "DEEP_TAIL_TOKEN", {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    const FileRecord& f = hits[0];
+    EXPECT_FALSE(f.snippet.empty());                    // head snippet present
+    EXPECT_EQ(f.snippet.find("DEEP_TAIL_TOKEN"), std::string::npos); // wrong-chunk content must not leak in
+    EXPECT_EQ(f.snippetMatchStart, -1);                 // and no fabricated span
+    EXPECT_EQ(f.snippetMatchEnd, -1);
+}
+
+
+// CA-031 invariant pin: sanitization maps every input byte 1:1 (kept byte or
+// '.'), so byte offsets computed BEFORE sanitization stay valid AFTER it —
+// in BOTH modes (lenient passthrough and aggressive binary replacement).
+TEST(ContentSearchSnippet, SanitizeSnippetContextPreservesByteLength) {
+    // Lenient mode (>=80% printable): bytes >=128 pass through verbatim.
+    std::string text = "text text text \xC5\x9F\x01"; // 16 bytes, 1 control byte
+    std::string out = sanitizeSnippetContext(text);
+    ASSERT_EQ(out.size(), text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127) || c >= 128) {
+            EXPECT_EQ(static_cast<unsigned char>(out[i]), c) << "i=" << i;
+        } else {
+            EXPECT_EQ(out[i], '.') << "i=" << i;
+        }
+    }
+
+    // Aggressive mode (<80% printable): every non-text byte becomes '.', but
+    // the 1:1 byte mapping (and thus offset validity) still holds.
+    std::string raw = "ab\x01\xFF\xC5\x9F\x80\x01\x02\xFE"; // mostly binary
+    std::string bin = sanitizeSnippetContext(raw);
+    ASSERT_EQ(bin.size(), raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(raw[i]);
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) {
+            EXPECT_EQ(static_cast<unsigned char>(bin[i]), c) << "i=" << i;
+        } else {
+            EXPECT_EQ(bin[i], '.') << "i=" << i;
+        }
+    }
 }
 
 // CA-031 binary-context guard: when the bytes around the match are mostly

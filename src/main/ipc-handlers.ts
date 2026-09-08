@@ -60,6 +60,19 @@ export function asciiForAudit(text: string): string {
   return text.replace(/[^\x20-\x7E]/g, '?').slice(0, 200)
 }
 
+/**
+ * Renderer-supplied RAID member arrays enter synchronous native loops on the
+ * main process: an unbounded array freezes the whole app, and duplicate members
+ * corrupt signature voting / assembly. Keep a small, de-duplicated, valid set
+ * (first-occurrence order preserved — member order matters for reconstruction).
+ */
+export function sanitizeRaidIndices(v: unknown, max: number): number[] {
+  if (!Array.isArray(v)) return []
+  const valid = v.filter((d): d is number => Number.isInteger(d) && d >= 0)
+  if (valid.length > max) return []
+  return [...new Set(valid)]
+}
+
 /** Best-effort write into the native hash-chained audit log via the
  *  logAuditEvent bridge export. Never throws: audit failure must not break
  *  the operation being audited (session.log still has the event). */
@@ -664,12 +677,14 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('detect-raid', (_event, driveIndices: number[]) => {
     try {
-      if (!Array.isArray(driveIndices) || driveIndices.length < 2 || driveIndices.some((d) => !Number.isInteger(d) || d < 0)) {
+      // Bounded, de-duplicated member set — see sanitizeRaidIndices.
+      const indices = sanitizeRaidIndices(driveIndices, 64)
+      if (indices.length < 2) {
         return { found: false }
       }
       const engine = getEngine()
-      console.log('[IPC] detect-raid drives:', driveIndices)
-      return engine.detectRaid(driveIndices)
+      console.log('[IPC] detect-raid drives:', indices)
+      return engine.detectRaid(indices)
     } catch (err) {
       console.error('[IPC] detect-raid error:', err)
       const msg = err instanceof Error ? err.message : String(err)
@@ -679,12 +694,15 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
     try {
-      if (!Array.isArray(driveIndices) || driveIndices.some((d) => !Number.isInteger(d) || d < 0) || typeof raidLevel !== 'number' || !Number.isInteger(raidLevel)) {
+      // Same bounded/deduped member set as detect-raid: duplicate members would
+      // assemble a bogus array, an unbounded array would freeze the main process.
+      const indices = sanitizeRaidIndices(driveIndices, 64)
+      if (indices.length < 1 || typeof raidLevel !== 'number' || !Number.isInteger(raidLevel)) {
         return { success: false, capacity: 0, numDisks: 0, error: 'Geçersiz RAID argümanları' }
       }
       const engine = getEngine()
-      console.log('[IPC] reconstruct-raid drives:', driveIndices, 'level:', raidLevel)
-      return engine.reconstructRaid(driveIndices, raidLevel)
+      console.log('[IPC] reconstruct-raid drives:', indices, 'level:', raidLevel)
+      return engine.reconstructRaid(indices, raidLevel)
     } catch (err) {
       console.error('[IPC] reconstruct-raid error:', err)
       // Renderer expects RaidAssemblyResult, never a bare boolean.
