@@ -115,6 +115,11 @@ public:
     void detachMemoryVolume();
     bool hasMemoryVolume() const;
 
+    // Test hook (memory backend only): make every read touching the given
+    // sector range fail outright, simulating a mid-image bad-sector region.
+    // Pass count=0 to clear.
+    void setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount);
+
     // EWF (.E01) or raw image over http(s) Range (ponytail: multi-segment EWF local only).
     bool attachEwfImage(const std::string& pathOrUrl, std::string* errOut = nullptr);
     bool attachRawFile(const std::string& path, std::string* errOut = nullptr);
@@ -148,6 +153,8 @@ private:
     std::shared_ptr<VirtualRaid> raidBackend_;
     std::vector<uint8_t> memoryImage_;
     bool memoryMode_ = false;
+    uint64_t faultStartSector_ = 0;
+    uint64_t faultSectorCount_ = 0;
     std::unique_ptr<EwfReader> ewfBackend_;
     std::unique_ptr<ByteSource> rawBackend_;
     bool rawBackendIsHttp_ = false;

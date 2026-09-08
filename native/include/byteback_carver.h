@@ -123,14 +123,16 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t maxGapBytes,
                                const std::function<int(const uint8_t*, size_t)>& validator,
                                size_t stepBytes = 1,
-                               size_t attemptBudget = 8192);
+                               size_t attemptBudget = 8192,
+                               std::atomic<bool>* isRunning = nullptr);
 
 // ponytail: max two internal gaps (three fragments), bounded attempt budget.
 BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                 size_t headerOffset, size_t footerOffset,
                                 size_t maxGapBytes,
                                 const std::function<int(const uint8_t*, size_t)>& validator,
-                                size_t stepBytes = 1, size_t attemptBudget = 8192);
+                                size_t stepBytes = 1, size_t attemptBudget = 8192,
+                                std::atomic<bool>* isRunning = nullptr);
 
 } // namespace byteback
 

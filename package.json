@@ -27,12 +27,12 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "cmake-js": "^8.0.0",
-    "electron": "^31.0.0",
+    "electron": "^44.2.0",
     "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.9",
-    "@playwright/test": "^1.49.0"
+    "@playwright/test": "^1.63.0"
   },
   "build": {
     "appId": "com.byteback.app",
@@ -59,7 +59,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "requestedExecutionLevel": "requireAdministrator"
@@ -68,7 +70,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Byteback"
+      "shortcutName": "Byteback",
+      "perMachine": true
     }
   }
 }

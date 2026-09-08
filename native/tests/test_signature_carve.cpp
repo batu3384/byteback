@@ -5,6 +5,7 @@
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -236,4 +237,76 @@ TEST(SignatureCarve, BgcRescuedCarveCarriesContentHash) {
     ASSERT_EQ(bgc[0].runs.size(), 2u);                 // frag1 + frag2 runs
     EXPECT_FALSE(bgc[0].contentHash.empty());
     EXPECT_EQ(bgc[0].contentHash, expectedHash);
+}
+
+// CA-034: OLE2 magic every sector — each header hit used to rescan the whole
+// activeCarve vector, quadratic in the carve count. The indexed engine must
+// complete the scan in bounded time and keep emission bounded (header-only
+// OLE2 candidates without a size bound are dropped, not emitted).
+TEST(SignatureCarve, HostileOle2DensityCompletesBounded) {
+    constexpr size_t kSectors = 2048; // 1 MB, magic per sector = 2048 hits
+    std::vector<uint8_t> disk(kSectors * 512, 0);
+    static const uint8_t ole2[8] = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
+    for (size_t s = 0; s < kSectors; ++s) {
+        std::memcpy(disk.data() + s * 512, ole2, sizeof(ole2));
+    }
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::atomic<bool> running{true};
+    size_t carved = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "carver" || fr.source == "carver_bgc") ++carved;
+    }, &running));
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+
+    EXPECT_LT(ms, 60000); // generous bound: the O(n^2) scans did not finish at all
+    EXPECT_LE(carved, kSectors); // duplicate suppression keeps emission bounded
+}
+
+// CA-038: Olympus ORF — TIFF-IFD structure with the "IIRO" variant magic.
+// parseTiff must bound the carve via StripOffsets/StripByteCounts and the
+// candidate must emit exactly once with the bounded size.
+TEST(SignatureCarve, OlympusOrfRawCarvesWithBoundedSize) {
+    std::vector<uint8_t> disk(64 * 1024, 0);
+    const size_t off = 8; // file-relative; TIFF offsets are file-relative too
+    disk[off + 0] = 'I'; disk[off + 1] = 'I'; disk[off + 2] = 'R'; disk[off + 3] = 'O';
+    const auto le32 = [&](size_t p, uint32_t v) {
+        disk[p] = static_cast<uint8_t>(v);
+        disk[p + 1] = static_cast<uint8_t>(v >> 8);
+        disk[p + 2] = static_cast<uint8_t>(v >> 16);
+        disk[p + 3] = static_cast<uint8_t>(v >> 24);
+    };
+    const auto le16 = [&](size_t p, uint16_t v) {
+        disk[p] = static_cast<uint8_t>(v);
+        disk[p + 1] = static_cast<uint8_t>(v >> 8);
+    };
+    le32(off + 4, 8);  // IFD0 at 8
+    le16(off + 8, 2);  // 2 entries
+    // entry 1: StripOffsets (273), LONG (4), count 1, value 100
+    le16(off + 10, 273); le16(off + 12, 4); le32(off + 14, 1); le32(off + 18, 100);
+    // entry 2: StripByteCounts (279), LONG (4), count 1, value 300
+    le16(off + 22, 279); le16(off + 24, 4); le32(off + 26, 1); le32(off + 30, 300);
+    le32(off + 34, 0);  // no next IFD
+    std::memset(disk.data() + off + 100, 0xAB, 300); // strip payload 100..400
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+
+    std::vector<FileRecord> orfs;
+    std::atomic<bool> running{true};
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.id != -1 && fr.extension == "orf") orfs.push_back(fr);
+    }, &running));
+
+    // Exactly one candidate, bounded by the strip extent (100 + 300 = 400).
+    ASSERT_EQ(orfs.size(), 1u);
+    EXPECT_EQ(orfs[0].sizeBytes, 400u);
 }

@@ -611,7 +611,12 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 fr.modifiedAt = modifiedAt;
                 
                 const uint64_t absByte = sector * sectorSize + i;
-                uint64_t mftRec = pass.orphan ? UINT64_MAX : mftRecFromAbsByte(absByte);
+                // CA-032: resolve the MFT record number in BOTH passes. The
+                // orphan pass used to force UINT64_MAX here, which made the
+                // dedup guard below unreachable-true — the orphan sweep re-scans
+                // the live MFT zone, so every record the main pass emitted was
+                // emitted a second time (doc.txt showed up exactly twice).
+                const uint64_t mftRec = mftRecFromAbsByte(absByte);
                 if (pass.orphan && mftRec != UINT64_MAX && dedupByMft.count(mftRec)) continue;
 
                 if (mftRec != UINT64_MAX)

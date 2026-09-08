@@ -176,6 +176,10 @@ public:
 
     // Unified timeline (USN journal and other event sources)
     int64_t insertTimelineEvent(int64_t scanId, const TimelineEvent& event);
+    // CA-036: batched insert — one transaction + one prepared statement for
+    // the whole buffer. Order within the batch is preserved; returns false
+    // only when nothing was persisted (caller must keep its buffer then).
+    bool appendTimelineEventsBatch(int64_t scanId, const std::vector<TimelineEvent>& events);
     std::vector<TimelineEvent> getTimelineEvents(int64_t scanId, int offset, int limit,
                                                  const std::string& eventTypeFilter = "");
     int64_t getTimelineEventCount(int64_t scanId, const std::string& eventTypeFilter = "");

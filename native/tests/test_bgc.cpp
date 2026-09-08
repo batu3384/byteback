@@ -193,3 +193,41 @@ TEST(Bgc, FindsTriFragmentGapInSplitJpeg) {
     EXPECT_GT(r.frag2Len, 0u);
     EXPECT_GT(r.gap2Len, 0u);
 }
+
+// CA-035: cancel must cut the sweep short — the loops used to run 8192
+// attempts (each with a span copy) before yielding to the caller.
+TEST(Bgc, CancelledSearchReturnsPromptly) {
+    std::vector<uint8_t> disk(64 * 1024, 0x42);
+    std::atomic<bool> running{true};
+    std::atomic<int> calls{0};
+    auto cancelling = [&](const uint8_t*, size_t) {
+        ++calls;
+        if (calls.load() >= 10) running = false;
+        return 0;
+    };
+    BgcResult r = bifragmentedGapCarve(disk.data(), disk.size(),
+                                       0, disk.size(),
+                                       /*maxGap=*/1024, cancelling, /*step=*/1,
+                                       /*attemptBudget=*/100000, &running);
+    EXPECT_FALSE(r.found);
+    // Cancel honored within a few validator calls — nowhere near the budget.
+    EXPECT_LE(calls.load(), 20);
+}
+
+// CA-035: attempts whose reassembly copy exceeds 64 MiB are skipped without
+// copying or validating. The old code copied ~66 MB per attempt for the full
+// budget on a span like this.
+TEST(Bgc, HugeSpanAttemptsSkipCopyCost) {
+    std::vector<uint8_t> disk(66u * 1024 * 1024, 0x42); // span > 64 MiB + maxGap
+    std::atomic<int> calls{0};
+    auto counting = [&](const uint8_t*, size_t) {
+        ++calls;
+        return 0;
+    };
+    BgcResult r = bifragmentedGapCarve(disk.data(), disk.size(),
+                                       0, disk.size(),
+                                       /*maxGap=*/64 * 1024, counting, /*step=*/4096,
+                                       /*attemptBudget=*/100000);
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(calls.load(), 0); // every attempt skipped: never copied, never validated
+}

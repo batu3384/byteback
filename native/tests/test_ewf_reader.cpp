@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 #include <cstring>
 #include <fstream>
+#include <algorithm>
+#include <iterator>
 #include <vector>
 
 using namespace byteback;
@@ -137,4 +139,94 @@ TEST(DiskReader, RawFileBackend) {
     for (uint8_t b : out) EXPECT_EQ(b, 0xAB);
 
     ::remove(path);
+}
+
+// CA-039: the stored MD5 was parsed but never checked. A complete round-trip
+// image must verify; a single flipped byte in the container must fail the
+// digest check.
+TEST(EwfReader, VerifyDigestTrueOnRoundTripFalseOnCorruption) {
+    const char* path = "reader_verify.E01";
+    ::remove(path);
+
+    const uint64_t kSectors = 32;
+    std::vector<uint8_t> img(kSectors * 512);
+    for (size_t i = 0; i < img.size(); ++i) img[i] = static_cast<uint8_t>(i & 0xFF);
+    // Unique marker inside the image data, used to locate the bytes in the
+    // container file for corruption.
+    static const uint8_t marker[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22, 0x33, 0x44,
+                                       0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+    std::memcpy(img.data() + 64, marker, sizeof(marker));
+
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+
+    {
+        EwfReader r;
+        std::string err;
+        ASSERT_TRUE(r.open(path, err)) << err;
+        EXPECT_FALSE(r.md5Hex().empty());
+        EXPECT_TRUE(r.verifyDigest());
+    }
+
+    // Flip one byte of the image data inside the container.
+    {
+        std::ifstream in(path, std::ios::binary);
+        ASSERT_TRUE(in.is_open());
+        std::vector<char> content((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+        in.close();
+        ASSERT_FALSE(content.empty());
+        // MSVC char is signed: compare as unsigned bytes or values >= 0x80
+        // never match.
+        const auto pos = std::search(content.begin(), content.end(),
+                                     std::begin(marker), std::end(marker),
+                                     [](char a, uint8_t b) {
+                                         return static_cast<uint8_t>(a) == b;
+                                     });
+        ASSERT_NE(pos, content.end());
+        *pos = static_cast<char>((*pos) ^ 0xFF);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        out.close();
+    }
+
+    {
+        EwfReader r;
+        std::string err;
+        ASSERT_TRUE(r.open(path, err)) << err;
+        EXPECT_FALSE(r.verifyDigest());
+    }
+
+    ::remove(path);
+}
+
+// An aborted acquisition stores no digest; verification must report failure
+// rather than pretending an unchecked image is verified.
+TEST(EwfReader, VerifyDigestFalseWithoutDigestSection) {
+    const char* p1 = "reader_verify_abort.E01";
+    const char* p2 = "reader_verify_abort.E02";
+    ::remove(p1);
+    ::remove(p2);
+
+    EwfOptions opts;
+    opts.sectorsPerChunk = 1;
+    EwfWriter w;
+    w.setMaxSectorsSectionBytes(8 * 512);
+    const uint64_t kSectors = 16;
+    ASSERT_TRUE(w.open(p1, kSectors, 512, opts));
+    std::vector<uint8_t> img(kSectors * 512, 0x5A);
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.abort());
+    ASSERT_TRUE(w.md5Hex().empty());
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(p1, err)) << err;
+    EXPECT_FALSE(r.verifyDigest());
+
+    ::remove(p1);
+    ::remove(p2);
 }

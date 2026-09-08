@@ -52,10 +52,17 @@ uint64_t rd64le(const uint8_t* p) {
 
 // TIFF: walk the IFD chain; the max StripOffsets[i]+StripByteCounts[i] is the
 // true end for non-fragmented camera files (the dominant recovery case).
+// CA-038: TIFF-variant camera RAWs share the exact IFD layout with a variant
+// magic at 0 — Olympus ORF "IIRO"/"IIRS" and Panasonic RW2 "IIU\0" — so the
+// walker accepts them too; only the RAW signatures dispatch here with those
+// extensions.
 StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
     StructuralParseResult r;
     if (!data || size < 8) return r;
-    const bool le = data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00;
+    const bool le = data[0] == 0x49 && data[1] == 0x49 &&
+                    ((data[2] == 0x2A && data[3] == 0x00) ||
+                     (data[2] == 0x52 && (data[3] == 0x4F || data[3] == 0x53)) ||
+                     (data[2] == 0x55 && data[3] == 0x00));
     const bool be = data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A;
     if (!le && !be) return r;
 

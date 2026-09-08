@@ -16,6 +16,12 @@
   --accent-blue: #3B82F6;
   --accent-blue-hover: #60A5FA;
   --accent-glow: rgba(59, 130, 246, 0.25);
+  /* Accent blue that passes AA as small text on tinted chips in the current
+     theme (-400 shade on dark, -700 shade on light). */
+  --accent-blue-text: #60A5FA;
+  /* Inverted primary button (bg = --text-main) hover shade. Light theme needs
+     a darker step than the old hardcoded Zinc 200, which was 1.15:1 there. */
+  --btn-primary-hover: #E4E4E7;
 
   /* Legacy accent aliases. Older components reference these names from a prior
      "neon cyan" palette; they are mapped to the current electric-blue scheme so
@@ -118,11 +124,14 @@ h1, h2, h3, h4, h5, h6 {
   --shadow-color: rgba(9, 9, 11, 0.12);
   --scrollbar-thumb: rgba(9, 9, 11, 0.18);
   --scrollbar-thumb-hover: rgba(9, 9, 11, 0.3);
-  /* Status accents drop to their -700 shades in light mode — the 500/600
-     shades used on dark fail contrast as text on light tinted chips. */
+  /* Status accents drop to their -700/-800 shades in light mode — the 500/600
+     shades used on dark fail contrast as text on light tinted chips. Amber-800
+     (not -700): amber-700 sits at ~4.4:1 on amber-tinted chip backgrounds. */
   --alert-red: #B91C1C;
   --success-green: #047857;
-  --warning-yellow: #B45309;
+  --warning-yellow: #92400E;
+  --accent-blue-text: #1D4ED8;
+  --btn-primary-hover: #3F3F46;
 }
 
 [data-theme='light'] body {
@@ -192,7 +201,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .btn-primary:hover {
-  background-color: #E4E4E7; /* Zinc 200 */
+  background-color: var(--btn-primary-hover);
   transform: translateY(-1px);
 }
 
@@ -240,6 +249,15 @@ h1, h2, h3, h4, h5, h6 {
 .btn-danger:hover {
   background-color: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* Canonical disabled state (was duplicated in ShredderView.css). Disabled
+   controls are exempt from contrast minimums; opacity signals inertness. */
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--panel-border);
+  color: var(--text-muted);
 }
 
 /* Scrollbars */

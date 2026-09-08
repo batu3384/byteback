@@ -54,11 +54,11 @@
 .drive-select {
   width: 100%;
   padding: 12px;
-  background: rgba(11, 15, 25, 0.8);
+  background: var(--well-bg);
   border: 1px solid var(--border-subtle);
   color: var(--text-main);
   border-radius: 8px;
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   outline: none;
   transition: var(--transition-smooth);
 }
@@ -72,32 +72,9 @@
   border-color: var(--alert-red);
 }
 
-.btn-danger {
-  background-color: transparent;
-  color: var(--alert-red);
-  border: 1px solid var(--alert-red);
-  padding: 14px 28px;
-  border-radius: 8px;
-  font-weight: 600;
-  font-size: 1rem;
-  letter-spacing: 1px;
-  cursor: pointer;
-  transition: var(--transition-smooth);
+/* Local full-width modifier — the canonical .btn-danger lives in index.css. */
+.btn-danger-block {
   width: 100%;
-}
-
-.btn-danger:hover:not(:disabled) {
-  background-color: var(--alert-red);
-  color: white;
-  box-shadow: 0 0 20px rgba(255, 23, 68, 0.6);
-  transform: translateY(-2px);
-}
-
-.btn-danger:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  border-color: var(--border-subtle);
-  color: var(--text-muted);
 }
 
 .shred-progress {

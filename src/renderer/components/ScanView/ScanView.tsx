@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import './ScanView.css'
 import DiskMapVisualizer from '../DiskMap/DiskMapVisualizer'
-import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square, Pause, AlertTriangle } from 'lucide-react'
+import { Search, CheckCircle, ChevronLeft, ChevronRight, File, Square, Pause, AlertTriangle, X } from 'lucide-react'
 import { scanProfileLabel } from '../../../shared/scan-profiles'
 import { formatSize } from '../ResultsView/results-view-utils'
 import {
@@ -404,7 +404,7 @@ function ScanView({
             <div style={{ width: '320px', flexShrink: 0, background: 'var(--well-bg)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
                 <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.fileDetail')}</h4>
-                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem' }} onClick={() => setSelectedFile(null)} aria-label={t('common.close')}>✕</button>
+                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center' }} onClick={() => setSelectedFile(null)} aria-label={t('common.close')}><X size={14} aria-hidden="true" /></button>
               </div>
               <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', marginBottom: 'var(--space-md)', color: 'var(--text-main)' }}>
                 {selectedFile.name}

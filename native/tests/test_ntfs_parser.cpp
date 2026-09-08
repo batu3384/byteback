@@ -553,3 +553,26 @@ TEST(NtfsParser, OversizedAttributeLengthDoesNotLoopForever) {
     NTFSParser ntfs;
     EXPECT_TRUE(ntfs.scan(reader, [](const FileRecord&) {}, &running));
 }
+
+// CA-032: with carveOrphanMft=true the orphan pass rescans the live MFT zone.
+// The sentinel bug made every live record emit TWICE (doc.txt x2). Count
+// assertions, not booleans — booleans are how this escaped.
+TEST(NtfsParser, OrphanPassDoesNotDuplicateLiveMftRecords) {
+    auto img = buildNtfsBootMftWalkDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) names.push_back(fr.name);
+    }, &running, 0, 0, true));
+
+    int doc = 0, orphan = 0;
+    for (const auto& n : names) {
+        if (n == "doc.txt") ++doc;
+        if (n == "orphan.bin") ++orphan;
+    }
+    EXPECT_EQ(doc, 1);    // main pass only; orphan pass must skip via dedupByMft
+    EXPECT_EQ(orphan, 1); // genuinely outside the MFT runs: discovered once
+}

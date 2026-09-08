@@ -1,10 +1,11 @@
 import { existsSync } from 'fs'
 import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { getEngine } from './native-bridge'
 import { hexDataOrNull } from '../shared/hex-read'
 import { diskBusyMessage } from '../shared/scan-required'
 import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
+import { validateRecoverDestDir } from './recover-dest-validator'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { callNative } from './ipc-native'
 import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from './session-log'
@@ -73,8 +74,11 @@ export function registerIpcHandlers(): void {
     const ok = engine.initDatabase(dbPath)
     dbReady = !!ok
     if (!ok) dbInitError = 'initDatabase returned false'
-    console.log('[IPC] Database initialized:', ok, 'at', dbPath)
-    appendSessionLog('DB_OPEN', `ok=${ok ? 1 : 0} path=${dbPath}`)
+    // Redact the absolute path: session.log must not embed C:\Users\<name> on
+    // every line — the file lives in app.getPath('userData'), which is where
+    // support should look for byteback.db.
+    console.log('[IPC] Database initialized:', ok, 'db:', basename(dbPath))
+    appendSessionLog('DB_OPEN', `ok=${ok ? 1 : 0} db=${basename(dbPath)} (tam yol userData dizininde)`)
     if (ok) {
       try {
         const usableId = engine.getLatestUsableScanId()
@@ -142,9 +146,9 @@ export function registerIpcHandlers(): void {
     }
     // Trust boundary: native std::stoi failure silently defaults to drive 0,
     // so garbage drivePath would scan the wrong disk without error.
-    if (typeof driveIndex !== 'number' || !Number.isFinite(driveIndex)) {
-      throw new Error('Geçersiz sürücü indeksi')
-    }
+    // assertDriveIndex requires an integer >= 0: 1.5 would truncate in native,
+    // 1e100 would fall back to 0. -1 is the RAID virtual array.
+    if (driveIndex !== -1) assertDriveIndex(driveIndex)
     if (typeof scanType !== 'string' || !scanType) {
       throw new Error('Geçersiz tarama tipi')
     }
@@ -248,9 +252,10 @@ export function registerIpcHandlers(): void {
       })
       try {
         await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+        // Electron 44 removed marginType: margins are physical inches now
+        // (default margins = Chromium print defaults, same intent).
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
-          margins: { marginType: 'default' },
           pageSize: 'A4',
         })
         const fs = await import('node:fs/promises')
@@ -286,10 +291,19 @@ export function registerIpcHandlers(): void {
     return callNative('get-smart-status', () => getEngine().getSmartStatus(driveIndex))
   })
 
+  // Evidence-access audit granularity (deliberate): raw per-sector reads are
+  // NOT audit-logged. The native AuditLogger's LogDiskRead / LogFileRecovered
+  // hooks stay unwired dead code on purpose — a deep scan or hex session reads
+  // millions of sectors and per-sector entries would flood the hash-chained
+  // log into uselessness. Evidence access is recorded at operation
+  // granularity instead: SCAN_START/SCAN_COMPLETE (bridge_scan.cpp), RECOVER /
+  // PREVIEW (bridge_wipe.cpp and below), imaging events (bridge_imager.cpp).
   ipcMain.handle('read-hex-data', (_event, driveIndex: number, offset: number, size: number) => {
     try {
       assertDbReady()
-      if (!Number.isFinite(driveIndex) || driveIndex < 0) {
+      // Align with assertDriveIndex: a fractional index would truncate in
+      // native and read sectors from the wrong disk.
+      if (!Number.isInteger(driveIndex) || driveIndex < 0) {
         return { data: null, error: 'Geçersiz sürücü indeksi' }
       }
       if (!Number.isFinite(offset) || offset < 0) {
@@ -574,7 +588,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('set-bitlocker-recovery-password', (_event, driveIndex: number, password: string) => {
     try {
-      if (typeof driveIndex !== 'number' || typeof password !== 'string') {
+      if (typeof driveIndex !== 'number' || !Number.isInteger(driveIndex) || driveIndex < 0 || typeof password !== 'string') {
         return 'invalid arguments'
       }
       return getEngine().setBitLockerRecoveryPassword(driveIndex, password)
@@ -586,7 +600,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('set-bitlocker-password', (_event, driveIndex: number, password: string) => {
     try {
-      if (typeof driveIndex !== 'number' || typeof password !== 'string') {
+      if (typeof driveIndex !== 'number' || !Number.isInteger(driveIndex) || driveIndex < 0 || typeof password !== 'string') {
         return 'invalid arguments'
       }
       return getEngine().setBitLockerPassword(driveIndex, password)
@@ -598,7 +612,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('wipe-physical-drive', async (_event, driveIndex: number, typedSerial: string, confirmPhrase?: string) => {
     try {
-      if (typeof driveIndex !== 'number' || typeof typedSerial !== 'string' || !typedSerial.trim()) {
+      // Destructive path: a fractional index would truncate in native and
+      // wipe the wrong physical drive — integer >= 0 required.
+      if (typeof driveIndex !== 'number' || !Number.isInteger(driveIndex) || driveIndex < 0 || typeof typedSerial !== 'string' || !typedSerial.trim()) {
         return { ok: false, error: 'Geçersiz sürücü veya seri numarası' }
       }
       if (confirmPhrase !== 'IMHA') {
@@ -628,9 +644,24 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('detect-raid', (_event, driveIndices: number[]) => {
+    try {
+      if (!Array.isArray(driveIndices) || driveIndices.length < 2 || driveIndices.some((d) => !Number.isInteger(d) || d < 0)) {
+        return { found: false }
+      }
+      const engine = getEngine()
+      console.log('[IPC] detect-raid drives:', driveIndices)
+      return engine.detectRaid(driveIndices)
+    } catch (err) {
+      console.error('[IPC] detect-raid error:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      return { found: false, error: msg }
+    }
+  })
+
   ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
     try {
-      if (!Array.isArray(driveIndices) || driveIndices.some((d) => !Number.isFinite(d)) || typeof raidLevel !== 'number') {
+      if (!Array.isArray(driveIndices) || driveIndices.some((d) => !Number.isInteger(d) || d < 0) || typeof raidLevel !== 'number' || !Number.isInteger(raidLevel)) {
         return { success: false, capacity: 0, numDisks: 0, error: 'Geçersiz RAID argümanları' }
       }
       const engine = getEngine()
@@ -646,6 +677,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('fail-raid-disk', (_event, diskIndex: number) => {
     try {
+      if (typeof diskIndex !== 'number' || !Number.isInteger(diskIndex) || diskIndex < 0) return false
       return getEngine().failRaidDisk(diskIndex)
     } catch (err) {
       console.error('[IPC] fail-raid-disk error:', err)
@@ -698,13 +730,31 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) => {
     try {
       assertDbReady()
+      // -1 is the RAID virtual array; everything else must be an integer >= 0.
+      if (driveIndex !== -1) assertDriveIndex(driveIndex)
       if (!destDir || !destDir.trim()) {
         return { success: false, error: 'Hedef klasör seçilmedi' }
       }
       const parsed = parseRecoverIds(scanId, fileId)
       if (!parsed.ok) return { success: false, error: parsed.error }
+      // Defense in depth: the native destDirIsSafe blocklist is lexical only
+      // (\\?\ prefixes, 8.3 short names and Startup locations bypass it).
+      // Validate in main and pass the resolved real path to native.
+      const dest = validateRecoverDestDir(destDir)
+      if (!dest.ok) {
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} dest_rejected: ${dest.error}`)
+        return { success: false, error: dest.error }
+      }
       const engine = getEngine()
-      return await engine.recoverFile(driveIndex, parsed.fileId, destDir, parsed.scanId, preservePaths)
+      const result = await engine.recoverFile(driveIndex, parsed.fileId, dest.destDir, parsed.scanId, preservePaths)
+      // Native audit-logs only successful recovery (bridge_wipe.cpp RECOVER
+      // event); the hash-chained audit writer is not exported to JS, so failed
+      // attempts are recorded in the session log here. Native gap: an
+      // exported logAuditEvent(string) → AuditLogger::LogEvent binding.
+      if (!result.success) {
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} error=${result.error ?? ''}`)
+      }
+      return result
     } catch (err) {
       console.error('[IPC] recover-file error:', err)
       const raw = err instanceof Error ? err.message : String(err)
@@ -715,13 +765,28 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number, preservePaths?: boolean) => {
     try {
       assertDbReady()
+      // -1 is the RAID virtual array; everything else must be an integer >= 0.
+      if (driveIndex !== -1) assertDriveIndex(driveIndex)
       if (!destDir || !destDir.trim()) {
         return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: 'Hedef klasör seçilmedi' }
       }
       const parsed = parseRecoverIdList(scanId, fileIds)
       if (!parsed.ok) return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: parsed.error }
+      // Same main-process destination policy as recover-file (see comment there).
+      const dest = validateRecoverDestDir(destDir)
+      if (!dest.ok) {
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} files=${parsed.fileIds.length} dest_rejected: ${dest.error}`)
+        return { succeeded: 0, failed: parsed.fileIds.length, results: [], error: dest.error }
+      }
       const engine = getEngine()
-      return await engine.recoverFilesBatch(driveIndex, parsed.fileIds, destDir, parsed.scanId, preservePaths)
+      const result = await engine.recoverFilesBatch(driveIndex, parsed.fileIds, dest.destDir, parsed.scanId, preservePaths)
+      // One bounded summary line per batch — per-file failure lines would
+      // flood session.log on large selections.
+      if (result.failed > 0) {
+        const firstError = result.results.find((r) => !r.success)?.error ?? ''
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} failed=${result.failed}/${parsed.fileIds.length} error=${firstError}`)
+      }
+      return result
     } catch (err) {
       console.error('[IPC] recover-files-batch error:', err)
       const raw = err instanceof Error ? err.message : String(err)
@@ -748,11 +813,19 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {
     try {
+      // -1 is the RAID virtual array; everything else must be an integer >= 0.
+      if (driveIndex !== -1) assertDriveIndex(driveIndex)
       const parsed = parseRecoverIds(scanId, fileId)
       if (!parsed.ok) return { success: false, error: parsed.error }
       const engine = getEngine()
       const res = engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
       if (res && res.error) return { ...res, error: diskBusyMessage(res.error) ?? res.error }
+      // Evidence-access logging at operation granularity: one bounded PREVIEW
+      // event per generated preview (not per chunk). The hash-chained native
+      // audit writer has no JS binding — same native gap as RECOVER_FAIL.
+      if (res && res.success) {
+        appendSessionLog('PREVIEW', `scanId=${parsed.scanId} file=${parsed.fileId} kind=${res.kind ?? ''} bytes=${res.data?.length ?? 0}`)
+      }
       return res
     } catch (err) {
       console.error('[IPC] read-file-preview error:', err)
@@ -766,7 +839,9 @@ export function registerIpcHandlers(): void {
       return getEngine().getRaidState()
     } catch (err) {
       console.error('[IPC] get-raid-state error:', err)
-      return { active: false, capacity: 0, numDisks: 0, level: -1 }
+      // Shape mirrors the native inactive branch (bridge_wipe.cpp GetRaidState):
+      // both index arrays are always present, possibly empty.
+      return { active: false, capacity: 0, numDisks: 0, level: -1, failedDisks: [], memberDriveIndices: [] }
     }
   })
 

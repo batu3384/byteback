@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, powerMonitor } from 'electron'
+import { app, BrowserWindow, dialog, powerMonitor, session } from 'electron'
 import { join } from 'path'
 import { broadcastScanComplete, isImagingLive, registerIpcHandlers } from './ipc-handlers'
 import { getEngine } from './native-bridge'
+import { redactPaths } from './redact-paths'
 import {
   appendSessionLog,
   initSessionLog,
@@ -112,6 +113,14 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // Trust boundary: every custom session in this app resolves to
+  // session.defaultSession (the offscreen PDF window sets no session), so one
+  // handler covers all windows. Clipboard writes stay allowed (report/CSV
+  // copy); media, notifications, geolocation and everything else is denied.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'clipboard-sanitized-write')
+  })
+
   initSessionLog(app.getPath('userData'))
   registerIpcHandlers()
   createWindow()
@@ -174,12 +183,17 @@ function stopScanForSignal(sig: string): void {
 process.on('SIGINT', () => stopScanForSignal('SIGINT'))
 process.on('SIGTERM', () => stopScanForSignal('SIGTERM'))
 
+/** Strip user-identifying absolute path prefixes (userData, cwd) from log text. */
+function redacted(text: string): string {
+  return redactPaths(text, { userData: app.getPath('userData'), cwd: process.cwd() })
+}
+
 process.on('uncaughtException', (err) => {
-  appendSessionLog('CRASH', `uncaughtException ${err.stack ?? err.message}`)
+  appendSessionLog('CRASH', `uncaughtException ${redacted(err.stack ?? err.message)}`)
 })
 process.on('unhandledRejection', (reason) => {
   const text = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
-  appendSessionLog('CRASH', `unhandledRejection ${text}`)
+  appendSessionLog('CRASH', `unhandledRejection ${redacted(text)}`)
 })
 
 app.on('child-process-gone', (_event, details) => {

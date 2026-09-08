@@ -41,7 +41,7 @@
   flex: 1;
   background: transparent;
   border: none;
-  color: var(--text-light);
+  color: var(--text-main);
   font-size: 1.1rem;
   padding: 10px;
   outline: none;
@@ -141,7 +141,7 @@
 
 .result-file {
   font-weight: 600;
-  color: var(--text-light);
+  color: var(--text-main);
   margin-bottom: 4px;
 }
 
@@ -151,11 +151,11 @@
   margin-bottom: 8px;
 }
 
-.result-context {
-  font-size: 0.9rem;
-  color: #ccc;
-  font-family: monospace;
-  background: var(--well-bg);
-  padding: 8px;
-  border-radius: 4px;
+/* Matched query substring inside result name/path. Solid pair that holds
+   >=4.5:1 in both themes without a theme override. */
+.kw-mark {
+  background: #FDE68A;
+  color: #78350F;
+  border-radius: 2px;
+  padding: 0 1px;
 }

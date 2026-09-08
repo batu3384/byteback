@@ -1,8 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Renderer makes no fetch/XHR/WebSocket calls (IPC only), so connect-src is
+         'none'. Previews ship as data:/blob: images. electron-vite dev replaces
+         this tag for HMR (see electron.vite.config.ts); builds keep it verbatim. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
     <title>Byteback</title>
   </head>
   <body>

@@ -3,9 +3,28 @@ import './KeywordSearch.css';
 import { Search, FileText, Filter, AlertCircle, FileSearch, Keyboard } from 'lucide-react';
 import type { FileRecord } from '../../../shared/ipc-contract';
 import { useI18n, tFormat } from '../../i18n';
+import { buildMatchParts } from './highlight';
 
 interface KeywordSearchProps {
   scanId: number;
+}
+
+/** Wraps the matched query substring in <mark class="kw-mark">. The IPC
+ *  payload (FileRecord) carries no content snippet, so highlighting applies
+ *  to the name/path text that the results list actually shows. */
+function HighlightText({ text, query, useRegex }: { text: string; query: string; useRegex: boolean }): React.ReactElement {
+  const parts = buildMatchParts(text, query, useRegex);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.match ? (
+          <mark key={i} className="kw-mark">{p.text}</mark>
+        ) : (
+          <React.Fragment key={i}>{p.text}</React.Fragment>
+        ),
+      )}
+    </>
+  );
 }
 
 const CATEGORIES = [
@@ -260,8 +279,12 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
                   background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid transparent'
                 }}>
                   <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
-                  <span style={{ fontWeight: 500, flex: 1 }}>{r.name}</span>
-                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem' }}>{r.path || r.category || '—'}</span>
+                  <span style={{ fontWeight: 500, flex: 1 }}>
+                    <HighlightText text={r.name} query={query.trim()} useRegex={useRegex && !searchContent} />
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.path || undefined}>
+                    {r.path ? <HighlightText text={r.path} query={query.trim()} useRegex={useRegex && !searchContent} /> : (r.category || '—')}
+                  </span>
                   <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
                     {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
                   </span>

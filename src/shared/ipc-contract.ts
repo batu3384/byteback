@@ -146,7 +146,24 @@ export interface RaidState {
   capacity: number
   numDisks: number
   level: number
+  /** Indices of inactive member disks (native always emits, empty when healthy). */
+  failedDisks?: number[]
+  /** Physical drive indices bound into the virtual array (native always emits). */
   memberDriveIndices?: number[]
+}
+
+/** Parity-consistency autodetection over candidate member drives. */
+export interface RaidDetection {
+  found: boolean
+  /** RaidLevel numbering as in reconstruct-raid (0=RAID0 … 4=RAID10). Present when found. */
+  raidLevel?: number
+  /** Stripe/chunk size in bytes. Present when found. */
+  blockSize?: number
+  /** Per-member start offset in 512B sectors. Present when found. */
+  dataOffsetSectors?: number
+  /** Parity-consistency score 0..1. Present when found. */
+  confidence?: number
+  error?: string
 }
 
 export interface BatchRecoverResult {

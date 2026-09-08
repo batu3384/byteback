@@ -849,6 +849,55 @@ int64_t MetadataStore::insertTimelineEvent(int64_t scanId, const TimelineEvent& 
     return id;
 }
 
+// CA-036: batched timeline insert mirroring insertFilesBatch — a scan with a
+// large USN journal used to pay one prepare/bind/step/finalize per record.
+bool MetadataStore::appendTimelineEventsBatch(int64_t scanId, const std::vector<TimelineEvent>& events) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (events.empty()) return true;
+    if (!db_) return false;
+
+    if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    const char* sql = R"(
+        INSERT INTO timeline_events (scan_id, timestamp, event_type, file_name, mft_ref, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    for (const auto& ev : events) {
+        sqlite3_bind_int64(stmt, 1, scanId);
+        sqlite3_bind_int64(stmt, 2, ev.timestamp);
+        sqlite3_bind_text(stmt, 3, ev.eventType.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, ev.fileName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 5, static_cast<sqlite3_int64>(ev.mftRef));
+        sqlite3_bind_text(stmt, 6, ev.source.c_str(), -1, SQLITE_TRANSIENT);
+
+        const int rc = sqlite3_step(stmt);
+        sqlite3_reset(stmt);
+        if (rc != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    // Same contract as insertFilesBatch: a failed COMMIT leaves the batch
+    // un-persisted and must not report success.
+    if (sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
+}
+
 std::vector<TimelineEvent> MetadataStore::getTimelineEvents(int64_t scanId, int offset, int limit,
                                                             const std::string& eventTypeFilter) {
     std::lock_guard<std::recursive_mutex> lock(mu_);

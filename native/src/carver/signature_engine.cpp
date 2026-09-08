@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <regex>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <set>
 
 namespace byteback {
 
@@ -83,7 +85,11 @@ void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size
     if (isZipFamilyExt(ext)) pr = carver::parseZipFamily(data, size);
     else if (ext == "sqlite" || ext == "db") pr = carver::parseSqliteDb(data, size);
     else if (isMp4FamilyExt(ext)) pr = carver::parseMp4Mov(data, size);
-    else if (ext == "tiff" || ext == "cr2") pr = carver::parseTiff(data, size);
+    // CA-038: ORF/RW2 are TIFF-IFD structures with a variant magic; parseTiff
+    // accepts both variant magics, giving these carves a real size bound (an
+    // unbounded candidate would be dropped as a phantom by the CA-001 policy).
+    else if (ext == "tiff" || ext == "cr2" || ext == "orf" || ext == "rw2")
+        pr = carver::parseTiff(data, size);
     else if (ext == "riff") pr = carver::parseRiff(data, size);
     else if (ext == "ts") pr = carver::parseMpegTs(data, size);
     else if (ext == "7z") pr = carver::parseSevenZip(data, size);
@@ -386,6 +392,17 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("PCap Network", ".pcap", "Network", {0xD4, 0xC3, 0xB2, 0xA1}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("PCap-ng Network", ".pcapng", "Network", {0x0A, 0x0D, 0x0D, 0x0A}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("Fuji RAF RAW", ".raf", "Image", {0x46, 0x55, 0x4A, 0x49, 0x46, 0x49, 0x4C, 0x4D, 0x43, 0x43, 0x44, 0x44, 0x2D, 0x52, 0x41, 0x57}, {}, 100 * 1024 * 1024);
+    // CA-038: RAW-camera formats with a FIXED-offset magic (no conditional
+    // EXIF parsing). ORF/RW2 are TIFF-IFD structures with a variant magic, so
+    // applyStructuralRefinement bounds them via parseTiff; X3F ("FOVb") has
+    // no verified fixed-offset size field, so its carve window stays bounded
+    // by maxSize and the CA-001 expire policy drops unboundable candidates.
+    // NEF/ARW/DNG/GPR are deliberately absent: they carry generic TIFF magic
+    // and are only distinguishable via EXIF-Make logic (documented ceiling).
+    addSig("Olympus ORF RAW (IIRO)", ".orf", "Image", {0x49, 0x49, 0x52, 0x4F}, {}, 128 * 1024 * 1024);
+    addSig("Olympus ORF RAW (IIRS)", ".orf", "Image", {0x49, 0x49, 0x52, 0x53}, {}, 128 * 1024 * 1024);
+    addSig("Panasonic RW2 RAW", ".rw2", "Image", {0x49, 0x49, 0x55, 0x00}, {}, 128 * 1024 * 1024);
+    addSig("Sigma X3F RAW", ".x3f", "Image", {0x46, 0x4F, 0x56, 0x62}, {}, 128 * 1024 * 1024);
     addSig("JPEG2000 JP2", ".jp2", "Image", {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 50 * 1024 * 1024);
     addSig("Apple Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);
     addSig("KeePass KDBX", ".kdbx", "Document", {0x03, 0x4B, 0x44, 0x42, 0x58}, {}, 50 * 1024 * 1024);
@@ -700,7 +717,23 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
     int foundCount = 0;
     
     int currentState = 0;
-    std::vector<ActiveCarve> activeCarves;
+    // CA-034: active carves live in a startOffset-ordered map with a
+    // per-signature start index. The old plain vector forced a full scan per
+    // header/footer hit — with a hostile image (magic every 512B) that is
+    // O(n^2) over tens of thousands of carves. The map preserves the vector's
+    // startOffset iteration order, so close/prune/flush semantics are
+    // unchanged; the windowed lookups below never scan the whole set.
+    std::map<uint64_t, ActiveCarve> activeCarves;
+    std::map<int, std::set<uint64_t>> startsBySig;
+    auto eraseCarve = [&](std::map<uint64_t, ActiveCarve>::iterator it)
+        -> std::map<uint64_t, ActiveCarve>::iterator {
+        const auto s = startsBySig.find(it->second.sigId);
+        if (s != startsBySig.end()) {
+            s->second.erase(it->first);
+            if (s->second.empty()) startsBySig.erase(s);
+        }
+        return activeCarves.erase(it);
+    };
     
     for (uint64_t sector = firstSector; sector < rangeEndSector; sector += chunkSectors) {
         if (isRunning && !(*isRunning)) break;
@@ -743,12 +776,20 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
             for (int sigId : acNodes[currentState].headerMatches) {
                 const auto& sig = signatures[sigId];
 
-                // Avoid duplicates for the same signature that overlap
+                // Avoid duplicates for the same signature that overlap. Both
+                // checks can only ever match carves opened within a bounded
+                // window behind the cursor, so the index makes each a
+                // window-sized walk instead of a whole-collection scan.
                 bool alreadyActive = false;
-                for (const auto& ac : activeCarves) {
-                    if (ac.sigId == sigId && currentAbsoluteOffset - ac.startOffset < 4096) {
-                        alreadyActive = true;
-                        break;
+                {
+                    const uint64_t winFrom =
+                        currentAbsoluteOffset >= 4096 ? currentAbsoluteOffset - 4095 : 0;
+                    for (auto w = activeCarves.lower_bound(winFrom);
+                         w != activeCarves.end() && w->first <= currentAbsoluteOffset; ++w) {
+                        if (w->second.sigId == sigId) {
+                            alreadyActive = true;
+                            break;
+                        }
                     }
                 }
                 // CA-006: signatures that share a magic (leftover collisions)
@@ -756,11 +797,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 // candidate per start offset, whatever the family.
                 if (!alreadyActive) {
                     uint64_t thisStart = currentAbsoluteOffset - sig.header.size() + 1;
-                    for (const auto& ac : activeCarves) {
-                        if (thisStart >= ac.startOffset && thisStart - ac.startOffset < 512) {
-                            alreadyActive = true;
-                            break;
-                        }
+                    const uint64_t winFrom = thisStart >= 512 ? thisStart - 511 : 0;
+                    auto w = activeCarves.lower_bound(winFrom);
+                    if (w != activeCarves.end() && w->first <= thisStart) {
+                        alreadyActive = true;
                     }
                 }
 
@@ -771,21 +811,28 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                     ac.startSector = ac.startOffset / sectorSize;
                     ac.endOffsetLimit = ac.startOffset + sig.maxSize;
                     ac.filename = "carved_" + std::to_string(foundCount++) + "_" + std::to_string(ac.startSector) + sig.extension;
-                    activeCarves.push_back(ac);
+                    activeCarves.emplace(ac.startOffset, std::move(ac));
+                    startsBySig[sigId].insert(ac.startOffset);
                 }
             }
             
             // Handle Footer Matches
             for (int sigId : acNodes[currentState].footerMatches) {
                 const auto& sig = signatures[sigId];
-                
-                // Find matching active carve
-                auto it = activeCarves.begin();
-                while (it != activeCarves.end()) {
-                    if (it->sigId == sigId) {
+
+                // Find matching active carves: iterate this signature's starts
+                // in startOffset order (the old vector order).
+                auto sigIt = startsBySig.find(sigId);
+                if (sigIt == startsBySig.end()) continue;
+                const std::set<uint64_t> starts = sigIt->second; // copy: closes erase below
+                for (uint64_t startOffset : starts) {
+                    auto it = activeCarves.find(startOffset);
+                    if (it == activeCarves.end()) continue;
+                    const ActiveCarve& carve = it->second;
+                    {
                         uint64_t fileEndOffset = currentAbsoluteOffset + 1; // End of footer
-                        if (fileEndOffset <= it->endOffsetLimit) {
-                            uint64_t actualSize = fileEndOffset - it->startOffset;
+                        if (fileEndOffset <= carve.endOffsetLimit) {
+                            uint64_t actualSize = fileEndOffset - carve.startOffset;
                             std::string ext = sig.extension.empty() ? "" : sig.extension.substr(1);
 
                             // Fast Object Validation: read the carved span back
@@ -810,7 +857,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 actualSize > 4096 && actualSize <= (16u << 20)) {
                                 uint32_t alignedSize = ((static_cast<uint32_t>(actualSize) + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> alignedBuf(alignedSize);
-                                auto rres = reader.readBytes(it->startOffset, alignedSize, alignedBuf.data());
+                                auto rres = reader.readBytes(carve.startOffset, alignedSize, alignedBuf.data());
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
                                     if (confidence >= 40 && confidence < 85) {
@@ -823,7 +870,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                             [&ext](const uint8_t* d, size_t n) {
                                                 return dispatchValidator(ext, d, n);
                                             },
-                                            sectorSize);
+                                            sectorSize, /*attemptBudget=*/8192, isRunning);
                                         if (!bgc.found) {
                                             bgc = triFragmentedGapCarve(
                                                 alignedBuf.data(), static_cast<size_t>(actualSize),
@@ -832,7 +879,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                                 [&ext](const uint8_t* d, size_t n) {
                                                     return dispatchValidator(ext, d, n);
                                                 },
-                                                sectorSize);
+                                                sectorSize, /*attemptBudget=*/8192, isRunning);
                                         }
                                         bgcRescued = bgc.found;
                                     }
@@ -848,7 +895,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             // Independent 512-byte header read — works for
                             // candidates of every size, not just the BGC window.
                             std::string effExt = ext;
-                            std::string effName = it->filename;
+                            std::string effName = carve.filename;
                             std::vector<uint8_t> probeBuf;
                             if (isZipFamilyExt(effExt) || effExt == "sqlite" || effExt == "db" ||
                                 isMp4FamilyExt(effExt) || effExt == "mkv" || effExt == "webm" ||
@@ -859,7 +906,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 probe = ((probe + sectorSize - 1) / sectorSize) * sectorSize;
                                 if (probe > 0) {
                                     probeBuf.resize(probe);
-                                    if (!reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
+                                    if (!reader.readBytes(carve.startOffset, probe, probeBuf.data()).success) {
                                         probeBuf.clear();
                                     }
                                 }
@@ -867,7 +914,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                     // CA-018/CA-022: targeted reads beat the 1MB probe clamp.
                                     // NB: maxSize==actualSize here on purpose — the footer already
                                     // fixed the exact size; the walk may only refine within it.
-                                    if (!applyBoundedTargetedParse(effExt, reader, it->startOffset,
+                                    if (!applyBoundedTargetedParse(effExt, reader, carve.startOffset,
                                                                    probeBuf.data(), probeBuf.size(),
                                                                    actualSize, actualSize, confidence)) {
                                         // CA-003: actualSize can exceed the 1MB probe; never
@@ -885,7 +932,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 uint8_t hdr[512];
                                 uint32_t hdrAligned = ((512u + sectorSize - 1) / sectorSize) * sectorSize;
                                 std::vector<uint8_t> hdrBuf(hdrAligned);
-                                if (reader.readBytes(it->startOffset, hdrAligned, hdrBuf.data()).success) {
+                                if (reader.readBytes(carve.startOffset, hdrAligned, hdrBuf.data()).success) {
                                     std::memcpy(hdr, hdrBuf.data(), 512);
                                     if (const char* sub = byteback::carver::detectRiffSubtype(hdr, 512)) {
                                         effExt = sub;
@@ -901,10 +948,10 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             if (probeBuf.empty() && actualSize > 0) {
                                 const uint32_t hashProbe = clampProbeToDisk(
                                     std::min<uint64_t>(actualSize, 64 * 1024),
-                                    it->startOffset, diskSize);
+                                    carve.startOffset, diskSize);
                                 if (hashProbe > 0) {
                                     probeBuf.resize(hashProbe);
-                                    if (!reader.readBytes(it->startOffset, hashProbe, probeBuf.data()).success) {
+                                    if (!reader.readBytes(carve.startOffset, hashProbe, probeBuf.data()).success) {
                                         // Raw/physical backends reject the aligned
                                         // overread of a partial final sector: retry
                                         // sector-rounded so tail carves still hash.
@@ -912,7 +959,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                         const uint32_t aligned = (hashProbe / sectorSize) * sectorSize;
                                         if (aligned > 0) {
                                             probeBuf.resize(aligned);
-                                            if (!reader.readBytes(it->startOffset, aligned, probeBuf.data()).success) {
+                                            if (!reader.readBytes(carve.startOffset, aligned, probeBuf.data()).success) {
                                                 probeBuf.clear();
                                             }
                                         }
@@ -929,12 +976,12 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 fr.extension = effExtBgc;
                                 fr.path = "/recovered_raw/" + fr.name;
                                 fr.sizeBytes = actualSize - bgc.gapLen - bgc.gap2Len;
-                                fr.startSector = it->startSector;
-                                fr.startByteOffset = it->startOffset % sectorSize;
+                                fr.startSector = carve.startSector;
+                                fr.startByteOffset = carve.startOffset % sectorSize;
                                 fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
-                                fr.runs.push_back({it->startOffset / sectorSize,
+                                fr.runs.push_back({carve.startOffset / sectorSize,
                                                    (bgc.frag1Len + sectorSize - 1) / sectorSize});
-                                uint64_t frag2Start = it->startOffset + bgc.frag1Len + bgc.gapLen;
+                                uint64_t frag2Start = carve.startOffset + bgc.frag1Len + bgc.gapLen;
                                 if (bgc.frag2Len > 0 || bgc.gap2Len > 0) {
                                     fr.runs.push_back({frag2Start / sectorSize,
                                                        (bgc.frag2Len + sectorSize - 1) / sectorSize});
@@ -960,11 +1007,11 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 // reassemblies over different gap junk hash apart —
                                 // a dedup miss, never a false duplicate.
                                 stampContentHash(fr, probeBuf.data(), probeBuf.size(), fr.sizeBytes);
-                                stampCarveExif(fr, effExtBgc, reader, it->startOffset, fr.sizeBytes, nullptr, 0);
+                                stampCarveExif(fr, effExtBgc, reader, carve.startOffset, fr.sizeBytes, nullptr, 0);
 
                                 emit(fr);
 
-                                it = activeCarves.erase(it);
+                                eraseCarve(it);
                                 continue;
                             }
 
@@ -975,8 +1022,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             fr.extension = effExt;
                             fr.path = "/recovered_raw/" + fr.name;
                             fr.sizeBytes = actualSize;
-                            fr.startSector = it->startSector;
-                            fr.startByteOffset = it->startOffset % sectorSize;
+                            fr.startSector = carve.startSector;
+                            fr.startByteOffset = carve.startOffset % sectorSize;
                             stampContentHash(fr, probeBuf.data(), probeBuf.size(), actualSize);
                             fr.endSector = (fileEndOffset + sectorSize - 1) / sectorSize;
                             fr.status = 0;
@@ -985,64 +1032,63 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                             fr.source = "carver";
                             fr.createdAt = 0;
                             fr.modifiedAt = 0;
-                            stampCarveExif(fr, effExt, reader, it->startOffset, actualSize, nullptr, 0);
+                            stampCarveExif(fr, effExt, reader, carve.startOffset, actualSize, nullptr, 0);
                             
                             emit(fr);
                             
                             // Remove from active carves
-                            it = activeCarves.erase(it);
+                            eraseCarve(it);
                             continue;
                         }
                     }
-                    ++it;
                 }
             }
         }
         
-        // Prune expired active carves
+        // Prune expired active carves (startOffset order, as before)
         uint64_t currentOffsetEndOfChunk = baseOffset + res.bytesRead;
         auto it = activeCarves.begin();
         while (it != activeCarves.end()) {
-        if (currentOffsetEndOfChunk > it->endOffsetLimit) {
-            const auto& sig = signatures[it->sigId];
+        if (currentOffsetEndOfChunk > it->second.endOffsetLimit) {
+            const auto& sig = signatures[it->second.sigId];
             std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);
             uint64_t actualSize = sig.maxSize;
             int confidence = sig.footer.empty() ? 55 : 70;
             const uint32_t probe = clampProbeSectorsToDisk(
-                std::min<uint64_t>(sig.maxSize, 1u << 20), it->startOffset, diskSize, sectorSize);
+                std::min<uint64_t>(sig.maxSize, 1u << 20), it->second.startOffset, diskSize, sectorSize);
                     std::vector<uint8_t> probeBuf;
                     if (probe > 0) {
                         probeBuf.resize(probe);
                         // CA-004: byte-exact read; unaligned candidates were silently
                         // erased here before because readSectors rejected the offset.
-                        if (reader.readBytes(it->startOffset, probe, probeBuf.data()).success) {
-                            std::string name = it->filename;
-                            if (!refineExpiredCarve(sig, &reader, it->startOffset, probeBuf.data(), probeBuf.size(),
+                        if (reader.readBytes(it->second.startOffset, probe, probeBuf.data()).success) {
+                            std::string name = it->second.filename;
+                            if (!refineExpiredCarve(sig, &reader, it->second.startOffset, probeBuf.data(), probeBuf.size(),
                                                     name, effExt, actualSize, confidence)) {
-                                it = activeCarves.erase(it);
+                                it = eraseCarve(it);
                                 continue;
                             }
-                            it->filename = name;
+                            it->second.filename = name;
                         } else {
-                            it = activeCarves.erase(it);
+                            it = eraseCarve(it);
                             continue;
                         }
                     } else {
-                        it = activeCarves.erase(it);
+                        it = eraseCarve(it);
                         continue;
                     }
 
                 FileRecord fr;
                 fr.id = 0;
                 fr.parentId = 0;
-                fr.name = it->filename;
+                fr.name = it->second.filename;
                 fr.extension = effExt;
                 fr.path = "/recovered_raw/" + fr.name;
                 fr.sizeBytes = actualSize;
-                fr.startSector = it->startSector;
-                fr.startByteOffset = it->startOffset % sectorSize;
+                fr.startSector = it->second.startSector;
+                fr.startByteOffset = it->second.startOffset % sectorSize;
                 stampContentHash(fr, probeBuf.data(), probeBuf.size(), actualSize);
-                fr.endSector = (it->startOffset + actualSize + sectorSize - 1) / sectorSize;
+                fr.endSector = (it->second.startOffset + actualSize + sectorSize - 1) / sectorSize;
                 fr.status = 0;
                 fr.confidence = confidence;
                 fr.category = refineCarveCategory(probeBuf.empty() ? nullptr : probeBuf.data(),
@@ -1050,12 +1096,12 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                 fr.source = "carver";
                 fr.createdAt = 0;
                 fr.modifiedAt = 0;
-                stampCarveExif(fr, effExt, reader, it->startOffset, actualSize,
+                stampCarveExif(fr, effExt, reader, it->second.startOffset, actualSize,
                                probeBuf.empty() ? nullptr : probeBuf.data(), probeBuf.size());
-                
+
                 emit(fr);
-                
-                it = activeCarves.erase(it);
+
+                it = eraseCarve(it);
             } else {
                 ++it;
             }
@@ -1070,7 +1116,8 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
 
     // Process remaining active carves when disk ends
     uint64_t endOfDiskOffset = std::min(diskSize, rangeEndSector * sectorSize);
-    for (const auto& ac : activeCarves) {
+    for (const auto& [startOffset, ac] : activeCarves) {
+        (void)startOffset;
         const auto& sig = signatures[ac.sigId];
         uint64_t actualSize = std::min(sig.maxSize, endOfDiskOffset > ac.startOffset ? endOfDiskOffset - ac.startOffset : 0);
         std::string effExt = sig.extension.empty() ? "" : sig.extension.substr(1);

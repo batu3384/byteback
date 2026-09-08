@@ -6,6 +6,7 @@ export type {
   ScanState,
   RecoverResult,
   RaidAssemblyResult,
+  RaidDetection,
   PartitionInfo,
   TimelineEvent,
   TimelineResult,
@@ -25,6 +26,7 @@ import type {
   ScanSummary,
   SmartStatus,
   RaidAssemblyResult,
+  RaidDetection,
   RecoverResult,
   FilePreviewResult,
 } from '../shared/ipc-contract'
@@ -80,9 +82,12 @@ interface BytebackEngine {
   setBitLockerRecoveryPassword(driveIndex: number, password: string): string
   setBitLockerPassword(driveIndex: number, password: string): string
   startPhysicalWipe(driveIndex: number, typedSerial: string): Promise<boolean>
+  detectRaid(driveIndices: number[]): RaidDetection
   reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
   failRaidDisk(diskIndex: number): boolean
-  getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[] }
+  // Synced with the native emission (bridge_wipe.cpp GetRaidState): both index
+  // arrays are always present, empty when the array is inactive.
+  getRaidState(): { active: boolean; capacity: number; numDisks: number; level: number; failedDisks: number[]; memberDriveIndices: number[] }
   recoverFile(
     driveIndex: number,
     fileId: number,

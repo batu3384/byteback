@@ -18,15 +18,44 @@ interface ConfirmModalProps {
 function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm, onCancel }: ConfirmModalProps): React.ReactElement | null {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!open) return
+    // Focus trap: Tab/Shift+Tab cycle inside the dialog; the trigger gets
+    // focus back when the dialog closes.
+    restoreFocusRef.current = document.activeElement as HTMLElement | null
     confirmRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape') {
+        onCancel()
+        return
+      }
+      if (e.key !== 'Tab' || !panelRef.current) return
+      const focusables = panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )
+      if (focusables.length === 0) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      const active = document.activeElement
+      if (!panelRef.current.contains(active)) {
+        e.preventDefault()
+        first.focus()
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      restoreFocusRef.current?.focus?.()
+    }
   }, [open, onCancel])
 
   if (!open) return null
@@ -50,6 +79,7 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
       onClick={onCancel}
     >
       <div
+        ref={panelRef}
         className="glass-panel"
         style={{ maxWidth: '480px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}
         onClick={(e) => e.stopPropagation()}

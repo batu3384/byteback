@@ -10,6 +10,7 @@ export type {
   RecoverResult,
   FilePreviewResult,
   RaidAssemblyResult,
+  RaidDetection,
   BatchRecoverResult,
   PartitionInfo,
   ScanOptions,
@@ -35,6 +36,7 @@ import type {
   RecoverResult,
   FilePreviewResult,
   RaidAssemblyResult,
+  RaidDetection,
   BatchRecoverResult,
   PartitionInfo,
   ScanOptions,
@@ -102,6 +104,7 @@ declare global {
       setBitLockerFvek: (hex: string) => Promise<boolean>
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>
       setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>
+      detectRaid: (driveIndices: number[]) => Promise<RaidDetection>
       reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[]; memberDriveIndices?: number[] }>
