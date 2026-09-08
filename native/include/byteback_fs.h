@@ -30,6 +30,30 @@ public:
     bool scanAt(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning,
                 uint64_t partitionOffsetBytes, uint64_t partitionSizeBytes = 0,
                 bool carveOrphanMft = true);
+
+private:
+    // FAZ 1.1: compact per-record index built by the Pass-1 MFT walk. Pass-1
+    // retains ONLY these entries — the previous design accumulated a full
+    // FileRecord (strings, runs, resident blob) per record and scaled with the
+    // record count into the gigabyte range. Pass-2 re-reads each record's bytes
+    // from disk (byteOffset/byteLen), re-parses it with the shared attribute
+    // parser and streams it to the callback, so at most one record is
+    // materialized at a time.
+    struct MftEntry {
+        uint64_t byteOffset = 0;  // absolute byte offset of the record start
+        uint32_t byteLen = 0;     // record length used while parsing in Pass-1
+        uint64_t mftRef = 0;      // MFT record number; UINT64_MAX when unknown
+        uint8_t flags = 0;        // MFT record flags snapshot (0x01 in-use, 0x02 dir)
+        // runs_codec serializeRuns() of the unnamed non-resident $DATA
+        // attribute. Resident $DATA bytes are NOT retained — Pass-2 re-reads
+        // them from the on-disk record (K1: nothing is dropped; the orphan
+        // sweep emits any entry Pass-2 could not re-read).
+        std::vector<uint8_t> packedRuns;
+    };
+    // Map key tag for entries whose MFT record number is unknown (records
+    // found outside the $MFT runs). Real refs are 48-bit, so the tag bit
+    // cannot collide.
+    static constexpr uint64_t kOrphanEntryKeyBit = 0x8000000000000000ULL;
 };
 
 class FATParser : public FileSystemParser {
