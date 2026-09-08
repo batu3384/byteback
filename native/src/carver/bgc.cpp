@@ -5,16 +5,29 @@
 // See byteback_carver.h (bifragmentedGapCarve) for the algorithm rationale.
 #include "byteback_carver.h"
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
 namespace byteback {
 
+namespace {
+// CA-035: skip reassembly attempts whose copy cost exceeds this bound — with
+// a huge candidate span the per-attempt span copy dominated the scan even
+// inside the attempt budget.
+constexpr size_t kMaxSpanCopyBytes = 64ull * 1024 * 1024;
+
+bool cancelled(std::atomic<bool>* isRunning) {
+    return isRunning && !isRunning->load(std::memory_order_relaxed);
+}
+} // namespace
+
 BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                size_t headerOffset, size_t footerOffset,
                                size_t maxGapBytes,
                                const std::function<int(const uint8_t*, size_t)>& validator,
-                               size_t stepBytes, size_t attemptBudget) {
+                               size_t stepBytes, size_t attemptBudget,
+                               std::atomic<bool>* isRunning) {
     BgcResult out;
     if (!disk || !validator || headerOffset >= diskSize || footerOffset <= headerOffset)
         return out;
@@ -32,7 +45,7 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
 
     // Reassembly buffer: the span minus one gap. Worst case = full span.
     std::vector<uint8_t> reassembled;
-    reassembled.reserve(span);
+    reassembled.reserve(std::min(span, kMaxSpanCopyBytes));
 
     // CA-021: bounded attempts, like the tri-fragmented variant. Span 16MB at
     // 512B steps is ~10^8 reassemblies without a budget — minutes-to-hours
@@ -43,11 +56,16 @@ BgcResult bifragmentedGapCarve(const uint8_t* disk, size_t diskSize,
         size_t localStart = gapStart - headerOffset;
         for (size_t gapLen = stepBytes; gapLen <= gapLimit && gapStart + gapLen <= footerOffset; gapLen += stepBytes) {
             if (++attempts >= attemptBudget) return out;
+            // CA-035: yield promptly on cancel and refuse to copy spans that
+            // can never validate cheaply.
+            if (cancelled(isRunning)) return out;
+            size_t frag2Start = gapStart + gapLen;
+            const size_t copyBytes = localStart + (footerOffset - frag2Start);
+            if (copyBytes > kMaxSpanCopyBytes) continue;
             // Reassemble: [headerOffset, gapStart) ++ [gapStart+gapLen, footerOffset)
             reassembled.clear();
             reassembled.insert(reassembled.end(),
                                disk + headerOffset, disk + gapStart);
-            size_t frag2Start = gapStart + gapLen;
             if (frag2Start < footerOffset) {
                 reassembled.insert(reassembled.end(),
                                    disk + frag2Start, disk + footerOffset);
@@ -72,7 +90,8 @@ BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                 size_t headerOffset, size_t footerOffset,
                                 size_t maxGapBytes,
                                 const std::function<int(const uint8_t*, size_t)>& validator,
-                                size_t stepBytes, size_t attemptBudget) {
+                                size_t stepBytes, size_t attemptBudget,
+                                std::atomic<bool>* isRunning) {
     BgcResult out;
     if (!disk || !validator || headerOffset >= diskSize || footerOffset <= headerOffset) {
         return out;
@@ -85,7 +104,7 @@ BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
     if (stepBytes > span) stepBytes = span;
 
     std::vector<uint8_t> reassembled;
-    reassembled.reserve(span);
+    reassembled.reserve(std::min(span, kMaxSpanCopyBytes));
     size_t attempts = 0;
 
     for (size_t g1Start = headerOffset + stepBytes; g1Start < footerOffset && attempts < attemptBudget;
@@ -100,6 +119,12 @@ BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                     // without this the sweep runs one full gap-length series
                     // past the budget before an outer condition re-checks.
                     if (++attempts >= attemptBudget) return out;
+                    // CA-035: yield promptly on cancel and refuse to copy
+                    // spans that can never validate cheaply.
+                    if (cancelled(isRunning)) return out;
+                    const size_t copyBytes = (g1Start - headerOffset) + (g2Start - afterG1) +
+                                             (footerOffset - (g2Start + g2Len));
+                    if (copyBytes > kMaxSpanCopyBytes) continue;
                     reassembled.clear();
                     reassembled.insert(reassembled.end(), disk + headerOffset, disk + g1Start);
                     reassembled.insert(reassembled.end(), disk + afterG1, disk + g2Start);

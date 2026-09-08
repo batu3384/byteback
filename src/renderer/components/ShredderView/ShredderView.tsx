@@ -106,7 +106,7 @@ const ShredderView: React.FC = () => {
           {status === 'idle' && (
             <>
               <button
-                className="btn-danger shred-btn"
+                className="btn-danger btn-danger-block"
                 onClick={() => void handleFreeSpaceWipe()}
                 style={{ padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}
               >
@@ -154,7 +154,7 @@ const ShredderView: React.FC = () => {
               )}
               <button
                 type="button"
-                className="btn-danger"
+                className="btn-danger btn-danger-block"
                 disabled={!typedSerial.trim() || confirmPhrase !== 'IMHA' || drives.length === 0}
                 onClick={() => void handlePhysicalWipe()}
                 style={{ padding: '12px' }}

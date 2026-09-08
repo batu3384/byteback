@@ -40,3 +40,4 @@ debug_electron.log
 .cursor/
 .mimosa/
 compile_commands.json
+release/

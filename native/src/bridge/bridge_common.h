@@ -47,6 +47,9 @@ struct ScanContext {
     Napi::ThreadSafeFunction tsfn;
     int64_t scanId = -1;
     std::vector<byteback::FileRecord> fileBuffer;
+    // CA-036: buffered timeline events, flushed through
+    // appendTimelineEventsBatch instead of one INSERT per USN record.
+    std::vector<byteback::TimelineEvent> timelineBuffer;
     byteback::DedupIndex dedupIndex;
     std::mutex bufferMutex;
     std::vector<uint64_t> badSectors;
@@ -157,6 +160,7 @@ bool tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
     return tsfn.NonBlockingCall(std::forward<Callback>(cb)) == napi_ok;
 }
 
+Napi::Value DetectRaid(const Napi::CallbackInfo& info);
 Napi::Value ReconstructRaid(const Napi::CallbackInfo& info);
 Napi::Value FailRaidDisk(const Napi::CallbackInfo& info);
 Napi::Value GetRaidState(const Napi::CallbackInfo& info);

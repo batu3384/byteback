@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('set-bitlocker-recovery-password', driveIndex, password),
   setBitLockerPassword: (driveIndex: number, password: string) =>
     ipcRenderer.invoke('set-bitlocker-password', driveIndex, password),
+  detectRaid: (driveIndices: number[]) => ipcRenderer.invoke('detect-raid', driveIndices),
   reconstructRaid: (driveIndices: number[], raidLevel: number) =>
     ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),

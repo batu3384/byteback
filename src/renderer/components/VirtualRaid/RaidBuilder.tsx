@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './RaidBuilder.css';
-import { Layers, HardDrive, Cpu, Settings2, Play, CheckCircle } from 'lucide-react';
+import { Layers, HardDrive, Cpu, Settings2, Play, CheckCircle, Radar } from 'lucide-react';
 import InlineAlert from '../InlineAlert';
 import { useI18n, tFormat } from '../../i18n';
 
@@ -14,12 +14,21 @@ interface RaidBuilderProps {
   onStartRaidScan?: (scanType: string) => void
 }
 
+// Numeric RaidLevel enum (virtual_raid.h) <-> dropdown labels.
+const RAID_LEVEL_TO_LABEL: Record<number, string> = {
+  0: 'RAID 0', 1: 'RAID 1', 2: 'RAID 5', 3: 'RAID 6', 4: 'RAID 10',
+};
+const RAID_LABEL_TO_LEVEL: Record<string, number> = {
+  'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2, 'RAID 6': 3, 'RAID 10': 4,
+};
+
 const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const { t } = useI18n()
   const [availableDisks, setAvailableDisks] = useState<Disk[]>([]);
   const [raidArray, setRaidArray] = useState<Disk[]>([]);
   const [raidType, setRaidType] = useState<string>('RAID 5');
   const [isBuilding, setIsBuilding] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
   const [assembled, setAssembled] = useState(false);
   const [failedSlots, setFailedSlots] = useState<Set<number>>(new Set());
   const [raidNotice, setRaidNotice] = useState<{ variant: 'success' | 'error' | 'warning'; message: string } | null>(null);
@@ -69,15 +78,54 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
     moveDisk(diskId, from, to)
   }
 
+  const detectRaid = async () => {
+    if (raidArray.length < 2 || isDetecting) return;
+    setIsDetecting(true);
+    setRaidNotice(null);
+    if (!(window.api && window.api.detectRaid)) {
+      setIsDetecting(false);
+      setRaidNotice({ variant: 'error', message: t('raid.noBackend') });
+      return;
+    }
+    try {
+      const driveIndices = raidArray.map(d => Number(d.id));
+      const res = await window.api.detectRaid(driveIndices);
+      if (res && res.found && typeof res.raidLevel === 'number') {
+        const label = RAID_LEVEL_TO_LABEL[res.raidLevel] ?? String(res.raidLevel);
+        setRaidType(label);
+        const confPct = res.confidence != null ? Math.round(res.confidence * 100) : null;
+        const sizeMb = res.blockSize != null ? (res.blockSize / (1024 * 1024)).toFixed(0) : null;
+        const details = [
+          confPct != null ? tFormat('raid.detectConfidence', { n: String(confPct) }) : '',
+          sizeMb != null ? tFormat('raid.detectStripe', { n: sizeMb }) : '',
+        ].filter(Boolean).join(' · ');
+        setRaidNotice({
+          variant: 'success',
+          message: details
+            ? tFormat('raid.detectOk', { type: label }) + ' — ' + details
+            : tFormat('raid.detectOk', { type: label }),
+        });
+      } else {
+        // Honest fail: RAID 0 carries no parity and is never guessed.
+        setRaidNotice({ variant: 'warning', message: t('raid.detectFailed') });
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setRaidNotice({
+        variant: 'error',
+        message: t('raid.detectFailed') + tFormat('raid.errorSuffix', { err: msg }),
+      });
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
   const buildRaid = async () => {
     if (raidArray.length < 2) return;
     setIsBuilding(true);
-    // Map the UI selection to the numeric RaidLevel enum used by the native
-    // engine (virtual_raid.h: RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4).
     // Pass the drives in their user-ordered slot order, since stripe/parity
     // layout depends on it.
-    const raidLevelMap: Record<string, number> = { 'RAID 0': 0, 'RAID 1': 1, 'RAID 5': 2, 'RAID 6': 3, 'RAID 10': 4 };
-    const raidLevel = raidLevelMap[raidType] ?? 2;
+    const raidLevel = RAID_LABEL_TO_LEVEL[raidType] ?? 2;
     const driveIndices = raidArray.map(d => Number(d.id));
     if (!(window.api && window.api.reconstructRaid)) {
       setIsBuilding(false);
@@ -186,11 +234,11 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           className="raid-column glass-panel array-column"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => handleDrop(e, 'array')}
-          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #b700ff44', boxShadow: 'inset 0 0 40px rgba(183, 0, 255, 0.05)' }}
+          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid var(--accent-blue-soft, rgba(59, 130, 246, 0.3))', boxShadow: 'inset 0 0 40px rgba(59, 130, 246, 0.05)' }}
         >
           <div className="array-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <Cpu size={20} color="#b700ff" />
+              <Cpu size={20} color="var(--accent-blue)" />
               <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{t('raid.arrayTitle')}</h3>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -210,19 +258,19 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
             </div>
           </div>
 
-          <div className="disk-list raid-slots" style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', background: 'rgba(183, 0, 255, 0.02)' }}>
+          <div className="disk-list raid-slots" style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', background: 'rgba(59, 130, 246, 0.02)' }}>
             {raidArray.map((disk, index) => (
-              <div 
-                key={disk.id} 
-                className="disk-item in-array" 
-                draggable 
+              <div
+                key={disk.id}
+                className="disk-item in-array"
+                draggable
                 onDragStart={(e) => handleDragStart(e, disk.id, 'array')}
-                style={{ 
-                  padding: '16px', background: 'rgba(183, 0, 255, 0.1)', border: '1px solid rgba(183, 0, 255, 0.3)', 
+                style={{
+                  padding: '16px', background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)',
                   borderRadius: '8px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: '16px'
                 }}
               >
-                <div style={{ background: '#b700ff', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>{tFormat('raid.slot', { n: String(index) })}</div>
+                <div style={{ background: 'var(--accent-blue)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>{tFormat('raid.slot', { n: String(index) })}</div>
                 <HardDrive size={24} color="white" />
                 <div className="disk-info" style={{ flex: 1 }}>
                   <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
@@ -262,12 +310,29 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
             )}
           </div>
 
-          <div style={{ padding: '24px', borderTop: '1px solid var(--panel-border)' }}>
-            <button 
-              className="btn-primary build-btn" 
+          <div style={{ padding: '24px', borderTop: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={raidArray.length < 2 || isDetecting || assembled}
+              onClick={detectRaid}
+              style={{ width: '100%', padding: '12px', fontSize: '0.95rem', fontWeight: 500, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px' }}
+            >
+              {isDetecting ? (
+                <>
+                  <Radar size={18} className="spinner" /> {t('raid.detecting')}
+                </>
+              ) : (
+                <>
+                  <Radar size={18} /> {t('raid.detectBtn')}
+                </>
+              )}
+            </button>
+            <button
+              className="btn-primary build-btn"
               disabled={raidArray.length < 2 || isBuilding}
               onClick={buildRaid}
-              style={{ width: '100%', padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', background: raidArray.length >= 2 ? '#b700ff' : 'var(--panel-border)', color: 'white' }}
+              style={{ width: '100%', padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}
             >
               {isBuilding ? (
                 <>

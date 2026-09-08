@@ -29,13 +29,13 @@
 }
 
 .badge {
-  background: rgba(255, 171, 0, 0.15);
-  color: #FFD600;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning-yellow);
   padding: 4px 8px;
   border-radius: 6px;
   font-size: 0.75rem;
   font-weight: 700;
-  border: 1px solid rgba(255, 171, 0, 0.4);
+  border: 1px solid rgba(245, 158, 11, 0.4);
   box-shadow: 0 0 10px rgba(255, 171, 0, 0.2);
 }
 
@@ -55,7 +55,7 @@
 
 .sector-input {
   width: 120px;
-  background: rgba(11, 15, 25, 0.8);
+  background: var(--well-bg);
   border: 1px solid rgba(41, 98, 255, 0.3);
   color: var(--text-main);
   padding: 8px 12px;
@@ -101,7 +101,7 @@
 }
 
 .hex-header {
-  color: var(--tech-blue);
+  color: var(--accent-blue);
   font-weight: 700;
   border-bottom: 1px solid rgba(41, 98, 255, 0.3);
   margin-bottom: var(--space-sm);
@@ -173,11 +173,11 @@
 }
 
 .entropy-low {
-  background-color: var(--tech-blue);
+  background-color: var(--accent-blue);
 }
 
 .entropy-mid {
-  background-color: var(--warning);
+  background-color: var(--warning-yellow);
 }
 
 .entropy-high {

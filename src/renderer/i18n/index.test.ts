@@ -188,3 +188,38 @@ describe('renderer sweep keys', () => {
     expect(formatInt(12345)).toBe('12.345')
   })
 })
+
+// Renderer/UI fix lane: new keys + terminology unification (results.allTypes
+// removed in favor of results.all). Also proves setLang is safe in a non-DOM
+// environment (document.documentElement.lang sync is guarded).
+describe('renderer ui-lane keys', () => {
+  const keys = [
+    'smart.emptyTitle',
+    'results.col.path',
+  ] as const
+
+  it.each(keys)('resolves %s in tr and en', (key) => {
+    setLang('tr')
+    expect(t(key)).not.toBe(key)
+    setLang('en')
+    expect(t(key)).not.toBe(key)
+  })
+
+  it('unifies the "all" filter term on Tümü (results.allTypes is gone)', () => {
+    setLang('tr')
+    expect(t('results.all')).toBe('Tümü')
+    expect(t('results.allTypes')).toBe('results.allTypes') // key deleted -> falls back
+  })
+
+  it('smart.emptyTitle no longer borrows the hex empty-state wording', () => {
+    setLang('en')
+    expect(t('smart.emptyTitle')).toBe('No Drive Selected')
+    setLang('tr')
+    expect(t('smart.emptyTitle')).toBe('Sürücü Seçilmedi')
+  })
+
+  it('setLang does not throw without a DOM (lang sync guard)', () => {
+    expect(() => setLang('en')).not.toThrow()
+    expect(() => setLang('tr')).not.toThrow()
+  })
+})

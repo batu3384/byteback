@@ -1,5 +1,7 @@
 #include "imager/ewf_reader.h"
 
+#include "crypto/byteback_md5.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -212,6 +214,35 @@ bool EwfReader::read(uint64_t offsetBytes, uint8_t* buf, size_t len, std::string
         done += take;
     }
     return true;
+}
+
+// CA-039: the digest section was parsed into md5Hex_ but never checked — a
+// corrupted or tampered image presented itself as verified. Hash the whole
+// image sequentially and compare in constant time.
+bool EwfReader::verifyDigest() {
+    if (!isOpen() || md5Hex_.empty()) return false;
+
+    crypto::Md5 ctx;
+    std::vector<uint8_t> buf(static_cast<size_t>(std::min<uint64_t>(imageBytes_, 1u << 20)));
+    if (buf.empty()) return false;
+
+    uint64_t off = 0;
+    while (off < imageBytes_) {
+        const size_t take = static_cast<size_t>(std::min<uint64_t>(buf.size(), imageBytes_ - off));
+        std::string err;
+        if (!read(off, buf.data(), take, err)) return false;
+        ctx.update(buf.data(), take);
+        off += take;
+    }
+
+    const std::string got = ctx.finalHex();
+    if (got.size() != md5Hex_.size()) return false;
+    // Constant-time compare so digest checks do not leak match positions.
+    volatile uint8_t diff = 0;
+    for (size_t i = 0; i < got.size(); ++i) {
+        diff |= static_cast<uint8_t>(got[i] ^ md5Hex_[i]);
+    }
+    return diff == 0;
 }
 
 } // namespace byteback

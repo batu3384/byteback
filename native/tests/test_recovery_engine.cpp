@@ -386,3 +386,73 @@ TEST_F(RecoveryEngineTest, CancelBeforeFirstReadIsNotSuccess) {
     EXPECT_FALSE(res.success);
     EXPECT_EQ(res.bytesRecovered, 0u);
 }
+
+// CA-031: a hostile compressed record (sizeBytes = 2^40, small runs) used to
+// reach inflated.resize() and die on std::bad_alloc. The claimed size is now
+// clamped to the runs span under a hard ceiling — the recovery must finish
+// honestly instead of crashing.
+TEST_F(RecoveryEngineTest, HostileCompressedSizeBytesDoesNotBadAlloc) {
+    std::vector<uint8_t> img(512 * 8, 0x00);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "hostile.bin";
+    rec.sizeBytes = 1ull << 40;
+    rec.runs = {{4, 4}}; // 2048 compressed bytes on disk
+    rec.compressed = true;
+    rec.source = "ntfs_mft";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    // Bounded memory means we get here at all: decompression of the zeroed
+    // stream yields nothing (LZNT1 error or empty output), the unbacked 2^40
+    // claim is rejected, and no 2^40-byte allocation is ever attempted.
+    EXPECT_FALSE(result.success);
+    // Honest failure is reported either as an error or via validation.
+    EXPECT_TRUE(!result.error.empty() || !result.validationError.empty());
+    EXPECT_LE(result.bytesRecovered, 2048u);
+}
+
+// CA-031: the non-compressed path gets the same clamp — recovery writes the
+// runs span and reports exactly that, not the unbacked 2^40 claim.
+TEST_F(RecoveryEngineTest, HostileSizeBytesClampsToRunsSpan) {
+    std::vector<uint8_t> img(512 * 8, 0x00);
+    for (int s = 4; s < 8; ++s) std::memset(img.data() + s * 512, 'A', 512);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "huge.bin";
+    rec.sizeBytes = 1ull << 40;
+    rec.runs = {{4, 4}};
+    rec.source = "ntfs_mft";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    // Exactly the runs span is written; the unbacked remainder of the claim
+    // fails validation honestly ("partial recovery") instead of success.
+    EXPECT_EQ(result.bytesRecovered, 4u * 512);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error.find("partial recovery"), std::string::npos) << result.error;
+}
+
+// CA-031: carved records clamp to the medium — a footerless record claiming
+// 2^40 bytes on a 512-byte volume must not stream terabytes of zeros to disk.
+TEST_F(RecoveryEngineTest, HostileCarvedSizeClampsToMedium) {
+    std::vector<uint8_t> img(512, 0x42);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "carved.bin";
+    rec.sizeBytes = 1ull << 40;
+    rec.startSector = 0;
+    rec.startByteOffset = 0;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    EXPECT_EQ(result.bytesRecovered, 512u);
+}

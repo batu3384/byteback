@@ -56,6 +56,29 @@ void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::strin
 
 } // namespace
 
+namespace {
+
+// CA-031: record.sizeBytes crosses a trust boundary (hostile/corrupt MFT or
+// carve metadata). Clamp the claimed size to what the evidence actually
+// supports: the total span of the record's data runs; when no runs exist, a
+// hard sanity ceiling. A claimed 2^40 used to reach inflated.resize() and die
+// on std::bad_alloc.
+constexpr uint64_t kMaxRecoveryClaimBytes = 16ull << 30; // 16 GiB sanity ceiling
+
+uint64_t evidenceClampedSize(const FileRecord& record, uint32_t sectorSize) {
+    uint64_t cap = kMaxRecoveryClaimBytes;
+    if (!record.runs.empty()) {
+        uint64_t span = 0;
+        for (const auto& run : record.runs) {
+            span += (uint64_t)run.sectorCount * sectorSize;
+        }
+        cap = std::min(cap, span);
+    }
+    return std::min<uint64_t>(record.sizeBytes, cap);
+}
+
+} // namespace
+
 // Exported API (byteback_recovery.h) — body shares discovery_sources.h list.
 bool isDiscoveryOnlySource(const std::string& source) {
     return isDiscoverySourceName(source);
@@ -172,7 +195,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
-    uint64_t totalBytes = record.sizeBytes;
+    uint64_t totalBytes = evidenceClampedSize(record, sectorSize);
     uint64_t bytesWritten = 0;
 
     // Read buffer — 1MB at a time
@@ -223,7 +246,14 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             }
 
             std::vector<uint8_t> inflated;
-            inflated.resize(static_cast<size_t>(std::max<uint64_t>(totalBytes, 4096)));
+            // CA-031: the inflate buffer is bounded by the clamp above and by
+            // a hard 1 GiB allocator ceiling — LZNT1 output for a stream that
+            // passed the 64 MiB compressed gate stays well inside it, and a
+            // hostile sizeBytes can no longer reach a multi-TiB resize.
+            const uint64_t kMaxInflateBytes = 1ull << 30;
+            const uint64_t inflateBytes =
+                std::max<uint64_t>(std::min<uint64_t>(totalBytes, kMaxInflateBytes), 4096);
+            inflated.resize(static_cast<size_t>(inflateBytes));
             int outLen = ntfs::lznt1Decompress(compressed.data(), filled,
                                                inflated.data(), inflated.size());
             if (outLen >= 0) {
@@ -364,7 +394,14 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
     // start sector). Reading from the sector floor shifted every unaligned
     // carve by up to 511 bytes and truncated its tail.
     uint64_t startOffset = record.startSector * sectorSize + record.startByteOffset;
-    uint64_t totalBytes = record.sizeBytes;
+    // CA-031: carved records carry attacker-controlled sizeBytes too — clamp
+    // to what the medium can back (bytes from startOffset to disk end) under
+    // the hard sanity ceiling instead of reading a claimed 2^40.
+    const uint64_t diskSize = reader.getDiskSize();
+    const uint64_t mediumCap =
+        diskSize > startOffset ? diskSize - startOffset : 0;
+    uint64_t totalBytes = std::min<uint64_t>(record.sizeBytes,
+                                             std::min<uint64_t>(kMaxRecoveryClaimBytes, mediumCap));
     uint64_t bytesWritten = 0;
 
     const uint32_t readChunk = 1024 * 1024;

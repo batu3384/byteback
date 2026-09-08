@@ -52,7 +52,7 @@
   color: var(--neon-cyan);
   border: 1px solid var(--neon-cyan);
   border-radius: 4px;
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-weight: 600;
   outline: none;
 }
@@ -88,7 +88,7 @@
 }
 
 .disk-item:hover {
-  border-color: var(--tech-blue);
+  border-color: var(--accent-blue);
   box-shadow: 0 4px 15px rgba(41, 98, 255, 0.2);
 }
 

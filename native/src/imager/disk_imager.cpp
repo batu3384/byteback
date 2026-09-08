@@ -113,27 +113,45 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         uint32_t sectorsToRead = std::min<uint64_t>(chunkSectors, totalSectors - sector);
         uint32_t bytesToRead = sectorsToRead * sectorSize;
 
-        auto res = reader.readSectors(sector * sectorSize, bytesToRead, poolBuf->data());
-
-        const uint8_t* outPtr = poolBuf->data();
-        size_t outLen = bytesToRead;
-        if (!res.success || res.bytesRead == 0) {
-            badSectorReads_.fetch_add(sectorsToRead);
-            std::memset(poolBuf->data(), 0, bytesToRead);
-        } else {
-            outLen = static_cast<size_t>(res.bytesRead);
+        // CA-037: a failed 16MB chunk used to be zero-filled wholesale — one
+        // bad sector silently punched a 16MB hole in the forensic image.
+        // Retry halving down to single sectors (same policy as the carver's
+        // CA-007 path), zero-fill only the sectors that truly failed, and
+        // count each of them in badSectorReads_. Sub-reads are processed in
+        // disk order, so the chunk buffer stays byte-exact.
+        struct SubRead { uint64_t sector; uint32_t sectors; };
+        std::vector<SubRead> subReads{{sector, sectorsToRead}};
+        while (!subReads.empty()) {
+            const auto sub = subReads.back();
+            subReads.pop_back();
+            const uint32_t want = sub.sectors * sectorSize;
+            uint8_t* dst = poolBuf->data() + (sub.sector - sector) * sectorSize;
+            auto res = reader.readSectors(sub.sector * sectorSize, want, dst);
+            if ((!res.success || res.bytesRead < want) && sub.sectors > 1) {
+                const uint32_t half = sub.sectors / 2;
+                subReads.push_back({sub.sector + half, sub.sectors - half});
+                subReads.push_back({sub.sector, half});
+                continue;
+            }
+            if (!res.success || res.bytesRead == 0) {
+                badSectorReads_.fetch_add(sub.sectors);
+                std::memset(dst, 0, want);
+                continue;
+            }
             if (res.paddedZeros) badSectorReads_.fetch_add(1);
-            if (outLen < bytesToRead) {
+            if (res.bytesRead < want) {
                 // Short-but-successful read (device EOD, flaky link): the
-                // loop advances a full chunk regardless, so the tail must be
+                // chunk advances a full chunk regardless, so the tail must be
                 // zero-padded — writing only bytesRead would shift every
                 // following byte and silently corrupt the rest of the image.
-                const size_t missing = bytesToRead - outLen;
-                std::memset(poolBuf->data() + outLen, 0, missing);
-                outLen = bytesToRead;
+                const size_t missing = want - res.bytesRead;
+                std::memset(dst + res.bytesRead, 0, missing);
                 badSectorReads_.fetch_add(missing / sectorSize);
             }
         }
+
+        const uint8_t* outPtr = poolBuf->data();
+        size_t outLen = bytesToRead;
 
         if (ewf) {
             if (!ewf->write(outPtr, outLen)) {

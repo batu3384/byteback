@@ -49,7 +49,7 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
     return (
       <div className="smart-view empty glass-panel" style={{ padding: '60px', textAlign: 'center', margin: '40px' }}>
         <Activity size={48} style={{ margin: '0 auto 16px', color: 'var(--panel-border)' }} />
-        <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>{t('hex.noDriveTitle')}</h3>
+        <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>{t('smart.emptyTitle')}</h3>
         <p style={{ color: 'var(--text-muted)' }}>{t('smart.noDriveBody')}</p>
       </div>
     )

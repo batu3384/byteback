@@ -47,7 +47,7 @@
 }
 
 .form-select, .form-input {
-  background-color: rgba(11, 15, 25, 0.8);
+  background-color: var(--well-bg);
   border: 1px solid rgba(41, 98, 255, 0.3);
   color: var(--text-main);
   padding: 12px 16px;
@@ -68,7 +68,9 @@
 }
 
 .form-select option {
-  background-color: #0B0F19;
+  /* Explicit pair so the native Windows dropdown does not inherit a dark
+     legacy background on the light theme. */
+  background-color: var(--bg-surface);
   color: var(--text-main);
 }
 

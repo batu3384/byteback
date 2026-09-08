@@ -547,3 +547,40 @@ TEST_F(MetadataStoreTest, ContentHashRoundTrip) {
     ASSERT_EQ(page.size(), 1u);
     EXPECT_EQ(page[0].contentHash, "abc123");
 }
+
+// CA-036: the batched timeline insert must persist every event, in order,
+// through one transaction — the per-record path paid a prepared statement
+// per event and dominated scan finalize on journal-heavy volumes.
+TEST_F(MetadataStoreTest, TimelineBatchInsertPreservesOrderAndContent) {
+    int64_t scanId = store_.createScan(0, "deep", 1000);
+    ASSERT_GT(scanId, 0);
+
+    std::vector<TimelineEvent> events;
+    events.reserve(5000);
+    for (int i = 0; i < 5000; ++i) {
+        TimelineEvent ev;
+        ev.timestamp = 1600000000 + i; // increasing: ORDER BY == insertion order
+        ev.eventType = (i % 2 == 0) ? "create" : "delete";
+        ev.fileName = "file_" + std::to_string(i) + ".bin";
+        ev.mftRef = static_cast<uint64_t>(i + 1);
+        ev.source = "usn_journal";
+        events.push_back(ev);
+    }
+
+    ASSERT_TRUE(store_.appendTimelineEventsBatch(scanId, events));
+    EXPECT_EQ(store_.getTimelineEventCount(scanId), 5000);
+
+    for (int off = 0; off < 5000; off += 1000) {
+        auto page = store_.getTimelineEvents(scanId, off, 1000);
+        ASSERT_EQ(page.size(), 1000u);
+        for (int j = 0; j < 1000; ++j) {
+            EXPECT_EQ(page[j].timestamp, 1600000000 + off + j);
+            EXPECT_EQ(page[j].fileName, "file_" + std::to_string(off + j) + ".bin");
+            EXPECT_EQ(page[j].eventType, ((off + j) % 2 == 0) ? "create" : "delete");
+            EXPECT_EQ(page[j].mftRef, static_cast<uint64_t>(off + j + 1));
+        }
+    }
+
+    // Empty batch is a successful no-op, matching insertFilesBatch.
+    EXPECT_TRUE(store_.appendTimelineEventsBatch(scanId, {}));
+}

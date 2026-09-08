@@ -276,6 +276,12 @@ bool DiskReader::hasMemoryVolume() const {
     return memoryMode_;
 }
 
+void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    faultStartSector_ = startSector;
+    faultSectorCount_ = sectorCount;
+}
+
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
@@ -437,6 +443,17 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
             result.error = "Read offset and size must be sector-aligned";
             return result;
+        }
+        // Test hook: a read overlapping the injected fault range fails.
+        if (faultSectorCount_ > 0) {
+            const uint64_t first = offsetBytes / sectorSize_;
+            const uint64_t last = first + sizeBytes / sectorSize_ - 1;
+            if (first <= faultStartSector_ + faultSectorCount_ - 1 &&
+                faultStartSector_ <= last) {
+                result.error = "injected memory fault range";
+                noteBadRead(offsetBytes, sizeBytes);
+                return result;
+            }
         }
         if (offsetBytes + sizeBytes > memoryImage_.size()) {
             std::memset(buffer, 0, sizeBytes);

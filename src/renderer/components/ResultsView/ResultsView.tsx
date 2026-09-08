@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import './ResultsView.css'
-import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2 } from 'lucide-react'
+import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { csvCell } from '../../../shared/html-escape'
@@ -602,7 +602,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setPage(0)
   }
 
-  const sortIndicator = (field: SortField) => (sortField === field ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
+  const sortIndicator = (field: SortField): React.ReactNode =>
+    sortField === field ? (
+      sortDir === 'asc'
+        ? <ChevronUp size={14} style={{ verticalAlign: 'middle', marginLeft: 2 }} />
+        : <ChevronDown size={14} style={{ verticalAlign: 'middle', marginLeft: 2 }} />
+    ) : null
 
   // Sortable column headers are keyboard-operable and expose aria-sort.
   const sortableTh = (field: SortField) => ({
@@ -879,7 +884,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           </div>
           <div className="filter-row">
             <span className="filter-label">{t('results.typeFilter')}</span>
-            <button type="button" className="filter-chip" aria-pressed={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>{t('results.allTypes')}</button>
+            <button type="button" className="filter-chip" aria-pressed={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>{t('results.all')}</button>
             <button type="button" className="filter-chip" aria-pressed={typeFilter === 'img'} onClick={() => setTypeFilter('img')}>{t('scan.image')}</button>
             <button type="button" className="filter-chip" aria-pressed={typeFilter === 'video'} onClick={() => setTypeFilter('video')}>{t('scan.video')}</button>
             <button type="button" className="filter-chip" aria-pressed={typeFilter === 'audio'} onClick={() => setTypeFilter('audio')}>{t('scan.audio')}</button>
@@ -1012,30 +1017,41 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           <table className="results-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
             <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-surface)', zIndex: 1 }}>
               <tr>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', width: '40px' }}>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', width: '40px' }}>
                   <input type="checkbox" checked={allPageSelected} onChange={toggleAll} aria-label={t('results.selectAllPage')} />
                 </th>
                 {([
                   [t('results.col.name'), 'name'],
-                  [t('results.col.size'), 'size'],
-                  [t('results.col.date'), 'date'],
                 ] as const).map(([label, field]) => (
-                  <th key={field} {...sortableTh(field)} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                  <th key={field} {...sortableTh(field)} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
                     {label}
                     <span aria-hidden="true">{sortIndicator(field)}</span>
                   </th>
                 ))}
-                <th {...sortableTh('confidence')} style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                {/* Path is display-only: server-side ORDER BY is a native whitelist
+                    (CA-030) without a path_* key, so a sort header would silently
+                    fall back to id order. */}
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.path')}</th>
+                {([
+                  [t('results.col.size'), 'size'],
+                  [t('results.col.date'), 'date'],
+                ] as const).map(([label, field]) => (
+                  <th key={field} {...sortableTh(field)} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                    {label}
+                    <span aria-hidden="true">{sortIndicator(field)}</span>
+                  </th>
+                ))}
+                <th {...sortableTh('confidence')} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
                   {t('results.col.confidence')}<span aria-hidden="true">{sortIndicator('confidence')}</span>
                 </th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.source')}</th>
-                <th style={{ padding: '12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.status')}</th>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.source')}</th>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.status')}</th>
               </tr>
             </thead>
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
                     {loading ? t('results.loading') : t('results.empty')}
                   </td>
                 </tr>
@@ -1045,6 +1061,16 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     .filter(Boolean)
                     .join(' · ')
                   const tierColor = f.confidenceTier === 'high' ? 'var(--success-green)' : f.confidenceTier === 'mid' ? 'var(--warning-yellow)' : 'var(--alert-red)'
+                  // Forensic semantics: deleted=red (loss), carved=blue (signature
+                  // recovery), allocated/in-use=green. Text colors are theme tokens;
+                  // both pairs compute >=4.5:1 on their 10% tints in dark and light.
+                  const statusTone =
+                    f.statusKey === 'status.deleted'
+                      ? { color: 'var(--alert-red)', background: 'rgba(239, 68, 68, 0.1)' }
+                      : f.statusKey === 'status.carved'
+                        ? { color: 'var(--accent-blue-text)', background: 'rgba(59, 130, 246, 0.1)' }
+                        : { color: 'var(--success-green)', background: 'rgba(16, 185, 129, 0.1)' }
+                  const cellPad = { padding: '7px 12px' } as const
                   return (
                   <tr
                     key={f.id}
@@ -1063,16 +1089,23 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     }}
                     style={{ borderBottom: '1px solid var(--surface-overlay)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
                   >
-                    <td style={{ padding: '12px' }}>
+                    <td style={{ ...cellPad }}>
                       <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} aria-label={tFormat('results.selectFile', { name: f.name })} />
                     </td>
-                    <td className="file-name-cell" style={{ padding: '12px', display: 'flex', alignItems: 'center', gap: '12px', fontFamily: 'monospace' }}>
+                    <td className="file-name-cell" style={{ ...cellPad, display: 'flex', alignItems: 'center', gap: '12px', fontFamily: 'monospace' }}>
                       {getIconForType(f.type)}
                       {f.name}
                     </td>
-                    <td style={{ padding: '12px', color: 'var(--text-muted)' }}>{f.size}</td>
-                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{f.dateLabel}</td>
-                    <td style={{ padding: '12px' }}>
+                    <td
+                      className="path-cell"
+                      style={{ ...cellPad, color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.8rem', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={f.path !== '—' ? f.path : undefined}
+                    >
+                      {f.path}
+                    </td>
+                    <td style={{ ...cellPad, color: 'var(--text-muted)' }}>{f.size}</td>
+                    <td style={{ ...cellPad, color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{f.dateLabel}</td>
+                    <td style={{ ...cellPad }}>
                       {f.confidenceTier === 'none' ? (
                         <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>
                       ) : (
@@ -1090,17 +1123,13 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                         </span>
                       )}
                     </td>
-                    <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
-                    <td style={{ padding: '12px' }}>
+                    <td style={{ ...cellPad, color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
+                    <td style={{ ...cellPad }}>
                       <span style={{
                         padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                        background: f.statusKey === 'status.deleted' || f.statusKey === 'status.carved'
-                          ? 'rgba(16, 185, 129, 0.1)'
-                          : 'rgba(245, 158, 11, 0.1)',
-                        color: f.statusKey === 'status.deleted' || f.statusKey === 'status.carved'
-                          ? 'var(--success-green)'
-                          : 'var(--warning-yellow)',
-                        border: `1px solid ${f.statusKey === 'status.deleted' || f.statusKey === 'status.carved' ? 'var(--success-green)' : 'var(--warning-yellow)'}`
+                        background: statusTone.background,
+                        color: statusTone.color,
+                        border: `1px solid ${statusTone.color}`
                       }}>
                         {f.status}
                       </span>

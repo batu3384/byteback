@@ -122,3 +122,44 @@ TEST(DiskImagerTest, CancelledEwfIsReadableButUnverified) {
     }
     std::filesystem::remove(dest);
 }
+
+// CA-037: one bad sector used to zero-fill the entire 16MB chunk silently.
+// The halving retry must zero only the actually-failed sectors and count
+// each of them in badSectorReads().
+TEST(DiskImagerTest, BadRegionZeroedGranularly) {
+    constexpr size_t kSectors = 256;
+    const auto vol = makeVolume(kSectors, 0x11);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+    reader.setMemoryFaultRange(100, 4); // sectors 100..103 fail
+
+    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_faults.raw").string();
+    DiskImager imager;
+    std::atomic<bool> done{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 400 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    // Granular telemetry: exactly the failed sectors, not the whole chunk.
+    EXPECT_EQ(imager.badSectorReads(), 4u);
+
+    std::ifstream in(dest, std::ios::binary);
+    std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    ASSERT_EQ(out.size(), vol.size());
+
+    // Bytes outside the fault range match the source.
+    EXPECT_EQ(std::memcmp(out.data(), vol.data(), 100 * 512), 0);
+    EXPECT_EQ(std::memcmp(out.data() + 104 * 512, vol.data() + 104 * 512, (kSectors - 104) * 512), 0);
+    // The fault range itself is zero-filled in the image.
+    EXPECT_EQ(out, [&] {
+        std::vector<uint8_t> expected = vol;
+        std::memset(expected.data() + 100 * 512, 0, 4 * 512);
+        return expected;
+    }());
+    std::filesystem::remove(dest);
+}

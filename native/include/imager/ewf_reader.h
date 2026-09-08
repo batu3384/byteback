@@ -27,6 +27,12 @@ public:
 
     bool read(uint64_t offsetBytes, uint8_t* buf, size_t len, std::string& err);
 
+    // CA-039: verify the stored MD5 digest by hashing the image data during a
+    // full sequential read and comparing in constant time. Returns false when
+    // no digest is stored (aborted acquisitions), on any read failure, or on
+    // a mismatch.
+    bool verifyDigest();
+
 private:
     struct SegmentMap {
         std::unique_ptr<ByteSource> source;

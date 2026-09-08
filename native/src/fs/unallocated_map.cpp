@@ -2,6 +2,7 @@
 #include "fs/ntfs_util.h"
 #include "byteback_db.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -309,6 +310,48 @@ struct ExFAT_BPB {
 };
 #pragma pack(pop)
 
+// CA-030: FAT tables are streamed through a sector-aligned sliding window.
+// The old per-cluster path paid one heap allocation + one 512B read PER
+// CLUSTER (30M clusters on an 8TB volume = 30M I/Os); the window costs one
+// read per kFatWindowBytes. The window size stays a sector multiple so both
+// the memory and physical backends accept the reads.
+constexpr uint64_t kFatWindowBytes = 1u << 20;
+
+struct FatWindow {
+    DiskReader* reader = nullptr;
+    uint64_t baseOffset = 0;   // byte offset of the FAT start on disk
+    uint64_t tableBytes = 0;   // declared FAT size in bytes
+    std::vector<uint8_t> buf;
+    uint64_t bufStart = 0;     // table-relative offset of buf[0]
+    uint64_t bufLen = 0;
+
+    bool init(DiskReader& r, uint64_t fatBase, uint64_t fatBytes) {
+        reader = &r;
+        baseOffset = fatBase;
+        tableBytes = fatBytes;
+        if (fatBytes == 0) return false;
+        buf.resize(static_cast<size_t>(std::min<uint64_t>(kFatWindowBytes, fatBytes)));
+        return !buf.empty();
+    }
+
+    // Returns a pointer valid for at least 1 byte at table offset `idx`, or
+    // nullptr past the table end / on a read failure.
+    const uint8_t* at(uint64_t idx) {
+        if (!reader || idx >= tableBytes) return nullptr;
+        if (idx < bufStart || idx + 8 > bufStart + bufLen) {
+            const uint64_t winStart = (idx / kFatWindowBytes) * kFatWindowBytes;
+            const uint64_t len = std::min<uint64_t>(buf.size(), tableBytes - winStart);
+            if (!reader->readSectors(baseOffset + winStart,
+                                     static_cast<uint32_t>(len), buf.data()).success) {
+                return nullptr;
+            }
+            bufStart = winStart;
+            bufLen = len;
+        }
+        return buf.data() + (idx - bufStart);
+    }
+};
+
 std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volOffsetBytes,
                                                uint64_t /*volSizeBytes*/) {
     std::vector<SectorRange> out;
@@ -321,6 +364,9 @@ std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volO
     if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) != 0) return out;
 
     const auto* bpb = reinterpret_cast<const ExFAT_BPB*>(buffer.data());
+    // CA-030: the shifts cross a trust boundary — 1u << 255 is UB before the
+    // old bytesPerSector check ever ran.
+    if (bpb->bytesPerSectorShift > 16 || bpb->sectorsPerClusterShift > 31) return out;
     const uint32_t bytesPerSector = 1u << bpb->bytesPerSectorShift;
     if (bytesPerSector != sectorSize) return out;
     const uint32_t sectorsPerCluster = 1u << bpb->sectorsPerClusterShift;
@@ -329,23 +375,22 @@ std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volO
     const uint64_t fatStartSector = partitionOffset + bpb->fatOffset;
     const uint64_t dataStartSector = partitionOffset + bpb->clusterHeapOffset;
 
-    auto readFatEntry = [&](uint32_t cluster) -> uint32_t {
+    FatWindow fat;
+    if (!fat.init(reader, fatStartSector * bytesPerSector,
+                  static_cast<uint64_t>(bpb->fatLength) * bytesPerSector)) {
+        return out;
+    }
+    auto readFatEntry = [&](uint64_t cluster) -> uint32_t {
         if (cluster < 2) return 0xFFFFFFFF;
-        const uint32_t entryIndex = cluster;
-        const uint64_t fatOffsetBytes = fatStartSector * bytesPerSector + static_cast<uint64_t>(entryIndex) * 4;
-        const uint64_t sectorOff = (fatOffsetBytes / bytesPerSector) * bytesPerSector;
-        const uint32_t inSector = static_cast<uint32_t>(fatOffsetBytes % bytesPerSector);
-        std::vector<uint8_t> sec(bytesPerSector);
-        if (!reader.readSectors(sectorOff, bytesPerSector, sec.data()).success) return 0xFFFFFFFF;
-        if (inSector + 4 > bytesPerSector) return 0xFFFFFFFF;
-        return static_cast<uint32_t>(sec[inSector] | (sec[inSector + 1] << 8) |
-                                     (sec[inSector + 2] << 16) | (sec[inSector + 3] << 24));
+        const uint8_t* p = fat.at(cluster * 4);
+        if (!p) return 0xFFFFFFFF;
+        return static_cast<uint32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (uint32_t)(p[3] << 24));
     };
 
     uint64_t runStartCluster = 0;
     uint64_t runLen = 0;
-    const uint32_t lastCluster = bpb->clusterCount + 1;
-    for (uint32_t cluster = 2; cluster <= lastCluster; ++cluster) {
+    const uint64_t lastCluster = (uint64_t)bpb->clusterCount + 1;
+    for (uint64_t cluster = 2; cluster <= lastCluster; ++cluster) {
         const uint32_t entry = readFatEntry(cluster);
         const bool free = (entry == 0);
         if (free) {
@@ -504,56 +549,73 @@ std::vector<SectorRange> buildFatUnallocated(DiskReader& reader, uint64_t volOff
     const auto* bpb = reinterpret_cast<const FAT_BPB*>(buffer.data());
     uint16_t bps = bpb->bytesPerSector;
     if (bps == 0 || (bps & (bps - 1)) != 0) return out;
+    const uint32_t spc = bpb->sectorsPerCluster;
+    // CA-030: a zero or non-power-of-two sectorsPerCluster is a corrupt BPB —
+    // the old code divided by it unguarded below.
+    if (spc == 0 || (spc & (spc - 1)) != 0) return out;
 
-    uint32_t rootDirSectors = ((bpb->rootEntryCount * 32) + (bps - 1)) / bps;
-    uint32_t fatSize = (bpb->fatSize16 != 0) ? bpb->fatSize16 : bpb->fatSize32;
-    uint64_t fatStartSector = partitionOffset + bpb->reservedSectorCount;
-    uint64_t dataStartSector = fatStartSector + (bpb->numFATs * fatSize) + rootDirSectors;
-    uint32_t totalSectors = (bpb->totalSectors16 != 0) ? bpb->totalSectors16 : bpb->totalSectors32;
-    uint32_t dataSectors = totalSectors - (bpb->reservedSectorCount + (bpb->numFATs * fatSize) + rootDirSectors);
-    uint32_t countOfClusters = dataSectors / bpb->sectorsPerCluster;
-    int fatBits = (countOfClusters < 4085) ? 12 : (countOfClusters < 65525 ? 16 : 32);
+    const uint64_t rootDirSectors = ((uint64_t)bpb->rootEntryCount * 32 + (bps - 1)) / bps;
+    const uint64_t fatSize = (bpb->fatSize16 != 0) ? bpb->fatSize16 : bpb->fatSize32;
+    if (fatSize == 0 || bpb->numFATs == 0) return out;
+    const uint64_t totalSectors = (bpb->totalSectors16 != 0) ? bpb->totalSectors16 : bpb->totalSectors32;
+    // CA-030: compute the metadata span in u64. A hostile BPB (fatSize huge,
+    // totalSectors small) made the u32 subtraction wrap to ~4G dataSectors and
+    // the cluster loop spin ~536M times with a 512B read each — an effective
+    // hang. metaSectors >= totalSectors means the BPB describes no data area
+    // at all: honest "unusable BPB" -> empty map (the scan falls back to
+    // whole-partition carving via the CA-022 policy in collectUnallocatedForScan).
+    const uint64_t metaSectors =
+        bpb->reservedSectorCount + (uint64_t)bpb->numFATs * fatSize + rootDirSectors;
+    if (totalSectors == 0 || metaSectors >= totalSectors) {
+        std::fprintf(stderr,
+                     "[byteback] FAT BPB unusable: meta sectors (%llu) >= total sectors (%llu); "
+                     "skipping FAT unallocated map\n",
+                     static_cast<unsigned long long>(metaSectors),
+                     static_cast<unsigned long long>(totalSectors));
+        return out;
+    }
+    const uint64_t fatStartSector = partitionOffset + bpb->reservedSectorCount;
+    const uint64_t dataStartSector = fatStartSector + (uint64_t)bpb->numFATs * fatSize + rootDirSectors;
+    const uint64_t dataSectors = totalSectors - metaSectors;
+    const uint64_t countOfClusters = dataSectors / spc;
+    const uint64_t fatBytes = fatSize * bps;
+    const int fatBits = (countOfClusters < 4085) ? 12 : (countOfClusters < 65525 ? 16 : 32);
 
-    auto readFatEntry = [&](uint32_t cluster) -> uint32_t {
+    // CA-030: one sliding-window read per MiB instead of one read per cluster,
+    // and every entry index is bounds-checked against the declared table size.
+    FatWindow fat;
+    if (!fat.init(reader, fatStartSector * bps, fatBytes)) return out;
+    auto readFatEntry = [&](uint64_t cluster) -> uint32_t {
         if (cluster < 2) return 0xFFFFFFFF;
-        uint32_t entryIndex = cluster;
-        uint64_t fatOffsetBytes = 0;
+        uint64_t entryOffsetBytes = 0;
         if (fatBits == 12) {
-            fatOffsetBytes = fatStartSector * bps + (entryIndex * 3) / 2;
+            entryOffsetBytes = (cluster * 3) / 2;
         } else if (fatBits == 16) {
-            fatOffsetBytes = fatStartSector * bps + entryIndex * 2;
+            entryOffsetBytes = cluster * 2;
         } else {
-            fatOffsetBytes = fatStartSector * bps + entryIndex * 4;
+            entryOffsetBytes = cluster * 4;
         }
-        uint64_t sectorOff = (fatOffsetBytes / bps) * bps;
-        uint32_t inSector = static_cast<uint32_t>(fatOffsetBytes % bps);
-        std::vector<uint8_t> sec(bps);
-        if (!reader.readSectors(sectorOff, bps, sec.data()).success) return 0xFFFFFFFF;
-        const uint8_t* entBuf = sec.data() + inSector;
+        const uint8_t* entBuf = fat.at(entryOffsetBytes);
+        if (!entBuf) return 0xFFFFFFFF; // past the table / unreadable: allocated
         if (fatBits == 12) {
+            // CA-030: a straddling FAT12 entry's second byte can lie one byte
+            // past the table end (sector-straddling entries at the last byte
+            // of the FAT overread the heap by one byte in the old path).
+            if (entryOffsetBytes + 1 >= fatBytes) return 0xFFFFFFFF;
             uint16_t word = static_cast<uint16_t>(entBuf[0] | (entBuf[1] << 8));
-            if (entryIndex & 1) word >>= 4;
+            if (cluster & 1) word >>= 4;
             else word &= 0x0FFF;
             return word;
         }
         if (fatBits == 16) {
-            if (inSector + 2 > bps) {
-                std::vector<uint8_t> sec2(bps);
-                if (!reader.readSectors(sectorOff + bps, bps, sec2.data()).success) return 0xFFFFFFFF;
-                uint16_t lo = sec[inSector];
-                uint16_t hi = sec2[0];
-                return static_cast<uint32_t>(lo | (hi << 8));
-            }
             return static_cast<uint32_t>(entBuf[0] | (entBuf[1] << 8));
         }
-        if (inSector + 4 > bps) return 0xFFFFFFFF;
-        return static_cast<uint32_t>(entBuf[0] | (entBuf[1] << 8) | (entBuf[2] << 16) | (entBuf[3] << 24));
+        return static_cast<uint32_t>(entBuf[0] | (entBuf[1] << 8) | (entBuf[2] << 16) | (uint32_t)(entBuf[3] << 24));
     };
 
     uint64_t runStartCluster = 0;
     uint64_t runLen = 0;
-    const uint32_t spc = bpb->sectorsPerCluster;
-    for (uint32_t cluster = 2; cluster < countOfClusters + 2; ++cluster) {
+    for (uint64_t cluster = 2; cluster < countOfClusters + 2; ++cluster) {
         uint32_t entry = readFatEntry(cluster);
         bool free = (entry == 0);
         if (free) {

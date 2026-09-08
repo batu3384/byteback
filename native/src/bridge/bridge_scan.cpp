@@ -98,6 +98,19 @@ bool flushFileBufferLocked(byteback::Engine* engine, ScanContext* context) {
     return true;
 }
 
+// CA-036: batched timeline flush, mirroring flushFileBufferLocked.
+bool flushTimelineBufferLocked(byteback::Engine* engine, ScanContext* context) {
+    if (!engine || !context || context->timelineBuffer.empty()) return true;
+    if (!engine->getMetadataStore().appendTimelineEventsBatch(context->scanId, context->timelineBuffer)) {
+        std::fprintf(stderr, "[byteback] appendTimelineEventsBatch failed scanId=%lld count=%zu\n",
+                     static_cast<long long>(context->scanId), context->timelineBuffer.size());
+        context->dbFlushFailed.store(true);
+        return false;
+    }
+    context->timelineBuffer.clear();
+    return true;
+}
+
 int flushScanToDb(BridgeData* bdata, int status) {
     if (!bdata || !bdata->scanContext) return status;
     auto context = bdata->scanContext;
@@ -105,6 +118,9 @@ int flushScanToDb(BridgeData* bdata, int status) {
     {
         std::lock_guard<std::mutex> lock(context->bufferMutex);
         if (!flushFileBufferLocked(&bdata->engine, context.get())) {
+            status = 3;
+        }
+        if (!flushTimelineBufferLocked(&bdata->engine, context.get())) {
             status = 3;
         }
     }
@@ -212,7 +228,10 @@ Napi::Value GetFileCount(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 1) return env.Undefined();
+    if (!engine || info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId, [filter])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     byteback::FileListFilter filter;
@@ -227,7 +246,10 @@ Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 3) return env.Undefined();
+    if (!engine || info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId, offset, limit, [filter])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     int offset = info[1].As<Napi::Number>().Int32Value();
@@ -250,7 +272,10 @@ Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 1) return env.Undefined();
+    if (!engine || info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     auto state = engine->getMetadataStore().getScanState(scanId);
@@ -607,7 +632,14 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             else if (reason & 0x00000004) ev.eventType = "overwrite";
             else if (reason & 0x00000001) ev.eventType = "create";
             else                          ev.eventType = "touch";
-            engine->getMetadataStore().insertTimelineEvent(context->scanId, ev);
+            // CA-036: buffer and batch-insert instead of one INSERT per event.
+            std::lock_guard<std::mutex> lock(context->bufferMutex);
+            context->timelineBuffer.push_back(std::move(ev));
+            if (context->timelineBuffer.size() >= 500) {
+                if (!flushTimelineBufferLocked(engine, context.get())) {
+                    context->coordinator.requestStop();
+                }
+            }
             return; // not surfaced as a file result
         }
         if (fr.source == "ntfs_logfile" || fr.source == "ntfs_logfile_restart") {
@@ -706,7 +738,11 @@ Napi::Value SearchFiles(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 4) return env.Undefined();
+    if (!engine || info.Length() < 4 || !info[0].IsNumber() || !info[1].IsString() ||
+        !info[2].IsNumber() || !info[3].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId, query, offset, limit, [useRegex], [category], [status])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     std::string query = info[1].As<Napi::String>().Utf8Value();
@@ -968,7 +1004,10 @@ Napi::Value GetScanSummary(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 1) return env.Undefined();
+    if (!engine || info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     auto summary = engine->getMetadataStore().getScanSummary(scanId);

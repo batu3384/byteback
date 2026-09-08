@@ -3,6 +3,7 @@
 #include "bridge_common.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_unlock.h"
+#include "fs/raid_detect.h"
 #include "recovery/preview_reader.h"
 #include "recovery/path_util.h"
 #include "forensic/audit_logger.h"
@@ -264,6 +265,61 @@ Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
     (new PhysicalWipeWorker(env, bdata, index, typed, actual, sizeBytes, deferred))->Queue();
     return deferred.Promise();
+    NAPI_CATCH
+}
+
+Napi::Value DetectRaid(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (driveIndices: number[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Array indicesArr = info[0].As<Napi::Array>();
+    if (indicesArr.Length() < 2) {
+        Napi::Error::New(env, "RAID detection requires at least 2 member drives").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::vector<int> drives;
+    drives.reserve(indicesArr.Length());
+    for (uint32_t i = 0; i < indicesArr.Length(); ++i) {
+        Napi::Value v = indicesArr[i];
+        if (!v.IsNumber()) {
+            Napi::TypeError::New(env, "driveIndices must be numbers").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        drives.push_back(v.As<Napi::Number>().Int32Value());
+    }
+
+    // Member readers mirror VirtualRaid's index-constructor path so the
+    // detection samples exactly what the reconstruction would read.
+    std::vector<byteback::DiskReader*> rawPtrs;
+    std::vector<std::shared_ptr<byteback::DiskReader>> readers;
+    readers.reserve(drives.size());
+    for (int idx : drives) {
+        auto reader = std::make_shared<byteback::DiskReader>();
+        if (!reader->openDrive(idx)) {
+            Napi::Error::New(env, "Failed to open physical drive " + std::to_string(idx) + " for RAID detection")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        rawPtrs.push_back(reader.get());
+        readers.push_back(std::move(reader));
+    }
+
+    byteback::RaidGeometry geo;
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("found", Napi::Boolean::New(env, byteback::detectRaidGeometry(rawPtrs, geo)));
+    if (out.Get("found").ToBoolean().Value()) {
+        // RaidLevel enum order == reconstruct-raid's raidLevel numbering.
+        out.Set("raidLevel", Napi::Number::New(env, static_cast<int>(geo.level)));
+        out.Set("blockSize", Napi::Number::New(env, static_cast<double>(geo.blockSize)));
+        out.Set("dataOffsetSectors", Napi::Number::New(env, static_cast<double>(geo.dataOffsetSectors)));
+        out.Set("confidence", Napi::Number::New(env, geo.confidence));
+    }
+    return out;
     NAPI_CATCH
 }
 

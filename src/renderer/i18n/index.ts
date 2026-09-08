@@ -21,9 +21,17 @@ try {
 
 const listeners = new Set<() => void>()
 
+// Keep <html lang> in sync with the UI language (a11y: screen readers pick the
+// right voice). Guarded so non-DOM consumers (vitest node env) stay safe.
+function syncDocumentLang(next: Lang): void {
+  if (typeof document !== 'undefined') document.documentElement.lang = next
+}
+syncDocumentLang(lang)
+
 export function setLang(next: Lang): void {
   if (next === lang) return
   lang = next
+  syncDocumentLang(next)
   try {
     localStorage.setItem(LANG_KEY, next)
   } catch {
@@ -259,6 +267,7 @@ const STRINGS: Record<string, Entry> = {
   'results.list': { tr: 'Liste', en: 'List' },
   'results.tree': { tr: 'Ağaç', en: 'Tree' },
   'results.col.name': { tr: 'Dosya Adı', en: 'Name' },
+  'results.col.path': { tr: 'Yol', en: 'Path' },
   'results.col.size': { tr: 'Boyut', en: 'Size' },
   'results.col.date': { tr: 'Değiştirilme', en: 'Modified' },
   'results.col.confidence': { tr: 'Güven', en: 'Confidence' },
@@ -307,7 +316,6 @@ const STRINGS: Record<string, Entry> = {
   'results.recoverBusyTitle': { tr: 'Tarama bitene kadar kurtarma kapalı', en: 'Recovery stays closed until the scan finishes' },
   'results.hfsLimit': { tr: 'HFS+ katalog bu taramada limit sentinel kaydı üretti. Varsayılan tarama sınırsızdır; bu satır yalnız limit verilmişse görünür.', en: 'The HFS+ catalog produced a limit sentinel record in this scan. The default scan is unlimited; this row only appears when a limit was set.' },
   'results.pageNumberAria': { tr: 'Sayfa numarası', en: 'Page number' },
-  'results.allTypes': { tr: 'Hepsi', en: 'All' },
   'results.searchByNameAria': { tr: 'Dosya adı ara', en: 'Search by file name' },
   'results.flatTitle': { tr: 'Düz liste', en: 'Flat list' },
   'results.galleryViewTitle': { tr: 'Resim galerisi', en: 'Image gallery' },
@@ -412,6 +420,7 @@ const STRINGS: Record<string, Entry> = {
   'hex.offset': { tr: 'Ofset', en: 'Offset' },
 
   // SmartView
+  'smart.emptyTitle': { tr: 'Sürücü Seçilmedi', en: 'No Drive Selected' },
   'smart.noDriveBody': { tr: 'S.M.A.R.T. analizini görüntülemek için Ana Ekran\'dan bir sürücü seçin.', en: 'Select a drive on the Dashboard to view its S.M.A.R.T. analysis.' },
   'smart.title': { tr: 'Donanım Sağlığı (S.M.A.R.T.)', en: 'Hardware Health (S.M.A.R.T.)' },
   'smart.subtitle': { tr: 'Fiziksel Sürücü {n} için doğrudan disk denetleyicisinden alınan veriler.', en: 'Data read directly from the disk controller of Physical Drive {n}.' },
@@ -525,6 +534,12 @@ const STRINGS: Record<string, Entry> = {
   'raid.emptyArray': { tr: 'Disk ekle düğmesi veya sürükle-bırak.', en: 'Use the add buttons or drag and drop.' },
   'raid.building': { tr: 'Parite Hesaplanıyor...', en: 'Computing parity...' },
   'raid.buildBtn': { tr: '{type} DİZİSİNİ OLUŞTUR VE BAĞLA', en: 'CREATE AND MOUNT {type} ARRAY' },
+  'raid.detectBtn': { tr: 'RAID Düzenini Otomatik Tespit Et', en: 'Auto-detect RAID Layout' },
+  'raid.detecting': { tr: 'Düzen tespit ediliyor…', en: 'Detecting layout…' },
+  'raid.detectOk': { tr: '{type} düzeni tespit edildi — seviye seçildi', en: '{type} layout detected — level selected' },
+  'raid.detectConfidence': { tr: 'tutarlılık %{n}', en: '{n}% consistency' },
+  'raid.detectStripe': { tr: 'şerit {n} MB', en: 'stripe {n} MB' },
+  'raid.detectFailed': { tr: 'Parite tutarlılığından bir RAID düzeni doğrulanamadı (RAID 0 parity taşımaz, tespit edilemez).', en: 'No RAID layout could be verified from parity consistency (RAID 0 carries no parity and cannot be detected).' },
   'raid.hint': { tr: 'En az 2 disk gereklidir. Dizi kurulduktan sonra bozuk üyeyi işaretleyin; RAID 0 o şeridi sıfırlar, RAID 5/6 parite ile okur.', en: 'At least 2 disks are required. Once the array is up, mark a failed member; RAID 0 zeroes that stripe, RAID 5/6 reads via parity.' },
 
   // ReportGenerator

@@ -364,19 +364,35 @@ void runQuickScan(DiskReader& reader,
     }
 }
 
-void runCarveScan(DiskReader& reader,
-                  FileSystemParser::FileRecordCallback onFileFound,
-                  ProgressCallback onProgress,
-                  std::atomic<bool>* isRunning,
-                  std::vector<uint64_t>* badSectorOut,
-                  ScanBounds bounds,
-                  bool unallocatedOnly,
-                  uint64_t resumeCarveSector) {
+// CA-033: carve ranges computed once. runDeepScan builds the unallocated map
+// for progress budgeting and runCarveScan rebuilt it for carving — on an 8TB
+// FAT volume that meant the FAT walk (I/O-bound) ran twice per deep scan.
+// The public runCarveScan keeps its header signature; runDeepScan hands the
+// already-built ranges through the impl (by value/reference down the call —
+// no shared mutable globals).
+void runCarveScanImpl(DiskReader& reader,
+                      FileSystemParser::FileRecordCallback onFileFound,
+                      ProgressCallback onProgress,
+                      std::atomic<bool>* isRunning,
+                      std::vector<uint64_t>* badSectorOut,
+                      ScanBounds bounds,
+                      bool unallocatedOnly,
+                      uint64_t resumeCarveSector,
+                      std::vector<SectorRange>* precomputedRanges) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
     g_scanPhase.store("carve", std::memory_order_relaxed);
-    std::vector<SectorRange> carveRanges = prepareCarveRanges(reader, bounds, unallocatedOnly);
+    std::vector<SectorRange> owned;
+    std::vector<SectorRange>* ranges = precomputedRanges;
+    // Precomputed ranges are only valid for the unallocated-only path; when
+    // the map came back empty the caller falls back to full-bound carving
+    // (unallocatedOnly=false), which must recompute as before.
+    if (!unallocatedOnly || !ranges || ranges->empty()) {
+        owned = prepareCarveRanges(reader, bounds, unallocatedOnly);
+        ranges = &owned;
+    }
+    std::vector<SectorRange> carveRanges = *ranges; // copy: caller may still hold it
     if (carveRanges.empty()) {
         g_scanPhase.store("carve_skipped", std::memory_order_relaxed);
         return;
@@ -438,6 +454,18 @@ void runCarveScan(DiskReader& reader,
     }
 }
 
+void runCarveScan(DiskReader& reader,
+                  FileSystemParser::FileRecordCallback onFileFound,
+                  ProgressCallback onProgress,
+                  std::atomic<bool>* isRunning,
+                  std::vector<uint64_t>* badSectorOut,
+                  ScanBounds bounds,
+                  bool unallocatedOnly,
+                  uint64_t resumeCarveSector) {
+    runCarveScanImpl(reader, onFileFound, onProgress, isRunning, badSectorOut, bounds,
+                     unallocatedOnly, resumeCarveSector, nullptr);
+}
+
 void runDeepScan(DiskReader& reader,
                  FileSystemParser::FileRecordCallback onFileFound,
                  ProgressCallback onProgress,
@@ -450,7 +478,10 @@ void runDeepScan(DiskReader& reader,
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
-    const uint64_t carveTotal = totalSectorCount(prepareCarveRanges(reader, bounds, true));
+    // CA-033: build the unallocated map once and hand it to the carve phase —
+    // it used to be built here for the budget and rebuilt inside runCarveScan.
+    std::vector<SectorRange> carveRanges = prepareCarveRanges(reader, bounds, true);
+    const uint64_t carveTotal = totalSectorCount(carveRanges);
     const bool unallocCarve = carveTotal > 0;
     const uint64_t carveBudget =
         unallocCarve ? std::min(carveTotal, totalSectors) : totalSectors / 4;
@@ -488,8 +519,9 @@ void runDeepScan(DiskReader& reader,
         emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, unallocCarve,
-                 target.carveResumeSector);
+    runCarveScanImpl(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds,
+                     unallocCarve, target.carveResumeSector,
+                     unallocCarve ? &carveRanges : nullptr);
     if (unallocCarve) {
         emit(totalSectors);
     } else {

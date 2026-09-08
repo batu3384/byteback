@@ -42,6 +42,13 @@
   color: var(--text-muted);
   font-size: 0.85rem;
   cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.filter-chip:hover {
+  background: var(--surface-overlay);
+  border-color: var(--panel-border-hover);
+  color: var(--text-main);
 }
 
 .filter-chip[aria-pressed="true"] {
