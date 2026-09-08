@@ -33,6 +33,31 @@ include_directories(${NODE_ADDON_API_DIR})
 # Define NAPI_VERSION
 add_definitions(-DNAPI_VERSION=8)
 
+# Vendored zlib 1.3.1 (native/third_party/zlib, license in zlib/README) — used
+# by the EWF (E01) sectors-chunk compression (EwfWriter deflate / EwfReader
+# inflate). Linked into BOTH the engine and the test binary.
+set(ZLIB_SOURCES
+  third_party/zlib/adler32.c
+  third_party/zlib/compress.c
+  third_party/zlib/crc32.c
+  third_party/zlib/deflate.c
+  third_party/zlib/gzclose.c
+  third_party/zlib/gzlib.c
+  third_party/zlib/gzread.c
+  third_party/zlib/gzwrite.c
+  third_party/zlib/infback.c
+  third_party/zlib/inffast.c
+  third_party/zlib/inflate.c
+  third_party/zlib/inftrees.c
+  third_party/zlib/trees.c
+  third_party/zlib/uncompr.c
+  third_party/zlib/zutil.c
+)
+foreach(zsrc ${ZLIB_SOURCES})
+  set_source_files_properties(${zsrc} PROPERTIES LANGUAGE C)
+endforeach()
+include_directories(${CMAKE_SOURCE_DIR}/third_party/zlib)
+
 # Source files
 set(SQLITE_SOURCES third_party/sqlite3.c)
 set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
@@ -103,6 +128,7 @@ set(SOURCES
   src/recovery/preview_reader.cpp
   src/recovery/process_util.cpp
   ${SQLITE_SOURCES}
+  ${ZLIB_SOURCES}
 )
 
 if(WIN32)
@@ -276,6 +302,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/memory/memory_pool.cpp
     src/security/data_shredder.cpp
     third_party/sqlite3.c
+    ${ZLIB_SOURCES}
   )
   target_link_libraries(byteback_tests
     PRIVATE

@@ -36,11 +36,17 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
   useEffect(() => {
     if (diskBusy) return
     if (!window.api?.listPartitions) return
-    window.api.listPartitions(drive.index).then(setPartitions).catch((e: unknown) => {
+    let alive = true
+    window.api.listPartitions(drive.index).then((list) => {
+      if (!alive) return
+      setPartitions(list)
+    }).catch((e: unknown) => {
       console.warn('[DriveCard] listPartitions failed', e)
+      if (!alive) return
       setPartitions([])
       setAdminNotice(t('drive.partTableError'))
     })
+    return () => { alive = false }
   }, [drive.index, diskBusy])
 
   useEffect(() => {
@@ -49,9 +55,11 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
       return
     }
     if (!window.api?.getSmartStatus) return
+    let alive = true
     window.api.getSmartStatus(drive.index).then((s) => {
-      if (s.isValid && s.isSsd) setIsSsd(true)
+      if (alive && s.isValid && s.isSsd) setIsSsd(true)
     }).catch((e: unknown) => console.warn('[DriveCard] getSmartStatus failed', e))
+    return () => { alive = false }
   }, [drive.index, drive.type])
 
   const scanOptions = (): ScanOptions | undefined => {

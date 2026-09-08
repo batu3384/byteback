@@ -203,3 +203,127 @@ TEST(AuditChain, TornFinalLineIsIncompleteNotBroken) {
 
     ::remove(path.c_str());
 }
+
+// ---- CA-028 flush hardening ----
+// Crash-evidence categories (RECOVER*/WIPE*/BITLOCKER*/FILE_RECOVERED) must be
+// durable the moment their log call returns: a hard crash right after must not
+// be able to drop them from the chain. Standalone instances (public ctor)
+// model the crash-killed logger without terminating the process singleton.
+TEST(AuditChain, CriticalEventsAreDurableImmediatelyAfterCall) {
+    const std::string path = "test_audit_critical.log";
+    { std::ofstream f(path, std::ios::trunc); } // start clean
+
+    {
+        AuditLogger local; // crash-simulation scope
+        local.Initialize(path);
+        local.LogEvent("RECOVER_BEGIN | fileId=7");
+        local.LogEvent("WIPE_END | passes=3");
+        local.LogEvent("BITLOCKER_UNLOCK | volume=C:");
+
+        // "Crash" happens HERE: read the file with no Shutdown/FlushPending.
+        // All three evidence lines must already be on disk, chain intact.
+        std::ifstream in(path);
+        ASSERT_TRUE(in.is_open());
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty()) lines.push_back(line);
+        }
+        ASSERT_EQ(lines.size(), 3u);
+        EXPECT_NE(lines[0].find("EVENT | RECOVER_BEGIN | fileId=7"), std::string::npos);
+        EXPECT_NE(lines[1].find("EVENT | WIPE_END | passes=3"), std::string::npos);
+        EXPECT_NE(lines[2].find("EVENT | BITLOCKER_UNLOCK | volume=C:"), std::string::npos);
+        for (const auto& l : lines) {
+            EXPECT_NE(l.find(" | ChainHash: "), std::string::npos);
+        }
+        auto r = forensic::VerifyAuditChainFile(path);
+        EXPECT_TRUE(r.ok);
+        EXPECT_EQ(r.entries, 3);
+        EXPECT_EQ(r.brokenAt, 0);
+    } // destructor: clean teardown after the property held
+    ::remove(path.c_str());
+}
+
+// Non-critical entries ride the async queue; FlushPending() must drain the
+// queue synchronously so a caller can force durability at a checkpoint.
+TEST(AuditChain, FlushPendingDrainsAsyncQueueSynchronously) {
+    const std::string path = "test_audit_flush.log";
+    { std::ofstream f(path, std::ios::trunc); }
+
+    AuditLogger local;
+    local.Initialize(path);
+    local.LogEvent("FLUSH_CHECK_A | n=1"); // queued, not critical
+    local.LogEvent("FLUSH_CHECK_B | n=2");
+    local.FlushPending();                  // after this returns, both are durable
+
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open());
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) lines.push_back(line);
+    }
+    ASSERT_EQ(lines.size(), 2u);
+    EXPECT_NE(lines[0].find("EVENT | FLUSH_CHECK_A | n=1"), std::string::npos);
+    EXPECT_NE(lines[1].find("EVENT | FLUSH_CHECK_B | n=2"), std::string::npos);
+
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(r.ok);
+    EXPECT_EQ(r.entries, 2);
+    local.Shutdown();
+    ::remove(path.c_str());
+}
+
+// Bridge-origin events (logAuditEvent export): valid tokens join the same
+// hash chain tagged with the "JS" origin segment; malformed input is rejected
+// without touching the file.
+TEST(AuditChain, BridgeEventsJoinChainTaggedJsAndRejectBadInput) {
+    const std::string path = "test_audit_bridge.log";
+    { std::ofstream f(path, std::ios::trunc); }
+
+    AuditLogger local;
+    local.Initialize(path);
+
+    // Round-trip: native event + bridge event + bridge-origin CRITICAL event
+    // in one chain. FlushPending between steps pins the on-disk order (the
+    // worker thread drains the async queue concurrently).
+    local.LogEvent("SCAN_END | scanId=9");
+    local.FlushPending(); // line 1: native event durable
+    EXPECT_TRUE(local.LogEventFromBridge("UI_EXPORT_START | fileId=42"));
+    local.FlushPending(); // line 2: bridge event durable
+    EXPECT_TRUE(local.LogEventFromBridge("RECOVER_NOTE | stage=verify")); // sync: line 3
+
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open());
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) lines.push_back(line);
+    }
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_NE(lines[0].find("EVENT | SCAN_END | scanId=9"), std::string::npos);
+    EXPECT_NE(lines[1].find("EVENT | JS | UI_EXPORT_START | fileId=42"), std::string::npos);
+    EXPECT_NE(lines[2].find("EVENT | JS | RECOVER_NOTE | stage=verify"), std::string::npos);
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(r.ok);
+    EXPECT_EQ(r.entries, 3);
+
+    // Validation: empty, non-UPPERCASE token, control chars, oversized.
+    EXPECT_FALSE(local.LogEventFromBridge(""));
+    EXPECT_FALSE(local.LogEventFromBridge("lowercase_token | x"));
+    EXPECT_FALSE(local.LogEventFromBridge("BAD\tTOKEN | x"));
+    EXPECT_FALSE(local.LogEventFromBridge("TRAILING\nNEWLINE"));
+    EXPECT_FALSE(local.LogEventFromBridge(std::string(513, 'A')));
+    // Still exactly 3 entries on disk after the rejects.
+    local.FlushPending();
+    {
+        std::ifstream in2(path);
+        std::size_t n = 0;
+        while (std::getline(in2, line)) {
+            if (!line.empty()) ++n;
+        }
+        EXPECT_EQ(n, 3u);
+    }
+    local.Shutdown();
+    ::remove(path.c_str());
+}

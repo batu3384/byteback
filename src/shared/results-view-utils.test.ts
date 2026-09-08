@@ -94,6 +94,11 @@ describe('results-view-utils', () => {
     expect(sortKey('confidence', 'desc')).toBe('confidence_desc')
     expect(sortKey('name', 'asc')).toBe('name_asc')
     expect(sortKey('id', 'desc')).toBe('') // id = native default
+    // Path sort is wired UI-first: keys are stable while the native whitelist
+    // gains path_asc/path_desc in a parallel lane (degrades to id order until
+    // then, which the engine treats like any unknown orderBy).
+    expect(sortKey('path', 'asc')).toBe('path_asc')
+    expect(sortKey('path', 'desc')).toBe('path_desc')
   })
 
   it('confidence tiers color triage chips', () => {

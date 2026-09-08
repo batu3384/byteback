@@ -159,3 +159,20 @@
   border-radius: 2px;
   padding: 0 1px;
 }
+
+/* Content-search match context (FileRecord.snippet): one clamped line under
+   the file name. --well-bg + --text-main holds >=4.5:1 in both themes; the
+   [matchStart,matchEnd) span reuses .kw-mark. */
+.kw-snippet {
+  flex-basis: 100%;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--well-bg);
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

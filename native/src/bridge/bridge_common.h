@@ -171,6 +171,8 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info);
 // bridge_ops.cpp — case metadata + NSRL
 Napi::Value GetCaseInfo(const Napi::CallbackInfo& info);
 Napi::Value SetCaseInfo(const Napi::CallbackInfo& info);
+// CA-028: JS-origin audit events, folded into the native hash chain.
+Napi::Value LogAuditEvent(const Napi::CallbackInfo& info);
 Napi::Value LoadNsrl(const Napi::CallbackInfo& info);
 Napi::Value LookupNsrl(const Napi::CallbackInfo& info);
 Napi::Value GetNsrlStats(const Napi::CallbackInfo& info);

@@ -32,6 +32,11 @@ export interface FileRecord {
   modifiedAt?: number
   runs?: DataRun[]
   contentHash?: string
+  /** Content-search only: sanitized text around the first match (not persisted). */
+  snippet?: string
+  /** Byte offsets of the match span inside snippet; absent/-1 = no highlight. */
+  snippetMatchStart?: number
+  snippetMatchEnd?: number
 }
 
 export interface SmartStatus {

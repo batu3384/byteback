@@ -16,6 +16,12 @@ class VirtualRaid;
 
 struct ContentSearchOptions {
     uint64_t chunkBytes = 256 * 1024;
+    // CA-031: treat `query` as an ECMAScript regex (matched case-insensitively,
+    // first match wins) instead of a case-insensitive literal. The FTS
+    // shortcut cannot evaluate regexes, so the search always walks the disk in
+    // this mode. Patterns longer than 128 chars fall back to literal search
+    // (mirrors the IPC regex cap; bounds backtracking exposure).
+    bool useRegex = false;
 };
 
 using ContentMatchCallback = std::function<void(const FileRecord&)>;

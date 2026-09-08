@@ -54,6 +54,24 @@ export function isImagingLive(): boolean {
   return imagingLive
 }
 
+/** ASCII-only sanitizer for hash-chain audit lines (native line format is ASCII;
+ *  the full localized error still goes to session.log). */
+export function asciiForAudit(text: string): string {
+  return text.replace(/[^\x20-\x7E]/g, '?').slice(0, 200)
+}
+
+/** Best-effort write into the native hash-chained audit log via the
+ *  logAuditEvent bridge export. Never throws: audit failure must not break
+ *  the operation being audited (session.log still has the event). */
+export function auditChainEvent(line: string): void {
+  try {
+    const engine = getEngine() as unknown as { logAuditEvent?: (e: string) => boolean }
+    engine.logAuditEvent?.(line)
+  } catch (err) {
+    console.warn('[IPC] auditChainEvent failed:', err instanceof Error ? err.message : err)
+  }
+}
+
 /** Notify renderer and clear main scan-live when native complete IPC may not arrive. */
 export function broadcastScanComplete(scanId: number, status: number, reason: string): void {
   setScanLive(false)
@@ -748,11 +766,11 @@ export function registerIpcHandlers(): void {
       const engine = getEngine()
       const result = await engine.recoverFile(driveIndex, parsed.fileId, dest.destDir, parsed.scanId, preservePaths)
       // Native audit-logs only successful recovery (bridge_wipe.cpp RECOVER
-      // event); the hash-chained audit writer is not exported to JS, so failed
-      // attempts are recorded in the session log here. Native gap: an
-      // exported logAuditEvent(string) → AuditLogger::LogEvent binding.
+      // event); failures go into the hash chain here via the logAuditEvent
+      // bridge export (ASCII-sanitized — the chain line format is ASCII).
       if (!result.success) {
         appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} error=${result.error ?? ''}`)
+        auditChainEvent(`RECOVER_FAIL | scanId=${parsed.scanId} file=${parsed.fileId} reason=${asciiForAudit(result.error ?? 'unknown')}`)
       }
       return result
     } catch (err) {
@@ -785,6 +803,7 @@ export function registerIpcHandlers(): void {
       if (result.failed > 0) {
         const firstError = result.results.find((r) => !r.success)?.error ?? ''
         appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} failed=${result.failed}/${parsed.fileIds.length} error=${firstError}`)
+        auditChainEvent(`RECOVER_FAIL | scanId=${parsed.scanId} failed=${result.failed}/${parsed.fileIds.length} reason=${asciiForAudit(firstError || 'unknown')}`)
       }
       return result
     } catch (err) {
@@ -821,10 +840,11 @@ export function registerIpcHandlers(): void {
       const res = engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
       if (res && res.error) return { ...res, error: diskBusyMessage(res.error) ?? res.error }
       // Evidence-access logging at operation granularity: one bounded PREVIEW
-      // event per generated preview (not per chunk). The hash-chained native
-      // audit writer has no JS binding — same native gap as RECOVER_FAIL.
+      // event per generated preview (not per chunk), into both the session
+      // log and the hash chain (logAuditEvent bridge export).
       if (res && res.success) {
         appendSessionLog('PREVIEW', `scanId=${parsed.scanId} file=${parsed.fileId} kind=${res.kind ?? ''} bytes=${res.data?.length ?? 0}`)
+        auditChainEvent(`PREVIEW | scanId=${parsed.scanId} file=${parsed.fileId} kind=${asciiForAudit(res.kind ?? 'unknown')}`)
       }
       return res
     } catch (err) {

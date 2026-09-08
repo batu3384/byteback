@@ -10,6 +10,7 @@
 #include "byteback_io.h"
 #include "byteback_fs.h"
 #include "byteback_carver.h"
+#include "fs/unallocated_map.h" // SectorRange (runCarveScanRanges, A2)
 
 namespace byteback {
 
@@ -31,6 +32,11 @@ struct ScanTarget {
     uint64_t resumeAtSector = 0;
     bool metadataComplete = false;
     uint64_t carveResumeSector = 0;
+    // A2: opt-out for the parallel carve phase (workers over disjoint carve
+    // ranges on clonable readers). Default ON; results are identical to the
+    // sequential path as a multiset — only emission order may differ, and the
+    // DB insert assigns ids by insertion order (documented, accepted).
+    bool parallelCarve = true;
     ScanBounds bounds() const {
         ScanBounds b;
         if (partitionStartSector >= 0 && partitionSizeSectors > 0) {
@@ -40,6 +46,11 @@ struct ScanTarget {
         return b;
     }
 };
+
+// A2 test/perf hook: worker count for the parallel carve phase. 0 = auto
+// (clamp(hardware_concurrency, 2, 4)); 1 forces the sequential path.
+void setParallelCarveWorkers(unsigned workers);
+unsigned parallelCarveWorkers();
 
 void runQuickScan(DiskReader& reader,
                   FileSystemParser::FileRecordCallback onFileFound,
@@ -57,6 +68,20 @@ void runCarveScan(DiskReader& reader,
                   ScanBounds bounds = {},
                   bool unallocatedOnly = true,
                   uint64_t resumeCarveSector = 0);
+
+// A2: carve an explicit, caller-supplied range list. Ranges are processed as
+// given — NOT merged (merging changes results at the seam: a file straddling
+// two ranges is flushed at its range end by design). This is the seam the
+// parallel carve phase (workers over disjoint ranges, clonable reader) hangs
+// on, and the test entry point for determinism/cancel coverage.
+void runCarveScanRanges(DiskReader& reader,
+                        FileSystemParser::FileRecordCallback onFileFound,
+                        ScanProgressCallback onProgress,
+                        std::atomic<bool>* isRunning,
+                        std::vector<uint64_t>* badSectorOut,
+                        std::vector<SectorRange> ranges,
+                        uint64_t resumeCarveSector = 0,
+                        bool allowParallelCarve = true);
 
 // Metadata quick scan followed by signature carving (professional "deep" mode).
 using ScanCheckpointCallback = std::function<void(bool metadataComplete, uint64_t carveResumeSector)>;

@@ -3,7 +3,7 @@ import './KeywordSearch.css';
 import { Search, FileText, Filter, AlertCircle, FileSearch, Keyboard } from 'lucide-react';
 import type { FileRecord } from '../../../shared/ipc-contract';
 import { useI18n, tFormat } from '../../i18n';
-import { buildMatchParts } from './highlight';
+import { buildMatchParts, buildSnippetParts, type SnippetRecord } from './highlight';
 
 interface KeywordSearchProps {
   scanId: number;
@@ -14,6 +14,24 @@ interface KeywordSearchProps {
  *  to the name/path text that the results list actually shows. */
 function HighlightText({ text, query, useRegex }: { text: string; query: string; useRegex: boolean }): React.ReactElement {
   const parts = buildMatchParts(text, query, useRegex);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.match ? (
+          <mark key={i} className="kw-mark">{p.text}</mark>
+        ) : (
+          <React.Fragment key={i}>{p.text}</React.Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
+/** Native content-search snippet (FileRecord.snippet): one sanitized context
+ *  line with the [matchStart,matchEnd) span marked. Invalid/absent offsets
+ *  (native may send -1) degrade to plain, unhighlighted text. */
+function SnippetText({ snippet, start, end }: { snippet: string; start?: number; end?: number }): React.ReactElement {
+  const parts = buildSnippetParts(snippet, start, end);
   return (
     <>
       {parts.map((p, i) =>
@@ -49,9 +67,25 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   const [searchError, setSearchError] = useState('');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const cleanupRef = useRef<(() => void)[]>([]);
+  // Content-search matches accumulate in a ref; the visible list gets one
+  // copy per 100ms flush instead of a whole-array copy + full list re-render
+  // per match event (the old setResults([...matches]) was O(n²) in copies).
+  const matchesRef = useRef<FileRecord[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const flushMatches = (): void => {
+    setResults(matchesRef.current.slice());
+  };
+  const stopFlush = (): void => {
+    if (flushTimerRef.current != null) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     return () => {
+      stopFlush();
       cleanupRef.current.forEach((fn) => fn());
       cleanupRef.current = [];
       window.api?.stopContentSearch?.();
@@ -77,6 +111,8 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     setSearchDone(false);
     setRegexError('');
     setSearchError('');
+    stopFlush();
+    matchesRef.current = [];
     setResults([]);
     setProgress({ current: 0, total: 0 });
 
@@ -91,8 +127,6 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     }
 
     if (searchContent && window.api.startContentSearch) {
-      const matches: FileRecord[] = [];
-
       if (window.api.onContentSearchProgress) {
         cleanupRef.current.push(
           window.api.onContentSearchProgress((data) => {
@@ -103,14 +137,15 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       if (window.api.onContentSearchMatch) {
         cleanupRef.current.push(
           window.api.onContentSearchMatch((data) => {
-            matches.push(data as FileRecord);
-            setResults([...matches]);
+            matchesRef.current.push(data as FileRecord);
           }),
         );
       }
       if (window.api.onContentSearchComplete) {
         cleanupRef.current.push(
           window.api.onContentSearchComplete(() => {
+            stopFlush();
+            flushMatches();
             setSearching(false);
             setSearchDone(true);
             cleanupRef.current.forEach((fn) => fn());
@@ -119,14 +154,22 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         );
       }
 
+      // Batched flush while matches stream in: one copy + render per 100ms.
+      stopFlush();
+      flushTimerRef.current = setInterval(flushMatches, 100);
+
       try {
         const res = await window.api.startContentSearch(scanId, query);
         if (!res.ok) {
+          stopFlush();
+          flushMatches();
           setRegexError(res.error ?? t('kw.contentStartFailed'))
           setSearching(false);
           setSearchDone(true);
         }
       } catch (e: unknown) {
+        stopFlush();
+        flushMatches();
         setRegexError(e instanceof Error ? e.message : t('kw.contentError'))
         setSearching(false);
         setSearchDone(true);
@@ -159,6 +202,8 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
 
   const handleStop = () => {
     window.api?.stopContentSearch?.();
+    stopFlush();
+    flushMatches();
     cleanupRef.current.forEach((fn) => fn());
     cleanupRef.current = [];
     setSearching(false);
@@ -273,23 +318,32 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
           <div className="results-list" style={{ padding: '16px 24px', overflowY: 'auto' }}>
             <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>{tFormat('kw.foundCount', { n: String(results.length) })}</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {results.map((r, i) => (
-                <div key={`${r.id}-${i}`} style={{
-                  display: 'flex', alignItems: 'center', padding: '12px 16px',
-                  background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid transparent'
-                }}>
-                  <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
-                  <span style={{ fontWeight: 500, flex: 1 }}>
-                    <HighlightText text={r.name} query={query.trim()} useRegex={useRegex && !searchContent} />
-                  </span>
-                  <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.path || undefined}>
-                    {r.path ? <HighlightText text={r.path} query={query.trim()} useRegex={useRegex && !searchContent} /> : (r.category || '—')}
-                  </span>
-                  <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
-                    {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
-                  </span>
-                </div>
-              ))}
+              {results.map((r, i) => {
+                const rec = r as SnippetRecord;
+                const snippet = typeof rec.snippet === 'string' ? rec.snippet : '';
+                return (
+                  <div key={`${r.id}-${i}`} style={{
+                    display: 'flex', flexWrap: 'wrap', alignItems: 'center', padding: '12px 16px',
+                    background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid transparent'
+                  }}>
+                    <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
+                    <span style={{ fontWeight: 500, flex: 1 }}>
+                      <HighlightText text={r.name} query={query.trim()} useRegex={useRegex && !searchContent} />
+                    </span>
+                    <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.path || undefined}>
+                      {r.path ? <HighlightText text={r.path} query={query.trim()} useRegex={useRegex && !searchContent} /> : (r.category || '—')}
+                    </span>
+                    <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
+                      {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
+                    </span>
+                    {snippet && (
+                      <div className="kw-snippet">
+                        <SnippetText snippet={snippet} start={rec.snippetMatchStart} end={rec.snippetMatchEnd} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             {!searching && results.length >= 500 && (
               <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>

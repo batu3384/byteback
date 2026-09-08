@@ -28,6 +28,14 @@ struct FileRecord {
     // P0-6 content dedup: MD5 of the first 64 KB of payload (carve records
     // only — computed from the already-in-memory probe). Empty = unknown.
     std::string contentHash;
+    // CA-031 content-search snippet: context around the first content match,
+    // filled by runContentSearch only (transient — never bound in
+    // bindFileRecord, never persisted). snippetMatchStart/End are byte
+    // offsets INTO snippet (post-sanitization), -1 when the match cannot be
+    // highlighted (e.g. FTS token match not re-locatable verbatim).
+    std::string snippet;
+    int snippetMatchStart = -1;
+    int snippetMatchEnd = -1;
 
     struct DataRun {
         uint64_t startSector;

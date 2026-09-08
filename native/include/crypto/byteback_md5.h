@@ -15,6 +15,17 @@
 namespace byteback {
 namespace crypto {
 
+// Serializable MD5 midstream state (imaging resume: the digest continues from
+// where a cancelled run stopped). bufLen is the number of valid bytes in
+// `buffer`; it always equals count % 64 and is stored so a corrupted blob is
+// detectable instead of silently desynchronizing the stream.
+struct Md5State {
+    uint32_t state[4];
+    uint64_t count;
+    uint8_t buffer[64];
+    uint32_t bufLen;
+};
+
 class Md5 {
 public:
     Md5();
@@ -24,12 +35,20 @@ public:
     // Finalize and write the 16 raw digest bytes.
     void finalRaw(uint8_t out[16]);
 
+    // Snapshot the midstream state. Fails (returns false, out untouched) only
+    // after finalHex/finalRaw consumed the context.
+    bool saveState(Md5State& out) const;
+    // Restore a snapshot produced by saveState. Fails on an inconsistent
+    // state (bufLen > 64 or bufLen != count % 64), leaving `this` unchanged.
+    bool loadState(const Md5State& s);
+
 private:
     void transform(const uint8_t block[64]);
 
     uint32_t state_[4];
     uint64_t count_;
     uint8_t buffer_[64];
+    bool finalized_ = false;
 };
 
 // One-shot helper.

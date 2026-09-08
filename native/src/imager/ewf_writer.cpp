@@ -1,6 +1,8 @@
 // EWF (EWF1 / .E01) multi-segment writer — see imager/ewf_writer.h.
 #include "imager/ewf_writer.h"
 
+#include "zlib.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +14,11 @@ namespace {
 constexpr size_t kFileHeaderSize = 76;
 constexpr size_t kSectionHeaderSize = 40;
 constexpr size_t kVolumeDataSize = 104;
+// C2: compression flag lives in the first reserved byte of the sectors and
+// table section headers (the 8 zero bytes after type/next/size).
+constexpr size_t kSectionHeaderFlagsOffset = 32;
+constexpr uint8_t kChunkFlagRaw = 0;
+constexpr uint8_t kChunkFlagDeflate = 1;
 
 void putU16(std::vector<uint8_t>& v, uint16_t x) {
     v.push_back(x & 0xFF);
@@ -23,6 +30,28 @@ void putU32(std::vector<uint8_t>& v, uint32_t x) {
 void putU64(std::vector<uint8_t>& v, uint64_t x) {
     for (int i = 0; i < 8; ++i) v.push_back((x >> (8 * i)) & 0xFF);
 }
+
+// C2: raw-deflate (windowBits -15, no zlib header) — the payload format EWF
+// compressed chunks use. Returns false when zlib refuses the stream.
+bool deflateChunk(const uint8_t* in, size_t inLen, int level, std::vector<uint8_t>& out) {
+    z_stream zs{};
+    if (deflateInit2_(&zs, level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY,
+                      ZLIB_VERSION, static_cast<int>(sizeof(zs))) != Z_OK) {
+        return false;
+    }
+    uLong bound = compressBound(static_cast<uLong>(inLen));
+    out.resize(bound);
+    zs.next_in = const_cast<Bytef*>(in);
+    zs.avail_in = static_cast<uInt>(inLen);
+    zs.next_out = out.data();
+    zs.avail_out = static_cast<uInt>(out.size());
+    const int rc = deflate(&zs, Z_FINISH);
+    const size_t produced = out.size() - zs.avail_out;
+    deflateEnd(&zs);
+    if (rc != Z_STREAM_END) return false;
+    out.resize(produced);
+    return true;
+}
 } // namespace
 
 EwfWriter::EwfWriter() {}
@@ -30,13 +59,14 @@ EwfWriter::~EwfWriter() {
     if (outFile_.is_open()) outFile_.close();
 }
 
-void EwfWriter::writeSectionHeader(const char type[16], uint64_t size) {
+void EwfWriter::writeSectionHeader(const char type[16], uint64_t size, uint8_t flags) {
     uint8_t hdr[kSectionHeaderSize];
     std::memset(hdr, 0, sizeof(hdr));
     std::memcpy(hdr, type, std::min<size_t>(15, std::strlen(type)));
     uint64_t v = size;
     for (int i = 0; i < 8; ++i) hdr[16 + i] = (v >> (8 * i)) & 0xFF;
     for (int i = 0; i < 8; ++i) hdr[24 + i] = (v >> (8 * i)) & 0xFF;
+    hdr[kSectionHeaderFlagsOffset] = flags;
     outFile_.write(reinterpret_cast<const char*>(hdr), sizeof(hdr));
 }
 
@@ -140,27 +170,70 @@ bool EwfWriter::startSegment(int number, bool first) {
         outFile_.write(reinterpret_cast<const char*>(vol.data()), vol.size());
     }
 
+    const uint8_t flag = opts_.compression > 0 ? kChunkFlagDeflate : kChunkFlagRaw;
     sectorsDataStart_ = static_cast<uint64_t>(outFile_.tellp()) + kSectionHeaderSize;
-    writeSectionHeader("sectors", 0);
+    writeSectionHeader("sectors", 0, flag);
+    return true;
+}
+
+// C2: flush the staged chunk. compression == 0 stores the bytes verbatim
+// (legacy layout, bit-identical); compression > 0 raw-deflates the chunk and
+// the table entry points at the compressed extent. Either way chunkOffsets_
+// stay byte counts into the sectors section.
+bool EwfWriter::flushChunk() {
+    if (pendingChunk_.empty()) return true;
+    if (currentChunkBytes_ > 0xffffffffULL) return false;
+    chunkOffsets_.push_back(static_cast<uint32_t>(currentChunkBytes_));
+
+    std::vector<uint8_t> compressed;
+    const uint8_t* outData = pendingChunk_.data();
+    size_t outLen = pendingChunk_.size();
+    if (opts_.compression > 0) {
+        const int level = static_cast<int>(std::min<uint32_t>(opts_.compression, 9));
+        if (!deflateChunk(pendingChunk_.data(), pendingChunk_.size(), level, compressed)) {
+            return false;
+        }
+        outData = compressed.data();
+        outLen = compressed.size();
+    }
+    outFile_.write(reinterpret_cast<const char*>(outData), static_cast<std::streamsize>(outLen));
+    currentChunkBytes_ += outLen;
+    pendingChunk_.clear();
     return true;
 }
 
 bool EwfWriter::closeSegment(bool last) {
     if (!outFile_.is_open()) return false;
 
+    if (!flushChunk()) return false;
+
     uint64_t sectorsSectionSize = kSectionHeaderSize + currentChunkBytes_;
+    const uint8_t flag = opts_.compression > 0 ? kChunkFlagDeflate : kChunkFlagRaw;
 
     std::vector<uint8_t> table;
     table.reserve((chunkOffsets_.size() + 1) * 4);
     for (uint32_t off : chunkOffsets_) putU32(table, off);
     putU32(table, static_cast<uint32_t>(currentChunkBytes_));
     while (table.size() % 16 != 0) table.push_back(0);
-    writeSectionHeader("table", kSectionHeaderSize + table.size());
+    writeSectionHeader("table", kSectionHeaderSize + table.size(), flag);
     outFile_.write(reinterpret_cast<const char*>(table.data()), table.size());
-    writeSectionHeader("table2", kSectionHeaderSize + table.size());
+    writeSectionHeader("table2", kSectionHeaderSize + table.size(), flag);
     outFile_.write(reinterpret_cast<const char*>(table.data()), table.size());
 
     if (last) {
+        // D1: acquiry errors ahead of the digest — u32 count, then
+        // {u64 sectorOffset, u64 sectorCount} pairs, little-endian.
+        if (!acquiryErrors_.empty()) {
+            std::vector<uint8_t> err;
+            putU32(err, static_cast<uint32_t>(acquiryErrors_.size()));
+            for (const auto& [start, count] : acquiryErrors_) {
+                putU64(err, start);
+                putU64(err, count);
+            }
+            writeSectionHeader("error", kSectionHeaderSize + err.size());
+            outFile_.write(reinterpret_cast<const char*>(err.data()), err.size());
+        }
+
         uint8_t digest[16];
         imageMd5_.finalRaw(digest);
         char hex[33];
@@ -184,6 +257,7 @@ bool EwfWriter::closeSegment(bool last) {
         std::memcpy(hdr, "sectors", 7);
         for (int i = 0; i < 8; ++i) hdr[16 + i] = (sectorsSectionSize >> (8 * i)) & 0xFF;
         for (int i = 0; i < 8; ++i) hdr[24 + i] = (sectorsSectionSize >> (8 * i)) & 0xFF;
+        hdr[kSectionHeaderFlagsOffset] = flag;
         outFile_.write(reinterpret_cast<const char*>(hdr), sizeof(hdr));
     }
     outFile_.seekp(static_cast<std::streamoff>(endPos));
@@ -210,6 +284,7 @@ bool EwfWriter::open(const std::string& destPath,
     totalSectors_ = totalSectors;
     bytesWritten_ = 0;
     currentChunkBytes_ = 0;
+    pendingChunk_.clear();
     chunkOffsets_.clear();
     segmentPaths_.clear();
     imageMd5_ = crypto::Md5();
@@ -220,26 +295,26 @@ bool EwfWriter::open(const std::string& destPath,
 bool EwfWriter::write(const uint8_t* data, size_t length) {
     if (!outFile_.is_open() || length % bytesPerSector_ != 0) return false;
 
-    uint64_t chunkBytes = static_cast<uint64_t>(opts_.sectorsPerChunk) * bytesPerSector_;
+    const size_t chunkBytes = static_cast<size_t>(opts_.sectorsPerChunk) * bytesPerSector_;
     size_t pos = 0;
     while (pos < length) {
-        uint64_t before = bytesWritten_;
-        if (before % chunkBytes == 0) {
+        const size_t space = chunkBytes - pendingChunk_.size();
+        const size_t take = std::min(space, length - pos);
+        // Digest is over the PLAINTEXT image bytes, never the stored form.
+        imageMd5_.update(data + pos, take);
+        pendingChunk_.insert(pendingChunk_.end(), data + pos, data + pos + take);
+        bytesWritten_ += take;
+        pos += take;
+        if (pendingChunk_.size() == chunkBytes) {
+            // Rotation decision at chunk boundaries, using the full chunk as
+            // the size estimate (compressed extents vary; the estimate is the
+            // conservative upper bound for the u32 table ceiling).
             if (currentChunkBytes_ > 0 &&
                 currentChunkBytes_ + chunkBytes > maxSectorsSectionBytes_) {
                 if (!rotateSegment()) return false;
             }
-            if (currentChunkBytes_ > 0xffffffffULL) return false;
-            chunkOffsets_.push_back(static_cast<uint32_t>(currentChunkBytes_));
+            if (!flushChunk()) return false;
         }
-        uint64_t spaceInChunk = chunkBytes - (before % chunkBytes);
-        size_t take = static_cast<size_t>(std::min<uint64_t>(spaceInChunk, length - pos));
-        if (currentChunkBytes_ + take > 0xffffffffULL) return false;
-        outFile_.write(reinterpret_cast<const char*>(data + pos), static_cast<std::streamsize>(take));
-        imageMd5_.update(data + pos, take);
-        bytesWritten_ += take;
-        currentChunkBytes_ += take;
-        pos += take;
     }
     return true;
 }

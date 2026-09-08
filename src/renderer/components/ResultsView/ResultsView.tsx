@@ -597,7 +597,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortField(field)
-      setSortDir(field === 'name' ? 'asc' : 'desc')
+      setSortDir(field === 'name' || field === 'path' ? 'asc' : 'desc')
     }
     setPage(0)
   }
@@ -1022,16 +1022,13 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                 </th>
                 {([
                   [t('results.col.name'), 'name'],
+                  [t('results.col.path'), 'path'],
                 ] as const).map(([label, field]) => (
                   <th key={field} {...sortableTh(field)} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
                     {label}
                     <span aria-hidden="true">{sortIndicator(field)}</span>
                   </th>
                 ))}
-                {/* Path is display-only: server-side ORDER BY is a native whitelist
-                    (CA-030) without a path_* key, so a sort header would silently
-                    fall back to id order. */}
-                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.path')}</th>
                 {([
                   [t('results.col.size'), 'size'],
                   [t('results.col.date'), 'date'],

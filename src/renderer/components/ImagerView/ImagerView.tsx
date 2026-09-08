@@ -20,6 +20,11 @@ interface ImagerViewProps {
   onImagingStateChange: (active: boolean) => void
 }
 
+/** Status line stored as an i18n key (+ optional engine error detail), same
+ *  shape as App's ScanStatusMessage — rendered through t()/tFormat so a
+ *  mid-session language switch re-translates instead of showing stale copy. */
+interface ImagerStatusMessage { key: string; err?: string }
+
 function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): React.ReactElement {
   const { t } = useI18n()
   const [drives, setDrives] = useState<DriveInfo[]>([])
@@ -28,7 +33,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
 
   const [imaging, setImaging] = useState(imagingActive)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
-  const [status, setStatus] = useState<string>(imagingActive ? t('imager.running') : '')
+  const [status, setStatus] = useState<ImagerStatusMessage | null>(imagingActive ? { key: 'imager.running' } : null)
   const [elapsed, setElapsed] = useState(0)
   const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
   const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
@@ -43,9 +48,13 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   const cancelledRef = useRef(false)
 
   useEffect(() => {
-    // Load drives
+    // Load drives (guard: a late response after unmount must not setState)
     if (window.api && window.api.listDrives) {
-      window.api.listDrives().then(setDrives).catch(console.error)
+      let alive = true
+      window.api.listDrives().then((list) => {
+        if (alive) setDrives(list)
+      }).catch(console.error)
+      return () => { alive = false }
     }
   }, [])
 
@@ -57,7 +66,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
           // Explicit terminal marker from main on stop — the native abort path
           // emits no completion tick, so this is the authoritative end event.
           cancelledRef.current = false
-          setStatus(t('imager.cancelled'))
+          setStatus({ key: 'imager.cancelled' })
           setImaging(false)
           onImagingStateChange(false)
           if (timerRef.current) clearInterval(timerRef.current)
@@ -66,7 +75,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         if (cancelledRef.current) return
         if (data.total === 0) {
           // CA-034: surface the real reason when the main process sent one.
-          setStatus(data.error ? tFormat('imager.failedWith', { err: data.error }) : t('imager.failed'))
+          setStatus(data.error ? { key: 'imager.failedWith', err: data.error } : { key: 'imager.failed' })
           setImaging(false)
           onImagingStateChange(false)
           if (timerRef.current) clearInterval(timerRef.current)
@@ -89,7 +98,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         });
 
         if (data.current >= data.total && data.total > 0) {
-          setStatus(t('imager.done'))
+          setStatus({ key: 'imager.done' })
           setImaging(false)
           onImagingStateChange(false)
           if (data.md5) setImageMd5(data.md5)
@@ -126,7 +135,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
     }
     cancelledRef.current = false
     setImaging(true)
-    setStatus(t('imager.starting'))
+    setStatus({ key: 'imager.starting' })
     onImagingStateChange(true)
     setProgress({ current: 0, total: 0 })
     setElapsed(0)
@@ -163,7 +172,7 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
     }
     setImaging(false)
     onImagingStateChange(false)
-    setStatus(t('imager.cancelled'))
+    setStatus({ key: 'imager.cancelled' })
   }
 
   const formatTime = (seconds: number) => {
@@ -174,6 +183,9 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   }
 
   const percent = progress.total > 0 ? Math.floor((progress.current / progress.total) * 100) : 0
+  // Key comparison, not localized-text matching — survives a language switch.
+  const isImagingDone = status?.key === 'imager.done'
+  const statusLabel = status ? tFormat(status.key, status.err != null ? { err: status.err } : {}) : ''
   const selectedDriveInfo = selectedDrive === '' ? undefined : drives.find(d => d.index === Number(selectedDrive))
   const showEwfSegmentWarning =
     format === 'ewf' && !!selectedDriveInfo && ewfWillRotateSegments(selectedDriveInfo.sizeBytes)
@@ -285,8 +297,8 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
         {(imaging || status) && (
           <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'var(--surface-overlay)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
-              <span style={{ fontWeight: 500, color: status.includes(t('imager.doneMarker')) ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {status.includes(t('imager.doneMarker')) ? <CheckCircle size={18} /> : <Activity size={18} />} {status}
+              <span style={{ fontWeight: 500, color: isImagingDone ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {isImagingDone ? <CheckCircle size={18} /> : <Activity size={18} />} {statusLabel}
               </span>
               <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{tFormat('imager.elapsed', { t: formatTime(elapsed) })}</span>
             </div>

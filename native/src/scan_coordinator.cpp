@@ -15,6 +15,10 @@
 #include <climits>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 namespace byteback {
 
@@ -25,6 +29,81 @@ std::atomic<uint64_t> g_phaseTotal{0};
 namespace {
 
 using ProgressCallback = ScanCoordinator::ProgressCallback;
+
+// A2: worker count for the parallel carve phase; 0 = auto.
+std::atomic<unsigned> g_parallelCarveWorkers{0};
+
+// A2: bounded hand-off between carve workers and the single consumer thread.
+// Cap bounds memory when a worker refines candidates faster than the emit
+// path (DB insert via the bridge callback) can consume them.
+class BoundedRecordQueue {
+public:
+    explicit BoundedRecordQueue(size_t cap) : cap_(cap) {}
+
+    enum class PopStatus { Got, Timeout, ClosedAndDrained };
+
+    // Blocks while full. Returns false once the queue is closed (a producer
+    // must then stop producing; the record is dropped).
+    bool push(FileRecord fr) {
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            cvNotFull_.wait(lock, [&] { return closed_ || q_.size() < cap_; });
+            if (closed_) return false;
+            q_.push_back(std::move(fr));
+        }
+        cvNotEmpty_.notify_one();
+        return true;
+    }
+
+    // Blocks while empty (up to timeoutMs). ClosedAndDrained is terminal.
+    PopStatus popFor(FileRecord& out, int timeoutMs) {
+        std::unique_lock<std::mutex> lock(mu_);
+        if (!cvNotEmpty_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                  [&] { return closed_ || !q_.empty(); })) {
+            return PopStatus::Timeout;
+        }
+        if (q_.empty()) return PopStatus::ClosedAndDrained;
+        out = std::move(q_.front());
+        q_.pop_front();
+        lock.unlock();
+        cvNotFull_.notify_one();
+        return PopStatus::Got;
+    }
+
+    void close() {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            closed_ = true;
+        }
+        cvNotEmpty_.notify_all();
+        cvNotFull_.notify_all();
+    }
+
+    bool empty() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return q_.empty();
+    }
+
+private:
+    mutable std::mutex mu_;
+    mutable std::condition_variable cvNotEmpty_;
+    mutable std::condition_variable cvNotFull_;
+    std::deque<FileRecord> q_;
+    size_t cap_;
+    bool closed_ = false;
+};
+
+} // namespace
+
+void setParallelCarveWorkers(unsigned workers) {
+    g_parallelCarveWorkers.store(workers, std::memory_order_relaxed);
+}
+
+unsigned parallelCarveWorkers() {
+    return g_parallelCarveWorkers.load(std::memory_order_relaxed);
+}
+
+namespace {
 
 void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
     if (!badSectorOut) return;
@@ -370,6 +449,15 @@ void runQuickScan(DiskReader& reader,
 // The public runCarveScan keeps its header signature; runDeepScan hands the
 // already-built ranges through the impl (by value/reference down the call —
 // no shared mutable globals).
+void runCarveScanRangesImpl(DiskReader& reader,
+                            FileSystemParser::FileRecordCallback onFileFound,
+                            ProgressCallback onProgress,
+                            std::atomic<bool>* isRunning,
+                            std::vector<uint64_t>* badSectorOut,
+                            std::vector<SectorRange> carveRanges,
+                            uint64_t resumeCarveSector,
+                            bool allowParallelCarve);
+
 void runCarveScanImpl(DiskReader& reader,
                       FileSystemParser::FileRecordCallback onFileFound,
                       ProgressCallback onProgress,
@@ -378,17 +466,17 @@ void runCarveScanImpl(DiskReader& reader,
                       ScanBounds bounds,
                       bool unallocatedOnly,
                       uint64_t resumeCarveSector,
-                      std::vector<SectorRange>* precomputedRanges) {
+                      std::vector<SectorRange>* precomputedRanges,
+                      bool allowParallelCarve) {
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
 
     g_scanPhase.store("carve", std::memory_order_relaxed);
     std::vector<SectorRange> owned;
     std::vector<SectorRange>* ranges = precomputedRanges;
-    // Precomputed ranges are only valid for the unallocated-only path; when
-    // the map came back empty the caller falls back to full-bound carving
-    // (unallocatedOnly=false), which must recompute as before.
-    if (!unallocatedOnly || !ranges || ranges->empty()) {
+    // Precomputed ranges win whenever the caller supplies them (CA-033); an
+    // empty/null pointer recomputes from the bounds with the requested mode.
+    if (!ranges || ranges->empty()) {
         owned = prepareCarveRanges(reader, bounds, unallocatedOnly);
         ranges = &owned;
     }
@@ -397,6 +485,24 @@ void runCarveScanImpl(DiskReader& reader,
         g_scanPhase.store("carve_skipped", std::memory_order_relaxed);
         return;
     }
+    runCarveScanRangesImpl(reader, onFileFound, onProgress, isRunning, badSectorOut,
+                           std::move(carveRanges), resumeCarveSector, allowParallelCarve);
+}
+
+// A2: carve a caller-supplied range list. Ranges are processed exactly as
+// given (NOT merged — merging would change carve results at the seam: a file
+// straddling two ranges is flushed at the range end by design). This is the
+// shared core of runCarveScan and the seam the parallel phase hangs on.
+void runCarveScanRangesImpl(DiskReader& reader,
+                            FileSystemParser::FileRecordCallback onFileFound,
+                            ProgressCallback onProgress,
+                            std::atomic<bool>* isRunning,
+                            std::vector<uint64_t>* badSectorOut,
+                            std::vector<SectorRange> carveRanges,
+                            uint64_t resumeCarveSector,
+                            bool allowParallelCarve) {
+    uint32_t sectorSize = reader.getSectorSize();
+    if (sectorSize == 0) sectorSize = 512;
 
     uint64_t totalCarveSectors = totalSectorCount(carveRanges);
     const uint64_t progressTotal = totalCarveSectors > 0 ? totalCarveSectors : 1;
@@ -415,6 +521,200 @@ void runCarveScanImpl(DiskReader& reader,
     CarvingEngine carver;
     if (!carver.loadSignatures("")) {
         std::cerr << "Failed to load carving signatures" << std::endl;
+    }
+
+    // ------------------------------------------------------------------
+    // A2: parallel carve over disjoint ranges.
+    //
+    // Parallelizes ONLY over ranges — never band-splits inside a range.
+    // CA-006 documented why banding corrupts results: a candidate opened near
+    // a band edge cannot see its footer past the edge, so records truncate.
+    // Whole ranges preserve sequential semantics exactly: every record a
+    // range produces depends only on that range's content, so the parallel
+    // result set equals the sequential one as a MULTISET (emission order may
+    // differ; DB ids follow insertion order — documented, accepted).
+    //
+    // Physical drives and volume devices stay SEQUENTIAL even though clone()
+    // would succeed: they are seek-bound, so overlapping workers thrash the
+    // head and lose to one well-ordered stream (supportsParallelScan()).
+    // The dedup/emit path stays single-threaded by construction: workers only
+    // produce into the bounded queue; the one consumer runs the SAME
+    // callbackWrapper as the sequential path (bridge-side markDuplicate etc.
+    // unchanged).
+    // ------------------------------------------------------------------
+    struct CarveWork { uint64_t start; uint64_t end; };
+    bool parallelViable = allowParallelCarve && reader.supportsParallelScan() &&
+                          reader.clone() != nullptr;
+    unsigned workerCount = 0;
+    if (parallelViable) {
+        unsigned n = g_parallelCarveWorkers.load(std::memory_order_relaxed);
+        if (n == 0) {
+            n = std::thread::hardware_concurrency();
+            n = n == 0 ? 2u : std::min(n, 4u);
+            n = std::max(n, 2u);
+        }
+        workerCount = n;
+        if (workerCount < 2) parallelViable = false;
+    }
+
+    // Resume skip is applied identically in both paths (same accounting, same
+    // progress shape) so DB checkpoints stay meaningful across the toggle.
+    // `cursor` mirrors the sequential loop's carvedSectors (resume math);
+    // `beforeWork` is ONLY the progress base — skipped sectors — so the
+    // parallel phase reports beforeWork + scanned without double counting.
+    uint64_t beforeWork = 0;    // skipped sectors (progress base)
+    uint64_t cursor = 0;        // cumulative sector cursor for resume math
+    uint64_t parallelTotal = 0; // sectors in the work list
+    std::vector<CarveWork> work;
+    bool cancelledDuringSkip = false;
+    if (parallelViable) {
+        for (const auto& rg : carveRanges) {
+            if (isRunning && !(*isRunning)) { cancelledDuringSkip = true; break; }
+            if (rg.count == 0) continue;
+            uint64_t rangeStart = rg.start;
+            uint64_t rangeEnd = rg.start + rg.count;
+
+            if (resumeCarveSector > 0 && cursor + rg.count <= resumeCarveSector) {
+                cursor += rg.count;
+                beforeWork += rg.count;
+                onProgress(meter.tick(beforeWork), progressTotal);
+                continue;
+            }
+            if (resumeCarveSector > cursor) {
+                const uint64_t skip = resumeCarveSector - cursor;
+                rangeStart += skip;
+                cursor += skip;
+                beforeWork += skip;
+                if (rangeStart >= rangeEnd) {
+                    cursor += rg.count - skip;
+                    onProgress(meter.tick(beforeWork), progressTotal);
+                    continue;
+                }
+            }
+            work.push_back({rangeStart, rangeEnd});
+            parallelTotal += rangeEnd - rangeStart;
+            cursor += rangeEnd - rangeStart;
+        }
+        // Parallel needs at least 2 non-trivial ranges and enough work to
+        // amortize the thread/clone startup (4 MiB floor).
+        if (work.size() < 2 || parallelTotal * sectorSize < 4ull * 1024 * 1024) {
+            parallelViable = false;
+        }
+    }
+
+    if (parallelViable && !cancelledDuringSkip) {
+        // Largest ranges first so workers finish close together (ranges are
+        // pulled dynamically; this is only a scheduling hint).
+        std::stable_sort(work.begin(), work.end(),
+                         [](const CarveWork& a, const CarveWork& b) {
+                             return (a.end - a.start) > (b.end - b.start);
+                         });
+
+        workerCount = std::min(workerCount, static_cast<unsigned>(work.size()));
+        std::vector<std::unique_ptr<DiskReader>> clones;
+        clones.reserve(workerCount);
+        for (unsigned i = 0; i < workerCount; ++i) {
+            clones.push_back(reader.clone());
+            if (!clones.back()) { // cannot happen behind supportsParallelScan(); be honest anyway
+                parallelViable = false;
+                break;
+            }
+        }
+
+        if (parallelViable) {
+            BoundedRecordQueue queue(10000);
+            std::atomic<uint64_t> scannedSectors{0};
+            // One shared BGC budget for all workers: same total as the
+            // sequential path, and scanRangeSingle's atomic path is race-free.
+            std::atomic<int> sharedBgcBudget(32);
+
+            auto emitParallelProgress = [&]() {
+                const uint64_t s = std::min<uint64_t>(scannedSectors.load(std::memory_order_relaxed),
+                                                      parallelTotal);
+                onProgress(meter.tick(beforeWork + s), progressTotal);
+            };
+
+            std::atomic<size_t> nextRange{0};
+            std::atomic<bool> workerFailed{false};
+            // Producers-done signal: the consumer runs on THIS thread, so the
+            // workers must announce termination through a counter — joining
+            // them before close() would deadlock against the drain loop.
+            // RAII decrement: workers exit via `return` deep inside the try
+            // block, which would skip a plain trailing fetch_sub.
+            struct LiveWorkersGuard {
+                std::atomic<int>& counter;
+                ~LiveWorkersGuard() { counter.fetch_sub(1, std::memory_order_release); }
+            };
+            std::atomic<int> liveWorkers(static_cast<int>(clones.size()));
+            std::vector<std::thread> workers;
+            workers.reserve(clones.size());
+            for (size_t w = 0; w < clones.size(); ++w) {
+                workers.emplace_back([&, w]() {
+                    LiveWorkersGuard guard{liveWorkers};
+                    try {
+                        for (;;) {
+                            if (isRunning && !(*isRunning)) return;
+                            const size_t i = nextRange.fetch_add(1, std::memory_order_relaxed);
+                            if (i >= work.size()) return;
+                            const uint64_t wStart = work[i].start;
+                            const uint64_t wEnd = work[i].end;
+                            auto sink = [&](const FileRecord& fr) {
+                                if (fr.id == -1 && fr.name.empty()) {
+                                    // Progress tick: chunk-level sector progress.
+                                    const uint64_t done = std::min(fr.startSector, wEnd);
+                                    const uint64_t rel = done > wStart ? done - wStart : 0;
+                                    scannedSectors.fetch_add(rel, std::memory_order_relaxed);
+                                    return;
+                                }
+                                queue.push(fr); // blocks while full; consumer keeps draining
+                            };
+                            carver.scanRangeSingle(*clones[w], wStart, wEnd, sink, isRunning,
+                                                   0, 0, &sharedBgcBudget);
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "[byteback] parallel carve worker exception: "
+                                  << e.what() << std::endl;
+                        workerFailed = true;
+                    } catch (...) {
+                        std::cerr << "[byteback] parallel carve worker unknown exception" << std::endl;
+                        workerFailed = true;
+                    }
+                });
+            }
+
+            // Single consumer: the ONLY thread running the emit path, so
+            // downstream dedup/DB insertion order logic stays single-threaded
+            // exactly as in the sequential path.
+            for (;;) {
+                FileRecord fr;
+                auto st = queue.popFor(fr, 200);
+                if (st == BoundedRecordQueue::PopStatus::Got) {
+                    callbackWrapper(fr);
+                    continue;
+                }
+                emitParallelProgress();
+                if (liveWorkers.load(std::memory_order_acquire) == 0 && queue.empty()) break;
+            }
+            for (auto& t : workers) t.join();
+            queue.close();
+            // Drain whatever is still queued, then a final progress tick.
+            for (;;) {
+                FileRecord fr;
+                if (queue.popFor(fr, 0) != BoundedRecordQueue::PopStatus::Got) break;
+                callbackWrapper(fr);
+            }
+            if (workerFailed) {
+                // Ceiling: a worker that died mid-range leaves that range
+                // partially scanned (matches a cancelled scan's honesty).
+                std::cerr << "[byteback] parallel carve: a worker failed; "
+                             "results may be a subset" << std::endl;
+            }
+            emitParallelProgress();
+            onProgress(meter.tick(progressTotal), progressTotal);
+            return;
+        }
+        // Cloning failed after all — fall through to the sequential loop
+        // (the resume-skip progress above replays as monotonic no-ops).
     }
 
     uint64_t carvedSectors = 0;
@@ -463,9 +763,25 @@ void runCarveScan(DiskReader& reader,
                   bool unallocatedOnly,
                   uint64_t resumeCarveSector) {
     runCarveScanImpl(reader, onFileFound, onProgress, isRunning, badSectorOut, bounds,
-                     unallocatedOnly, resumeCarveSector, nullptr);
+                     unallocatedOnly, resumeCarveSector, nullptr, /*allowParallelCarve=*/true);
 }
 
+void runCarveScanRanges(DiskReader& reader,
+                        FileSystemParser::FileRecordCallback onFileFound,
+                        ProgressCallback onProgress,
+                        std::atomic<bool>* isRunning,
+                        std::vector<uint64_t>* badSectorOut,
+                        std::vector<SectorRange> ranges,
+                        uint64_t resumeCarveSector,
+                        bool allowParallelCarve) {
+    g_scanPhase.store("carve", std::memory_order_relaxed);
+    if (ranges.empty()) {
+        g_scanPhase.store("carve_skipped", std::memory_order_relaxed);
+        return;
+    }
+    runCarveScanRangesImpl(reader, onFileFound, onProgress, isRunning, badSectorOut,
+                           std::move(ranges), resumeCarveSector, allowParallelCarve);
+}
 void runDeepScan(DiskReader& reader,
                  FileSystemParser::FileRecordCallback onFileFound,
                  ProgressCallback onProgress,
@@ -521,7 +837,7 @@ void runDeepScan(DiskReader& reader,
     };
     runCarveScanImpl(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds,
                      unallocCarve, target.carveResumeSector,
-                     unallocCarve ? &carveRanges : nullptr);
+                     unallocCarve ? &carveRanges : nullptr, target.parallelCarve);
     if (unallocCarve) {
         emit(totalSectors);
     } else {
@@ -541,8 +857,10 @@ void runFullCarveScan(DiskReader& reader,
     if (sectorSize == 0) sectorSize = 512;
     uint64_t totalSectors = bounds.active() ? bounds.sizeInSectors : reader.getDiskSize() / sectorSize;
 
-    const uint64_t fullCarveTotal =
-        totalSectorCount(prepareCarveRanges(reader, bounds, false));
+    // A2: compute the full carve ranges once and hand them down so
+    // target.parallelCarve governs the carve phase here too.
+    std::vector<SectorRange> fullCarveRanges = prepareCarveRanges(reader, bounds, false);
+    const uint64_t fullCarveTotal = totalSectorCount(fullCarveRanges);
     const uint64_t carveBudget = fullCarveTotal > 0 ? std::min(fullCarveTotal, totalSectors) : totalSectors / 2;
     const uint64_t metaShare =
         totalSectors > carveBudget ? totalSectors - carveBudget : totalSectors / 2;
@@ -576,15 +894,14 @@ void runFullCarveScan(DiskReader& reader,
         emit(carveProgressBase + slice);
         if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
-                 target.carveResumeSector);
+    runCarveScanImpl(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds,
+                     false, target.carveResumeSector, &fullCarveRanges, target.parallelCarve);
     if (fullCarveTotal > 0) {
         emit(totalSectors);
     } else {
         emit(carveProgressBase);
     }
 }
-
 void runCarveOnlyScan(DiskReader& reader,
                       FileSystemParser::FileRecordCallback onFileFound,
                       ProgressCallback onProgress,
@@ -607,8 +924,11 @@ void runCarveOnlyScan(DiskReader& reader,
         onProgress(overall.tick(mulDivU64(capped, totalSectors, denom)), totalSectors);
         if (onCheckpoint) onCheckpoint(true, current);
     };
-    runCarveScan(reader, onFileFound, carveProgress, isRunning, badSectorOut, bounds, false,
-                 target.carveResumeSector);
+    // A2: explicit range list so target.parallelCarve applies here as well.
+    std::vector<SectorRange> carveOnlyRanges = prepareCarveRanges(reader, bounds, false);
+    runCarveScanRanges(reader, onFileFound, carveProgress, isRunning, badSectorOut,
+                       std::move(carveOnlyRanges), target.carveResumeSector,
+                       target.parallelCarve);
     onProgress(overall.tick(totalSectors), totalSectors);
 }
 

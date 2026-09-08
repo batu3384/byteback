@@ -149,6 +149,10 @@ bool DiskReader::openDrive(int driveIndex) {
     if (handle_ == INVALID_HANDLE_VALUE) return false;
 
     currentDriveIndex_ = driveIndex;
+    volumePath_.clear();
+    rawFilePath_.clear();
+    ewfPath_.clear();
+    ewfPathIsHttp_ = false;
 
     // Get geometry
     DISK_GEOMETRY_EX geo;
@@ -192,6 +196,10 @@ bool DiskReader::openVolumePath(const std::string& path) {
     currentDriveIndex_ = -1;
     sectorSize_ = 512;
     diskSize_ = 0;
+    volumePath_ = path;
+    rawFilePath_.clear();
+    ewfPath_.clear();
+    ewfPathIsHttp_ = false;
 
     DISK_GEOMETRY_EX geo{};
     DWORD bytesReturned = 0;
@@ -211,6 +219,7 @@ bool DiskReader::openVolumePath(const std::string& path) {
 
     CloseHandle(h);
     handle_ = INVALID_HANDLE_VALUE;
+    volumePath_.clear(); // spec only tracked for successfully opened volumes
     return false;
 }
 
@@ -227,8 +236,12 @@ void DiskReader::closeDriveUnlocked() {
     diskSize_ = 0;
     currentDriveIndex_ = -1;
     shareWrite_ = false;
+    volumePath_.clear();
+    rawFilePath_.clear();
+    ewfPath_.clear();
+    ewfPathIsHttp_ = false;
     raidBackend_.reset();
-    memoryImage_.clear();
+    memoryVolume_.reset();
     memoryMode_ = false;
     ewfBackend_.reset();
     rawBackend_.reset();
@@ -257,16 +270,20 @@ bool DiskReader::hasRaidBackend() const {
 void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
-    memoryImage_ = std::move(image);
+    // A2: the buffer lives in a shared state so clones reference the SAME
+    // bytes (no per-clone copy) and fault injections stay coherent.
+    memoryVolume_ = std::make_shared<MemoryVolumeState>();
+    memoryVolume_->data = std::move(image);
     sectorSize_ = sectorSize ? sectorSize : 512;
-    diskSize_ = memoryImage_.size();
+    diskSize_ = memoryVolume_->data.size();
     memoryMode_ = true;
     currentDriveIndex_ = -1;
 }
 
 void DiskReader::detachMemoryVolume() {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    memoryImage_.clear();
+    // Detaching drops this reader's reference; clones keep the shared state.
+    memoryVolume_.reset();
     memoryMode_ = false;
     diskSize_ = 0;
 }
@@ -278,8 +295,9 @@ bool DiskReader::hasMemoryVolume() const {
 
 void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount) {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    faultStartSector_ = startSector;
-    faultSectorCount_ = sectorCount;
+    if (!memoryVolume_) return;
+    memoryVolume_->faultStartSector = startSector;
+    memoryVolume_->faultSectorCount = sectorCount;
 }
 
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
@@ -295,6 +313,8 @@ bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOu
     sectorSize_ = ewfBackend_->bytesPerSector();
     diskSize_ = ewfBackend_->imageBytes();
     currentDriveIndex_ = -1;
+    ewfPath_ = pathOrUrl; // A2: clone() re-parses from this path
+    ewfPathIsHttp_ = isHttpUrl(pathOrUrl);
     return true;
 }
 
@@ -312,6 +332,7 @@ bool DiskReader::attachRawFile(const std::string& path, std::string* errOut) {
     sectorSize_ = 512;
     diskSize_ = rawBackend_->size();
     currentDriveIndex_ = -1;
+    rawFilePath_ = path; // A2: clone() re-opens this path
     return true;
 }
 
@@ -440,27 +461,32 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
     if (sectorSize_ == 0) sectorSize_ = 512;
 
     if (memoryMode_) {
+        if (!memoryVolume_) {
+            result.error = "No drive opened";
+            return result;
+        }
+        const MemoryVolumeState& mv = *memoryVolume_;
         if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
             result.error = "Read offset and size must be sector-aligned";
             return result;
         }
         // Test hook: a read overlapping the injected fault range fails.
-        if (faultSectorCount_ > 0) {
+        if (mv.faultSectorCount > 0) {
             const uint64_t first = offsetBytes / sectorSize_;
             const uint64_t last = first + sizeBytes / sectorSize_ - 1;
-            if (first <= faultStartSector_ + faultSectorCount_ - 1 &&
-                faultStartSector_ <= last) {
+            if (first <= mv.faultStartSector + mv.faultSectorCount - 1 &&
+                mv.faultStartSector <= last) {
                 result.error = "injected memory fault range";
                 noteBadRead(offsetBytes, sizeBytes);
                 return result;
             }
         }
-        if (offsetBytes + sizeBytes > memoryImage_.size()) {
+        if (offsetBytes + sizeBytes > mv.data.size()) {
             std::memset(buffer, 0, sizeBytes);
-            if (offsetBytes < memoryImage_.size()) {
+            if (offsetBytes < mv.data.size()) {
                 size_t avail = static_cast<size_t>(
-                    std::min<uint64_t>(sizeBytes, memoryImage_.size() - offsetBytes));
-                std::memcpy(buffer, memoryImage_.data() + offsetBytes, avail);
+                    std::min<uint64_t>(sizeBytes, mv.data.size() - offsetBytes));
+                std::memcpy(buffer, mv.data.data() + offsetBytes, avail);
                 result.bytesRead = static_cast<uint64_t>(avail);
             }
             noteBadRead(offsetBytes, sizeBytes);
@@ -468,7 +494,7 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.paddedZeros = true;
             return result;
         }
-        std::memcpy(buffer, memoryImage_.data() + offsetBytes, sizeBytes);
+        std::memcpy(buffer, mv.data.data() + offsetBytes, sizeBytes);
         result.success = true;
         result.bytesRead = sizeBytes;
         maybeDecryptXts(offsetBytes, sizeBytes, buffer);

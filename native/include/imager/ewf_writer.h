@@ -10,12 +10,29 @@
 //
 // CA-004 verification status: container round-trips in test_ewf.cpp. Optional
 // independent check: set BYTEBACK_EWFINFO to an ewfinfo binary (CI skips if absent).
+//
+// Compression (task C, zlib 1.3.1 vendored in third_party/zlib): when
+// EwfOptions::compression > 0, every sectors chunk is raw-deflate compressed
+// and the table entries stay byte counts (offset of the chunk start within
+// the sectors section; final entry = total compressed bytes). The sectors and
+// table section headers carry the compression flag in their reserved byte 32
+// (0 = raw chunks, 1 = deflate). Default stays 0: existing callers keep
+// producing byte-identical uncompressed images. Ceiling: compressed images
+// round-trip through OUR EwfReader; byte-level libewf interop for compressed
+// images is deferred (uncompressed remains the default, externally verified
+// format).
+//
+// Acquiry errors (task D): setAcquiryErrors() records the sectors that could
+// not be read during acquisition; finish() writes an "error" section
+// (u32 count, then {u64 sectorOffset, u64 sectorCount} entries, LE) ahead of
+// the digest in the final segment.
 
 #include "crypto/byteback_md5.h"
 #include <cstdint>
 #include <cstddef>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace byteback {
@@ -29,6 +46,9 @@ struct EwfOptions {
     std::string notes;
     // Serial string embedded in the header section.
     std::string serial = "BYTEBACK01";
+    // C2: 0 = store chunks uncompressed (default, legacy byte-identical
+    // output); 1 = fastest deflate .. 9 = best. Values are clamped to [0, 9].
+    uint32_t compression = 0;
 };
 
 class EwfWriter {
@@ -56,6 +76,12 @@ public:
     // deliberately omit the digest/done sections — a truncated copy must
     // never carry a checksum that presents it as complete. md5Hex() stays
     // empty after abort().
+    //
+    // Resume ceiling (task B): EWF is abort-only by design — appending to a
+    // partially written chunk table/digest layout mid-stream would require
+    // rewriting every section that follows the resume point. RAW imaging has
+    // real resume support in DiskImager; EWF acquisitions restart from zero
+    // (the partial image stays readable, just unverified).
     bool abort();
 
     bool isOpen() const { return outFile_.is_open(); }
@@ -66,8 +92,15 @@ public:
     void setMaxSectorsSectionBytes(uint64_t n) { maxSectorsSectionBytes_ = n; }
     int segmentCount() const { return static_cast<int>(segmentPaths_.size()); }
 
+    // D1: read-failed sector runs observed during acquisition
+    // {startSector, sectorCount}. Written as the "error" section by finish().
+    void setAcquiryErrors(std::vector<std::pair<uint64_t, uint64_t>> errors) {
+        acquiryErrors_ = std::move(errors);
+    }
+
 private:
-    void writeSectionHeader(const char type[16], uint64_t size);
+    void writeSectionHeader(const char type[16], uint64_t size, uint8_t flags = 0);
+    bool flushChunk();
     bool startSegment(int number, bool first);
     bool closeSegment(bool last);
     bool rotateSegment();
@@ -93,6 +126,12 @@ private:
     std::string destPath_;
     int segmentNumber_ = 1;
     std::vector<std::string> segmentPaths_;
+
+    // C2: staged plaintext of the chunk being assembled; flushed (raw or
+    // deflated) whenever it reaches a full chunk or write()/finish() ends it.
+    std::vector<uint8_t> pendingChunk_;
+    // D1: acquisition read errors, emitted as the "error" section.
+    std::vector<std::pair<uint64_t, uint64_t>> acquiryErrors_;
 };
 
 } // namespace byteback

@@ -106,8 +106,10 @@ export function chipToCategory(chip: string): string {
 
 export type StatusChip = 'deleted' | 'allocated' | 'all' | 'carved'
 
-/** CA-030: sortable column keys; values map to the native ORDER BY whitelist. */
-export type SortField = 'confidence' | 'size' | 'name' | 'date' | 'id'
+/** CA-030: sortable column keys; values map to the native ORDER BY whitelist.
+ *  'path' is wired UI-first: native gains path_asc/path_desc in a parallel
+ *  lane; until then the engine ignores the unknown key and keeps id order. */
+export type SortField = 'confidence' | 'size' | 'name' | 'date' | 'path' | 'id'
 export type SortDir = 'asc' | 'desc'
 
 export function sortKey(field: SortField, dir: SortDir): string {

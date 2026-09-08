@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import DriveCard from './DriveCard'
 import SsdTrimModal from './SsdTrimModal'
 import type { DriveInfo, ResolvedVolume, ScanOptions, ScanState } from '../../../shared/types'
@@ -49,6 +49,14 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   // same failure twice on the dashboard.
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
+  // Stale-response guard: navigation can unmount the dashboard while the
+  // drive list / session probe is in flight; late .then state writes stop.
+  // Setup re-arms the flag so StrictMode's double mount stays live.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
   // P0-2: lost partition search state.
   const [lostScanDrive, setLostScanDrive] = useState(0)
   const [lostScanning, setLostScanning] = useState(false)
@@ -60,6 +68,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
     checkActiveSession()
     if (window.api?.listVolumeLetters) {
       window.api.listVolumeLetters().then((letters) => {
+        if (!aliveRef.current) return
         if (letters?.length) {
           setVolumeLetters(letters)
           if (!letters.includes(volumeLetter)) setVolumeLetter(letters[0])
@@ -78,6 +87,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           window.api.isAdmin(),
           window.api.listDrives()
         ])
+        if (!aliveRef.current) return
         setIsAdmin(adminStatus)
         setDrives(driveList as DriveInfo[])
         if (!driveList || driveList.length === 0) {
@@ -88,10 +98,11 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       }
     } catch (err: any) {
       console.error('Sürücüler alınırken hata:', err)
+      if (!aliveRef.current) return
       setError(tFormat('dash.driveListError', { err: err?.message || String(err) }))
       setDrives([])
     } finally {
-      setLoading(false)
+      if (aliveRef.current) setLoading(false)
     }
   }
 
@@ -99,12 +110,14 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
     if (!window.api?.getLatestUsableScanId || !window.api.getScanState) return
     try {
       const usableId = await window.api.getLatestUsableScanId()
+      if (!aliveRef.current) return
       if (usableId <= 0) {
         setLatestScan(null)
         setPausedSession(null)
         return
       }
       const state = await window.api.getScanState(usableId)
+      if (!aliveRef.current) return
       if (!state || state.id <= 0) {
         setLatestScan(null)
         setPausedSession(null)
@@ -113,7 +126,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       setLatestScan(state)
       setPausedSession(isPausedScan(state) ? state : null)
     } catch {
-      setPausedSession(null)
+      if (aliveRef.current) setPausedSession(null)
     }
   }
 
@@ -133,19 +146,6 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       setClearBusy(false)
     }
   }
-
-  useEffect(() => {
-    fetchDrives()
-    checkActiveSession()
-    if (window.api?.listVolumeLetters) {
-      window.api.listVolumeLetters().then((letters) => {
-        if (letters?.length) {
-          setVolumeLetters(letters)
-          if (!letters.includes(volumeLetter)) setVolumeLetter(letters[0])
-        }
-      }).catch((e: unknown) => console.warn('[Dashboard] listVolumeLetters failed', e))
-    }
-  }, [])
 
   const driveIsSsd = (driveIndex: number): boolean => {
     const d = drives.find((x) => x.index === driveIndex)

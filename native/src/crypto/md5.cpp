@@ -100,6 +100,7 @@ void Md5::finalRaw(uint8_t out[16]) {
     // inputs whose length mod 64 was in [48, 56). Feeding the length bytes
     // directly into the buffer and transforming here closes both that and
     // the update() buffering defect.
+    finalized_ = true;
     uint64_t bits = count_ * 8;
     size_t index = (size_t)(count_ % 64);
     size_t padLen = (index < 56) ? (56 - index) : (120 - index);
@@ -126,6 +127,26 @@ std::string md5Hex(const uint8_t* data, size_t len) {
     Md5 md5;
     md5.update(data, len);
     return md5.finalHex();
+}
+
+bool Md5::saveState(Md5State& out) const {
+    if (finalized_) return false;
+    for (int i = 0; i < 4; ++i) out.state[i] = state_[i];
+    out.count = count_;
+    std::memcpy(out.buffer, buffer_, sizeof(buffer_));
+    out.bufLen = static_cast<uint32_t>(count_ % 64);
+    return true;
+}
+
+bool Md5::loadState(const Md5State& s) {
+    // A snapshot whose buffered-byte count disagrees with the stream length
+    // would desynchronize every following block; reject instead of resuming.
+    if (s.bufLen > 64 || s.bufLen != s.count % 64) return false;
+    for (int i = 0; i < 4; ++i) state_[i] = s.state[i];
+    count_ = s.count;
+    std::memcpy(buffer_, s.buffer, sizeof(buffer_));
+    finalized_ = false;
+    return true;
 }
 
 } // namespace crypto
