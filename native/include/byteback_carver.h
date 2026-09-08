@@ -141,5 +141,20 @@ BgcResult triFragmentedGapCarve(const uint8_t* disk, size_t diskSize,
                                 size_t stepBytes = 1, size_t attemptBudget = 8192,
                                 std::atomic<bool>* isRunning = nullptr);
 
+// CA-053: atomically claim one unit of the shared parallel-carve BGC budget.
+// The previous check-then-decrement (load() > 0 gate, later fetch_sub) let
+// <=N-1 workers overshoot: with budget 1 and N workers, every worker that
+// passed the gate also decremented, so N workers ran BGC on a 1-unit budget.
+// Here the fetch_sub IS the commit: a worker whose decrement drives the
+// counter below zero restores it and aborts its attempt, so at most `budget`
+// attempts proceed and the counter never stays negative.
+inline bool bgcBudgetTryAcquire(std::atomic<int>& budget) {
+    if (budget.fetch_sub(1) <= 0) {
+        budget.fetch_add(1); // restore: this attempt did not get the budget
+        return false;
+    }
+    return true;
+}
+
 } // namespace byteback
 

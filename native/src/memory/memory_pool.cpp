@@ -1,5 +1,7 @@
 #include "byteback_memory.h"
 
+#include <cstring> // CA-056: std::memset — MSVC pulled it in transitively, g++ does not
+
 namespace byteback {
 
 void BufferDeleter::operator()(std::vector<uint8_t>* ptr) const {

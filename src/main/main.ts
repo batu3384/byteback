@@ -120,6 +120,12 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'clipboard-sanitized-write')
   })
+  // Sync companion of the request handler: Chromium's permission pre-checks
+  // (navigator.permissions.query etc.) consult this handler and would
+  // default-allow while the request handler denies — an inconsistent surface.
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin) => {
+    return permission === 'clipboard-sanitized-write'
+  })
 
   initSessionLog(app.getPath('userData'))
   registerIpcHandlers()

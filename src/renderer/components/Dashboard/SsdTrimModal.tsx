@@ -13,16 +13,24 @@ interface SsdTrimModalProps {
 function SsdTrimModal({ open, scanType, onConfirm, onCancel }: SsdTrimModalProps): React.ReactElement | null {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
+  // Callers pass inline handlers (Dashboard onCancel={() => ...}). The
+  // open/focus effect must key on `open` only — re-running it on every parent
+  // re-render (drive polling) would yank focus back to the confirm button.
+  // Same pattern as ConfirmModal.
+  const onCancelRef = useRef(onCancel)
+  useEffect(() => {
+    onCancelRef.current = onCancel
+  })
 
   useEffect(() => {
     if (!open) return
     confirmRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape') onCancelRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onCancel])
+  }, [open])
 
   if (!open) return null
 

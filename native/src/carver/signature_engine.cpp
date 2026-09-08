@@ -861,18 +861,20 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                 if (rres.success && rres.bytesRead >= actualSize) {
                                     confidence = dispatchValidator(ext, alignedBuf.data(), static_cast<size_t>(actualSize));
                                     if (confidence >= 40 && confidence < 85) {
-                                        if (bgcBudget) bgcBudget->fetch_sub(1);
-                                        else --bgcBudget_;
-                                        bgc = bifragmentedGapCarve(
-                                            alignedBuf.data(), static_cast<size_t>(actualSize),
-                                            0, static_cast<size_t>(actualSize),
-                                            static_cast<size_t>(actualSize) / 4,
-                                            [&ext](const uint8_t* d, size_t n) {
-                                                return dispatchValidator(ext, d, n);
-                                            },
-                                            sectorSize, /*attemptBudget=*/8192, isRunning);
-                                        if (!bgc.found) {
-                                            bgc = triFragmentedGapCarve(
+                                        // CA-053: acquire at the commit point —
+                                        // the old gate(load()>0)+fetch_sub pair
+                                        // let <=N-1 parallel workers overshoot the
+                                        // shared budget (all saw >0, all
+                                        // decremented). Losers restore and skip.
+                                        bool acquired = false;
+                                        if (bgcBudget) {
+                                            acquired = bgcBudgetTryAcquire(*bgcBudget);
+                                        } else if (bgcBudget_ > 0) {
+                                            --bgcBudget_;
+                                            acquired = true;
+                                        }
+                                        if (acquired) {
+                                            bgc = bifragmentedGapCarve(
                                                 alignedBuf.data(), static_cast<size_t>(actualSize),
                                                 0, static_cast<size_t>(actualSize),
                                                 static_cast<size_t>(actualSize) / 4,
@@ -880,8 +882,18 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
                                                     return dispatchValidator(ext, d, n);
                                                 },
                                                 sectorSize, /*attemptBudget=*/8192, isRunning);
+                                            if (!bgc.found) {
+                                                bgc = triFragmentedGapCarve(
+                                                    alignedBuf.data(), static_cast<size_t>(actualSize),
+                                                    0, static_cast<size_t>(actualSize),
+                                                    static_cast<size_t>(actualSize) / 4,
+                                                    [&ext](const uint8_t* d, size_t n) {
+                                                        return dispatchValidator(ext, d, n);
+                                                    },
+                                                    sectorSize, /*attemptBudget=*/8192, isRunning);
+                                            }
+                                            bgcRescued = bgc.found;
                                         }
-                                        bgcRescued = bgc.found;
                                     }
                                 }
                             } else if (actualSize > 0) {

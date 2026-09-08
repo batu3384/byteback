@@ -12,6 +12,13 @@ interface ConfirmModalProps {
   onCancel: () => void
 }
 
+// Open-modal registry: with two stacked ConfirmModals every instance hears the
+// same window keydown, so Escape must be acted on by the topmost registered
+// modal only (the underlying one stays open). Single-modal behavior — the only
+// usage today — is unchanged: one registration, always on top.
+let modalSeq = 0
+const modalStack: number[] = []
+
 /** Modal confirmation for destructive actions (same pattern as SsdTrimModal:
  *  focuses the confirm button, Escape and backdrop click cancel). Replaces
  *  window.confirm so destructive prompts stay in-app and localized. */
@@ -31,13 +38,17 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
 
   useEffect(() => {
     if (!open) return
+    // Register on the open-modal stack; Escape is only acted on while this
+    // instance is the topmost entry (stacked-modals case).
+    const modalId = ++modalSeq
+    modalStack.push(modalId)
     // Focus trap: Tab/Shift+Tab cycle inside the dialog; the trigger gets
     // focus back when the dialog closes.
     restoreFocusRef.current = document.activeElement as HTMLElement | null
     confirmRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onCancelRef.current()
+        if (modalStack[modalStack.length - 1] === modalId) onCancelRef.current()
         return
       }
       if (e.key !== 'Tab' || !panelRef.current) return
@@ -62,6 +73,8 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+      const at = modalStack.indexOf(modalId)
+      if (at !== -1) modalStack.splice(at, 1)
       restoreFocusRef.current?.focus?.()
     }
   }, [open])

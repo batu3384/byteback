@@ -6,13 +6,35 @@
 #include <cstring>
 #include <chrono>
 #include <atomic>
+#include <string>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace byteback;
+
+namespace {
+// CA-054: per-process DB name — two concurrent byteback_tests.exe instances
+// (multi-lane sweeps share the machine temp dir) used to fight over the fixed
+// path: the second open hit a locked/corrupted SQLite file.
+int testPid() {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return static_cast<int>(::getpid());
+#endif
+}
+} // namespace
 
 class ContentSearchTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = (std::filesystem::temp_directory_path() / "byteback_content_search_test.db").string();
+        path_ = (std::filesystem::temp_directory_path() /
+                 ("byteback_content_search_test_" + std::to_string(testPid()) + ".db"))
+                    .string();
         std::filesystem::remove(path_);
         ASSERT_TRUE(store_.open(path_));
     }
@@ -311,6 +333,77 @@ TEST_F(ContentSearchTest, SnippetRegexQueryFirstMatch) {
         bad.push_back(f);
     }, nullptr, &running);
     EXPECT_TRUE(bad.empty());
+}
+
+// CA-055: a snippet window cut out of raw bytes must keep LENGTH and OFFSET
+// stability across sanitization. The window contains an overlong sequence
+// (C0 81), a UTF-16 surrogate (ED A0 80) and a multi-byte sequence truncated
+// by the window edge (E4 B8 at bytes 158-159) — sequences V8 would re-encode
+// as U+FFFD, shifting every byte offset. The lenient-preserving pass turns
+// each invalid BYTE into one '?', so snippet.size() == window size, the ASCII
+// match span survives verbatim, and the output is valid UTF-8 (renderer's
+// highlight.ts byteOffsetToUnitIndex conversion stays anchored).
+TEST_F(ContentSearchTest, SnippetSanitizeKeepsLengthAndOffsets) {
+    const size_t ss = 512;
+    std::vector<uint8_t> img(ss * 2, 'A');
+    std::memcpy(img.data() + 0, "0123456789", 10);
+    std::memcpy(img.data() + 10, "MATCH_ME", 8);   // span 10..18
+    img[18] = 0xC0; img[19] = 0x81;                // overlong 'A'
+    img[20] = 0xED; img[21] = 0xA0; img[22] = 0x80; // surrogate U+D800
+    // Bytes 158-159: E4 B8 — the 160-byte snippet window ends mid-sequence.
+    img[158] = 0xE4; img[159] = 0xB8;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "raw.bin";
+    r.sizeBytes = ss * 2;
+    r.startSector = 0;
+    r.endSector = 2;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "MATCH_ME", {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    const FileRecord& h = hits[0];
+
+    ASSERT_GE(h.snippetMatchStart, 0);
+    ASSERT_GT(h.snippetMatchEnd, h.snippetMatchStart);
+    EXPECT_EQ(h.snippetMatchStart, 10);
+    EXPECT_EQ(h.snippetMatchEnd, 18);
+    EXPECT_EQ(h.snippet.size(), 160u); // 1:1: window length survived sanitize
+    EXPECT_EQ(h.snippet.substr(10, 8), "MATCH_ME");
+    EXPECT_EQ(h.snippet.substr(18, 5), "?????"); // overlong + surrogate, byte per byte
+    EXPECT_EQ(h.snippet.substr(158, 2), "??");   // sequence truncated at window edge
+
+    // Validity: the whole snippet is strict UTF-8, so the renderer conversion
+    // introduces no U+FFFD and holds the offsets above.
+    const auto* p = reinterpret_cast<const unsigned char*>(h.snippet.data());
+    size_t i = 0;
+    bool validUtf8 = true;
+    while (i < h.snippet.size()) {
+        const unsigned char c = p[i];
+        size_t need = 0;
+        unsigned char min2 = 0x80, max2 = 0xBF;
+        if (c < 0x80) { ++i; continue; }
+        else if (c >= 0xC2 && c <= 0xDF) need = 1;
+        else if (c >= 0xE0 && c <= 0xEF) { need = 2; if (c == 0xE0) min2 = 0xA0; else if (c == 0xED) max2 = 0x9F; }
+        else if (c >= 0xF0 && c <= 0xF4) { need = 3; if (c == 0xF0) min2 = 0x90; else if (c == 0xF4) max2 = 0x8F; }
+        else { validUtf8 = false; break; }
+        if (i + need >= h.snippet.size() || p[i + 1] < min2 || p[i + 1] > max2) { validUtf8 = false; break; }
+        for (size_t k = 2; k <= need; ++k) {
+            if ((p[i + k] & 0xC0) != 0x80) { validUtf8 = false; break; }
+        }
+        if (!validUtf8) break;
+        i += need + 1;
+    }
+    EXPECT_TRUE(validUtf8);
 }
 
 // ReDoS guard regression pin: a nested-quantifier pattern ("(a+)+$") must fall

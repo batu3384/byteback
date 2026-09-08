@@ -3,14 +3,36 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstdio>
+#include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 using namespace byteback;
+
+namespace {
+// CA-054: per-process DB name — two concurrent byteback_tests.exe instances
+// (multi-lane sweeps share the machine temp dir) used to fight over the fixed
+// path: the second open hit a locked/corrupted SQLite file.
+int testPid() {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return static_cast<int>(::getpid());
+#endif
+}
+} // namespace
 
 class MetadataStoreTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        path_ = (std::filesystem::temp_directory_path() / "byteback_meta_test.db").string();
+        path_ = (std::filesystem::temp_directory_path() /
+                 ("byteback_meta_test_" + std::to_string(testPid()) + ".db"))
+                    .string();
         std::filesystem::remove(path_);
         ASSERT_TRUE(store_.open(path_));
     }

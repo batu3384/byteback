@@ -281,20 +281,28 @@ export function registerIpcHandlers(): void {
         show: false,
         webPreferences: { offscreen: true, sandbox: true },
       })
+      // data: URLs hit Chromium's URL length cap (~2MB encoded) — large
+      // reports fail to load. A temp file has no such limit; loadFile is the
+      // same document for the print engine.
+      const fs = await import('node:fs/promises')
+      const tempHtml = join(app.getPath('temp'), `byteback-report-${Date.now()}-${Math.random().toString(36).slice(2)}.html`)
       try {
-        await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+        await fs.writeFile(tempHtml, html, 'utf-8')
+        await win.loadFile(tempHtml)
         // Electron 44 removed marginType: margins are physical inches now
         // (default margins = Chromium print defaults, same intent).
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
           pageSize: 'A4',
         })
-        const fs = await import('node:fs/promises')
         await fs.writeFile(target.filePath, pdf)
         return { success: true, path: target.filePath }
       } finally {
-        // Never leak a hidden window when loadURL/printToPDF throws.
+        // Never leak a hidden window or the temp report when
+        // writeFile/loadFile/printToPDF throws. Destroy first so Windows
+        // releases its handle before the unlink.
         win.destroy()
+        await fs.unlink(tempHtml).catch(() => {})
       }
     } catch (err) {
       console.error('[IPC] export-report-pdf error:', err)
