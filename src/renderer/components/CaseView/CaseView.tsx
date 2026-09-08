@@ -1,8 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react'
 import './CaseView.css'
-import { Briefcase, FolderOpen } from 'lucide-react'
+import { Briefcase, FolderOpen, Copy } from 'lucide-react'
 import type { CaseInfo, NsrlStats } from '../../../shared/ipc-contract'
 import { useI18n, tFormat } from '../../i18n'
+
+interface DataPaths {
+  userData: string
+  dbPath: string
+  sessionLog: string
+  auditLog: string
+}
 
 const emptyCase: CaseInfo = {
   caseNumber: '',
@@ -20,6 +27,8 @@ function CaseView(): React.ReactElement {
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
   const [nsrlError, setNsrlError] = useState('')
+  const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
+  const [copiedPath, setCopiedPath] = useState('')
   // Stale-response guard for the mount load (and every unmount, once).
   // Setup re-arms the flag so StrictMode's double mount stays live.
   const aliveRef = useRef(true)
@@ -46,7 +55,20 @@ function CaseView(): React.ReactElement {
 
   useEffect(() => {
     void reload()
+    // Field-evidence paths (field-test protocol 0.2): read-only display data.
+    if (window.api?.getDataPaths) {
+      window.api.getDataPaths().then((p) => {
+        if (aliveRef.current) setDataPaths(p)
+      }).catch(() => { /* paths are optional context, not an error surface */ })
+    }
   }, [])
+
+  const copyPath = async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedPath(label)
+    } catch { /* clipboard denied — no-op, paths remain visible/selectable */ }
+  }
 
   const handleSave = async () => {
     setSaveError('')
@@ -167,6 +189,31 @@ function CaseView(): React.ReactElement {
           <FolderOpen size={16} aria-hidden="true" /> {t('case.pickNsrl')}
         </button>
       </div>
+
+      {dataPaths && (
+        <div className="case-nsrl glass-panel" data-testid="evidence-paths">
+          <h3>{t('case.pathsTitle')}</h3>
+          <p>{t('case.pathsHint')}</p>
+          {([
+            ['userData', dataPaths.userData],
+            ['db', dataPaths.dbPath],
+            ['sessionLog', dataPaths.sessionLog],
+            ['auditLog', dataPaths.auditLog],
+          ] as const).map(([label, value]) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '6px 0' }}>
+              <code style={{ flex: 1, fontSize: '0.78rem', wordBreak: 'break-all', color: 'var(--text-muted)' }}>{value}</code>
+              <button
+                type="button"
+                className="btn-secondary"
+                aria-label={tFormat('case.copyPath', { label: t(`case.paths.${label}`) })}
+                onClick={() => void copyPath(label, value)}
+              >
+                <Copy size={14} aria-hidden="true" /> {copiedPath === label ? t('case.copied') : t('case.copy')}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
