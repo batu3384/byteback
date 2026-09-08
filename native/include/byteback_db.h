@@ -31,8 +31,11 @@ struct FileRecord {
     // CA-031 content-search snippet: context around the first content match,
     // filled by runContentSearch only (transient — never bound in
     // bindFileRecord, never persisted). snippetMatchStart/End are byte
-    // offsets INTO snippet (post-sanitization), -1 when the match cannot be
-    // highlighted (e.g. FTS token match not re-locatable verbatim).
+    // offsets INTO snippet (post-sanitization; sanitization is 1:1 per byte
+    // so the offsets survive it), -1 when the match cannot be highlighted
+    // (e.g. FTS token match not re-locatable verbatim). Wire contract: the
+    // renderer converts byte offsets to JS string indices once, in
+    // highlight.ts byteOffsetToUnitIndex — do NOT convert at the bridge.
     std::string snippet;
     int snippetMatchStart = -1;
     int snippetMatchEnd = -1;

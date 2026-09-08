@@ -16,6 +16,10 @@
 
 namespace byteback {
 
+// CA-007: bounded, representative bad-sector sample list (shared by
+// noteBadRead and mergeBadSectorTelemetryFrom).
+static constexpr size_t kMaxBadSamples = 4096;
+
 DiskReader::DiskReader()
     : handle_(INVALID_HANDLE_VALUE), diskSize_(0), sectorSize_(512), currentDriveIndex_(-1), shareWrite_(false) {}
 
@@ -296,8 +300,9 @@ bool DiskReader::hasMemoryVolume() const {
 void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     if (!memoryVolume_) return;
-    memoryVolume_->faultStartSector = startSector;
-    memoryVolume_->faultSectorCount = sectorCount;
+    // The range lives in the SHARED state: the write must synchronize against
+    // reads on clones (their ioMutex_ does not order against this one).
+    memoryVolume_->setFaultRange(startSector, sectorCount);
 }
 
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
@@ -436,11 +441,22 @@ void DiskReader::noteBadRead(uint64_t offsetBytes, uint32_t sizeBytes) {
     std::lock_guard<std::mutex> lock(badSectorMutex_);
     badSectorReads_ += count;
     // Keep a bounded, representative sample for the map.
-    constexpr size_t kMaxBadSamples = 4096;
     for (uint64_t i = 0; i < count && badSectorList_.size() < kMaxBadSamples; ++i) {
         // Sub-sample large failures so one dead region doesn't fill the cap.
         if (count > kMaxBadSamples && (i % (count / kMaxBadSamples + 1)) != 0) continue;
         badSectorList_.push_back(startSector + i);
+    }
+}
+
+void DiskReader::mergeBadSectorTelemetryFrom(const DiskReader& src) {
+    if (this == &src) return;
+    std::lock_guard<std::mutex> lockSrc(src.badSectorMutex_);
+    if (src.badSectorReads_ == 0 && src.badSectorList_.empty()) return;
+    std::lock_guard<std::mutex> lockDst(badSectorMutex_);
+    badSectorReads_ += src.badSectorReads_;
+    for (uint64_t s : src.badSectorList_) {
+        if (badSectorList_.size() >= kMaxBadSamples) break;
+        badSectorList_.push_back(s);
     }
 }
 
@@ -470,12 +486,14 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             result.error = "Read offset and size must be sector-aligned";
             return result;
         }
-        // Test hook: a read overlapping the injected fault range fails.
-        if (mv.faultSectorCount > 0) {
+        // Test hook: a read overlapping the injected fault range fails. The
+        // range lives in the shared state (clones included) — snapshot it
+        // under its own lock so (start,count) is consistent.
+        const auto [fStart, fCount] = mv.faultRange();
+        if (fCount > 0) {
             const uint64_t first = offsetBytes / sectorSize_;
             const uint64_t last = first + sizeBytes / sectorSize_ - 1;
-            if (first <= mv.faultStartSector + mv.faultSectorCount - 1 &&
-                mv.faultStartSector <= last) {
+            if (first <= fStart + fCount - 1 && fStart <= last) {
                 result.error = "injected memory fault range";
                 noteBadRead(offsetBytes, sizeBytes);
                 return result;

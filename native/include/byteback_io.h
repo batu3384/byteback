@@ -8,6 +8,7 @@
 #include <mutex>
 #include <functional>
 #include <memory>
+#include <utility>
 
 namespace byteback {
 
@@ -35,8 +36,32 @@ struct ReadResult {
 // image buffer is copied once and a fault injected via the original's
 // setMemoryFaultRange hook is visible to every clone (the buffer truly is the
 // same bytes, not a stale copy).
+//
+// Concurrency: the fault range is WRITTEN through whatever reader instance
+// the caller holds (original or a clone) under THAT reader's ioMutex_, while
+// reads happen under a DIFFERENT reader's ioMutex_ — per-reader locks give no
+// cross-reader happens-before, so the range needs its own internal lock.
+// Without it, injecting a fault mid-clone-read is a data race (UB) and a torn
+// (start,count) pair can mark a "ghost" range that was never configured.
+// `data` itself is immutable once the state is shared (attach replaces the
+// whole shared_ptr), so it needs no lock.
 struct MemoryVolumeState {
     std::vector<uint8_t> data;
+
+    void setFaultRange(uint64_t startSector, uint64_t sectorCount) {
+        std::lock_guard<std::mutex> lock(faultMu);
+        faultStartSector = startSector;
+        faultSectorCount = sectorCount;
+    }
+
+    // Consistent (start, count) snapshot.
+    std::pair<uint64_t, uint64_t> faultRange() const {
+        std::lock_guard<std::mutex> lock(faultMu);
+        return {faultStartSector, faultSectorCount};
+    }
+
+private:
+    mutable std::mutex faultMu;
     uint64_t faultStartSector = 0;
     uint64_t faultSectorCount = 0;
 };
@@ -117,6 +142,12 @@ public:
     uint64_t getBadSectorReads() const;
     std::vector<uint64_t> getBadSectors() const;
     int getDriveIndex() const;
+
+    // A2: merge src's bad-read telemetry into this reader. Parallel carve
+    // reads through per-worker clones, so failures land on the CLONE's
+    // counters; without this merge the parallel phase loses every sector its
+    // workers hit and the bad-sector map goes blind exactly where it ran.
+    void mergeBadSectorTelemetryFrom(const DiskReader& src);
 
     bool isOpen() const;
 

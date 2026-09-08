@@ -14,6 +14,42 @@ namespace byteback {
 
 namespace {
 
+// ReDoS guard, mirroring the renderer's isSafeHighlightRegex policy
+// (src/renderer/components/SearchView/highlight.ts): reject patterns where a
+// quantifier is applied to a group whose body contains a quantifier or an
+// alternation — the classic exponential-backtracking shape ("(a+)+$"). Such
+// patterns fall back to literal search, same as oversized patterns. This is a
+// conservative shape match: some safe patterns degrade to literal, an
+// acceptable trade for never hanging the main process on hostile input.
+bool regexLikelyBacktracking(const std::string& pattern) {
+    // Locate each quantifier applied to a ')'; inspect the matching group body.
+    for (size_t i = 1; i < pattern.size(); ++i) {
+        if (pattern[i] != ')' ) continue;
+        if (i + 1 >= pattern.size()) break;
+        char q = pattern[i + 1];
+        bool quantified = q == '*' || q == '+' ||
+                          (q == '{' && pattern.find('}', i + 2) != std::string::npos);
+        if (!quantified) continue;
+        // Find the matching '(' for this ')' (plain depth scan; character
+        // classes with parens degrade to literal — never a security loss).
+        int depth = 0;
+        size_t open = std::string::npos;
+        for (size_t j = 0; j <= i; ++j) {
+            if (pattern[j] == '(') {
+                if (depth == 0) open = j;
+                ++depth;
+            } else if (pattern[j] == ')') {
+                if (depth > 0) --depth;
+            }
+        }
+        if (open == std::string::npos) continue;
+        for (size_t k = open + 1; k < i; ++k) {
+            if (pattern[k] == '*' || pattern[k] == '+' || pattern[k] == '|') return true;
+        }
+    }
+    return false;
+}
+
 // CA-031: single compiled matcher per search run — the chunk scan calls
 // find() on every chunk, so a regex must compile once, not per chunk.
 class QueryMatcher {
@@ -28,6 +64,11 @@ public:
         if (pattern.size() > kMaxRegexQueryChars) {
             // Mirrors the IPC regex cap (ipc-handlers.ts): oversized patterns
             // fall back to literal search to bound backtracking exposure.
+            m.literal_ = pattern;
+            return m;
+        }
+        if (regexLikelyBacktracking(pattern)) {
+            // Exponential-backtracking shape: literal fallback, never compile.
             m.literal_ = pattern;
             return m;
         }
@@ -47,6 +88,13 @@ public:
         if (regex_) {
             std::smatch m;
             if (!std::regex_search(hay, m, re_)) return std::string::npos;
+            if (m.length(0) == 0) {
+                // Zero-width match (e.g. "Z*"): the empty string matches at
+                // every position, so honoring it would turn every file into a
+                // hit with a 0-length span. Parity with the renderer's
+                // zero-width guard: not a match.
+                return std::string::npos;
+            }
             *matchLen = static_cast<size_t>(m.length(0));
             return static_cast<size_t>(m.position(0));
         }
@@ -72,29 +120,6 @@ private:
 // plus byte offsets of the match span inside the snippet (post-sanitization;
 // sanitization maps every input byte 1:1, so offsets survive it).
 constexpr size_t kSnippetContextBytes = 160;
-
-std::string sanitizeSnippetContext(const std::string& raw) {
-    size_t printable = 0;
-    for (unsigned char c : raw) {
-        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) ++printable;
-    }
-    // Binary-context guard: with <80% printable bytes, replace every non-text
-    // byte ('.'), otherwise keep >=128 bytes untouched — valid UTF-8 is then
-    // enforced at the trust boundary by the bridge's utf8ForJs.
-    const bool aggressive = printable * 5 < raw.size() * 4;
-    std::string out;
-    out.reserve(raw.size());
-    for (unsigned char c : raw) {
-        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) {
-            out.push_back(static_cast<char>(c));
-        } else if (!aggressive && c >= 128) {
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back('.');
-        }
-    }
-    return out;
-}
 
 void attachSnippet(FileRecord& f, const std::string& chunkText, size_t matchPos, size_t matchLen) {
     if (chunkText.empty()) return;
@@ -228,6 +253,32 @@ constexpr size_t kChunkFlushBatch = 32;
 
 } // namespace
 
+std::string sanitizeSnippetContext(const std::string& raw) {
+    size_t printable = 0;
+    for (unsigned char c : raw) {
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) ++printable;
+    }
+    // Binary-context guard: with <80% printable bytes, replace every non-text
+    // byte ('.'), otherwise keep >=128 bytes untouched — valid UTF-8 is then
+    // enforced at the trust boundary by the bridge's utf8ForJs.
+    const bool aggressive = printable * 5 < raw.size() * 4;
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) {
+            out.push_back(static_cast<char>(c));
+        } else if (!aggressive && c >= 128) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('.');
+        }
+    }
+    return out;
+}
+
+// CA-031: byte offsets stay valid through sanitization (1:1 per byte); the
+// renderer's highlight.ts byteOffsetToUnitIndex converts them to JS string
+// indices exactly once. No bridge-side remapping — see byteback_db.h.
 std::string sanitizeContentSample(const std::vector<uint8_t>& raw, uint64_t maxLen) {
     std::string out;
     out.reserve(std::min<uint64_t>(raw.size(), maxLen));

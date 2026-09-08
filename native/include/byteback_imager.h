@@ -60,6 +60,12 @@ private:
 
     std::atomic<bool> isRunning_;
     std::thread imagingThread_;
+    // B2: a run cancelled by a self-stop from its own progress callback cannot
+    // be joined there (deadlock), so it is parked here still joinable. The
+    // next foreign stopImaging() — and therefore every startImaging*/the
+    // destructor — joins it BEFORE a new run starts: two writers must never
+    // share one destination (.part or .E01).
+    std::thread parkedThread_;
     std::atomic<uint64_t> badSectorReads_{0};
     std::atomic<uint32_t> chunkSectorsOverride_{0};
     std::string lastImageMd5_;

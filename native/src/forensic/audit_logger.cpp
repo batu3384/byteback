@@ -195,6 +195,7 @@ bool IsValidBridgeEvent(const std::string& event) {
         const bool okToken = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
         if (!okToken) return false;
     }
+    if (i == 0) return false; // empty token ("| spoof", " payload") — never enters the chain
     for (; i < event.size(); ++i) {
         const unsigned char c = static_cast<unsigned char>(event[i]);
         if (c < 0x20 || c > 0x7E) return false; // control / non-ASCII rejected
@@ -276,6 +277,22 @@ void AuditLogger::FlushPending() {
     }
 }
 
+bool AuditLogger::ConsumeBridgeRateTokenLocked() {
+    const auto now = std::chrono::steady_clock::now();
+    if (bridgeLastRefill_.time_since_epoch().count() == 0) {
+        bridgeLastRefill_ = now;
+    }
+    const double elapsedSec = std::chrono::duration<double>(now - bridgeLastRefill_).count();
+    if (elapsedSec > 0) {
+        bridgeTokens_ = std::min(kBridgeEventBurst,
+                                 bridgeTokens_ + elapsedSec * kBridgeEventsPerSecond);
+        bridgeLastRefill_ = now;
+    }
+    if (bridgeTokens_ < 1.0) return false;
+    bridgeTokens_ -= 1.0;
+    return true;
+}
+
 void AuditLogger::WriteEntryLocked(const std::string& message) {
     // queueMutex_ held: serializes the hash chain between the worker thread
     // and synchronous (critical / FlushPending) writers.
@@ -310,9 +327,22 @@ void AuditLogger::LogEvent(const std::string& eventMessage) {
 
 bool AuditLogger::LogEventFromBridge(const std::string& event) {
     if (!IsValidBridgeEvent(event)) return false;
+    // CA-028 hardening: flood cap. The renderer is an untrusted audit source
+    // and critical categories (WIPE_*/RECOVER_* tokens) write + flush
+    // synchronously per call — an uncapped loop would grow the audit file
+    // without bound and thrash the disk from the main process. Excess events
+    // are REJECTED (false); the UI layer surfaces the rejection, session.log
+    // remains the unlimited side channel.
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!ConsumeBridgeRateTokenLocked()) return false;
+    }
     // Existing line convention is "[ts] CATEGORY | payload..."; the JS origin
     // rides as the first payload segment so the chain distinguishes
-    // renderer/main-process events from native ones.
+    // renderer/main-process events from native ones. Spoof-proof by
+    // construction: the bridge ALWAYS writes "EVENT | JS | " ahead of the
+    // renderer-supplied text, so a bridge event can never mimic a native
+    // "[ts] EVENT | TOKEN" line.
     std::stringstream ss;
     ss << "[" << current_time_iso() << "] EVENT | JS | " << event;
     EnqueueLog(ss.str(), IsCriticalEventToken(EventTokenOf(event)));
@@ -378,12 +408,22 @@ AuditChainVerifyResult VerifyAuditChainFile(const std::string& path) {
             res.entries = lineNo;
             continue;
         }
-        // The writer appends whole lines (flush per entry); a verify racing
-        // an ACTIVE writer can observe a torn FINAL line — half a message or
-        // a truncated hash. If nothing follows the torn line, report an
-        // incomplete tail (chain intact so far) instead of a false "broken".
+        // Torn write vs tampering on the FINAL line: an append+flush writer
+        // can leave half a message or a truncated hash, but it can NEVER
+        // fabricate a complete 64-hex digest that fails verification. A
+        // well-formed hash that does not verify is therefore tampering of the
+        // last entry and must be reported broken — not excused as a torn tail.
+        const bool malformedHash =
+            pos == std::string::npos || stored.size() != 64 ||
+            stored.find_first_not_of("0123456789abcdef") != std::string::npos;
         std::string next;
         if (!std::getline(in, next)) {
+            if (!malformedHash) {
+                res.entries = lineNo;
+                res.brokenAt = lineNo;
+                res.detail = "hash mismatch";
+                return res;
+            }
             res.ok = res.entries > 0;
             res.detail = res.ok ? "incomplete tail (writer active?)" : "incomplete tail";
             return res;

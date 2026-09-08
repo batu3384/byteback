@@ -2,6 +2,7 @@
 #include "byteback_memory.h"
 #include "crypto/byteback_md5.h"
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -139,8 +140,14 @@ bool jsonFindU64(const std::string& json, const char* key, uint64_t& out) {
     if (p == std::string::npos) return false;
     p = json.find_first_of("0123456789", p + needle.size());
     if (p == std::string::npos) return false;
+    // A sign between the ':' and the digits means this is not the plain
+    // unsigned count we write ("doneBytes": -512 must not parse as 512).
+    size_t s = p;
+    while (s > 0 && (json[s - 1] == ' ' || json[s - 1] == '\t')) --s;
+    if (s > 0 && (json[s - 1] == '-' || json[s - 1] == '+')) return false;
+    errno = 0;
     out = std::strtoull(json.c_str() + p, nullptr, 10);
-    return true;
+    return errno != ERANGE; // overflowed garbage is not a resume point
 }
 
 // D1: merge overlapping/adjacent failed-sector runs for the error section.
@@ -198,16 +205,21 @@ void DiskImager::requestStop() {
 
 void DiskImager::stopImaging() {
     requestStop();
-    if (!imagingThread_.joinable()) return;
     if (imagingThread_.get_id() == std::this_thread::get_id()) {
-        // Self-stop from a progress callback: joining would deadlock, so the
-        // thread detaches and finishes the current chunk on its own. Caveat:
-        // the DiskImager and any captured reader must therefore outlive that
-        // detached run — do not destroy the imager from inside its own callback.
-        imagingThread_.detach();
+        // Self-stop from a progress callback: joining here would deadlock, so
+        // the thread is parked joinable on the member and finishes the current
+        // chunk on its own. A later foreign stopImaging()/startImaging*/
+        // destructor joins it first, so a restarted acquisition can never
+        // overlap the cancelled one on the same destination. Caveat: the
+        // DiskImager and any captured reader must still outlive that run — do
+        // not destroy the imager from inside its own callback.
+        if (!imagingThread_.joinable()) return;
+        if (parkedThread_.joinable()) parkedThread_.detach(); // unreachable in practice; never abandon a thread object
+        parkedThread_ = std::move(imagingThread_);
         return;
     }
-    imagingThread_.join();
+    if (imagingThread_.joinable()) imagingThread_.join();
+    if (parkedThread_.joinable()) parkedThread_.join();
 }
 
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
@@ -254,6 +266,82 @@ bool writeResumeSidecar(const std::string& sidePath, const std::string& sourceKe
       << "  \"appVersion\": \"byteback-native-1\"\n"
       << "}\n";
     return f.good();
+}
+
+// B2 forensic rule: a resumed image is byte-identical to a one-shot run, or
+// the resume must clearly fail. Two gates decide that, and BOTH must pass
+// before the .part is trusted:
+//
+//   1) Prefix integrity — stream the .part's [0, resumeBytes) through a fresh
+//      MD5 and require the resulting midstream state to equal the sidecar's
+//      serialized state. A corrupt, truncated, tampered or fabricated pair
+//      (sidecar/.part disagree in any byte) fails here instead of producing a
+//      silently wrong digest over wrong bytes. The reseeded context is also
+//      the one the run continues with, so `loadState` never has to trust the
+//      sidecar blob on its own.
+//
+//   2) Source identity — the sidecar's sourceKey is geometry-derived
+//      ("memory:<size>", "drive:<index>:<size>") and cannot distinguish two
+//      DIFFERENT sources of the same size (swapped disk, re-attached volume).
+//      Resuming across such a swap would stitch one source's prefix onto the
+//      other's tail and still report a digest over the hybrid. Compare the
+//      first window of the CURRENT source against the same window of the
+//      .part; any difference restarts fresh.
+//
+// Ceiling: sources identical within the first kResumeSampleWindow bytes stay
+// confusable — full certainty would require re-reading the entire prefix from
+// the source, which is exactly the work resume exists to avoid.
+constexpr uint64_t kResumeSampleWindow = 1024ull * 1024ull;
+
+bool verifyResumePrefix(const std::string& partPath, uint64_t resumeBytes,
+                        DiskReader& reader, crypto::Md5& reseeded, std::string& why) {
+    reseeded = crypto::Md5();
+    std::ifstream f(partPath, std::ios::binary);
+    if (!f.is_open()) {
+        why = "part reopen failed";
+        return false;
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(std::min<uint64_t>(resumeBytes, 1024ull * 1024ull)));
+    std::vector<uint8_t> head; // sample window as it exists in the .part
+    uint64_t off = 0;
+    while (off < resumeBytes) {
+        const size_t want = static_cast<size_t>(std::min<uint64_t>(buf.size(), resumeBytes - off));
+        f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(want));
+        if (static_cast<size_t>(f.gcount()) != want) {
+            why = "part shortened under resume";
+            return false;
+        }
+        reseeded.update(buf.data(), want);
+        if (head.empty()) {
+            const size_t win = static_cast<size_t>(std::min<uint64_t>(resumeBytes, kResumeSampleWindow));
+            head.assign(buf.data(), buf.data() + win);
+        }
+        off += want;
+    }
+
+    const uint64_t win = std::min<uint64_t>(resumeBytes, kResumeSampleWindow);
+    std::vector<uint8_t> src(static_cast<size_t>(win), 0);
+    const auto res = reader.readSectors(0, static_cast<uint32_t>(win), src.data());
+    if (res.bytesRead < win) {
+        // Keep the zero-filled remainder: deterministic for this source and
+        // consistent with how the failed read was imaged in the first place.
+        why = "source sample read short";
+        return false;
+    }
+    if (std::memcmp(head.data(), src.data(), static_cast<size_t>(win)) != 0) {
+        why = "source changed since the cancelled run";
+        return false;
+    }
+    return true;
+}
+
+bool statesMatch(const crypto::Md5& live, const crypto::Md5State& sidecarState) {
+    crypto::Md5State a;
+    if (!live.saveState(a)) return false;
+    uint8_t blobA[92], blobB[92];
+    serializeMd5State(a, blobA);
+    serializeMd5State(sidecarState, blobB);
+    return std::memcmp(blobA, blobB, sizeof(blobA)) == 0;
 }
 } // namespace
 
@@ -339,17 +427,24 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             if (partOk) {
                 ec.clear();
                 std::filesystem::resize_file(partPath, resumeBytes, ec);
-                if (!ec) {
-                    crypto::Md5State st;
-                    std::vector<uint8_t> blob;
-                    if (b64Decode(resumeMd5B64, blob) &&
-                        deserializeMd5State(blob.data(), blob.size(), st) &&
-                        rawMd5.loadState(st)) {
+                crypto::Md5State st;
+                std::vector<uint8_t> blob;
+                if (!ec && b64Decode(resumeMd5B64, blob) &&
+                    deserializeMd5State(blob.data(), blob.size(), st)) {
+                    crypto::Md5 reseeded;
+                    std::string why;
+                    if (verifyResumePrefix(partPath, resumeBytes, reader, reseeded, why) &&
+                        statesMatch(reseeded, st)) {
                         rawOut.open(partPath, std::ios::binary | std::ios::out | std::ios::app);
                         if (rawOut.is_open()) {
                             startSector = resumeBytes / sectorSize;
                             resumed = true;
+                            rawMd5 = std::move(reseeded);
                         }
+                    } else {
+                        std::cerr << "[byteback] imaging resume rejected: "
+                                  << (why.empty() ? "prefix does not match sidecar state" : why)
+                                  << "; restarting " << partPath << " from zero" << std::endl;
                     }
                 }
             }

@@ -137,8 +137,17 @@ export function validateRecoverDestDir(raw: unknown, env: RecoverDestEnv = {}): 
   if (!/^[A-Za-z]:[\\/]/.test(stripped)) {
     return { ok: false, error: ERR_DEST_NOT_ABSOLUTE }
   }
+  const segments = toBackslashes(stripped).split('\\')
   // '..' segments must not survive: resolve() would collapse them silently.
-  if (toBackslashes(stripped).split('\\').some((seg) => seg === '..')) {
+  if (segments.some((seg) => seg === '..')) {
+    return { ok: false, error: ERR_DEST_NOT_ABSOLUTE }
+  }
+  // Win32 path normalization strips trailing dots/spaces from the last segment
+  // at CreateDirectoryW time, so a dest like "C:\Windows." would land IN the
+  // blocked system root while the resolved-form comparison above saw the dotted
+  // variant (realpathSync.native does not collapse it). Windows forbids creating
+  // such directory names anyway, so no legitimate destination is lost.
+  if (segments.some((seg) => /[. ]$/.test(seg))) {
     return { ok: false, error: ERR_DEST_NOT_ABSOLUTE }
   }
 

@@ -274,6 +274,107 @@ TEST(AuditChain, FlushPendingDrainsAsyncQueueSynchronously) {
     ::remove(path.c_str());
 }
 
+// CA-028 adversarial: a tampered FINAL line that still carries a complete,
+// well-formed 64-hex hash (payload rewritten, old hash left in place) must be
+// reported as BROKEN — an append+flush writer can truncate a line but never
+// fabricate a full-length wrong hash. Reporting it as "incomplete tail" would
+// silently bless tampering of the most recent entry.
+TEST(AuditChain, TamperedFinalLineWithWellFormedHashIsBroken) {
+    const auto calc = [](const std::string& s) {
+        return forensic::AuditLogger::CalculateSHA256(
+            reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    };
+    const std::string path = "test_audit_final_tamper.log";
+    std::string prev(64, '0');
+    std::vector<std::string> lines;
+    for (const char* m : {"EVENT | F_ONE", "EVENT | F_TWO", "EVENT | F_THREE"}) {
+        const std::string h = calc(prev + m);
+        lines.push_back(std::string(m) + " | ChainHash: " + h);
+        prev = h;
+    }
+    // Tamper the FINAL entry's payload, keeping its (now wrong) 64-hex hash.
+    lines[2].replace(lines[2].find("F_THREE"), 7, "F_THREE_WIPED");
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        for (const auto& l : lines) f << l << "\n";
+    }
+
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.brokenAt, 3);
+    EXPECT_EQ(r.detail, "hash mismatch");
+
+    ::remove(path.c_str());
+}
+
+// CA-028 adversarial: the renderer is an untrusted audit source and critical
+// categories write synchronously per call — an uncapped loop would grow the
+// audit file without bound and thrash the disk from the main process. The
+// bridge path must reject flood-rate events (token bucket); accepted events
+// stay chain-intact and exactly match the on-disk line count.
+TEST(AuditChain, BridgeEventFloodIsRateLimited) {
+    const std::string path = "test_audit_flood.log";
+    { std::ofstream f(path, std::ios::trunc); }
+
+    AuditLogger local;
+    local.Initialize(path);
+
+    int accepted = 0;
+    for (int i = 0; i < 400; ++i) {
+        // WIPE_* prefix -> critical category -> synchronous write per call.
+        if (local.LogEventFromBridge("WIPE_FLOOD_PROBE | i=" + std::to_string(i))) ++accepted;
+    }
+    EXPECT_GT(accepted, 0);     // burst admits the first events
+    EXPECT_LT(accepted, 400);   // a cap exists at all
+    EXPECT_LE(accepted, 100);   // burst (60) + generous refill slack
+
+    // Every accepted event is durable (sync write) and the chain still verifies.
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open());
+    std::size_t lines = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) ++lines;
+    }
+    EXPECT_EQ(lines, static_cast<std::size_t>(accepted));
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(r.ok);
+    EXPECT_EQ(r.entries, accepted);
+
+    local.Shutdown();
+    ::remove(path.c_str());
+}
+
+// CA-028 adversarial: the event TOKEN must be non-empty — "| spoof | x" or "
+// leading-space" payloads previously slipped through (the format contract is
+// "UPPERCASE_TOKEN | payload"). The JS origin tag still rides first, but a
+// malformed line must not enter the chain at all.
+TEST(AuditChain, BridgeEventRequiresNonEmptyToken) {
+    const std::string path = "test_audit_token.log";
+    { std::ofstream f(path, std::ios::trunc); }
+
+    AuditLogger local;
+    local.Initialize(path);
+
+    EXPECT_FALSE(local.LogEventFromBridge("| spoofed | payload"));
+    EXPECT_FALSE(local.LogEventFromBridge(" leading-space | x"));
+    EXPECT_FALSE(local.LogEventFromBridge("|"));
+    EXPECT_FALSE(local.LogEventFromBridge(" "));
+
+    local.FlushPending();
+    std::ifstream in(path);
+    ASSERT_TRUE(in.is_open());
+    std::string line;
+    std::size_t n = 0;
+    while (std::getline(in, line)) {
+        if (!line.empty()) ++n;
+    }
+    EXPECT_EQ(n, 0u); // nothing entered the chain
+
+    local.Shutdown();
+    ::remove(path.c_str());
+}
+
 // Bridge-origin events (logAuditEvent export): valid tokens join the same
 // hash chain tagged with the "JS" origin segment; malformed input is rejected
 // without touching the file.

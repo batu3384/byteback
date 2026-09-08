@@ -20,6 +20,14 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
   const confirmRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
+  // Callers pass inline handlers (e.g. Dashboard onCancel={() => ...}). The
+  // open/focus/teardown effect must key on `open` only — re-running it on
+  // every parent re-render would yank focus back to the confirm button and
+  // pollute the restore target while the dialog is still open.
+  const onCancelRef = useRef(onCancel)
+  useEffect(() => {
+    onCancelRef.current = onCancel
+  })
 
   useEffect(() => {
     if (!open) return
@@ -29,7 +37,7 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
     confirmRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onCancel()
+        onCancelRef.current()
         return
       }
       if (e.key !== 'Tab' || !panelRef.current) return
@@ -56,7 +64,7 @@ function ConfirmModal({ open, title, body, confirmLabel, cancelLabel, onConfirm,
       window.removeEventListener('keydown', onKey)
       restoreFocusRef.current?.focus?.()
     }
-  }, [open, onCancel])
+  }, [open])
 
   if (!open) return null
 
