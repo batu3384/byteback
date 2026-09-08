@@ -46,6 +46,37 @@ Napi::Value SetCaseInfo(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+// CA-028: JS-origin audit events. Args: (event: string) — non-empty, <=512
+// chars, UPPERCASE/underscore token first, printable ASCII payload. Rejected
+// input throws; accepted input is written through LogEventFromBridge, which
+// tags it "JS" in the hash-chained log line.
+Napi::Value LogAuditEvent(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "logAuditEvent expects a string event").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const std::string event = info[0].As<Napi::String>().Utf8Value();
+    if (event.empty()) {
+        Napi::TypeError::New(env, "logAuditEvent: event must not be empty").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (event.size() > 512) {
+        Napi::TypeError::New(env, "logAuditEvent: event exceeds 512 characters").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    bool ok = forensic::AuditLogger::GetInstance().LogEventFromBridge(event);
+    if (!ok) {
+        Napi::TypeError::New(
+            env, "logAuditEvent: invalid event (expected 'UPPERCASE_TOKEN | key=value' ASCII)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return Napi::Boolean::New(env, true);
+    NAPI_CATCH
+}
+
 Napi::Value LoadNsrl(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY

@@ -83,6 +83,14 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     fileObj.Set("modifiedAt", Napi::Number::New(env, static_cast<double>(fr.modifiedAt)));
     fileObj.Set("runs", RunsToJs(env, fr.runs));
     fileObj.Set("contentHash", jsUtf8(env, fr.contentHash));
+    // CA-031 transient content-search snippet: only present on content-match
+    // payloads; empty snippet ships no fields at all (never an empty string).
+    // Offsets are byte offsets into `snippet` for renderer-side highlight.
+    if (!fr.snippet.empty()) {
+        fileObj.Set("snippet", jsUtf8(env, fr.snippet));
+        fileObj.Set("snippetMatchStart", Napi::Number::New(env, fr.snippetMatchStart));
+        fileObj.Set("snippetMatchEnd", Napi::Number::New(env, fr.snippetMatchEnd));
+    }
     return fileObj;
 }
 

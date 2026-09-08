@@ -97,6 +97,10 @@ std::string orderByToSql(const std::string& key) {
     if (key == "size_asc") return "size_bytes ASC, id";
     if (key == "name_asc") return "name COLLATE NOCASE ASC, id";
     if (key == "name_desc") return "name COLLATE NOCASE DESC, id";
+    // CA-030: full path ordering (NOCASE so case differences do not split
+    // directory siblings).
+    if (key == "path_asc") return "path COLLATE NOCASE ASC, id";
+    if (key == "path_desc") return "path COLLATE NOCASE DESC, id";
     if (key == "date_desc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END DESC, id";
     if (key == "date_asc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END ASC, id";
     return "id";

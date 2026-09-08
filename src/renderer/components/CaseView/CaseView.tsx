@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import './CaseView.css'
 import { Briefcase, FolderOpen } from 'lucide-react'
 import type { CaseInfo, NsrlStats } from '../../../shared/ipc-contract'
@@ -20,14 +20,27 @@ function CaseView(): React.ReactElement {
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
   const [nsrlError, setNsrlError] = useState('')
+  // Stale-response guard for the mount load (and every unmount, once).
+  // Setup re-arms the flag so StrictMode's double mount stays live.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
 
   const reload = async () => {
     try {
-      if (window.api?.getCaseInfo) setInfo(await window.api.getCaseInfo())
-      if (window.api?.getNsrlStats) setNsrl(await window.api.getNsrlStats())
+      if (window.api?.getCaseInfo) {
+        const loaded = await window.api.getCaseInfo()
+        if (aliveRef.current) setInfo(loaded)
+      }
+      if (window.api?.getNsrlStats) {
+        const stats = await window.api.getNsrlStats()
+        if (aliveRef.current) setNsrl(stats)
+      }
     } catch (err) {
       console.error(err)
-      setNsrlError(t('case.loadFailed'))
+      if (aliveRef.current) setNsrlError(t('case.loadFailed'))
     }
   }
 
@@ -111,21 +124,21 @@ function CaseView(): React.ReactElement {
         <input
           id="case-number"
           value={info.caseNumber}
-          onChange={(e) => setInfo({ ...info, caseNumber: e.target.value })}
+          onChange={(e) => { setInfo({ ...info, caseNumber: e.target.value }); setSaved(false) }}
         />
 
         <label htmlFor="case-investigator">{t('case.investigatorLabel')}</label>
         <input
           id="case-investigator"
           value={info.investigator}
-          onChange={(e) => setInfo({ ...info, investigator: e.target.value })}
+          onChange={(e) => { setInfo({ ...info, investigator: e.target.value }); setSaved(false) }}
         />
 
         <label htmlFor="case-agency">{t('case.agencyLabel')}</label>
         <input
           id="case-agency"
           value={info.agency}
-          onChange={(e) => setInfo({ ...info, agency: e.target.value })}
+          onChange={(e) => { setInfo({ ...info, agency: e.target.value }); setSaved(false) }}
         />
 
         <label htmlFor="case-notes">{t('case.notesLabel')}</label>
@@ -133,7 +146,7 @@ function CaseView(): React.ReactElement {
           id="case-notes"
           rows={4}
           value={info.notes}
-          onChange={(e) => setInfo({ ...info, notes: e.target.value })}
+          onChange={(e) => { setInfo({ ...info, notes: e.target.value }); setSaved(false) }}
         />
 
         <div className="case-actions">

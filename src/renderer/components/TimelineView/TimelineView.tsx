@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import './TimelineView.css'
 import {
   Clock,
@@ -46,6 +46,13 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
   const [filter, setFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
+  // Stale-response guard: navigating away mid-fetch must not setState.
+  // Setup re-arms the flag so StrictMode's double mount stays live.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
 
   const fetchTimeline = useCallback(async (p: number, f: string) => {
     if (scanId < 0) return
@@ -54,14 +61,15 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
     try {
       if (window.api?.getTimelineEvents) {
         const res = await window.api.getTimelineEvents(scanId, p * PAGE_SIZE, PAGE_SIZE, f)
+        if (!aliveRef.current) return
         setEvents(res?.events ?? [])
         setTotal(res?.total ?? 0)
       }
     } catch (err) {
       console.error(err)
-      setLoadError(t('tl.loadFailed'))
+      if (aliveRef.current) setLoadError(t('tl.loadFailed'))
     } finally {
-      setLoading(false)
+      if (aliveRef.current) setLoading(false)
     }
   }, [scanId, t])
 

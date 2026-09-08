@@ -55,23 +55,39 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
   // tamper-evidence claim is machine-checked, not manual.
   useEffect(() => {
     if (!window.api?.verifyAuditLog) return
-    window.api.verifyAuditLog().then(setChain).catch(() => setChain(null))
+    let alive = true
+    window.api.verifyAuditLog().then((v) => {
+      if (alive) setChain(v)
+    }).catch(() => {
+      if (alive) setChain(null)
+    })
+    return () => { alive = false }
   }, [])
 
   useEffect(() => {
+    let alive = true
     if (scanId > 0 && window.api?.getScanState) {
-      window.api.getScanState(scanId).then(setRowState).catch(() => setRowState(null))
+      window.api.getScanState(scanId).then((s) => {
+        if (alive) setRowState(s)
+      }).catch(() => {
+        if (alive) setRowState(null)
+      })
     } else {
       setRowState(null)
     }
+    return () => { alive = false }
   }, [scanId])
 
   useEffect(() => {
+    let alive = true
     if (scanId > 0 && window.api?.getScanSummary) {
       setSummaryError(null)
       window.api.getScanSummary(scanId)
-        .then(setSummary)
+        .then((s) => {
+          if (alive) setSummary(s)
+        })
         .catch((e: unknown) => {
+          if (!alive) return
           setSummary(null)
           setSummaryError(e instanceof Error ? e.message : t('report.summaryReadFailed'))
         });
@@ -79,6 +95,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
       setSummary(null);
       setSummaryError(null)
     }
+    return () => { alive = false }
   }, [scanId]);
 
   const generateReport = async () => {

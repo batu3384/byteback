@@ -71,13 +71,20 @@ public:
     // ponytail: per-scan BGC budget test hook
     void setBgcBudget(int budget) { bgcBudget_ = budget; }
 
-private:
+    // A2: single-range scan core. Public for the scan_coordinator parallel
+    // carve phase: one engine is shared by all workers and is safe there
+    // because every mutable member the hot path touches (the BGC budget) is
+    // externalized — callers running workers concurrently MUST pass a shared,
+    // non-null bgcBudget; passing nullptr mutates the engine's own counter and
+    // is only safe on a single thread. signatures/acNodes/acNext_ are
+    // immutable after loadSignatures().
     bool scanRangeSingle(DiskReader& reader, uint64_t firstSector, uint64_t lastSector,
                          FileSystemParser::FileRecordCallback callback,
                          std::atomic<bool>* isRunning,
                          uint64_t emitFirstSector, uint64_t emitLastSector,
                          std::atomic<int>* bgcBudget);
 
+private:
     std::vector<FileSignature> signatures;
     std::vector<ACTrieNode> acNodes;
     std::vector<int> acNext_; // compiled [state][256] transitions (CA-023)

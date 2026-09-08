@@ -12,6 +12,7 @@
 //   ctest --test-dir native/build --output-on-failure
 #include "crypto/byteback_md5.h"
 #include "imager/ewf_writer.h"
+#include "imager/ewf_reader.h"
 
 #include <gtest/gtest.h>
 #include <cstdint>
@@ -96,6 +97,56 @@ TEST(Md5, AllLengthsMod64RoundTrip) {
         }
         EXPECT_EQ(m2.finalHex(), oneShot) << "length " << len << " (7-byte chunks)";
     }
+}
+
+// B1: midstream state snapshot. update(half) -> save -> fresh Md5 load ->
+// update(rest) must equal the one-shot digest. Sweeps split points around the
+// 64-byte block boundary and after finalize (which must refuse to save).
+TEST(Md5, SaveLoadStateResumesExactly) {
+    std::vector<uint8_t> buf(300);
+    for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<uint8_t>(i * 7);
+
+    for (size_t split : {0u, 1u, 48u, 63u, 64u, 65u, 127u, 128u, 299u}) {
+        const std::string oneShot = md5Hex(buf.data(), buf.size());
+
+        crypto::Md5 first;
+        first.update(buf.data(), split);
+        crypto::Md5State st;
+        ASSERT_TRUE(first.saveState(st)) << "split " << split;
+        EXPECT_EQ(st.count, split);
+        EXPECT_EQ(st.bufLen, split % 64);
+
+        crypto::Md5 second;
+        ASSERT_TRUE(second.loadState(st)) << "split " << split;
+        second.update(buf.data() + split, buf.size() - split);
+        EXPECT_EQ(second.finalHex(), oneShot) << "split " << split;
+    }
+}
+
+TEST(Md5, LoadStateRejectsInconsistentAndFinalized) {
+    std::vector<uint8_t> buf(128);
+    for (size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<uint8_t>(i);
+
+    crypto::Md5 finalized;
+    finalized.update(buf.data(), buf.size());
+    (void)finalized.finalHex();
+    crypto::Md5State st;
+    EXPECT_FALSE(finalized.saveState(st)); // consumed context cannot be saved
+
+    // bufLen must equal count % 64 and never exceed 64.
+    crypto::Md5 mid;
+    mid.update(buf.data(), 100);
+    ASSERT_TRUE(mid.saveState(st));
+    const crypto::Md5State good = st;
+    crypto::Md5 restore;
+    EXPECT_TRUE(restore.loadState(good));
+
+    crypto::Md5State corrupt = good;
+    corrupt.bufLen = 65;
+    EXPECT_FALSE(restore.loadState(corrupt));
+    corrupt = good;
+    corrupt.bufLen = static_cast<uint32_t>((corrupt.count + 1) % 64);
+    EXPECT_FALSE(restore.loadState(corrupt));
 }
 
 // ---------------- EWF writer ----------------
@@ -329,4 +380,168 @@ TEST(Ewf, RotatesToSecondSegment) {
     EXPECT_EQ(rdU32(b.data() + 0x12) & 0xFFFF, 2u);
     static const uint8_t SIG[8] = {'E', 'V', 'F', 0x09, 0x0D, 0x0A, 0xFF, 0x00};
     EXPECT_EQ(std::memcmp(b.data(), SIG, 8), 0);
+}
+
+// ---------------- C2: compressed chunks ----------------
+namespace {
+// Walk to the "sectors" section of a single-segment file; returns the section
+// payload size and the compression flag byte (section header byte 32).
+bool findSectorsSection(const std::vector<uint8_t>& f, uint64_t& dataOff,
+                        uint64_t& dataLen, uint8_t& flag) {
+    uint64_t off = 76;
+    while (off + 40 <= f.size()) {
+        char type[17] = {0};
+        std::memcpy(type, f.data() + off, 16);
+        const uint64_t size = rdU64(f.data() + off + 24);
+        if (std::string(type) == "sectors") {
+            dataOff = off + 40;
+            dataLen = size - 40;
+            flag = f[off + 32];
+            return true;
+        }
+        if (size < 40) return false;
+        off += size;
+    }
+    return false;
+}
+} // namespace
+
+// Level 0 must keep the legacy layout bit-for-bit: raw chunk bytes, no
+// compression flag in the sectors/table section headers.
+TEST(EwfCompression, Level0StaysLegacyUncompressed) {
+    const char* path = "comp_level0.E01";
+    ::remove(path);
+    const uint64_t kSectors = 40;
+    std::vector<uint8_t> img(kSectors * 512);
+    for (size_t i = 0; i < img.size(); ++i) img[i] = static_cast<uint8_t>(i & 0xFF);
+
+    EwfOptions opts;
+    opts.compression = 0;
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512, opts));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size()));
+
+    auto f = readAll(path);
+    ::remove(path);
+    uint64_t dataOff = 0, dataLen = 0;
+    uint8_t flag = 0xFF;
+    ASSERT_TRUE(findSectorsSection(f, dataOff, dataLen, flag));
+    EXPECT_EQ(flag, 0u);
+    EXPECT_EQ(dataLen, img.size()); // stored, not deflated
+    EXPECT_EQ(0, std::memcmp(f.data() + dataOff, img.data(), img.size()));
+}
+
+// Levels 1 and 6: chunks are raw-deflate stored; table entries point at
+// compressed extents; the digest is still over the PLAINTEXT image. (The
+// read-back equality itself is asserted by the EwfReader suite below.)
+TEST(EwfCompression, Level1And6CompressChunksAndKeepDigest) {
+    const uint64_t kSectors = 64; // one 64 KiB chunk at defaults... 128 s/chunk -> partial chunk
+    std::vector<uint8_t> img(kSectors * 512);
+    // Highly compressible pattern — must actually shrink the sectors section.
+    std::memset(img.data(), 0x5A, img.size());
+    for (size_t i = 0; i < img.size(); i += 4096) img[i] = static_cast<uint8_t>(i >> 12);
+
+    for (uint32_t level : {1u, 6u}) {
+        const std::string path = "comp_l" + std::to_string(level) + ".E01";
+        ::remove(path.c_str());
+        EwfOptions opts;
+        opts.compression = level;
+        EwfWriter w;
+        ASSERT_TRUE(w.open(path, kSectors, 512, opts)) << level;
+        ASSERT_TRUE(w.write(img.data(), img.size())) << level;
+        ASSERT_TRUE(w.finish()) << level;
+        // Digest enforced: over the plaintext, byte-exact.
+        EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size())) << level;
+
+        auto f = readAll(path);
+        ::remove(path.c_str());
+        uint64_t dataOff = 0, dataLen = 0;
+        uint8_t flag = 0;
+        ASSERT_TRUE(findSectorsSection(f, dataOff, dataLen, flag)) << level;
+        EXPECT_EQ(flag, 1u) << level;
+        EXPECT_LT(dataLen, img.size()) << "compressible image must shrink, level " << level;
+    }
+}
+
+// Incompressible (random) data: the deflate stream may equal or slightly
+// exceed the plaintext size; the format stores it anyway and the reader must
+// still reproduce the bytes exactly.
+TEST(EwfCompression, IncompressibleDataRoundTrips) {
+    const char* path = "comp_rand.E01";
+    ::remove(path);
+    const uint64_t kSectors = 32;
+    std::vector<uint8_t> img(kSectors * 512);
+    uint32_t seed = 0x12345678;
+    for (auto& b : img) {
+        seed = seed * 1664525u + 1013904223u; // LCG: deterministic pseudo-random
+        b = static_cast<uint8_t>(seed >> 24);
+    }
+
+    EwfOptions opts;
+    opts.compression = 6;
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512, opts));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size()));
+
+    EwfReader r;
+    std::string err;
+    ASSERT_TRUE(r.open(path, err)) << err;
+    std::vector<uint8_t> out(img.size());
+    ASSERT_TRUE(r.read(0, out.data(), out.size(), err)) << err;
+    EXPECT_EQ(out, img);
+    EXPECT_TRUE(r.verifyDigest());
+    ::remove(path);
+}
+
+// ---------------- D1: acquiry error section ----------------
+TEST(EwfAcquiryErrors, WriterEmitsErrorSectionEntries) {
+    const char* path = "err_section.E01";
+    ::remove(path);
+    const uint64_t kSectors = 16;
+    std::vector<uint8_t> img(kSectors * 512, 0x33);
+
+    EwfWriter w;
+    ASSERT_TRUE(w.open(path, kSectors, 512));
+    ASSERT_TRUE(w.write(img.data(), img.size()));
+    w.setAcquiryErrors({{100, 4}, {500, 1}, {501, 2}}); // writer stores as given
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.md5Hex(), md5Hex(img.data(), img.size()));
+
+    auto f = readAll(path);
+    ::remove(path);
+    // Find the "error" section and check the payload shape: u32 count +
+    // {u64 start, u64 count} pairs, little-endian, BEFORE the digest section.
+    uint64_t off = 76;
+    bool found = false;
+    while (off + 40 <= f.size()) {
+        char type[17] = {0};
+        std::memcpy(type, f.data() + off, 16);
+        const uint64_t size = rdU64(f.data() + off + 24);
+        if (std::string(type) == "error") {
+            found = true;
+            const uint8_t* d = f.data() + off + 40;
+            const uint32_t count = d[0] | (d[1] << 8) | (d[2] << 16) | (d[3] << 24);
+            ASSERT_EQ(count, 3u);
+            auto u64at = [&](size_t p) {
+                uint64_t v = 0;
+                for (int i = 7; i >= 0; --i) v = (v << 8) | d[p + i];
+                return v;
+            };
+            EXPECT_EQ(u64at(4), 100u);
+            EXPECT_EQ(u64at(12), 4u);
+            EXPECT_EQ(u64at(20), 500u);
+            EXPECT_EQ(u64at(28), 1u);
+            EXPECT_EQ(u64at(36), 501u);
+            EXPECT_EQ(u64at(44), 2u);
+            break;
+        }
+        if (std::string(type) == "done") break;
+        if (size < 40) break;
+        off += size;
+    }
+    EXPECT_TRUE(found);
 }

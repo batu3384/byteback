@@ -35,7 +35,9 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
 
   useEffect(() => {
     if (window.api && window.api.listDrives) {
+      let alive = true
       window.api.listDrives().then((drives: any[]) => {
+        if (!alive) return
         const disks = drives.map(d => ({
           id: d.index.toString(),
           name: tFormat('raid.diskName', { n: String(d.index), model: d.model }),
@@ -44,8 +46,9 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         setAvailableDisks(disks);
       }).catch((e: unknown) => {
         console.error(e);
-        setRaidNotice({ variant: 'error', message: t('raid.drivesFailed') });
+        if (alive) setRaidNotice({ variant: 'error', message: t('raid.drivesFailed') });
       });
+      return () => { alive = false }
     }
   }, []);
 

@@ -200,3 +200,155 @@ TEST_F(ContentSearchTest, LargeFileBatchedFlushKeepsTailFindable) {
     auto ids = store_.searchContentFts(scanId, "BATCH_TAIL", 0, 10);
     ASSERT_EQ(ids.size(), 1u);
 }
+
+// CA-031: an icontains query whose bytes straddle the DEFAULT 256 KiB chunk
+// boundary (the historical miss class) must return a snippet with a highlight
+// span that exactly covers the match — on the live path and, after indexing,
+// on the FTS path. The count path must stay unaffected.
+TEST_F(ContentSearchTest, SnippetSpansDefault256KiBChunkBoundary) {
+    const size_t ss = 512;
+    const size_t sectors = 1024; // 512 KiB image
+    // 0x00 filler sanitizes to spaces -> separate FTS tokens; a letter filler
+    // would merge the payload into one giant token the FTS path cannot match.
+    std::vector<uint8_t> img(ss * sectors, 0x00);
+    const char payload[] = "GRANT_SECRET_2024";
+    const size_t payloadOff = 256 * 1024 - 9; // straddles the 256 KiB boundary
+    std::memcpy(img.data() + payloadOff, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "grant.bin";
+    r.sizeBytes = ss * sectors;
+    r.startSector = 0;
+    r.endSector = sectors;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts; // default 256 KiB chunks
+    const std::string query = "GRANT_SECRET";
+
+    // Live path (index still incomplete): exact snippet + highlight span.
+    std::vector<FileRecord> liveHits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, query, opts, [&](const FileRecord& f) {
+        liveHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(liveHits.size(), 1u);
+    const FileRecord& live = liveHits[0];
+    EXPECT_FALSE(live.snippet.empty());
+    EXPECT_GE(live.snippet.size(), 160u); // ~160 bytes of context requested
+    ASSERT_GE(live.snippetMatchStart, 0);
+    ASSERT_GT(live.snippetMatchEnd, live.snippetMatchStart);
+    EXPECT_EQ(live.snippet.substr(static_cast<size_t>(live.snippetMatchStart),
+                                  static_cast<size_t>(live.snippetMatchEnd - live.snippetMatchStart)),
+              query);
+
+    // Count path untouched by the snippet work.
+    EXPECT_EQ(searchFileContentCount(store_, reader, scanId, query, opts), 1);
+
+    // FTS path (index complete now): chunk 0 stores [0, 256K + 4K overlap),
+    // so the straddling match is re-locatable and keeps its exact span.
+    ASSERT_TRUE(store_.isContentIndexComplete(scanId));
+    std::vector<FileRecord> ftsHits;
+    runContentSearch(store_, reader, scanId, query, opts, [&](const FileRecord& f) {
+        ftsHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(ftsHits.size(), 1u);
+    const FileRecord& fts = ftsHits[0];
+    EXPECT_FALSE(fts.snippet.empty());
+    ASSERT_GE(fts.snippetMatchStart, 0);
+    ASSERT_GT(fts.snippetMatchEnd, fts.snippetMatchStart);
+    EXPECT_EQ(fts.snippet.substr(static_cast<size_t>(fts.snippetMatchStart),
+                                 static_cast<size_t>(fts.snippetMatchEnd - fts.snippetMatchStart)),
+              query);
+}
+
+// CA-031: regex queries locate their FIRST match; the span covers exactly the
+// regex match text. Invalid patterns match nothing (never throw).
+TEST_F(ContentSearchTest, SnippetRegexQueryFirstMatch) {
+    std::vector<uint8_t> img(512 * 16, 0);
+    const char before[] = "noise noise ";
+    const char match[] = "TOKEN_12345";
+    std::memcpy(img.data() + 100, before, sizeof(before) - 1);
+    std::memcpy(img.data() + 100 + sizeof(before) - 1, match, sizeof(match) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "re.bin";
+    r.sizeBytes = img.size();
+    r.startSector = 0;
+    r.endSector = 16;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "TOKEN_[0-9]+", opts, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_FALSE(hits[0].snippet.empty());
+    ASSERT_GE(hits[0].snippetMatchStart, 0);
+    ASSERT_GT(hits[0].snippetMatchEnd, hits[0].snippetMatchStart);
+    EXPECT_EQ(hits[0].snippet.substr(static_cast<size_t>(hits[0].snippetMatchStart),
+                                     static_cast<size_t>(hits[0].snippetMatchEnd - hits[0].snippetMatchStart)),
+              match);
+
+    // Invalid regex: no crash, no matches.
+    std::vector<FileRecord> bad;
+    runContentSearch(store_, reader, scanId, "TOKEN_[0-9", opts, [&](const FileRecord& f) {
+        bad.push_back(f);
+    }, nullptr, &running);
+    EXPECT_TRUE(bad.empty());
+}
+
+// CA-031 binary-context guard: when the bytes around the match are mostly
+// non-text (<80% printable), the snippet is still returned but sanitized
+// aggressively — every non-text byte becomes '.'; the match itself stays
+// visible and highlighted.
+TEST_F(ContentSearchTest, SnippetBinaryContextSanitizedAggressively) {
+    std::vector<uint8_t> img(512 * 4, 0xFF); // non-text filler
+    const char payload[] = "SECRET";
+    std::memcpy(img.data() + 512, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "bin.bin";
+    r.sizeBytes = img.size();
+    r.startSector = 1;
+    r.endSector = 2;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, "SECRET", {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    const FileRecord& f = hits[0];
+    ASSERT_FALSE(f.snippet.empty());
+    ASSERT_GE(f.snippetMatchStart, 0);
+    ASSERT_GT(f.snippetMatchEnd, f.snippetMatchStart);
+    EXPECT_EQ(f.snippet.substr(static_cast<size_t>(f.snippetMatchStart),
+                               static_cast<size_t>(f.snippetMatchEnd - f.snippetMatchStart)),
+              "SECRET");
+    // Aggressive output: printable ASCII only (letters, spaces, dots).
+    for (unsigned char c : f.snippet) {
+        ASSERT_GE(c, 32) << "byte " << static_cast<int>(c);
+        ASSERT_LE(c, 126) << "byte " << static_cast<int>(c);
+    }
+    EXPECT_NE(f.snippet.find('.'), std::string::npos); // filler was replaced
+}

@@ -458,7 +458,6 @@ const STRINGS: Record<string, Entry> = {
   'imager.failedWith': { tr: 'İmaj alma başarısız: {err}', en: 'Imaging failed: {err}' },
   'imager.failed': { tr: 'İmaj alma başarısız (açma/yazma hatası)', en: 'Imaging failed (open/write error)' },
   'imager.done': { tr: 'İmaj Alma Tamamlandı', en: 'Imaging Complete' },
-  'imager.doneMarker': { tr: 'Tamamlandı', en: 'Complete' },
   'imager.noApi': { tr: 'İmaj API\'si kullanılamıyor. Uygulamayı masaüstü modunda çalıştırın.', en: 'Imaging API unavailable. Run the app in desktop mode.' },
   'imager.selectDrive': { tr: 'Sürücü seçin.', en: 'Select a drive.' },
   'imager.starting': { tr: 'İmaj Alınıyor...', en: 'Imaging...' },

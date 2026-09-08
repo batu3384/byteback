@@ -584,3 +584,75 @@ TEST_F(MetadataStoreTest, TimelineBatchInsertPreservesOrderAndContent) {
     // Empty batch is a successful no-op, matching insertFilesBatch.
     EXPECT_TRUE(store_.appendTimelineEventsBatch(scanId, {}));
 }
+
+// CA-030: path_asc / path_desc whitelist keys — case-insensitive full-path
+// ordering; unknown keys keep falling back to the id default (injection-safe).
+TEST_F(MetadataStoreTest, OrderByPathWhitelist) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+
+    const char* paths[] = {"/docs/b.pdf", "/Alpha/a.txt", "/alpha/z.txt", "/docs/a.pdf"};
+    for (int i = 0; i < 4; ++i) {
+        FileRecord r;
+        r.name = "f" + std::to_string(i);
+        r.path = paths[i];
+        r.sizeBytes = 10;
+        r.status = 0;
+        ASSERT_GT(store_.insertFile(scanId, r), 0);
+    }
+
+    FileListFilter f;
+    f.orderBy = "path_asc";
+    auto asc = store_.getFiles(scanId, 0, 10, f);
+    ASSERT_EQ(asc.size(), 4u);
+    // NOCASE: /Alpha/a.txt and /alpha/* interleave by folded bytes.
+    EXPECT_EQ(asc[0].path, "/Alpha/a.txt");
+    EXPECT_EQ(asc[1].path, "/alpha/z.txt");
+    EXPECT_EQ(asc[2].path, "/docs/a.pdf");
+    EXPECT_EQ(asc[3].path, "/docs/b.pdf");
+
+    f.orderBy = "path_desc";
+    auto desc = store_.getFiles(scanId, 0, 10, f);
+    ASSERT_EQ(desc.size(), 4u);
+    EXPECT_EQ(desc[0].path, "/docs/b.pdf");
+    EXPECT_EQ(desc[1].path, "/docs/a.pdf");
+    EXPECT_EQ(desc[2].path, "/alpha/z.txt");
+    EXPECT_EQ(desc[3].path, "/Alpha/a.txt");
+
+    // Non-whitelisted key: id fallback (stable), table untouched.
+    f.orderBy = "path; DROP TABLE files";
+    auto safe = store_.getFiles(scanId, 0, 10, f);
+    ASSERT_EQ(safe.size(), 4u);
+    for (size_t i = 1; i < safe.size(); ++i) {
+        EXPECT_LE(safe[i - 1].id, safe[i].id);
+    }
+}
+
+// CA-031: snippet fields are transient search output — insert paths must not
+// persist them and read paths must not resurrect them.
+TEST_F(MetadataStoreTest, SnippetIsTransientNeverPersisted) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+
+    FileRecord r;
+    r.name = "leak.txt";
+    r.path = "/docs/leak.txt";
+    r.sizeBytes = 10;
+    r.status = 0;
+    r.snippet = "should never be stored";
+    r.snippetMatchStart = 3;
+    r.snippetMatchEnd = 9;
+    int64_t fileId = store_.insertFile(scanId, r);
+    ASSERT_GT(fileId, 0);
+
+    auto page = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_TRUE(page[0].snippet.empty());
+    EXPECT_EQ(page[0].snippetMatchStart, -1);
+    EXPECT_EQ(page[0].snippetMatchEnd, -1);
+
+    auto byId = store_.getFileById(fileId);
+    EXPECT_TRUE(byId.snippet.empty());
+    EXPECT_EQ(byId.snippetMatchStart, -1);
+    EXPECT_EQ(byId.snippetMatchEnd, -1);
+}

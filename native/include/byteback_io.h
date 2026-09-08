@@ -31,6 +31,16 @@ struct ReadResult {
     bool paddedZeros = false; // short/failed read was zero-padded
 };
 
+// A2: state of the memory-volume backend. Clones SHARE one instance, so the
+// image buffer is copied once and a fault injected via the original's
+// setMemoryFaultRange hook is visible to every clone (the buffer truly is the
+// same bytes, not a stale copy).
+struct MemoryVolumeState {
+    std::vector<uint8_t> data;
+    uint64_t faultStartSector = 0;
+    uint64_t faultSectorCount = 0;
+};
+
 class DiskReader {
 public:
     DiskReader();
@@ -115,6 +125,74 @@ public:
     void detachMemoryVolume();
     bool hasMemoryVolume() const;
 
+    // A2: an independent reader over the SAME source, or nullptr when the
+    // backend cannot be cloned (RAID member set, HTTP raw image). Supported
+    // sources: physical drive (re-opened by index), volume path (re-opened),
+    // raw file (re-opened), EWF image (re-parsed), memory volume (shares the
+    // buffer via shared_ptr — no copy). Each clone owns its own handle and
+    // locks, so concurrent reads on clones never serialize on the source.
+    std::unique_ptr<DiskReader> clone() const {
+        auto c = std::make_unique<DiskReader>();
+        // Snapshot the source spec under our lock, then act on the clone —
+        // copyXtsFvekFrom re-locks ioMutex_, so it must run outside it.
+        int driveIndex = -1;
+        std::string volumePath, rawPath, ewfPath;
+        std::shared_ptr<MemoryVolumeState> mem;
+        uint32_t sectorSize = 512;
+        bool memoryMode = false;
+        bool unclonable = false;
+        {
+            std::lock_guard<std::mutex> lock(ioMutex_);
+            if (raidBackend_ || rawBackendIsHttp_) unclonable = true;
+            driveIndex = currentDriveIndex_;
+            volumePath = volumePath_;
+            rawPath = rawFilePath_;
+            ewfPath = ewfPath_;
+            mem = memoryVolume_;
+            memoryMode = memoryMode_ && static_cast<bool>(memoryVolume_);
+            sectorSize = sectorSize_ ? sectorSize_ : 512;
+        }
+        if (unclonable) return nullptr;
+
+        std::string err;
+        if (memoryMode) {
+            // Same class: share the volume state directly (buffer NOT copied).
+            c->closeDriveUnlocked();
+            c->memoryVolume_ = std::move(mem);
+            c->memoryMode_ = true;
+            c->sectorSize_ = sectorSize;
+            c->diskSize_ = c->memoryVolume_->data.size();
+        } else if (driveIndex >= 0) {
+            if (!c->openDrive(driveIndex)) return nullptr;
+        } else if (!volumePath.empty()) {
+            if (!c->openVolumePath(volumePath)) return nullptr;
+        } else if (!rawPath.empty()) {
+            if (!c->attachRawFile(rawPath, &err)) return nullptr;
+        } else if (!ewfPath.empty()) {
+            if (!c->attachEwfImage(ewfPath, &err)) return nullptr;
+        } else {
+            return nullptr;
+        }
+        c->copyXtsFvekFrom(*this);
+        return c;
+    }
+
+    // A2: parallel-carve policy. True only for backends that tolerate several
+    // concurrent readers with real random access: memory volumes, local raw
+    // files, local EWF images (each clone gets an independent handle; EWF
+    // re-inflates per instance). Physical drives and volume devices stay
+    // SEQUENTIAL by policy — they are seek-bound, so overlapping workers
+    // thrash the head and lose to one well-ordered stream. RAIDs serialize on
+    // their member readers, HTTP sources would multiply range traffic; both
+    // are rejected here (and clone() itself returns nullptr for them).
+    bool supportsParallelScan() const {
+        std::lock_guard<std::mutex> lock(ioMutex_);
+        if (memoryMode_) return true;
+        if (rawBackend_ && !rawBackendIsHttp_) return true;
+        if (ewfBackend_ && !ewfPathIsHttp_) return true;
+        return false;
+    }
+
     // Test hook (memory backend only): make every read touching the given
     // sector range fail outright, simulating a mid-image bad-sector region.
     // Pass count=0 to clear.
@@ -126,6 +204,16 @@ public:
     bool attachHttpRawImage(const std::string& url, std::string* errOut = nullptr);
     void detachImageBackend();
     bool hasImageBackend() const;
+
+    // B2: source identity for imaging-resume sidecars. Empty for backends
+    // without a path (drives are identified by index+size, memory volumes by
+    // size alone — see DiskImager's sourceKey composition).
+    std::string imageSourcePath() const {
+        std::lock_guard<std::mutex> lock(ioMutex_);
+        if (!rawFilePath_.empty()) return rawFilePath_;
+        if (!ewfPath_.empty()) return ewfPath_;
+        return {};
+    }
 
     // AES-XTS FVEK: 32 bytes (AES-128-XTS) or 64 bytes (AES-256-XTS).
     // Decrypts each sector after read. Not a password cracker — caller supplies FVEK.
@@ -151,10 +239,13 @@ private:
     int currentDriveIndex_ = -1;
     bool shareWrite_ = false;
     std::shared_ptr<VirtualRaid> raidBackend_;
-    std::vector<uint8_t> memoryImage_;
+    // A2: the source spec each backend was opened from — clone() re-opens it.
+    std::string volumePath_;
+    std::string rawFilePath_;
+    std::string ewfPath_;
+    bool ewfPathIsHttp_ = false;
+    std::shared_ptr<MemoryVolumeState> memoryVolume_; // shared with clones (A2)
     bool memoryMode_ = false;
-    uint64_t faultStartSector_ = 0;
-    uint64_t faultSectorCount_ = 0;
     std::unique_ptr<EwfReader> ewfBackend_;
     std::unique_ptr<ByteSource> rawBackend_;
     bool rawBackendIsHttp_ = false;

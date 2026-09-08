@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import './SmartView.css'
 import { Activity, HardDrive, Thermometer, Clock, AlertTriangle, ShieldCheck, RefreshCw, Zap, Database, Power } from 'lucide-react'
 import type { SmartStatus } from '../../../shared/types'
@@ -21,6 +21,13 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
   const { t } = useI18n()
   const [smartData, setSmartData] = useState<SmartStatus | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
+  // Stale-response guard: navigating away mid-read must not setState.
+  // Setup re-arms the flag so StrictMode's double mount stays live.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
 
   useEffect(() => {
     if (driveIndex !== undefined && driveIndex !== null) {
@@ -33,15 +40,15 @@ function SmartView({ driveIndex }: SmartViewProps): React.ReactElement {
     try {
       if (window.api && window.api.getSmartStatus) {
         const data = await window.api.getSmartStatus(index)
-        setSmartData(data)
+        if (aliveRef.current) setSmartData(data)
       }
     } catch (err) {
       console.error(err)
       // Drop stale readings so the read-failed panel becomes the visible
       // error surface instead of silently showing old data.
-      setSmartData(null)
+      if (aliveRef.current) setSmartData(null)
     } finally {
-      setLoading(false)
+      if (aliveRef.current) setLoading(false)
     }
   }
 

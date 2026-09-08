@@ -7,20 +7,143 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <regex>
 #include <vector>
 
 namespace byteback {
 
 namespace {
 
-bool icontains(const std::string& hay, const std::string& needle) {
-    if (needle.empty()) return false;
-    auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
-                          [](char a, char b) {
-                              return std::tolower(static_cast<unsigned char>(a)) ==
-                                     std::tolower(static_cast<unsigned char>(b));
-                          });
-    return it != hay.end();
+// CA-031: single compiled matcher per search run — the chunk scan calls
+// find() on every chunk, so a regex must compile once, not per chunk.
+class QueryMatcher {
+public:
+    static QueryMatcher literal(std::string needle) {
+        QueryMatcher m;
+        m.literal_ = std::move(needle);
+        return m;
+    }
+    static QueryMatcher regex(const std::string& pattern) {
+        QueryMatcher m;
+        if (pattern.size() > kMaxRegexQueryChars) {
+            // Mirrors the IPC regex cap (ipc-handlers.ts): oversized patterns
+            // fall back to literal search to bound backtracking exposure.
+            m.literal_ = pattern;
+            return m;
+        }
+        try {
+            m.re_ = std::regex(pattern, std::regex::icase | std::regex::optimize);
+            m.regex_ = true;
+        } catch (const std::regex_error&) {
+            // Invalid pattern matches nothing; find() never throws.
+        }
+        return m;
+    }
+
+    // First (leftmost) match position; *matchLen receives its length.
+    // npos = no match.
+    size_t find(const std::string& hay, size_t* matchLen) const {
+        *matchLen = 0;
+        if (regex_) {
+            std::smatch m;
+            if (!std::regex_search(hay, m, re_)) return std::string::npos;
+            *matchLen = static_cast<size_t>(m.length(0));
+            return static_cast<size_t>(m.position(0));
+        }
+        if (literal_.empty()) return std::string::npos;
+        auto it = std::search(hay.begin(), hay.end(), literal_.begin(), literal_.end(),
+                              [](char a, char b) {
+                                  return std::tolower(static_cast<unsigned char>(a)) ==
+                                         std::tolower(static_cast<unsigned char>(b));
+                              });
+        if (it == hay.end()) return std::string::npos;
+        *matchLen = literal_.size();
+        return static_cast<size_t>(it - hay.begin());
+    }
+
+private:
+    static constexpr size_t kMaxRegexQueryChars = 128;
+    std::string literal_;
+    std::regex re_;
+    bool regex_ = false;
+};
+
+// CA-031 snippet protocol: ~160 bytes of context centered on the first match,
+// plus byte offsets of the match span inside the snippet (post-sanitization;
+// sanitization maps every input byte 1:1, so offsets survive it).
+constexpr size_t kSnippetContextBytes = 160;
+
+std::string sanitizeSnippetContext(const std::string& raw) {
+    size_t printable = 0;
+    for (unsigned char c : raw) {
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) ++printable;
+    }
+    // Binary-context guard: with <80% printable bytes, replace every non-text
+    // byte ('.'), otherwise keep >=128 bytes untouched — valid UTF-8 is then
+    // enforced at the trust boundary by the bridge's utf8ForJs.
+    const bool aggressive = printable * 5 < raw.size() * 4;
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (c == '\t' || c == '\n' || c == '\r' || (c >= 32 && c < 127)) {
+            out.push_back(static_cast<char>(c));
+        } else if (!aggressive && c >= 128) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('.');
+        }
+    }
+    return out;
+}
+
+void attachSnippet(FileRecord& f, const std::string& chunkText, size_t matchPos, size_t matchLen) {
+    if (chunkText.empty()) return;
+    size_t begin = 0;
+    if (chunkText.size() > kSnippetContextBytes) {
+        const size_t center = matchPos + matchLen / 2;
+        begin = center > kSnippetContextBytes / 2 ? center - kSnippetContextBytes / 2 : 0;
+        if (begin + kSnippetContextBytes > chunkText.size()) {
+            begin = chunkText.size() - kSnippetContextBytes;
+        }
+    }
+    const size_t len = std::min(kSnippetContextBytes, chunkText.size() - begin);
+    f.snippet = sanitizeSnippetContext(chunkText.substr(begin, len));
+    // No span when the caller could not anchor the match (matchLen == 0) or
+    // the context window clipped it.
+    if (matchLen > 0 && matchPos >= begin && matchPos + matchLen <= begin + len) {
+        f.snippetMatchStart = static_cast<int>(matchPos - begin);
+        f.snippetMatchEnd = static_cast<int>(matchPos - begin + matchLen);
+    }
+}
+
+// CA-031 FTS path: MATCH is token/prefix based — re-locate the query (or its
+// first token) verbatim in the stored text to anchor the highlight. Only the
+// first stored chunk is reachable through getContentSample; matches living in
+// later chunks yield a head snippet without a highlight (known ceiling).
+void attachFtsSnippet(MetadataStore& store, FileRecord& f, const std::string& query) {
+    const std::string sample = store.getContentSample(f.id);
+    if (sample.empty()) return;
+    size_t mlen = 0;
+    size_t pos = QueryMatcher::literal(query).find(sample, &mlen);
+    if (pos == std::string::npos) {
+        // Multi-token queries are ANDed by FTS; anchor on the first token.
+        std::string token;
+        for (size_t i = 0; i <= query.size() && pos == std::string::npos; ++i) {
+            if (i == query.size() || std::isspace(static_cast<unsigned char>(query[i]))) {
+                if (!token.empty()) {
+                    pos = QueryMatcher::literal(token).find(sample, &mlen);
+                    token.clear();
+                }
+            } else {
+                token += query[i];
+            }
+        }
+    }
+    if (pos != std::string::npos) {
+        attachSnippet(f, sample, pos, mlen);
+    } else {
+        attachSnippet(f, sample, 0, 0); // head snippet, no highlight span
+    }
 }
 
 bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, uint64_t maxBytes,
@@ -135,7 +258,9 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
         return;
     }
 
-    if (store.isContentIndexComplete(scanId)) {
+    // CA-031: the FTS shortcut cannot evaluate regexes — regex queries always
+    // walk the disk (which also re-anchors snippets on live chunk text).
+    if (!opts.useRegex && store.isContentIndexComplete(scanId)) {
         auto ids = store.searchContentFts(scanId, query, 0, 100000);
         int64_t processed = 0;
         for (int64_t id : ids) {
@@ -143,6 +268,7 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
             FileRecord f = store.getFileById(id);
             if (f.id > 0) {
                 tagContentMatch(f);
+                attachFtsSnippet(store, f, query);
                 onMatch(f);
             }
             ++processed;
@@ -190,6 +316,8 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
             }
 
             bool hit = false;
+            const QueryMatcher matcher = opts.useRegex ? QueryMatcher::regex(query)
+                                                       : QueryMatcher::literal(query);
             std::vector<std::string> chunks;
             bool flushed = false;
             auto flush = [&](bool force) {
@@ -208,7 +336,14 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                     if (!readFileRange(*active, f, o, chunk + kChunkOverlap, sample)) break;
                     std::string t = sanitizeContentSample(sample, chunk + kChunkOverlap);
                     if (!t.empty()) {
-                        if (!hit && icontains(t, query)) hit = true;
+                        if (!hit) {
+                            size_t mlen = 0;
+                            const size_t mpos = matcher.find(t, &mlen);
+                            if (mpos != std::string::npos) {
+                                hit = true;
+                                attachSnippet(f, t, mpos, mlen);
+                            }
+                        }
                         chunks.push_back(std::move(t));
                     }
                     flush(false);

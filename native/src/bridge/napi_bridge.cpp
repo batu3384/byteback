@@ -60,6 +60,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     // bridge_ops.cpp
     exports.Set("getCaseInfo", Napi::Function::New(env, GetCaseInfo));
     exports.Set("setCaseInfo", Napi::Function::New(env, SetCaseInfo));
+    exports.Set("logAuditEvent", Napi::Function::New(env, LogAuditEvent));
     exports.Set("loadNsrl", Napi::Function::New(env, LoadNsrl));
     exports.Set("lookupNsrl", Napi::Function::New(env, LookupNsrl));
     exports.Set("getNsrlStats", Napi::Function::New(env, GetNsrlStats));

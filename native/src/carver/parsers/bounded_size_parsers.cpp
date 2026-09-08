@@ -190,6 +190,21 @@ StructuralParseResult parseCab(const uint8_t* data, size_t size) {
     return r;
 }
 
+// X3F ("FOVb", Sigma/Foveon RAW) — deliberately NOT implemented as a size
+// bound. Verified layout (kalpanika/x3f, src/x3f_io.c, x3f_new_from_file):
+// magic "FOVb"@0, version u32@4, unique identifier 16B@8, then
+// version-dependent geometry fields — and the DIRECTORY POINTER is read from
+// the LAST FOUR BYTES of the file:
+//     fseek(infile, -4, SEEK_END); fseek(infile, x3f_get4(infile), SEEK_SET);
+// followed by the "SECd" directory (u32 version, u32 count, entries of
+// {u32 offset, u32 size, u32 type id}). The size bound therefore exists only
+// at the file END: deriving it from a start-anchored probe would require
+// reading up to the signature's full 128 MiB maxSize to locate the directory,
+// which CA-001 forbids (unbounded candidate work). The X3F signature stays
+// maxSize-bounded and the expire path drops unboundable candidates — the
+// documented behavior since CA-038. Ceiling: X3F carves remain coarse until a
+// start-side bound is proven in the wild.
+
 namespace {
 
 // EBML variable-length integer: leading zero bits give the length; all value

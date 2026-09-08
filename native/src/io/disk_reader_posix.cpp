@@ -39,8 +39,12 @@ void DiskReader::closeDriveUnlocked() {
     diskSize_ = 0;
     currentDriveIndex_ = -1;
     shareWrite_ = false;
+    volumePath_.clear();
+    rawFilePath_.clear();
+    ewfPath_.clear();
+    ewfPathIsHttp_ = false;
     raidBackend_.reset();
-    memoryImage_.clear();
+    memoryVolume_.reset();
     memoryMode_ = false;
     ewfBackend_.reset();
     rawBackend_.reset();
@@ -66,15 +70,18 @@ bool DiskReader::hasRaidBackend() const {
 void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
-    memoryImage_ = std::move(image);
+    // A2: the buffer lives in a shared state so clones reference the SAME
+    // bytes (no per-clone copy) and fault injections stay coherent.
+    memoryVolume_ = std::make_shared<MemoryVolumeState>();
+    memoryVolume_->data = std::move(image);
     sectorSize_ = sectorSize ? sectorSize : 512;
-    diskSize_ = memoryImage_.size();
+    diskSize_ = memoryVolume_->data.size();
     memoryMode_ = true;
 }
 
 void DiskReader::detachMemoryVolume() {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    memoryImage_.clear();
+    memoryVolume_.reset();
     memoryMode_ = false;
     diskSize_ = 0;
 }
@@ -86,8 +93,9 @@ bool DiskReader::hasMemoryVolume() const {
 
 void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount) {
     std::lock_guard<std::mutex> lock(ioMutex_);
-    faultStartSector_ = startSector;
-    faultSectorCount_ = sectorCount;
+    if (!memoryVolume_) return;
+    memoryVolume_->faultStartSector = startSector;
+    memoryVolume_->faultSectorCount = sectorCount;
 }
 
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
@@ -102,6 +110,8 @@ bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOu
     ewfBackend_ = std::move(reader);
     sectorSize_ = ewfBackend_->bytesPerSector();
     diskSize_ = ewfBackend_->imageBytes();
+    ewfPath_ = pathOrUrl; // A2: clone() re-parses from this path
+    ewfPathIsHttp_ = isHttpUrl(pathOrUrl);
     return true;
 }
 
@@ -117,6 +127,7 @@ bool DiskReader::attachRawFile(const std::string& path, std::string* errOut) {
     rawBackend_ = std::move(src);
     sectorSize_ = 512;
     diskSize_ = rawBackend_->size();
+    rawFilePath_ = path; // A2: clone() re-opens this path
     return true;
 }
 

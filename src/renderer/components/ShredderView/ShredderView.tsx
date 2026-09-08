@@ -15,13 +15,16 @@ const ShredderView: React.FC = () => {
 
   React.useEffect(() => {
     if (!window.api?.listDrives) return
+    let alive = true
     window.api.listDrives().then((list) => {
+      if (!alive) return
       setDrives(list)
       setSsdWarning(list.some((d: { type?: string }) => d.type === 'SSD'))
     }).catch((e: unknown) => {
       console.error('listDrives failed', e)
-      setWipeError(t('shred.drivesFailed'))
+      if (alive) setWipeError(t('shred.drivesFailed'))
     })
+    return () => { alive = false }
   }, [])
 
   const handleFreeSpaceWipe = async () => {

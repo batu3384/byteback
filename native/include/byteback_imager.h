@@ -37,6 +37,11 @@ public:
                                 ImageFormat format = ImageFormat::Raw,
                                 const EwfOptions& ewfOpts = EwfOptions());
 
+    // Test hook (B2): shrink the read chunk so a cancel lands at a small,
+    // deterministic resume point. 0 = default (16 MiB chunks). Must be set
+    // before startImaging/startImagingFromReader.
+    void setChunkSectorsForTest(uint32_t sectors) { chunkSectorsOverride_ = sectors; }
+
     // MD5 hex of the imaged data; valid after imaging completes (EWF only,
     // computed on the fly for both formats but only surfaced for EWF).
     std::string lastImageMd5() const { return lastImageMd5_; }
@@ -55,8 +60,8 @@ private:
 
     std::atomic<bool> isRunning_;
     std::thread imagingThread_;
-
     std::atomic<uint64_t> badSectorReads_{0};
+    std::atomic<uint32_t> chunkSectorsOverride_{0};
     std::string lastImageMd5_;
 };
 

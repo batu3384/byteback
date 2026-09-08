@@ -1,8 +1,10 @@
 #include "imager/ewf_reader.h"
 
 #include "crypto/byteback_md5.h"
+#include "zlib.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace byteback {
@@ -11,6 +13,9 @@ namespace {
 
 constexpr size_t kFileHeaderSize = 76;
 constexpr size_t kSectionHeaderSize = 40;
+// C3: compression flag byte in the sectors/table section headers (written by
+// EwfWriter since the compressed-chunk support; 0 for legacy images).
+constexpr size_t kSectionHeaderFlagsOffset = 32;
 
 uint64_t rdU64(const uint8_t* p) {
     uint64_t v = 0;
@@ -50,6 +55,22 @@ bool readExact(ByteSource& src, uint64_t off, uint8_t* buf, size_t len, std::str
     return true;
 }
 
+// C3: raw-inflate (windowBits -15) `inLen` bytes into `out` (exactly
+// out.size() plaintext bytes expected).
+bool inflateChunkRaw(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen) {
+    z_stream zs{};
+    if (inflateInit2_(&zs, -15, ZLIB_VERSION, static_cast<int>(sizeof(zs))) != Z_OK) {
+        return false;
+    }
+    zs.next_in = const_cast<Bytef*>(in);
+    zs.avail_in = static_cast<uInt>(inLen);
+    zs.next_out = out;
+    zs.avail_out = static_cast<uInt>(outLen);
+    const int rc = inflate(&zs, Z_FINISH);
+    inflateEnd(&zs);
+    return rc == Z_STREAM_END && zs.avail_out == 0;
+}
+
 } // namespace
 
 EwfReader::EwfReader() = default;
@@ -58,8 +79,10 @@ EwfReader::~EwfReader() { close(); }
 void EwfReader::close() {
     segments_.clear();
     bytesPerSector_ = 0;
+    sectorsPerChunk_ = 0;
     imageBytes_ = 0;
     md5Hex_.clear();
+    acquiryErrors_.clear();
     basePath_.clear();
 }
 
@@ -81,7 +104,6 @@ bool EwfReader::parseSegment(ByteSource& src, bool firstSegment, SegmentMap& out
     uint64_t off = kFileHeaderSize;
     const uint64_t fileSize = src.size();
     bool sawSectors = false;
-    bool sawDigest = false;
 
     while (off + kSectionHeaderSize <= fileSize) {
         std::vector<uint8_t> sh(kSectionHeaderSize);
@@ -104,11 +126,46 @@ bool EwfReader::parseSegment(ByteSource& src, bool firstSegment, SegmentMap& out
                 return false;
             }
             bytesPerSector_ = bps;
+            sectorsPerChunk_ = rdU32(vol.data() + 4);
             imageBytes_ = sectors * bps;
         } else if (std::strcmp(type, "sectors") == 0) {
             out.sectorsDataOffset = off + kSectionHeaderSize;
             out.sectorsDataBytes = secSize - kSectionHeaderSize;
+            out.chunkCompression = sh[kSectionHeaderFlagsOffset];
             sawSectors = true;
+        } else if (std::strcmp(type, "table") == 0) {
+            // C3: chunk byte counts. The writer pads the table to 16 bytes and
+            // repeats the section total as the final entry: strip the zero
+            // padding, then drop the final entry — the remaining entries are
+            // the chunk START offsets (extents end at the next start, the
+            // last one at sectorsDataBytes).
+            const uint64_t tableBytes = secSize - kSectionHeaderSize;
+            if (tableBytes >= 8 && tableBytes % 4 == 0) {
+                std::vector<uint8_t> tbl(static_cast<size_t>(tableBytes));
+                if (!readExact(src, off + kSectionHeaderSize, tbl.data(), tbl.size(), err)) return false;
+                size_t entries = tbl.size() / 4;
+                while (entries > 1 && rdU32(tbl.data() + (entries - 1) * 4) == 0) --entries;
+                out.chunkTable.clear();
+                if (entries >= 2) {
+                    out.chunkTable.reserve(entries - 1);
+                    for (size_t i = 0; i + 1 < entries; ++i) {
+                        out.chunkTable.push_back(rdU32(tbl.data() + i * 4));
+                    }
+                }
+            }
+        } else if (std::strcmp(type, "error") == 0) {
+            // D2: u32 count, then {u64 startSector, u64 sectorCount} pairs.
+            std::vector<uint8_t> ed(static_cast<size_t>(secSize - kSectionHeaderSize));
+            if (!readExact(src, off + kSectionHeaderSize, ed.data(), ed.size(), err)) return false;
+            if (ed.size() >= 4) {
+                const uint32_t count = rdU32(ed.data());
+                if (4ull + 16ull * count <= ed.size()) {
+                    for (uint32_t i = 0; i < count; ++i) {
+                        const uint8_t* e = ed.data() + 4 + 16ull * i;
+                        acquiryErrors_.emplace_back(rdU64(e), rdU64(e + 8));
+                    }
+                }
+            }
         } else if (std::strcmp(type, "digest") == 0) {
             uint8_t digest[16];
             if (!readExact(src, off + kSectionHeaderSize, digest, sizeof(digest), err)) return false;
@@ -120,7 +177,6 @@ bool EwfReader::parseSegment(ByteSource& src, bool firstSegment, SegmentMap& out
             }
             hex[32] = '\0';
             md5Hex_ = hex;
-            sawDigest = true;
         } else if (std::strcmp(type, "done") == 0) {
             break;
         }
@@ -135,7 +191,6 @@ bool EwfReader::parseSegment(ByteSource& src, bool firstSegment, SegmentMap& out
         err = "missing disk geometry";
         return false;
     }
-    (void)sawDigest;
     return true;
 }
 
@@ -172,11 +227,63 @@ bool EwfReader::parseAllSegments(const std::string& firstPath, std::string& err)
         }
         sm.imageBaseOffset = imageCursor;
         if (!parseSegment(*sm.source, seg == 1, sm, err)) return false;
-        imageCursor += sm.sectorsDataBytes;
+        // The cursor advances by IMAGE bytes, not container bytes: compressed
+        // segments contribute their inflated size (chunk count * chunk bytes;
+        // a partial final chunk is bounded by imageBytes_ at read time).
+        if (sm.chunkCompression) {
+            const uint64_t chunkBytes =
+                static_cast<uint64_t>(sectorsPerChunk_ ? sectorsPerChunk_ : 128) * bytesPerSector_;
+            imageCursor += static_cast<uint64_t>(sm.chunkTable.size()) * chunkBytes;
+        } else {
+            imageCursor += sm.sectorsDataBytes;
+        }
         segments_.push_back(std::move(sm));
     }
 
     if (imageBytes_ == 0) imageBytes_ = imageCursor;
+    return true;
+}
+
+// C3: inflate chunk `idx` into seg.cachedData (single-chunk plaintext cache).
+bool EwfReader::inflateChunk(SegmentMap& seg, uint64_t idx, std::string& err) const {
+    const uint64_t chunkBytes =
+        static_cast<uint64_t>(sectorsPerChunk_ ? sectorsPerChunk_ : 128) * bytesPerSector_;
+    if (idx >= seg.chunkTable.size()) {
+        err = "chunk index out of range";
+        return false;
+    }
+    const uint64_t remaining = imageBytes_ > seg.imageBaseOffset
+                                   ? imageBytes_ - seg.imageBaseOffset
+                                   : 0;
+    const uint64_t offsetInSeg = idx * chunkBytes;
+    if (offsetInSeg >= remaining) {
+        err = "chunk index past image end";
+        return false;
+    }
+    const uint64_t expectedPlain = std::min<uint64_t>(chunkBytes, remaining - offsetInSeg);
+
+    const uint64_t compOff = seg.chunkTable[static_cast<size_t>(idx)];
+    const uint64_t compEnd = idx + 1 < seg.chunkTable.size()
+                                 ? seg.chunkTable[static_cast<size_t>(idx + 1)]
+                                 : seg.sectorsDataBytes;
+    if (compEnd < compOff || compEnd > seg.sectorsDataBytes) {
+        err = "invalid chunk extent";
+        return false;
+    }
+    const size_t compLen = static_cast<size_t>(compEnd - compOff);
+    std::vector<uint8_t> comp(compLen);
+    if (!readExact(*seg.source, seg.sectorsDataOffset + compOff, comp.data(), comp.size(), err)) {
+        return false;
+    }
+
+    seg.cachedData.assign(static_cast<size_t>(expectedPlain), 0);
+    if (!inflateChunkRaw(comp.data(), comp.size(), seg.cachedData.data(), seg.cachedData.size())) {
+        err = "chunk decompression failed";
+        seg.cachedData.clear();
+        seg.cachedChunk = UINT64_MAX;
+        return false;
+    }
+    seg.cachedChunk = idx;
     return true;
 }
 
@@ -193,9 +300,15 @@ bool EwfReader::read(uint64_t offsetBytes, uint8_t* buf, size_t len, std::string
     size_t done = 0;
     while (done < len) {
         const uint64_t pos = offsetBytes + done;
-        const SegmentMap* seg = nullptr;
-        for (const auto& s : segments_) {
-            if (pos >= s.imageBaseOffset && pos < s.imageBaseOffset + s.sectorsDataBytes) {
+        SegmentMap* seg = nullptr;
+        for (auto& s : segments_) {
+            const uint64_t segImageEnd =
+                s.chunkCompression
+                    ? std::min<uint64_t>(imageBytes_, s.imageBaseOffset +
+                          static_cast<uint64_t>(s.chunkTable.size()) *
+                              (sectorsPerChunk_ ? sectorsPerChunk_ : 128) * bytesPerSector_)
+                    : s.imageBaseOffset + s.sectorsDataBytes;
+            if (pos >= s.imageBaseOffset && pos < segImageEnd) {
                 seg = &s;
                 break;
             }
@@ -205,12 +318,29 @@ bool EwfReader::read(uint64_t offsetBytes, uint8_t* buf, size_t len, std::string
             return false;
         }
         const uint64_t local = pos - seg->imageBaseOffset;
-        const size_t take = static_cast<size_t>(
-            std::min<uint64_t>(len - done, seg->sectorsDataBytes - local));
-        if (!seg->source->read(seg->sectorsDataOffset + local, buf + done, take)) {
-            err = seg->source->lastError();
-            return false;
+
+        if (seg->chunkCompression == 0) {
+            // Legacy stored-chunk path: the sectors section IS the image.
+            const size_t take = static_cast<size_t>(
+                std::min<uint64_t>(len - done, seg->sectorsDataBytes - local));
+            if (!seg->source->read(seg->sectorsDataOffset + local, buf + done, take)) {
+                err = seg->source->lastError();
+                return false;
+            }
+            done += take;
+            continue;
         }
+
+        const uint64_t chunkBytes = static_cast<uint64_t>(
+            sectorsPerChunk_ ? sectorsPerChunk_ : 128) * bytesPerSector_;
+        const uint64_t chunkIdx = local / chunkBytes;
+        if (seg->cachedChunk != chunkIdx) {
+            if (!inflateChunk(*seg, chunkIdx, err)) return false;
+        }
+        const uint64_t inChunk = local - chunkIdx * chunkBytes;
+        const size_t avail = static_cast<size_t>(seg->cachedData.size() - inChunk);
+        const size_t take = std::min<size_t>(len - done, avail);
+        std::memcpy(buf + done, seg->cachedData.data() + inChunk, take);
         done += take;
     }
     return true;

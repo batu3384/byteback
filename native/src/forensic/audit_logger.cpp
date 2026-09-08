@@ -167,6 +167,43 @@ std::string current_time_iso() {
 
 namespace forensic {
 
+namespace {
+
+// CA-028 crash-evidence categories: a process killed mid-operation must not
+// take its own evidence (recovery/wipe/BitLocker state changes) down with it,
+// so these event tokens bypass the async queue and are written synchronously.
+bool IsCriticalEventToken(const std::string& token) {
+    return token.rfind("RECOVER", 0) == 0 || token.rfind("WIPE", 0) == 0 ||
+           token.rfind("BITLOCKER", 0) == 0 || token.rfind("FILE_RECOVERED", 0) == 0;
+}
+
+// The event token is the first segment of the message, terminated by a space
+// or the first pipe ("SCAN_END | scanId=3" -> "SCAN_END").
+std::string EventTokenOf(const std::string& message) {
+    const size_t stop = message.find_first_of(" |");
+    return stop == std::string::npos ? message : message.substr(0, stop);
+}
+
+// CA-028 bridge-origin events: first token must be UPPERCASE/underscore/digit
+// (machine marker, e.g. "UI_EXPORT_START"); the payload must be printable
+// ASCII; overall length is capped. Returns false on any violation.
+bool IsValidBridgeEvent(const std::string& event) {
+    if (event.empty() || event.size() > 512) return false;
+    size_t i = 0;
+    for (; i < event.size() && event[i] != ' ' && event[i] != '|'; ++i) {
+        const char c = event[i];
+        const bool okToken = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        if (!okToken) return false;
+    }
+    for (; i < event.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(event[i]);
+        if (c < 0x20 || c > 0x7E) return false; // control / non-ASCII rejected
+    }
+    return true;
+}
+
+} // namespace
+
 AuditLogger::AuditLogger() {
     previousHash_ = std::string(64, '0');
     workerThread_ = std::thread(&AuditLogger::ProcessQueue, this);
@@ -188,6 +225,9 @@ void AuditLogger::Initialize(const std::string& logFilePath) {
 }
 
 void AuditLogger::Shutdown() {
+    // CA-028: drain whatever is queued before tearing the worker down — the
+    // explicit teardown-side flush of the bounded queue.
+    FlushPending();
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         if (stopThread_) return; // Already shut down
@@ -211,7 +251,15 @@ std::string AuditLogger::CalculateSHA256(const uint8_t* data, size_t size) {
     return bytes_to_hex(hash);
 }
 
-void AuditLogger::EnqueueLog(const std::string& message) {
+void AuditLogger::EnqueueLog(const std::string& message, bool critical) {
+    // CA-028: critical (crash-evidence) entries never touch the queue — they
+    // are folded into the hash chain and flushed to disk on this thread, so a
+    // hard crash cannot drop them. Queue ordering yields to durability here.
+    if (critical) {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        WriteEntryLocked(message);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         logQueue_.push({message});
@@ -219,9 +267,33 @@ void AuditLogger::EnqueueLog(const std::string& message) {
     cv_.notify_one();
 }
 
+void AuditLogger::FlushPending() {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    while (!logQueue_.empty()) {
+        const LogEntry entry = std::move(logQueue_.front());
+        logQueue_.pop();
+        WriteEntryLocked(entry.message);
+    }
+}
+
+void AuditLogger::WriteEntryLocked(const std::string& message) {
+    // queueMutex_ held: serializes the hash chain between the worker thread
+    // and synchronous (critical / FlushPending) writers.
+    const std::string to_hash = previousHash_ + message;
+    const std::string new_hash = CalculateSHA256(
+        reinterpret_cast<const uint8_t*>(to_hash.c_str()), to_hash.size());
+
+    if (logFile_.is_open()) {
+        logFile_ << message << " | ChainHash: " << new_hash << "\n";
+        logFile_.flush();
+    }
+
+    previousHash_ = new_hash;
+}
+
 void AuditLogger::LogDiskRead(const std::string& devicePath, uint64_t offset, uint64_t size) {
     std::stringstream ss;
-    ss << "[" << current_time_iso() << "] DISK_READ | Device: " << devicePath 
+    ss << "[" << current_time_iso() << "] DISK_READ | Device: " << devicePath
        << " | Offset: " << offset << " | Size: " << size;
     EnqueueLog(ss.str());
 }
@@ -233,15 +305,26 @@ void AuditLogger::LogEvent(const std::string& eventMessage) {
     }
     std::stringstream ss;
     ss << "[" << current_time_iso() << "] EVENT | " << sanitized;
-    EnqueueLog(ss.str());
+    EnqueueLog(ss.str(), IsCriticalEventToken(EventTokenOf(sanitized)));
+}
+
+bool AuditLogger::LogEventFromBridge(const std::string& event) {
+    if (!IsValidBridgeEvent(event)) return false;
+    // Existing line convention is "[ts] CATEGORY | payload..."; the JS origin
+    // rides as the first payload segment so the chain distinguishes
+    // renderer/main-process events from native ones.
+    std::stringstream ss;
+    ss << "[" << current_time_iso() << "] EVENT | JS | " << event;
+    EnqueueLog(ss.str(), IsCriticalEventToken(EventTokenOf(event)));
+    return true;
 }
 
 void AuditLogger::LogFileRecovered(const std::string& filePath, const uint8_t* data, size_t size) {
     std::string hash = CalculateSHA256(data, size);
     std::stringstream ss;
-    ss << "[" << current_time_iso() << "] FILE_RECOVERED | Path: " << filePath 
+    ss << "[" << current_time_iso() << "] FILE_RECOVERED | Path: " << filePath
        << " | Size: " << size << " | SHA256: " << hash;
-    EnqueueLog(ss.str());
+    EnqueueLog(ss.str(), true); // recovery evidence — crash must not drop it
 }
 
 void AuditLogger::ProcessQueue() {
@@ -250,25 +333,17 @@ void AuditLogger::ProcessQueue() {
         {
             std::unique_lock<std::mutex> lock(queueMutex_);
             cv_.wait(lock, [this]() { return stopThread_ || !logQueue_.empty(); });
-            
+
             if (stopThread_ && logQueue_.empty()) {
                 break;
             }
-            
+
             event = std::move(logQueue_.front());
             logQueue_.pop();
+            // CA-028: hash + write under the queue mutex so concurrent
+            // synchronous writers cannot fork the chain.
+            WriteEntryLocked(event.message);
         }
-        
-        // Calculate hash chain
-        std::string to_hash = previousHash_ + event.message;
-        std::string new_hash = CalculateSHA256(reinterpret_cast<const uint8_t*>(to_hash.c_str()), to_hash.size());
-        
-        if (logFile_.is_open()) {
-            logFile_ << event.message << " | ChainHash: " << new_hash << "\n";
-            logFile_.flush();
-        }
-        
-        previousHash_ = new_hash;
     }
 }
 
