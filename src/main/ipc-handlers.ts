@@ -320,6 +320,20 @@ export function registerIpcHandlers(): void {
     callNative('verify-audit-log', () => getEngine().verifyAuditLog())
   )
 
+  // Field-evidence collection (field-test protocol 0.2): the examiner copies
+  // these paths into the case record. All names are derivable locally — no
+  // native call needed (audit log lives next to the DB as <db>.audit.log).
+  ipcMain.handle('get-data-paths', () => {
+    const userData = app.getPath('userData')
+    const dbPath = join(userData, 'byteback.db')
+    return {
+      userData,
+      dbPath,
+      sessionLog: join(userData, 'session.log'),
+      auditLog: dbPath + '.audit.log',
+    }
+  })
+
   ipcMain.handle('get-session-log', (_event, maxLines?: number) => {
     const n = typeof maxLines === 'number' && maxLines > 0 ? Math.min(maxLines, 500) : 80
     return readSessionLog(n)

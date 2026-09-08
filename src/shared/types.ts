@@ -76,6 +76,7 @@ declare global {
       onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled' }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
+      getDataPaths: () => Promise<{ userData: string; dbPath: string; sessionLog: string; auditLog: string }>
       readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>
 
       getFileCount: (scanId: number, filter?: FileListFilter) => Promise<number>

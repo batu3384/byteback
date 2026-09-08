@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
+  getDataPaths: () => ipcRenderer.invoke('get-data-paths'),
   readHexData: (driveIndex: number, offset: number, size: number) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size),
 
   getFileCount: (scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-file-count', scanId, filter),
