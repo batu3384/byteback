@@ -44,6 +44,15 @@ interface BytebackEngine {
   getFilesPage(scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter): FileRecord[]
   searchFiles(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string): FileRecord[]
   searchFileContent(scanId: number, query: string, offset: number, limit: number): FileRecord[]
+  /** FAZ 1.3c: single-pass streaming CSV export; resolves { ok, rows } or rejects with the native error. */
+  exportCsv(
+    scanId: number,
+    destPath: string,
+    filter: import('../shared/ipc-contract').FileListFilter | undefined,
+    header: string[],
+    noFsDateLabel: string,
+    noDateLabel: string,
+  ): Promise<{ ok: boolean; rows: number }>
   startContentSearch(scanId: number, query: string, callback: (data: any) => void): boolean
   stopContentSearch(): void
   getScanSummary(scanId: number): ScanSummary

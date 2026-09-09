@@ -179,3 +179,10 @@ Napi::Value GetNsrlStats(const Napi::CallbackInfo& info);
 Napi::Value SetSignaturesDir(const Napi::CallbackInfo& info);
 Napi::Value SetSignatureOverlay(const Napi::CallbackInfo& info);
 Napi::Value ScanLostPartitions(const Napi::CallbackInfo& info);
+// FAZ 1.3c: streaming CSV export (AsyncWorker; defined in bridge_ops.cpp).
+Napi::Value ExportCsv(const Napi::CallbackInfo& info);
+
+// Renderer filter-object parser; defined (canonical field list) in
+// bridge_scan.cpp and reused by bridge_ops.cpp ExportCsv so both paths can
+// never drift apart.
+byteback::FileListFilter FilterFromJs(const Napi::Value& v);

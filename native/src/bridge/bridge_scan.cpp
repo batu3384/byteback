@@ -21,6 +21,11 @@ Napi::Array RunsToJs(Napi::Env env, const std::vector<byteback::FileRecord::Data
     return arr;
 }
 
+} // namespace
+
+// Shared with bridge_ops.cpp (ExportCsv) — declared in bridge_common.h. Kept
+// file-scope (not static) so both translation units parse the renderer filter
+// identically; the canonical field list lives here and cannot drift.
 byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     byteback::FileListFilter f;
     if (!v.IsObject()) return f;
@@ -78,6 +83,7 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     return f;
 }
 
+namespace {
 Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     Napi::Object fileObj = Napi::Object::New(env);
     fileObj.Set("id", Napi::Number::New(env, static_cast<double>(fr.id)));

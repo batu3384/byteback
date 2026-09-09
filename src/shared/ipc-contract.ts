@@ -242,3 +242,20 @@ export interface SearchFilesResult {
   rows: FileRecord[]
   error?: string
 }
+
+/** FAZ 1.3c: renderer-localized CSV placeholders (native never hardcodes strings). */
+export interface CsvExportLabels {
+  /** Label used for carve records whose filesystem date is unknown. */
+  noFsDate: string
+  /** Placeholder for records with no date at all ('—'). */
+  noDate: string
+}
+
+/** export-csv IPC response. */
+export interface CsvExportResult {
+  success: boolean
+  canceled?: boolean
+  path?: string
+  rows?: number
+  error?: string
+}

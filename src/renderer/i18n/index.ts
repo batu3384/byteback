@@ -352,6 +352,8 @@ const STRINGS: Record<string, Entry> = {
   'results.confirmProceed': { tr: 'Yine de devam et', en: 'Continue anyway' },
   'results.confirmCancel': { tr: 'İptal', en: 'Cancel' },
   'results.csvFileName': { tr: 'byteback-sonuclar-{n}-kayit-{date}.csv', en: 'byteback-results-{n}-records-{date}.csv' },
+  // FAZ 1.3c: native export completion surface (row count + dialog path).
+  'results.csvDone': { tr: '{n} kayıt CSV olarak yazıldı:\n{path}', en: '{n} records written to CSV:\n{path}' },
 
   // CSV header row (results export)
   'csv.name': { tr: 'Ad', en: 'Name' },

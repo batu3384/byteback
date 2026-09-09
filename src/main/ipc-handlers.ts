@@ -1,12 +1,13 @@
 import { existsSync } from 'fs'
 import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
-import { basename, join } from 'path'
+import { basename, extname, join } from 'path'
 import { getEngine } from './native-bridge'
 import { hexDataOrNull } from '../shared/hex-read'
 import { diskBusyMessage } from '../shared/scan-required'
 import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
 import { validateRecoverDestDir } from './recover-dest-validator'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
+import { findThumbPath, mimeForExt, storeThumb, thumbUrlFor, THUMB_DIR_NAME } from './thumb-cache'
 import { callNative } from './ipc-native'
 import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from './session-log'
 
@@ -33,6 +34,16 @@ export function clampInt(v: unknown, min: number, max: number, fallback: number)
   const n = typeof v === 'number' ? v : Number(v)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.floor(n)))
+}
+
+/** FAZ 1.3c: keep the renderer's suggested CSV file NAME only — never a path.
+ *  Strips separators/control chars; falls back to a dated default. */
+export function sanitizeCsvFileName(suggested: unknown): string {
+  const fallback = `byteback-sonuclar-${new Date().toISOString().slice(0, 10)}.csv`
+  if (typeof suggested !== 'string') return fallback
+  const cleaned = suggested.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim()
+  if (!cleaned || !cleaned.toLowerCase().endsWith('.csv')) return fallback
+  return cleaned.slice(0, 180)
 }
 
 /** Shape the native progress event for the renderer: stamp the bound scanId and
@@ -315,6 +326,49 @@ export function registerIpcHandlers(): void {
       getEngine().getAuditLog(maxLines === undefined ? undefined : clampInt(maxLines, 1, 5000, 500))
     )
   )
+
+  // FAZ 1.3c: streaming CSV export. Dest safety mirrors the imaging allowlist
+  // pattern — the ONLY path native ever receives comes from this save dialog;
+  // the renderer sends filter/labels/none of a path.
+  ipcMain.handle('export-csv', async (
+    _event,
+    scanId: number,
+    filter?: import('../shared/ipc-contract').FileListFilter,
+    header?: string[],
+    labels?: import('../shared/ipc-contract').CsvExportLabels,
+    suggestedName?: string,
+  ) => {
+    try {
+      assertDbReady()
+      const sid = clampInt(scanId, 1, Number.MAX_SAFE_INTEGER, 0)
+      if (sid <= 0) {
+        return { success: false, error: 'Geçersiz tarama kimliği' }
+      }
+      if (!Array.isArray(header) || header.length !== 10 || header.some((h) => typeof h !== 'string' || h.length > 128)) {
+        return { success: false, error: 'Geçersiz CSV başlığı' }
+      }
+      const noFsDate = typeof labels?.noFsDate === 'string' && labels.noFsDate.length <= 128 ? labels.noFsDate : 'no FS date'
+      const noDate = typeof labels?.noDate === 'string' && labels.noDate.length <= 128 ? labels.noDate : '—'
+
+      const focused = BrowserWindow.getFocusedWindow()
+      const opts: Electron.SaveDialogOptions = {
+        title: 'CSV Dışa Aktar',
+        defaultPath: sanitizeCsvFileName(suggestedName),
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+      }
+      const target = focused
+        ? await dialog.showSaveDialog(focused, opts)
+        : await dialog.showSaveDialog(opts)
+      if (target.canceled || !target.filePath) return { success: false, canceled: true }
+
+      const res = await getEngine().exportCsv(sid, target.filePath, filter, header, noFsDate, noDate)
+      appendSessionLog('CSV_EXPORT', `scanId=${sid} rows=${res?.rows ?? 0}`)
+      return { success: true, path: target.filePath, rows: res?.rows ?? 0 }
+    } catch (err) {
+      console.error('[IPC] export-csv error:', err)
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   ipcMain.handle('verify-audit-log', () =>
     callNative('verify-audit-log', () => getEngine().verifyAuditLog())
@@ -960,6 +1014,38 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] pick-and-load-nsrl error:', err)
       return { ok: false, count: 0, path: '' }
+    }
+  })
+
+  // FAZ 1.3b: gallery thumbnail disk cache (L2) under userData/thumbs, served
+  // to the renderer through the thumb:// protocol (see main.ts). The URL is
+  // constructed here so the renderer never learns absolute cache paths.
+  const thumbsDir = join(app.getPath('userData'), THUMB_DIR_NAME)
+
+  ipcMain.handle('get-thumb-url', (_event, fileId: number, scanId: number) => {
+    const fid = clampInt(fileId, 1, Number.MAX_SAFE_INTEGER, 0)
+    const sid = clampInt(scanId, 1, Number.MAX_SAFE_INTEGER, 0)
+    if (fid <= 0 || sid <= 0) return null
+    const path = findThumbPath(thumbsDir, fid, sid)
+    if (!path) return null
+    return thumbUrlFor(fid, sid, mimeForExt(extname(path).slice(1).toLowerCase()) ?? '')
+  })
+
+  ipcMain.handle('put-thumb', (_event, fileId: number, scanId: number, mime: string, base64: string) => {
+    try {
+      const fid = clampInt(fileId, 1, Number.MAX_SAFE_INTEGER, 0)
+      const sid = clampInt(scanId, 1, Number.MAX_SAFE_INTEGER, 0)
+      if (fid <= 0 || sid <= 0 || typeof mime !== 'string' || typeof base64 !== 'string') return null
+      // 512KB decoded cap: gallery previews are ≤64KB payloads; the cap only
+      // guards a hostile/buggy renderer from ballooning the cache via IPC.
+      if (base64.length > 700_000) return null
+      const data = Buffer.from(base64, 'base64')
+      if (data.length === 0 || data.length > 512 * 1024) return null
+      storeThumb(thumbsDir, fid, sid, mime, data)
+      return thumbUrlFor(fid, sid, mime)
+    } catch (err) {
+      console.error('[IPC] put-thumb error:', err)
+      return null
     }
   })
 }
