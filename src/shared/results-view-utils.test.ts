@@ -11,6 +11,7 @@ import {
   toSqlListFilter,
   sortKey,
   confidenceTier,
+  cursorValueFor,
 } from '../renderer/components/ResultsView/results-view-utils'
 import type { FileRecord } from './ipc-contract'
 
@@ -147,6 +148,48 @@ describe('results-view-utils', () => {
       sourceNotLike: 'carver%',
       includeDuplicates: true,
       includeDiscovery: false,
+    })
+  })
+
+  // FAZ 1.2: keyset cursor rides inside the filter; absent extra keeps it
+  // undefined so the wire payload stays byte-compatible with pre-cursor.
+  it('toSqlListFilter carries the keyset cursor (FAZ 1.2)', () => {
+    const f = toSqlListFilter('all', 'all', '', true, 'name_asc', { cursor: { v: 'b.txt', id: 12 } })
+    expect(f.cursor).toEqual({ v: 'b.txt', id: 12 })
+    expect(toSqlListFilter('all', 'all', '', true).cursor).toBeUndefined()
+  })
+
+  // FAZ 1.2: cursorValueFor must mirror the native sortKeySql expression per
+  // field — including the date CASE (modified_at > created_at ? m : c) in
+  // unix SECONDS, tie → createdAt.
+  describe('cursorValueFor (FAZ 1.2 keyset)', () => {
+    const rec = {
+      id: 7,
+      name: 'A.wav',
+      path: '/Docs/A.wav',
+      sizeBytes: 4096,
+      confidence: 85,
+      createdAt: 100,
+      modifiedAt: 90,
+    } as FileRecord
+
+    it('mirrors the native sort expressions', () => {
+      expect(cursorValueFor('confidence', rec)).toBe(85)
+      expect(cursorValueFor('size', rec)).toBe(4096)
+      expect(cursorValueFor('name', rec)).toBe('A.wav')
+      expect(cursorValueFor('path', rec)).toBe('/Docs/A.wav')
+      expect(cursorValueFor('date', rec)).toBe(100)
+      expect(cursorValueFor('date', { ...rec, modifiedAt: 120 })).toBe(120)
+      expect(cursorValueFor('date', { ...rec, modifiedAt: 100 })).toBe(100)
+    })
+
+    it('tolerates missing fields and the non-keyset id field', () => {
+      expect(cursorValueFor('confidence', {} as FileRecord)).toBe(0)
+      expect(cursorValueFor('size', {} as FileRecord)).toBe(0)
+      expect(cursorValueFor('name', {} as FileRecord)).toBe('')
+      expect(cursorValueFor('path', {} as FileRecord)).toBe('')
+      expect(cursorValueFor('date', {} as FileRecord)).toBe(0)
+      expect(cursorValueFor('id', rec)).toBe(0)
     })
   })
 })

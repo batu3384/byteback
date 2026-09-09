@@ -126,6 +126,10 @@ export interface FileListFilter {
   sizeMax?: number
   dateFrom?: number
   dateTo?: number
+  /** FAZ 1.2 keyset cursor: sort-key value + id tiebreaker of the previous
+   *  page's last row. Native ignores offset while a usable cursor applies;
+   *  absent/null keeps OFFSET paging (first page, page jumps, CSV walk). */
+  cursor?: { v: string | number; id: number } | null
 }
 
 export type ProgressCallback = (data: {

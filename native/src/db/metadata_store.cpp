@@ -90,20 +90,32 @@ void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
 }
 
 // CA-030: whitelisted sort keys — raw input never reaches the SQL string.
+// FAZ 1.2: sortKeySql is the SINGLE source for the key expression; ORDER BY
+// (orderByToSql) and the keyset cursor predicate in getFiles both consume it,
+// so the two can never drift apart. Empty return = unknown key / id default:
+// not keyset-capable.
+std::string sortKeySql(const std::string& key) {
+    if (key == "confidence_desc" || key == "confidence_asc") return "confidence";
+    if (key == "size_desc" || key == "size_asc") return "size_bytes";
+    // CA-030: full path / name ordering (NOCASE so case differences do not
+    // split directory siblings).
+    if (key == "name_asc" || key == "name_desc") return "name COLLATE NOCASE";
+    if (key == "path_asc" || key == "path_desc") return "path COLLATE NOCASE";
+    if (key == "date_desc" || key == "date_asc")
+        return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END";
+    return "";
+}
+
+// Direction suffix of a whitelisted key ("*_desc"); sortKeySql already
+// rejected everything else, so the suffix check cannot see raw input.
+bool sortKeyDesc(const std::string& key) {
+    return key.size() >= 5 && key.compare(key.size() - 5, 5, "_desc") == 0;
+}
+
 std::string orderByToSql(const std::string& key) {
-    if (key == "confidence_desc") return "confidence DESC, id";
-    if (key == "confidence_asc") return "confidence ASC, id";
-    if (key == "size_desc") return "size_bytes DESC, id";
-    if (key == "size_asc") return "size_bytes ASC, id";
-    if (key == "name_asc") return "name COLLATE NOCASE ASC, id";
-    if (key == "name_desc") return "name COLLATE NOCASE DESC, id";
-    // CA-030: full path ordering (NOCASE so case differences do not split
-    // directory siblings).
-    if (key == "path_asc") return "path COLLATE NOCASE ASC, id";
-    if (key == "path_desc") return "path COLLATE NOCASE DESC, id";
-    if (key == "date_desc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END DESC, id";
-    if (key == "date_asc") return "CASE WHEN modified_at > created_at THEN modified_at ELSE created_at END ASC, id";
-    return "id";
+    std::string expr = sortKeySql(key);
+    if (expr.empty()) return "id";
+    return expr + (sortKeyDesc(key) ? " DESC, id" : " ASC, id");
 }
 
 std::string safe_column_text(sqlite3_stmt* stmt, int col) {
@@ -633,9 +645,25 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         FROM files WHERE scan_id = ?
     )";
     appendListFilter(sql, filter, "");
+    // FAZ 1.2 keyset pagination: a usable cursor on a keyset-capable key
+    // replaces OFFSET with a seek predicate. The id tiebreaker sorts ASC in
+    // every direction, so the row-value comparison must expand per direction:
+    //   asc:  key > v OR (key = v AND id > cursorId)
+    //   desc: key < v OR (key = v AND id > cursorId)
+    // (a single "(key, id) > (v, ?)" row-value term cannot express the DESC
+    // next-page because the two columns order oppositely).
+    std::string keyExpr = sortKeySql(filter.orderBy);
+    const bool keyset = filter.hasCursor && filter.cursorId > 0 && !keyExpr.empty();
+    if (keyset) {
+        sql += " AND (";
+        sql += keyExpr;
+        sql += sortKeyDesc(filter.orderBy) ? " < ? OR (" : " > ? OR (";
+        sql += keyExpr;
+        sql += " = ? AND id > ?))";
+    }
     sql += " ORDER BY ";
     sql += orderByToSql(filter.orderBy);
-    sql += " LIMIT ? OFFSET ?";
+    sql += keyset ? " LIMIT ?" : " LIMIT ? OFFSET ?";
 
     std::vector<FileRecord> records;
     sqlite3_stmt* stmt = nullptr;
@@ -646,8 +674,20 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
     int bind = 1;
     sqlite3_bind_int64(stmt, bind++, scanId);
     bindListFilter(stmt, bind, filter);
+    if (keyset) {
+        // Bind order matches the predicate: (v, v, id). Text keys compare
+        // under the same COLLATE NOCASE as the ORDER BY expression.
+        if (filter.orderBy.rfind("name", 0) == 0 || filter.orderBy.rfind("path", 0) == 0) {
+            sqlite3_bind_text(stmt, bind++, filter.cursorText.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, bind++, filter.cursorText.c_str(), -1, SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_int64(stmt, bind++, filter.cursorV);
+            sqlite3_bind_int64(stmt, bind++, filter.cursorV);
+        }
+        sqlite3_bind_int64(stmt, bind++, filter.cursorId);
+    }
     sqlite3_bind_int(stmt, bind++, limit);
-    sqlite3_bind_int(stmt, bind++, offset);
+    if (!keyset) sqlite3_bind_int(stmt, bind++, offset);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         FileRecord r;

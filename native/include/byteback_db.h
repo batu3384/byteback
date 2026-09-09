@@ -107,6 +107,16 @@ struct FileListFilter {
     uint64_t sizeMax = 0;     // bytes; 0 = off
     int64_t dateFrom = 0;     // unix seconds; 0 = off (modified_at, created_at fallback)
     int64_t dateTo = 0;       // unix seconds; 0 = off
+    // FAZ 1.2 keyset pagination: sort-key value + id tiebreaker of the last
+    // row of the previous page. cursorV carries the numeric keys
+    // (confidence/size/date), cursorText the text keys (name/path). When
+    // hasCursor holds AND orderBy is keyset-capable, getFiles replaces the
+    // OFFSET term with the key predicate; any other combination silently
+    // keeps offset paging (old renderer, id default, page jumps).
+    bool hasCursor = false;
+    int64_t cursorV = 0;
+    std::string cursorText;
+    int64_t cursorId = 0;
 };
 
 class MetadataStore {

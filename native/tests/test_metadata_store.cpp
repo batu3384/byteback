@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <algorithm>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -677,4 +678,156 @@ TEST_F(MetadataStoreTest, SnippetIsTransientNeverPersisted) {
     EXPECT_TRUE(byId.snippet.empty());
     EXPECT_EQ(byId.snippetMatchStart, -1);
     EXPECT_EQ(byId.snippetMatchEnd, -1);
+}
+
+// FAZ 1.2 keyset pagination: a cursor-driven page must be byte-identical to
+// the same OFFSET page for every whitelist sort key in both directions —
+// including 100-rows-per-value duplicate boundaries where the id tiebreaker
+// decides the page edge (no skips, no duplicates).
+TEST_F(MetadataStoreTest, KeysetCursorPagesMatchOffsetPages) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+
+    constexpr int kRows = 10000;
+    constexpr int kPage = 500;
+    {
+        std::vector<FileRecord> batch;
+        batch.reserve(1000);
+        for (int i = 0; i < kRows; ++i) {
+            FileRecord r;
+            // Case-flipped prefixes interleave under COLLATE NOCASE.
+            r.name = (i % 2 ? "File_" : "file_") + std::to_string(100000 + i) + ".bin";
+            r.path = (i % 2 ? "/Docs" : "/docs") + std::to_string(i % 50) + "/f" + std::to_string(i) + ".bin";
+            r.sizeBytes = static_cast<uint64_t>((i % 37) * 1024);
+            r.confidence = i % 100;                    // 100 rows share each value
+            r.createdAt = 1600000000 + (i % 500);
+            r.modifiedAt = r.createdAt + (i % 3) - 1;  // CASE flips both ways
+            r.status = 0;
+            batch.push_back(r);
+            if (static_cast<int>(batch.size()) == 1000) {
+                ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+                batch.clear();
+            }
+        }
+        ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+    }
+    ASSERT_EQ(store_.getFileCount(scanId), kRows);
+
+    // Renderer-side cursorValueFor parity: the native date CASE.
+    auto dateKey = [](const FileRecord& r) {
+        return r.modifiedAt > r.createdAt ? r.modifiedAt : r.createdAt;
+    };
+
+    const char* keys[] = {"confidence_asc", "confidence_desc", "size_asc", "size_desc",
+                          "name_asc", "name_desc", "path_asc", "path_desc",
+                          "date_asc", "date_desc"};
+    for (const char* key : keys) {
+        const std::string k(key);
+        const bool textKey = k.rfind("name", 0) == 0 || k.rfind("path", 0) == 0;
+        FileListFilter f;
+        f.orderBy = k;
+        int64_t lastV = 0;
+        std::string lastText;
+        int64_t lastId = 0;
+        for (int off = 0; off < kRows; off += kPage) {
+            auto ref = store_.getFiles(scanId, off, kPage, f);
+            ASSERT_EQ(ref.size(), static_cast<size_t>(kPage)) << k << " offset " << off;
+            FileListFilter cf = f;
+            if (off > 0) {
+                cf.hasCursor = true;
+                cf.cursorId = lastId;
+                cf.cursorV = lastV;
+                cf.cursorText = lastText;
+            }
+            // Offset still travels but must be IGNORED while the cursor applies.
+            auto page = store_.getFiles(scanId, off, kPage, cf);
+            ASSERT_EQ(page.size(), ref.size()) << k << " cursor page " << off / kPage;
+            for (size_t j = 0; j < ref.size(); ++j) {
+                ASSERT_EQ(page[j].id, ref[j].id)
+                    << k << " page " << off / kPage << " row " << j;
+            }
+            const FileRecord& last = ref.back();
+            lastId = last.id;
+            if (textKey) {
+                lastText = k.rfind("name", 0) == 0 ? last.name : last.path;
+                lastV = 0;
+            } else if (k.rfind("date", 0) == 0) {
+                lastV = dateKey(last);
+            } else if (k.rfind("confidence", 0) == 0) {
+                lastV = last.confidence;
+            } else {
+                lastV = static_cast<int64_t>(last.sizeBytes);
+            }
+        }
+    }
+}
+
+// Keyset boundary with a single shared sort value: every row has the same
+// confidence, so every page edge is decided by the id tiebreaker alone.
+TEST_F(MetadataStoreTest, KeysetCursorTiebreakerSameValue) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+
+    std::vector<FileRecord> batch(10);
+    for (int i = 0; i < 10; ++i) {
+        batch[static_cast<size_t>(i)].name = "same_" + std::to_string(i) + ".bin";
+        batch[static_cast<size_t>(i)].confidence = 50;
+        batch[static_cast<size_t>(i)].status = 0;
+    }
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    FileListFilter f;
+    f.orderBy = "confidence_desc";
+    std::vector<int64_t> seen;
+    int64_t lastId = 0;
+    bool haveCursor = false;
+    for (int guard = 0; guard < 10; ++guard) {
+        FileListFilter cf = f;
+        cf.hasCursor = haveCursor;
+        cf.cursorId = lastId;
+        cf.cursorV = 50;
+        auto page = store_.getFiles(scanId, 0, 3, cf);
+        if (page.empty()) break;
+        // Full pages except the last one (10 rows / 3 per page → 3,3,3,1).
+        ASSERT_EQ(page.size(), std::min<size_t>(3, 10 - seen.size()));
+        for (const auto& r : page) seen.push_back(r.id);
+        lastId = page.back().id;
+        haveCursor = true;
+    }
+    ASSERT_EQ(seen.size(), 10u);
+    for (size_t i = 1; i < seen.size(); ++i) {
+        EXPECT_LT(seen[i - 1], seen[i]) << "duplicate or skipped id at " << i;
+    }
+}
+
+// Unknown / default sort keys are not keyset-capable: the cursor must be
+// ignored and the OFFSET path used verbatim.
+TEST_F(MetadataStoreTest, KeysetCursorUnknownKeyFallsBackToOffset) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_GT(scanId, 0);
+
+    std::vector<FileRecord> batch(7);
+    for (int i = 0; i < 7; ++i) {
+        batch[static_cast<size_t>(i)].name = "f" + std::to_string(i) + ".bin";
+        batch[static_cast<size_t>(i)].confidence = i;
+        batch[static_cast<size_t>(i)].status = 0;
+    }
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    const char* keys[] = {"", "id", "bogus_desc", "confidence; DROP TABLE files"};
+    for (const char* key : keys) {
+        FileListFilter cf;
+        cf.orderBy = key;
+        cf.hasCursor = true;
+        cf.cursorId = 3;
+        cf.cursorV = 999999;
+        auto page = store_.getFiles(scanId, 2, 2, cf);
+        FileListFilter ref;
+        ref.orderBy = key;
+        auto expected = store_.getFiles(scanId, 2, 2, ref);
+        ASSERT_EQ(page.size(), expected.size()) << "key=" << key;
+        for (size_t j = 0; j < expected.size(); ++j) {
+            EXPECT_EQ(page[j].id, expected[j].id) << "key=" << key;
+        }
+    }
 }

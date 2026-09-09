@@ -61,6 +61,20 @@ byteback::FileListFilter FilterFromJs(const Napi::Value& v) {
     if (o.Has("dateTo") && o.Get("dateTo").IsNumber()) {
         f.dateTo = o.Get("dateTo").As<Napi::Number>().Int64Value();
     }
+    // FAZ 1.2 keyset cursor: rides inside the filter object. Absent/null/old
+    // fields leave the defaults in place — offset paging (old renderers safe).
+    if (o.Has("cursor") && o.Get("cursor").IsObject()) {
+        Napi::Object c = o.Get("cursor").As<Napi::Object>();
+        if (c.Has("id") && c.Get("id").IsNumber()) {
+            f.cursorId = c.Get("id").As<Napi::Number>().Int64Value();
+            f.hasCursor = f.cursorId > 0;
+        }
+        if (c.Has("v")) {
+            Napi::Value v = c.Get("v");
+            if (v.IsNumber()) f.cursorV = v.As<Napi::Number>().Int64Value();
+            else if (v.IsString()) f.cursorText = v.As<Napi::String>().Utf8Value();
+        }
+    }
     return f;
 }
 

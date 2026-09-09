@@ -21,10 +21,12 @@ import {
   toSqlListFilter,
   confidenceTier,
   sortKey,
+  cursorValueFor,
   type MappedFile,
   type TreeNode,
   type SortField,
   type SortDir,
+  type PageCursor,
 } from './results-view-utils'
 
 const INACTIVE_RAID: RaidState = { active: false, capacity: 0, numDisks: 0, level: -1, memberDriveIndices: [] }
@@ -145,6 +147,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [csvExporting, setCsvExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const loadGenRef = useRef(0)
+  // FAZ 1.2 keyset pagination: last row (native sort-key value + id) of each
+  // loaded page; fetching page N attaches page N-1's cursor to the filter.
+  // Page jumps without the predecessor entry fall back to OFFSET (null).
+  const pageCursorRef = useRef<Map<number, PageCursor>>(new Map())
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
 
@@ -212,7 +218,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setLoading(true)
     const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir),
       { sizeMin: sizeMin > 0 ? sizeMin : undefined, sizeMax: sizeMax > 0 ? sizeMax : undefined,
-        dateFrom: dateFrom > 0 ? dateFrom : undefined, dateTo: dateTo > 0 ? dateTo : undefined })
+        dateFrom: dateFrom > 0 ? dateFrom : undefined, dateTo: dateTo > 0 ? dateTo : undefined,
+        // Keyset cursor from the previous sequential page; first page and
+        // page jumps send null — native then keeps the OFFSET path. Offset
+        // itself still travels for old-native compatibility (FAZ 1.2).
+        cursor: pageIndex > 0 ? pageCursorRef.current.get(pageIndex - 1) ?? null : null })
     try {
       const [count, pageData, sum] = await Promise.all([
         window.api.getFileCount(scan, listFilter),
@@ -223,6 +233,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       setTotalCount(typeof count === 'number' && count >= 0 ? count : 0)
       setDbFiles(pageData ?? [])
       setListError(false)
+      // Remember this page's last row so the next sequential fetch rides the
+      // keyset cursor (gen guard above keeps stale fetches from writing it).
+      if (pageData && pageData.length > 0) {
+        const last = pageData[pageData.length - 1]!
+        pageCursorRef.current.set(pageIndex, { v: cursorValueFor(sortField, last), id: last.id })
+      }
       if (sum) {
         setSummary({
           totalFiles: sum.totalFiles ?? 0,
@@ -255,6 +271,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   useEffect(() => {
     setPage(0)
     setSelectedFiles(new Set())
+    // Cursors belong to a (sort, filter) combination — a change invalidates all.
+    pageCursorRef.current.clear()
   }, [statusFilter, typeFilter, nameQuery, showDuplicates, sizeMin, sizeMax, dateFrom, dateTo])
 
   useEffect(() => {
@@ -600,6 +618,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       setSortDir(field === 'name' || field === 'path' ? 'asc' : 'desc')
     }
     setPage(0)
+    pageCursorRef.current.clear()
   }
 
   const sortIndicator = (field: SortField): React.ReactNode =>
@@ -652,6 +671,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setThumbs(new Map())
     setRecordById(new Map())
     thumbLoadingRef.current.clear()
+    pageCursorRef.current.clear()
   }, [effectiveScanId])
 
   // Gallery thumbnail card: lazy-loads its 64KB preview when scrolled into view.
