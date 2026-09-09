@@ -117,6 +117,29 @@ export function sortKey(field: SortField, dir: SortDir): string {
   return `${field}_${dir}`
 }
 
+/** FAZ 1.2 keyset cursor payload: the native ORDER BY key value of the last
+ *  row of the previous page plus its id tiebreaker. */
+export type PageCursor = { v: string | number; id: number }
+
+/** Sort-key value the native keyset predicate compares for `record` — must
+ *  mirror sortKeySql exactly: confidence→confidence, size→size_bytes,
+ *  name/path verbatim, date→the native CASE (modified_at > created_at ?
+ *  modified_at : created_at) in unix SECONDS (the unit the columns store). */
+export function cursorValueFor(sortField: SortField, record: FileRecord): string | number {
+  switch (sortField) {
+    case 'confidence': return record.confidence ?? 0
+    case 'size': return record.sizeBytes ?? 0
+    case 'name': return record.name ?? ''
+    case 'path': return record.path ?? ''
+    case 'date': {
+      const c = record.createdAt ?? 0
+      const m = record.modifiedAt ?? 0
+      return m > c ? m : c
+    }
+    default: return 0 // 'id' order is not keyset-capable; native ignores the cursor
+  }
+}
+
 /** Confidence chip tier for triage coloring. */
 export function confidenceTier(c?: number): 'high' | 'mid' | 'low' | 'none' {
   if (typeof c !== 'number' || c <= 0) return 'none'
@@ -131,7 +154,7 @@ export function toSqlListFilter(
   query: string,
   showDuplicates: boolean,
   orderBy?: string,
-  extra?: { sizeMin?: number; sizeMax?: number; dateFrom?: number; dateTo?: number },
+  extra?: { sizeMin?: number; sizeMax?: number; dateFrom?: number; dateTo?: number; cursor?: PageCursor | null },
 ): {
   status: number
   category: string
@@ -145,6 +168,7 @@ export function toSqlListFilter(
   sizeMax?: number
   dateFrom?: number
   dateTo?: number
+  cursor?: PageCursor | null
 } {
   const base = {
     category: chipToCategory(typeChip),
@@ -158,6 +182,7 @@ export function toSqlListFilter(
     sizeMax: extra?.sizeMax,
     dateFrom: extra?.dateFrom,
     dateTo: extra?.dateTo,
+    cursor: extra?.cursor,
   }
   if (statusChip === 'carved') return { ...base, status: -1, sourceLike: 'carver%' }
   // Metadata deleted only — carve lives under "Oyulmuş" (DiskDrill/Recuva style split).
