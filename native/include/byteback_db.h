@@ -134,6 +134,16 @@ public:
     std::vector<FileRecord> getFiles(int64_t scanId, int offset, int limit,
                                      const FileListFilter& filter = {});
     int64_t getFileCount(int64_t scanId, const FileListFilter& filter = {});
+    // FAZ 1.3c: single-pass streaming CSV export (RFC4180 quoting, ';' delimiter,
+    // UTF-8 BOM — byte-identical column semantics with the renderer's old
+    // offset-walk export). `header` must carry exactly 10 localized column
+    // labels (i18n lives in the renderer; native never hardcodes strings).
+    // The destination path is dialog-arbitrated in the main process; native
+    // treats it as trusted. rowsOut (optional) receives the data-row count.
+    bool exportCsv(int64_t scanId, const std::string& destPath, const FileListFilter& filter,
+                   const std::vector<std::string>& header,
+                   const std::string& noFsDateLabel, const std::string& noDateLabel,
+                   int64_t* rowsOut = nullptr, std::string* errOut = nullptr);
 
     // Scan state
     int64_t createScan(int driveIndex, const std::string& scanType, uint64_t totalSectors);

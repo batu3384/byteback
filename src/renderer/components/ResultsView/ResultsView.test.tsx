@@ -91,3 +91,69 @@ describe('ResultsView keyset pager (FAZ 1.2)', () => {
     expect(filter.cursor).toEqual({ v: 90, id: 101 })
   })
 })
+
+// FAZ 1.3c: the CSV button must delegate to the native single-pass exportCsv
+// IPC (dialog-arbitrated path, no renderer file writes) and must NOT keep the
+// old 100-round getFilesPage offset walk.
+describe('ResultsView CSV export (FAZ 1.3c)', () => {
+  const CSV_HEADER_TR = ['Ad', 'Boyut (bayt)', 'Kategori', 'Güven', 'Durum', 'Yol', 'Kaynak', 'Başlangıç Sektörü', 'Oluşturma', 'Değiştirme']
+
+  function mockApiWith(exportCsv: ReturnType<typeof vi.fn>) {
+    const getFilesPage = vi.fn(async () => PAGE_A)
+    ;(window as unknown as { api: unknown }).api = {
+      getFilesPage,
+      getFileCount: vi.fn(async () => 2),
+      searchFiles: vi.fn(async () => ({ rows: [] })),
+      exportCsv,
+    }
+    return getFilesPage
+  }
+
+  function exportButton(): HTMLButtonElement {
+    const btn = [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('Dışa Aktar (CSV)'))
+    expect(btn).toBeDefined()
+    return btn!
+  }
+
+  it('calls native exportCsv once and never walks getFilesPage offsets', async () => {
+    // Rest args keep the mock's call tuples indexable for the parity asserts.
+    const exportCsv = vi.fn(async (..._args: unknown[]) => ({ success: true, rows: 2, path: 'C:/tmp/out.csv' }))
+    const getFilesPage = mockApiWith(exportCsv)
+    render(<ResultsView filesFound={[]} driveIndex={null} scanId={5} />)
+    await waitFor(() => expect(document.querySelector('[data-testid="result-row"]')).not.toBeNull())
+    const callsBeforeExport = getFilesPage.mock.calls.length
+
+    fireEvent.click(exportButton())
+    await waitFor(() => expect(exportCsv).toHaveBeenCalledTimes(1))
+    expect(getFilesPage.mock.calls.length).toBe(callsBeforeExport)
+
+    const [scanId, filter, header, labels, suggestedName] = exportCsv.mock.calls[0]!
+    expect(scanId).toBe(5)
+    expect((filter as { orderBy?: string }).orderBy).toBe('confidence_desc')
+    // Column set/order parity with the native writer (native/tests csvHeader()).
+    expect(header).toEqual(CSV_HEADER_TR)
+    expect(labels).toEqual({ noFsDate: 'FS tarihi yok', noDate: '—' })
+    expect(String(suggestedName).endsWith('.csv')).toBe(true)
+
+    // Row count surfaces when done (role=status report panel).
+    await waitFor(() => {
+      const report = document.querySelector('[role="status"]')
+      expect(report?.textContent).toContain('2')
+    })
+  })
+
+  it('surfaces a native failure in the exportError alert instead of a report', async () => {
+    const exportCsv = vi.fn(async () => ({ success: false, error: 'SQLite error: no such table' }))
+    mockApiWith(exportCsv)
+    render(<ResultsView filesFound={[]} driveIndex={null} scanId={5} />)
+    await waitFor(() => expect(document.querySelector('[data-testid="result-row"]')).not.toBeNull())
+
+    fireEvent.click(exportButton())
+    await waitFor(() => expect(exportCsv).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      const alert = document.querySelector('[role="alert"]')
+      expect(alert?.textContent).toContain('CSV dışa aktarım başarısız')
+    })
+    expect(document.querySelector('[role="status"]')).toBeNull()
+  })
+})

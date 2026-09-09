@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, powerMonitor, session } from 'electron'
-import { join } from 'path'
+import { app, BrowserWindow, dialog, powerMonitor, protocol, session } from 'electron'
+import { existsSync, readFileSync } from 'fs'
+import { extname, join } from 'path'
 import { broadcastScanComplete, isImagingLive, registerIpcHandlers } from './ipc-handlers'
 import { getEngine } from './native-bridge'
 import { redactPaths } from './redact-paths'
+import { mimeForExt, resolveThumbUrlToPath, THUMB_DIR_NAME } from './thumb-cache'
 import {
   appendSessionLog,
   initSessionLog,
@@ -36,6 +38,35 @@ if (!gotSingleInstanceLock) {
 
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+
+// FAZ 1.3b: thumb:// serves gallery thumbnails from userData/thumbs. Must be
+// registered BEFORE app.whenReady (Electron requirement). Privileges kept
+// minimal: standard URLs (thumb://scan-<id>/<file>) so the strict host/
+// filename guard can parse them, no fetch API exposure, streaming for <img>.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'thumb', privileges: { standard: true, supportFetchAPI: false, stream: true } },
+])
+
+// FAZ 1.3b: thumb:// protocol handler. The URL guard (resolveThumbUrlToPath)
+// is strict: `scan-<id>` host matching the scanId embedded in the file name
+// (pure-digit hosts would be canonicalized to IPv4 by Chromium), and a
+// resolved path that stays strictly inside the thumbs dir — anything else is
+// rejected with 403 before any byte leaves the cache directory.
+function registerThumbProtocol(): void {
+  const thumbsDir = join(app.getPath('userData'), THUMB_DIR_NAME)
+  protocol.handle('thumb', (request) => {
+    const path = resolveThumbUrlToPath(thumbsDir, request.url)
+    if (!path) return new Response('Forbidden', { status: 403 })
+    if (!existsSync(path)) return new Response('Not Found', { status: 404 })
+    try {
+      const data = readFileSync(path)
+      const mime = mimeForExt(extname(path).slice(1)) ?? 'application/octet-stream'
+      return new Response(data, { status: 200, headers: { 'content-type': mime } })
+    } catch {
+      return new Response('Forbidden', { status: 403 })
+    }
+  })
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -129,6 +160,7 @@ app.whenReady().then(() => {
 
   initSessionLog(app.getPath('userData'))
   registerIpcHandlers()
+  registerThumbProtocol()
   createWindow()
 
   powerMonitor.on('suspend', () => {

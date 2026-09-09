@@ -123,6 +123,55 @@ std::string safe_column_text(sqlite3_stmt* stmt, int col) {
     return txt ? txt : "";
 }
 
+// ---- FAZ 1.3c CSV formatting (parity with the renderer's csvCell) ----
+
+// Mirrors shared/html-escape.ts csvCell: formula-injection guard first, then
+// RFC4180 quoting when the cell contains a quote, comma, newline or the ';'
+// delimiter. '\r' alone does NOT trigger quoting (same as the JS regex).
+std::string csvCellNative(const std::string& s) {
+    std::string out = s;
+    if (!out.empty() && (out[0] == '=' || out[0] == '+' || out[0] == '-' || out[0] == '@')) {
+        out.insert(out.begin(), '\'');
+    }
+    if (out.find_first_of("\",\n;") != std::string::npos) {
+        std::string quoted;
+        quoted += '"';
+        for (char c : out) {
+            if (c == '"') quoted += "\"\"";
+            else quoted += c;
+        }
+        quoted += '"';
+        return quoted;
+    }
+    return out;
+}
+
+// Mirrors new Date(unixSec * 1000).toISOString(): UTC, millisecond precision,
+// trailing 'Z'. Records store whole seconds, so the ms field is always .000.
+std::string iso8601Utc(int64_t unixSec) {
+    std::time_t t = static_cast<std::time_t>(unixSec);
+    std::tm tmv {};
+#ifdef _WIN32
+    gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    return buf;
+}
+
+// Mirrors the renderer row rule: `ts > 0 ? toISOString() : formatFsTimestamp(0, source)`
+// where the placeholder is the localized no-FS-date label for carve sources
+// and '—' otherwise. Labels are handed in by the caller (renderer i18n).
+std::string csvDateCell(int64_t ts, const std::string& source,
+                        const std::string& noFsDateLabel, const std::string& noDateLabel) {
+    if (ts > 0) return iso8601Utc(ts);
+    return source.rfind("carver", 0) == 0 ? noFsDateLabel : noDateLabel;
+}
+
 void bindFileRecord(sqlite3_stmt* stmt, int64_t scanId, const FileRecord& r) {
     sqlite3_bind_int64(stmt, 1, scanId);
     sqlite3_bind_int64(stmt, 2, r.parentId);
@@ -739,6 +788,169 @@ int64_t MetadataStore::getFileCount(int64_t scanId, const FileListFilter& filter
     }
     sqlite3_finalize(stmt);
     return count;
+}
+
+// FAZ 1.3c: single streaming pass — one prepared SELECT per pass, no
+// LIMIT/OFFSET (a 100-round offset walk used to re-sort the whole table per
+// batch in the renderer). Column semantics mirror the renderer's old export:
+// name;sizeBytes;category;confidence;status;path;source;startSector;
+// createdAt;modifiedAt with csvCell quoting, ';' delimiter, CRLF rows and a
+// UTF-8 BOM. Query filters ride the same FTS→LIKE dispatch as searchFiles
+// (ORDER BY id there, no keyset); plain filters reuse the getFiles ORDER BY.
+bool MetadataStore::exportCsv(int64_t scanId, const std::string& destPath, const FileListFilter& filter,
+                              const std::vector<std::string>& header,
+                              const std::string& noFsDateLabel, const std::string& noDateLabel,
+                              int64_t* rowsOut, std::string* errOut) {
+    if (rowsOut) *rowsOut = 0;
+    if (errOut) errOut->clear();
+    if (header.size() != 10) {
+        if (errOut) *errOut = "csv header must carry exactly 10 column labels";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_) {
+        if (errOut) *errOut = "database is not open";
+        return false;
+    }
+
+    std::FILE* out = std::fopen(destPath.c_str(), "wb");
+    if (!out) {
+        if (errOut) *errOut = "cannot open destination file for writing";
+        return false;
+    }
+    auto fail = [&](const std::string& msg) {
+        std::fclose(out);
+        std::remove(destPath.c_str());
+        if (errOut) *errOut = msg;
+        return false;
+    };
+
+    const std::string bomAndHeader = "\xEF\xBB\xBF" + header[0] + ";" + header[1] + ";" + header[2] + ";" +
+        header[3] + ";" + header[4] + ";" + header[5] + ";" + header[6] + ";" + header[7] + ";" +
+        header[8] + ";" + header[9] + "\r\n";
+    if (std::fwrite(bomAndHeader.data(), 1, bomAndHeader.size(), out) != bomAndHeader.size()) {
+        return fail("failed to write CSV header");
+    }
+
+    constexpr const char* kCsvCols =
+        "name, size_bytes, category, confidence, status, path, source, start_sector, created_at, modified_at";
+    // FTS pass joins files with files_fts: columns must carry the f. prefix or
+    // SQLite rejects them as ambiguous (same reason searchFiles prefixes).
+    constexpr const char* kCsvColsFts =
+        "f.name, f.size_bytes, f.category, f.confidence, f.status, f.path, f.source, f.start_sector, f.created_at, f.modified_at";
+    const bool hasQuery = !filter.query.empty();
+    std::vector<std::string> passes;
+    if (hasQuery) {
+        // Same FTS branch as searchFiles (ORDER BY id, whitelisted filter terms).
+        // MATCH rides the FTS5 hidden column (fts.files_fts) — an alias on the
+        // bare MATCH form (`fts MATCH ?`) prepares as "no such column: fts".
+        std::string fts = std::string("SELECT ") + kCsvColsFts +
+            " FROM files f INNER JOIN files_fts fts ON f.id = fts.rowid "
+            "WHERE f.scan_id = ? AND fts.scan_id = ? AND fts.files_fts MATCH ?";
+        appendListFilter(fts, filter, "f.");
+        fts += " ORDER BY f.id";
+        passes.push_back(std::move(fts));
+        // Fallback branch — only executed when the FTS pass yields zero rows
+        // (searchFiles parity: empty FTS result falls through to LIKE).
+        std::string like = std::string("SELECT ") + kCsvCols + " FROM files WHERE scan_id = ?";
+        appendListFilter(like, filter, "");
+        like += " AND (LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(path) LIKE LOWER(?) ESCAPE '\\') ORDER BY id";
+        passes.push_back(std::move(like));
+    } else {
+        std::string plain = std::string("SELECT ") + kCsvCols + " FROM files WHERE scan_id = ?";
+        appendListFilter(plain, filter, "");
+        plain += " ORDER BY " + orderByToSql(filter.orderBy);
+        passes.push_back(std::move(plain));
+    }
+
+    const std::string match = hasQuery ? buildFtsMatch(filter.query) : "";
+    std::string pattern;
+    if (hasQuery) {
+        pattern = "%";
+        for (char c : filter.query) {
+            if (c == '%' || c == '_' || c == '\\') pattern += '\\';
+            pattern += c;
+        }
+        pattern += '%';
+    }
+
+    int64_t totalRows = 0;
+    // Chunked locking: the DB lock is dropped around the 1000-row fwrite/fflush
+    // so a live scan can keep committing between chunks.
+    std::unique_lock<std::recursive_mutex> stepLock(mu_, std::defer_lock);
+    for (size_t p = 0; p < passes.size(); ++p) {
+        // FTS pass runs first; the LIKE fallback runs only after zero FTS rows.
+        if (p == 1 && totalRows > 0) break;
+        stepLock.lock();
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, passes[p].c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            const std::string msg = sqlite3_errmsg(db_);
+            stepLock.unlock();
+            std::fclose(out);
+            std::remove(destPath.c_str());
+            if (errOut) *errOut = "SQLite error: " + msg;
+            return false;
+        }
+        int bind = 1;
+        sqlite3_bind_int64(stmt, bind++, scanId);
+        if (hasQuery && p == 0) {
+            sqlite3_bind_int64(stmt, bind++, scanId);
+            sqlite3_bind_text(stmt, bind++, match.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        bindListFilter(stmt, bind, filter);
+        if (hasQuery && p == 1) {
+            sqlite3_bind_text(stmt, bind++, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, bind++, pattern.c_str(), -1, SQLITE_TRANSIENT);
+        }
+
+        std::string chunk;
+        int64_t rowsInPass = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const std::string source = safe_column_text(stmt, 6);
+            const std::string row =
+                csvCellNative(safe_column_text(stmt, 0)) + ";" +
+                csvCellNative(std::to_string(sqlite3_column_int64(stmt, 1))) + ";" +
+                csvCellNative(safe_column_text(stmt, 2)) + ";" +
+                csvCellNative(std::to_string(sqlite3_column_int(stmt, 3))) + ";" +
+                csvCellNative(std::to_string(sqlite3_column_int(stmt, 4))) + ";" +
+                csvCellNative(safe_column_text(stmt, 5)) + ";" +
+                csvCellNative(source) + ";" +
+                csvCellNative(std::to_string(sqlite3_column_int64(stmt, 7))) + ";" +
+                csvCellNative(csvDateCell(sqlite3_column_int64(stmt, 8), source, noFsDateLabel, noDateLabel)) + ";" +
+                csvCellNative(csvDateCell(sqlite3_column_int64(stmt, 9), source, noFsDateLabel, noDateLabel)) +
+                "\r\n";
+            chunk += row;
+            ++rowsInPass;
+            if (rowsInPass % 1000 == 0) {
+                // Flush outside the DB lock — a live scan keeps committing.
+                stepLock.unlock();
+                const bool wrote = std::fwrite(chunk.data(), 1, chunk.size(), out) == chunk.size() &&
+                                   std::fflush(out) == 0;
+                chunk.clear();
+                stepLock.lock();
+                if (!wrote) {
+                    sqlite3_finalize(stmt);
+                    stepLock.unlock();
+                    return fail("failed to write CSV chunk");
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+        stepLock.unlock();
+        if (!chunk.empty()) {
+            if (std::fwrite(chunk.data(), 1, chunk.size(), out) != chunk.size() || std::fflush(out) != 0) {
+                return fail("failed to write CSV chunk");
+            }
+        }
+        totalRows += rowsInPass;
+    }
+
+    if (std::fflush(out) != 0) {
+        return fail("failed to flush CSV output");
+    }
+    std::fclose(out);
+    if (rowsOut) *rowsOut = totalRows;
+    return true;
 }
 
 ScanState MetadataStore::getScanState(int64_t scanId) {

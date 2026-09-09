@@ -141,6 +141,20 @@ declare global {
         fileId: number,
       ) => Promise<FilePreviewResult>
 
+      /** FAZ 1.3c: dialog-arbitrated streaming CSV export; the renderer never
+       *  sends a path — main picks the destination via save dialog. */
+      exportCsv: (
+        scanId: number,
+        filter?: FileListFilter,
+        header?: string[],
+        labels?: import('./ipc-contract').CsvExportLabels,
+        suggestedName?: string,
+      ) => Promise<import('./ipc-contract').CsvExportResult>
+
+      /** FAZ 1.3b: gallery thumbnail disk cache (L2) behind thumb://. */
+      getThumbUrl: (fileId: number, scanId: number) => Promise<string | null>
+      putThumb: (fileId: number, scanId: number, mime: string, base64: string) => Promise<string | null>
+
       pickDirectory: () => Promise<string | null>
       pickSaveImage: (format: 'raw' | 'ewf') => Promise<string | null>
       getCaseInfo: () => Promise<CaseInfo>

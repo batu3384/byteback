@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <algorithm>
@@ -830,4 +831,204 @@ TEST_F(MetadataStoreTest, KeysetCursorUnknownKeyFallsBackToOffset) {
             EXPECT_EQ(page[j].id, expected[j].id) << "key=" << key;
         }
     }
+}
+
+// ---- FAZ 1.3c: streaming CSV export ----
+
+namespace {
+std::string readFileBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// Non-ASCII content MUST be written as hex-escape byte literals: MSVC without
+// /utf-8 runs a codepage conversion on non-ASCII source literals (u8 included)
+// and double-encodes them. Hex escapes are byte-exact on every toolchain, so
+// the assertions below prove real UTF-8 passthrough (renderer parity) instead
+// of compiler-codepage accidents. '—' = E2 80 94, 'şğüöçı' = the escapes below.
+const std::string kEmDash = "\xE2\x80\x94";
+const std::string kTurkish = "\xC5\x9F\xC4\x9F\xC3\xBC\xC3\xB6\xC3\xA7\xC4\xB1"; // şğüöçı
+
+// Renderer-parity header labels (csv.* keys, tr locale).
+std::vector<std::string> csvHeader() {
+    return {"Ad", "Boyut (bayt)", "Kategori", "G\xC3\xBCven", "Durum", "Yol", "Kaynak",
+            "Ba\xC5\x9Flang\xC4\xB1\xC3\xA7 Sekt\xC3\xB6r\xC3\xBC", "Olu\xC5\x9Fturma", "De\xC4\x9Fi\xC5\x9Ftirme"};
+}
+} // namespace
+
+TEST_F(MetadataStoreTest, ExportCsvHeaderQuotingAndDates) {
+    const int64_t scanId = store_.createScan(0, "deep", 100);
+    ASSERT_GT(scanId, 0);
+
+    auto mk = [&](const std::string& name, const std::string& source, int status,
+                  int64_t createdAt, int64_t modifiedAt) {
+        FileRecord r;
+        r.name = name;
+        r.path = "/docs/" + name;
+        r.sizeBytes = 123;
+        r.status = status;
+        r.confidence = 90;
+        r.category = "Document";
+        r.source = source;
+        r.startSector = 10;
+        r.createdAt = createdAt;
+        r.modifiedAt = modifiedAt;
+        return r;
+    };
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {
+        mk("duz.txt", "mft", 0, 1700000000, 1700000001),
+        mk("virgul,icinde.txt", "mft", 0, 0, 0),
+        mk("tirnak\"icinde.txt", "mft", 0, 0, 0),
+        mk("satir\nsonu.txt", "mft", 0, 0, 0),
+        mk(kTurkish + ".txt", "mft", 0, 0, 0),
+        mk("-bayragu.txt", "mft", 0, 0, 0),
+        mk("carve_no_date.jpg", "carver", 0, 0, 0),
+        mk("ayrilmis.txt", "mft", 1, 0, 0),
+    }));
+
+    const std::string dest =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_csv_test_" + std::to_string(testPid()) + ".csv")).string();
+    FileListFilter filter; // defaults: all statuses, no discovery rows exist anyway
+    int64_t rows = -1;
+    std::string err = "unchanged";
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, filter, csvHeader(),
+                                 "FS tarihi yok", kEmDash, &rows, &err));
+    EXPECT_TRUE(err.empty());
+    ASSERT_EQ(rows, 8);
+
+    const std::string bom = "\xEF\xBB\xBF";
+    const std::string header =
+        "Ad;Boyut (bayt);Kategori;G\xC3\xBCven;Durum;Yol;Kaynak;Ba\xC5\x9Flang\xC4\xB1\xC3\xA7 Sekt\xC3\xB6r\xC3\xBC;Olu\xC5\x9Fturma;De\xC4\x9Fi\xC5\x9Ftirme";
+    const std::string expected =
+        bom + header + "\r\n"
+        // 1700000000 -> 2023-11-14T22:13:20.000Z (toISOString parity).
+        "duz.txt;123;Document;90;0;/docs/duz.txt;mft;10;2023-11-14T22:13:20.000Z;2023-11-14T22:13:21.000Z\r\n"
+        // csvCell parity: comma/quote/newline trigger RFC4180 quoting ("" escape)
+        // on EVERY cell — the path inherits the name's special characters.
+        "\"virgul,icinde.txt\";123;Document;90;0;\"/docs/virgul,icinde.txt\";mft;10;" + kEmDash + ";" + kEmDash + "\r\n"
+        "\"tirnak\"\"icinde.txt\";123;Document;90;0;\"/docs/tirnak\"\"icinde.txt\";mft;10;" + kEmDash + ";" + kEmDash + "\r\n"
+        "\"satir\nsonu.txt\";123;Document;90;0;\"/docs/satir\nsonu.txt\";mft;10;" + kEmDash + ";" + kEmDash + "\r\n"
+        // UTF-8 Turkish passes through unquoted (byte-identical with the input).
+        + kTurkish + ".txt;123;Document;90;0;/docs/" + kTurkish + ".txt;mft;10;" + kEmDash + ";" + kEmDash + "\r\n"
+        // Formula-injection guard: leading '-' gains a ' prefix on the cell it
+        // starts with only — the path starts with '/', so it stays untouched.
+        "'-bayragu.txt;123;Document;90;0;/docs/-bayragu.txt;mft;10;" + kEmDash + ";" + kEmDash + "\r\n"
+        // Carve record with no FS date: localized no-FS-date label.
+        "carve_no_date.jpg;123;Document;90;0;/docs/carve_no_date.jpg;carver;10;FS tarihi yok;FS tarihi yok\r\n"
+        "ayrilmis.txt;123;Document;90;1;/docs/ayrilmis.txt;mft;10;" + kEmDash + ";" + kEmDash + "\r\n";
+    EXPECT_EQ(readFileBytes(dest), expected);
+    std::filesystem::remove(dest);
+}
+
+TEST_F(MetadataStoreTest, ExportCsvRespectsFilterAndOrderBy) {
+    const int64_t scanId = store_.createScan(0, "deep", 100);
+    ASSERT_GT(scanId, 0);
+
+    auto mk = [&](const std::string& name, int status, uint64_t size) {
+        FileRecord r;
+        r.name = name;
+        r.sizeBytes = size;
+        r.status = status;
+        r.source = "mft";
+        return r;
+    };
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {
+        mk("kucuk.txt", 0, 10),
+        mk("buyuk.txt", 0, 900),
+        mk("orta.txt", 1, 300),
+    }));
+
+    const std::string dest =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_csv_filter_" + std::to_string(testPid()) + ".csv")).string();
+
+    // Status filter: deleted only.
+    FileListFilter del;
+    del.status = 0;
+    int64_t rows = -1;
+    std::string err;
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, del, csvHeader(), "x", "—", &rows, &err));
+    EXPECT_EQ(rows, 2);
+    const std::string delFile = readFileBytes(dest);
+    EXPECT_NE(delFile.find("kucuk.txt"), std::string::npos);
+    EXPECT_NE(delFile.find("buyuk.txt"), std::string::npos);
+    EXPECT_EQ(delFile.find("orta.txt"), std::string::npos);
+
+    // Size bounds + orderBy parity with getFiles (size_desc): the single row
+    // must be buyuk.txt AND it must be the first data row.
+    FileListFilter sized;
+    sized.status = 0;
+    sized.sizeMin = 100;
+    sized.orderBy = "size_desc";
+    rows = -1;
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, sized, csvHeader(), "x", "—", &rows, &err));
+    EXPECT_EQ(rows, 1);
+    const std::string sizedFile = readFileBytes(dest);
+    const size_t headerEnd = sizedFile.find("\r\n");
+    ASSERT_NE(headerEnd, std::string::npos);
+    EXPECT_EQ(sizedFile.find("buyuk.txt"), headerEnd + 2);
+    EXPECT_EQ(sizedFile.find("kucuk.txt"), std::string::npos);
+
+    // Name query rides the same FTS/LIKE dispatch as getFiles/searchFiles.
+    FileListFilter q;
+    q.query = "kucuk";
+    rows = -1;
+    err.clear();
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, q, csvHeader(), "x", "—", &rows, &err)) << err;
+    EXPECT_EQ(rows, 1);
+    EXPECT_NE(readFileBytes(dest).find("kucuk.txt"), std::string::npos);
+    std::filesystem::remove(dest);
+}
+
+TEST_F(MetadataStoreTest, ExportCsvLargeRowSetFlushesEvery1000) {
+    const int64_t scanId = store_.createScan(0, "deep", 100000);
+    ASSERT_GT(scanId, 0);
+
+    std::vector<FileRecord> batch(2500);
+    for (size_t i = 0; i < batch.size(); ++i) {
+        batch[i].name = "r" + std::to_string(i) + ".bin";
+        batch[i].sizeBytes = static_cast<uint64_t>(i);
+        batch[i].status = 0;
+    }
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    const std::string dest =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_csv_bulk_" + std::to_string(testPid()) + ".csv")).string();
+    int64_t rows = -1;
+    std::string err;
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, {}, csvHeader(), "x", "—", &rows, &err));
+    EXPECT_EQ(rows, 2500);
+
+    // Header line + 2500 CRLF-terminated rows.
+    const std::string file = readFileBytes(dest);
+    const int64_t newlines = static_cast<int64_t>(std::count(file.begin(), file.end(), '\n'));
+    EXPECT_EQ(newlines, 2501);
+    EXPECT_EQ(file.compare(0, 3, "\xEF\xBB\xBF"), 0);
+    std::filesystem::remove(dest);
+}
+
+TEST_F(MetadataStoreTest, ExportCsvRejectsBadHeaderAndReportsError) {
+    const int64_t scanId = store_.createScan(0, "quick", 10);
+    ASSERT_GT(scanId, 0);
+    const std::string dest =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_csv_bad_" + std::to_string(testPid()) + ".csv")).string();
+
+    int64_t rows = 7;
+    std::string err;
+    EXPECT_FALSE(store_.exportCsv(scanId, dest, {}, {"tek"}, "x", "—", &rows, &err));
+    EXPECT_EQ(rows, 0);
+    EXPECT_FALSE(err.empty());
+    // No partial output may survive a rejected export.
+    EXPECT_FALSE(std::filesystem::exists(dest));
+    // Unwritable destination (a directory path) must fail with an error, not crash.
+    const std::string dirDest = (std::filesystem::temp_directory_path() /
+                                 ("byteback_csv_dir_" + std::to_string(testPid()))).string();
+    std::filesystem::create_directories(dirDest);
+    err.clear();
+    EXPECT_FALSE(store_.exportCsv(scanId, dirDest, {}, csvHeader(), "x", "—", &rows, &err));
+    EXPECT_FALSE(err.empty());
+    std::filesystem::remove_all(dirDest);
 }

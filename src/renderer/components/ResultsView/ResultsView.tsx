@@ -3,10 +3,9 @@ import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
-import { csvCell } from '../../../shared/html-escape'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
-import { previewDataUrl } from '../../../shared/preview-utils'
+import { previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
 import { useI18n, tFormat, formatInt } from '../../i18n'
 import InlineAlert from '../InlineAlert'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
@@ -28,6 +27,7 @@ import {
   type SortDir,
   type PageCursor,
 } from './results-view-utils'
+import { computeVirtualWindow, estimateRowHeight, DEFAULT_ROW_HEIGHT, ROW_OVERSCAN, type VirtualWindow } from './virtual-rows'
 
 const INACTIVE_RAID: RaidState = { active: false, capacity: 0, numDisks: 0, level: -1, memberDriveIndices: [] }
 
@@ -41,9 +41,11 @@ interface ResultsViewProps {
 const PAGE_SIZE = 500
 
 // W3: module-level so React keeps card state across parent re-renders.
-function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
+function ThumbCard({ f, thumb, thumbUrl, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
   f: MappedFile
   thumb?: FilePreviewResult
+  /** FAZ 1.3b L2: thumb:// URL served from the main-process disk cache. */
+  thumbUrl?: string | null
   onVisible: (id: number) => void
   onOpen: (id: number) => void
   noPreviewLabel: string
@@ -74,6 +76,8 @@ function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
     return () => io.disconnect()
   }, [visible, f.id, onVisible])
   const dataUrl = useMemo(() => (thumb ? previewDataUrl(thumb) : null), [thumb])
+  // L1 (in-memory data URL) wins when both exist; thumb:// covers the L2 hit.
+  const imgSrc = dataUrl ?? (thumbUrl || null)
   return (
     <div
       ref={imgRef}
@@ -87,8 +91,8 @@ function ThumbCard({ f, thumb, onVisible, onOpen, noPreviewLabel, ariaLabel }: {
       aria-label={ariaLabel}
     >
       <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--well-bg)' }}>
-        {dataUrl ? (
-          <img src={dataUrl} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+        {imgSrc ? (
+          <img src={imgSrc} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
         ) : thumb ? (
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>{noPreviewLabel}</span>
         ) : (
@@ -142,15 +146,28 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [thumbs, setThumbs] = useState<Map<number, FilePreviewResult>>(new Map())
   const thumbsRef = useRef(thumbs)
   thumbsRef.current = thumbs
+  // FAZ 1.3b L2: thumb:// URLs answered from the main-process disk cache
+  // (userData/thumbs); fileIds here need no drive read to render.
+  const [thumbUrls, setThumbUrls] = useState<Map<number, string>>(new Map())
+  const thumbUrlsRef = useRef(thumbUrls)
+  thumbUrlsRef.current = thumbUrls
   const thumbLoadingRef = useRef<Set<number>>(new Set())
   const previewReqRef = useRef(0)
   const [csvExporting, setCsvExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  // FAZ 1.3c: success surface with the natively written row count + path.
+  const [csvReport, setCsvReport] = useState<string | null>(null)
   const loadGenRef = useRef(0)
   // FAZ 1.2 keyset pagination: last row (native sort-key value + id) of each
   // loaded page; fetching page N attaches page N-1's cursor to the filter.
   // Page jumps without the predecessor entry fall back to OFFSET (null).
   const pageCursorRef = useRef<Map<number, PageCursor>>(new Map())
+  // FAZ 1.3a table virtualization: only the scroll window (+overscan) renders;
+  // spacer rows keep the scrollbar geometry honest. Flat/table mode only.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const rowProbeRef = useRef<HTMLTableRowElement | null>(null)
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT)
+  const [vWindow, setVWindow] = useState<VirtualWindow>({ start: 0, end: 0 })
 
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
 
@@ -530,44 +547,32 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   }
 
   const exportCsv = async () => {
-    if (effectiveScanId <= 0 || !window.api?.getFilesPage || !window.api?.getFileCount || csvExporting) return
-    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir))
+    if (effectiveScanId <= 0 || !window.api?.exportCsv || csvExporting) return
+    // Same filter shape as loadPage (minus the paging cursor — native streams
+    // the whole matching set in one pass, no keyset needed).
+    const listFilter = toSqlListFilter(statusFilter, typeFilter, nameQuery, showDuplicates, sortKey(sortField, sortDir),
+      { sizeMin: sizeMin > 0 ? sizeMin : undefined, sizeMax: sizeMax > 0 ? sizeMax : undefined,
+        dateFrom: dateFrom > 0 ? dateFrom : undefined, dateTo: dateTo > 0 ? dateTo : undefined })
     setCsvExporting(true)
     setExportError(null)
+    setCsvReport(null)
     try {
-      const total = await window.api.getFileCount(effectiveScanId, listFilter)
-      // CA-038: build the CSV per batch and hand Blob the chunk array — no
-      // multi-hundred-MB string concat of every record in renderer memory.
-      const batch = 1000
+      // FAZ 1.3c: the native engine streams the CSV in one prepared SELECT
+      // (replacing the old 100-round offset walk) and the save dialog lives in
+      // the main process — the renderer never sends a file path.
       const header = ['name', 'sizeBytes', 'category', 'confidence', 'status', 'path', 'source', 'startSector', 'createdAt', 'modifiedAt'].map((k) => t(`csv.${k}`))
-      const chunks: string[] = [header.join(';')]
-      for (let off = 0; off < total; off += batch) {
-        const chunk = await window.api.getFilesPage(effectiveScanId, off, batch, listFilter)
-        for (const raw of chunk ?? []) {
-          const row = [
-            raw.name,
-            raw.sizeBytes ?? '',
-            raw.category ?? '',
-            raw.confidence ?? '',
-            raw.status ?? '',
-            raw.path ?? '',
-            raw.source ?? '',
-            raw.startSector ?? '',
-            raw.createdAt && raw.createdAt > 0 ? new Date(raw.createdAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
-            raw.modifiedAt && raw.modifiedAt > 0 ? new Date(raw.modifiedAt * 1000).toISOString() : formatFsTimestamp(0, raw.source),
-          ]
-          chunks.push(row.map((v) => csvCell(v)).join(';'))
-        }
-        if ((chunk?.length ?? 0) < batch) break
-      }
-      // Blob takes string parts — no final join of every row into one string.
-      const blob = new Blob(['\uFEFF', ...chunks.map((c) => c + '\r\n')], { type: 'text/csv;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = tFormat('results.csvFileName', { n: String(total), date: new Date().toISOString().slice(0, 10) })
-      a.click()
-      URL.revokeObjectURL(url)
+      const suggestedName = tFormat('results.csvFileName', { n: String(filteredFiles.length), date: new Date().toISOString().slice(0, 10) })
+      const res = await window.api.exportCsv(
+        effectiveScanId,
+        listFilter,
+        header,
+        { noFsDate: t('ts.noFsDate'), noDate: '—' },
+        suggestedName,
+      )
+      if (res.canceled) return
+      if (!res.success || typeof res.rows !== 'number') throw new Error(res.error ?? 'csv export failed')
+      // Row count when done: the export ran natively, the user only sees the dialog.
+      setCsvReport(tFormat('results.csvDone', { n: formatInt(res.rows), path: res.path ?? '' }))
     } catch {
       // In-app error surface — window.alert would break the modal pattern.
       setExportError(t('results.csvFailed'))
@@ -596,6 +601,38 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const filteredFiles = mappedFiles
   const treeRoot = buildTree(filteredFiles)
   const galleryFiles = filteredFiles.filter((f) => f.type === 'img')
+
+  // FAZ 1.3a — virtual window for the flat table (gallery/tree keep their own
+  // dynamics and render everything, as before).
+  const recomputeWindow = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || viewMode !== 'flat') return
+    setVWindow(computeVirtualWindow({
+      scrollTop: el.scrollTop,
+      viewportHeight: el.clientHeight,
+      rowHeight,
+      totalRows: filteredFiles.length,
+      overscan: ROW_OVERSCAN,
+    }))
+  }, [viewMode, rowHeight, filteredFiles.length])
+
+  // Page / sort / filter changes restart the list at the top: reset scrollTop
+  // (its scroll event recomputes the window) and recompute for the fresh rows.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && el.scrollTop !== 0) el.scrollTop = 0
+    recomputeWindow()
+  }, [page, effectiveScanId, viewMode, recomputeWindow])
+
+  // Measure the real row height from the first rendered row (probe ref);
+  // jsdom/collapsed tables report 0 and keep the 40px fallback via estimateRowHeight.
+  useEffect(() => {
+    if (viewMode !== 'flat') return
+    const h = estimateRowHeight(rowProbeRef.current?.getBoundingClientRect().height)
+    setRowHeight((prev) => (Math.abs(prev - h) > 0.5 ? h : prev))
+  })
+
+  const visibleFiles = viewMode === 'flat' ? filteredFiles.slice(vWindow.start, vWindow.end) : filteredFiles
 
   // CA-037: select-all means "all rows visible on this page". Selection
   // itself persists across pages; the checkbox only reflects this page.
@@ -642,13 +679,23 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   })
 
   const loadThumb = useCallback(async (id: number) => {
-    if (thumbsRef.current.has(id) || thumbLoadingRef.current.has(id)) return
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
-    const effectiveDrive = driveIndex !== null ? driveIndex : -1
-    if (effectiveDrive < 0 && !raidState.active) return
-    if (effectiveScanId <= 0 || !window.api?.readFilePreview) return
+    if (thumbsRef.current.has(id) || thumbUrlsRef.current.has(id) || thumbLoadingRef.current.has(id)) return
+    if (effectiveScanId <= 0) return
     thumbLoadingRef.current.add(id)
     try {
+      // FAZ 1.3b L2: a disk cache hit renders through thumb:// with no drive
+      // read, so a gallery survives an app restart without the imaged disk.
+      if (window.api?.getThumbUrl) {
+        const cached = await window.api.getThumbUrl(id, effectiveScanId)
+        if (cached) {
+          setThumbUrls((prev) => new Map(prev).set(id, cached))
+          return
+        }
+      }
+      const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+      const effectiveDrive = driveIndex !== null ? driveIndex : -1
+      if (effectiveDrive < 0 && !raidState.active) return
+      if (!window.api?.readFilePreview) return
       const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, id)
       setThumbs((prev) => {
         const next = new Map(prev)
@@ -659,6 +706,17 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         next.set(id, res)
         return next
       })
+      // FAZ 1.3b: populate the disk cache (L2) from the fetched preview so the
+      // next session rides thumb:// instead of re-reading the drive.
+      if (window.api?.putThumb && res.success && res.data?.length) {
+        const mime = resolvePreviewImageMime(res)
+        const dataUrl = mime ? previewDataUrl(res) : null
+        const prefix = mime ? `data:${mime};base64,` : ''
+        if (mime && dataUrl?.startsWith(prefix)) {
+          const url = await window.api.putThumb(id, effectiveScanId, mime, dataUrl.slice(prefix.length))
+          if (url) setThumbUrls((prev) => new Map(prev).set(id, url))
+        }
+      }
     } catch {
       /* thumbnail is best-effort */
     } finally {
@@ -669,6 +727,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   // W4: a different scan session invalidates every cached preview/record.
   useEffect(() => {
     setThumbs(new Map())
+    setThumbUrls(new Map())
     setRecordById(new Map())
     thumbLoadingRef.current.clear()
     pageCursorRef.current.clear()
@@ -854,6 +913,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           {exportError}
         </InlineAlert>
       )}
+      {csvReport && (
+        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--success-green)', whiteSpace: 'pre-wrap' }}>
+          {csvReport}
+        </div>
+      )}
 
           {effectiveScanId > 0 && totalPages > 1 ? (
             <div className="pager" role="navigation" aria-label={t('results.pageLabel')}>
@@ -994,7 +1058,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           </div>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''}>
+        <div ref={scrollRef} onScroll={recomputeWindow} style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''} data-testid="results-scroll">
           {viewMode === 'tree' && totalCount > PAGE_SIZE && (
             <p style={{ padding: '8px 0', color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
               {tFormat('results.treePageNote', { n: String(filteredFiles.length), total: formatInt(totalCount) })}
@@ -1013,6 +1077,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                       key={f.id}
                       f={f}
                       thumb={thumbs.get(f.id)}
+                      thumbUrl={thumbUrls.get(f.id)}
                       onVisible={loadThumb}
                       onOpen={(id) => {
                         setSelectedFiles(new Set([id]))
@@ -1073,7 +1138,16 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   </td>
                 </tr>
               ) : (
-                filteredFiles.map((f) => {
+                <>
+                  {/* FAZ 1.3a: spacer rows stand in for the unrendered window
+                      neighbours so the scrollbar geometry stays honest; the
+                      data-testid="result-row" contract is unchanged. */}
+                  {vWindow.start > 0 && (
+                    <tr aria-hidden="true" style={{ height: vWindow.start * rowHeight }}>
+                      <td colSpan={8} style={{ padding: 0, border: 'none' }} />
+                    </tr>
+                  )}
+                  {visibleFiles.map((f, idx) => {
                   const titleParts = [f.path !== '—' ? tFormat('results.locationPrefix', { path: f.path }) : null, f.qualityLabel !== '—' ? tFormat('results.qualityPrefix', { q: f.qualityLabel }) : null]
                     .filter(Boolean)
                     .join(' · ')
@@ -1091,6 +1165,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   return (
                   <tr
                     key={f.id}
+                    ref={idx === 0 ? rowProbeRef : undefined}
                     data-testid="result-row"
                     title={titleParts || undefined}
                     tabIndex={0}
@@ -1153,7 +1228,13 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     </td>
                   </tr>
                   )
-                })
+                  })}
+                  {vWindow.end < filteredFiles.length && (
+                    <tr aria-hidden="true" style={{ height: (filteredFiles.length - vWindow.end) * rowHeight }}>
+                      <td colSpan={8} style={{ padding: 0, border: 'none' }} />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>

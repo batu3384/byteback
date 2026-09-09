@@ -110,6 +110,19 @@ contextBridge.exposeInMainWorld('api', {
   getNsrlStats: () => ipcRenderer.invoke('get-nsrl-stats'),
   lookupNsrl: (md5Hex: string) => ipcRenderer.invoke('lookup-nsrl', md5Hex),
 
+  // FAZ 1.3c: dialog-arbitrated CSV export — the renderer never sends a path.
+  exportCsv: (scanId: number, filter?: import('../shared/ipc-contract').FileListFilter,
+              header?: string[], labels?: import('../shared/ipc-contract').CsvExportLabels,
+              suggestedName?: string) =>
+    ipcRenderer.invoke('export-csv', scanId, filter, header, labels, suggestedName) as
+      Promise<import('../shared/ipc-contract').CsvExportResult>,
+
+  // FAZ 1.3b: gallery thumbnail disk cache (L2) behind the thumb:// protocol.
+  getThumbUrl: (fileId: number, scanId: number) =>
+    ipcRenderer.invoke('get-thumb-url', fileId, scanId) as Promise<string | null>,
+  putThumb: (fileId: number, scanId: number, mime: string, base64: string) =>
+    ipcRenderer.invoke('put-thumb', fileId, scanId, mime, base64) as Promise<string | null>,
+
   removeAllScanListeners: () => {
     ipcRenderer.removeAllListeners('scan-progress')
     ipcRenderer.removeAllListeners('scan-complete')
