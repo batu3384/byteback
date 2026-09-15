@@ -1,32 +1,33 @@
 .imager-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--space-lg);
   max-width: 800px;
   margin: 0 auto;
-  animation: fadeIn 0.4s ease-out;
-  padding-top: var(--space-xl);
+  padding-top: var(--space-md);
 }
 
 .imager-header {
-  padding: var(--space-lg);
-  text-align: center;
+  padding: 12px 16px;
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
 }
 
 .imager-header h2 {
   color: var(--text-main);
   margin-bottom: var(--space-sm);
-  font-size: 1.8rem;
-  text-shadow: 0 0 15px rgba(0, 229, 255, 0.2);
+  font-size: 1.05rem;
+  font-weight: 600;
 }
 
 .imager-header p {
   color: var(--text-muted);
-  font-size: 1rem;
+  font-size: 0.85rem;
 }
 
 .imager-content {
-  padding: var(--space-xl);
+  padding: var(--space-lg);
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
@@ -41,37 +42,61 @@
 .form-group label {
   color: var(--text-muted);
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.75rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
 }
 
 .form-select, .form-input {
   background-color: var(--well-bg);
-  border: 1px solid rgba(41, 98, 255, 0.3);
+  border: 1px solid var(--panel-border);
   color: var(--text-main);
-  padding: 12px 16px;
-  border-radius: 8px;
-  font-size: 1rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
   outline: none;
-  transition: var(--transition-smooth);
+  width: 100%;
 }
 
 .form-select:focus-visible, .form-input:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
 }
 
 .form-select:focus, .form-input:focus {
-  border-color: var(--neon-cyan);
-  box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+  border-color: var(--accent-blue);
 }
 
 .form-select option {
-  /* Explicit pair so the native Windows dropdown does not inherit a dark
-     legacy background on the light theme. */
   background-color: var(--bg-surface);
   color: var(--text-main);
+}
+
+.imager-volume-bind {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.imager-volume-note {
+  color: var(--warning-yellow);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.imager-volume-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  color: var(--text-main);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .path-input-group {
@@ -83,63 +108,179 @@
   flex: 1;
 }
 
+.path-input-group .btn-secondary {
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
 .form-actions {
   margin-top: var(--space-md);
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
 }
 
 .start-btn {
   width: 100%;
-  padding: 14px;
-  font-size: 1.1rem;
-  letter-spacing: 0.5px;
+  padding: 10px;
+  font-size: 0.9rem;
 }
 
 .start-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  background: rgba(148, 163, 184, 0.2);
-  color: rgba(148, 163, 184, 0.5);
+  background: var(--surface-overlay);
+  color: var(--text-muted);
   box-shadow: none;
 }
 
-.imager-progress {
-  margin-top: var(--space-md);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
+.stop-btn {
+  color: var(--alert-red);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.imager-progress-card {
+  margin-top: var(--space-sm);
+  padding: var(--space-lg);
+  background: var(--surface-overlay);
 }
 
 .progress-bar-bg {
   width: 100%;
-  height: 16px;
-  background-color: rgba(11, 15, 25, 0.8);
-  border-radius: 8px;
+  height: 10px;
+  background-color: var(--well-bg);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  border: 1px solid rgba(0, 229, 255, 0.2);
+  border: 1px solid var(--panel-border);
 }
 
-.progress-bar-fill {
-  height: 100%;
-  background-color: var(--neon-cyan);
-  box-shadow: 0 0 15px rgba(0, 229, 255, 0.6), inset 0 0 8px rgba(255, 255, 255, 0.4);
-  transition: width 0.3s ease;
-  position: relative;
+.form-actions .btn-secondary {
+  padding: 0 16px;
+  white-space: nowrap;
 }
 
-.progress-bar-fill::after {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; bottom: 0; right: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
-  animation: shimmer 1.5s infinite linear;
+.imager-alert-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.imager-ewf-note {
+  color: var(--warning-yellow);
+  font-size: 0.85rem;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.progress-status {
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-blue);
+}
+
+.progress-status.is-done {
+  color: var(--success-green);
+}
+
+.progress-elapsed {
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.imager-md5 {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--radius-md);
+}
+
+.imager-md5-label {
+  font-size: 0.8rem;
+  color: var(--success-green);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.imager-md5-value {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  word-break: break-all;
+  user-select: all;
+}
+
+.latency-chart-container {
+  margin-top: 24px;
+  padding: 16px;
+  background-color: var(--well-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
+}
+
+.latency-chart-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+}
+
+.latency-chart-label {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.latency-chart-value {
+  font-family: monospace;
+  color: var(--success-green);
+}
+
+.latency-chart-value.is-high {
+  color: var(--alert-red);
+}
+
+.latency-chart {
+  display: flex;
+  align-items: flex-end;
+  height: 60px;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.latency-bar {
+  flex: 1;
+  background-color: var(--accent-blue);
+  opacity: 0.8;
+  min-height: 2px;
+  transition: height 0.1s ease-out;
+  border-radius: 1px 1px 0 0;
+}
+
+.latency-bar.is-high {
+  background-color: var(--alert-red);
 }
 
 .progress-stats {
   display: flex;
   justify-content: space-between;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   color: var(--text-main);
   font-family: monospace;
   font-weight: 500;
@@ -151,24 +292,22 @@
 }
 
 .coming-soon-icon {
-  font-size: 4rem;
+  font-size: 2rem;
   margin-bottom: var(--space-md);
-  filter: drop-shadow(0 0 15px rgba(0, 229, 255, 0.4));
 }
 
 .coming-soon-container h3 {
-  color: var(--neon-cyan);
-  font-size: 1.5rem;
+  color: var(--text-main);
+  font-size: 1.05rem;
   margin-bottom: var(--space-md);
-  text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
 }
 
 .coming-soon-container p {
   color: var(--text-muted);
-  font-size: 1rem;
+  font-size: 0.9rem;
   max-width: 500px;
   margin: 0 auto var(--space-lg);
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .feature-list {
@@ -181,13 +320,13 @@
 
 .feature-list li {
   color: var(--text-muted);
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(41, 98, 255, 0.15);
-  font-size: 0.95rem;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.85rem;
 }
 
 .feature-list li::before {
-  content: "◈ ";
-  color: var(--neon-cyan);
+  content: "· ";
+  color: var(--accent-blue);
   margin-right: 8px;
 }

@@ -63,15 +63,27 @@ export function formatEtaClock(seconds: number): string {
 }
 
 export function scanPhaseLabel(phase?: string): string {
+  if (phase === 'carve_fallback') return 'Oyma — tüm bölüm (bitmap yok)'
+  if (phase === 'carve_bitmap_unread') return 'Oyma — bitmap kısmen okunamadı'
   if (phase === 'carve') return 'Oyma — boş alan imza taraması'
   if (phase === 'carve_skipped') return 'Oyma atlandı — boş alan haritası yok'
   if (phase === 'carve_only') return 'İmza carve — dosya sistemi atlandı'
   return 'Metadata — dosya tablosu'
 }
 
+export function scanPhaseI18nKey(phase?: string): string {
+  if (phase === 'carve_fallback') return 'scan.phase.carveFallback'
+  if (phase === 'carve_bitmap_unread') return 'scan.phase.carveBitmapUnread'
+  if (phase === 'carve') return 'scan.phase.carve'
+  if (phase === 'carve_skipped') return 'scan.phase.carveSkipped'
+  if (phase === 'carve_only') return 'scan.phase.carveOnly'
+  return 'scan.phase.metadata'
+}
+
 export function scanStepIndex(phase?: string, scanType?: string): { step: number; of: number } {
   if (scanType === 'carve_only') return { step: 1, of: 1 }
   if (scanType !== 'deep' && scanType !== 'full_carve') return { step: 1, of: 1 }
-  if (phase === 'carve' || phase === 'carve_skipped') return { step: 2, of: 2 }
+  if (phase === 'carve' || phase === 'carve_skipped' || phase === 'carve_fallback' ||
+      phase === 'carve_bitmap_unread') return { step: 2, of: 2 }
   return { step: 1, of: 2 }
 }

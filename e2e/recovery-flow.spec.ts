@@ -9,7 +9,7 @@ test.describe('Recovery flow UI', () => {
       const resultsBtn = win.getByTestId('nav-results')
       await expect(resultsBtn).toBeDisabled()
       await resultsBtn.click({ force: true })
-      await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')
+      await expect(win.locator('.header-title h2')).toHaveText('Kaynaklar')
       await expect(win.getByTestId('show-duplicates')).not.toBeVisible()
     } finally {
       await closeApp(launched)

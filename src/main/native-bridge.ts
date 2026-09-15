@@ -19,6 +19,7 @@ import { APP_VERSION } from '../shared/app-version'
 import type {
   DriveInfo,
   FileRecord,
+  LostPartitionScanResult,
   PartitionInfo,
   ResolvedVolume,
   ScanState,
@@ -43,7 +44,7 @@ interface BytebackEngine {
   getFileCount(scanId: number, filter?: import('../shared/ipc-contract').FileListFilter): number
   getFilesPage(scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter): FileRecord[]
   searchFiles(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string): FileRecord[]
-  searchFileContent(scanId: number, query: string, offset: number, limit: number): FileRecord[]
+  searchFileContent(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean): FileRecord[]
   /** FAZ 1.3c: single-pass streaming CSV export; resolves { ok, rows } or rejects with the native error. */
   exportCsv(
     scanId: number,
@@ -53,7 +54,7 @@ interface BytebackEngine {
     noFsDateLabel: string,
     noDateLabel: string,
   ): Promise<{ ok: boolean; rows: number }>
-  startContentSearch(scanId: number, query: string, callback: (data: any) => void): boolean
+  startContentSearch(scanId: number, query: string, callback: (data: any) => void, useRegex?: boolean): boolean
   stopContentSearch(): void
   getScanSummary(scanId: number): ScanSummary
   getScanState(scanId: number): ScanState
@@ -64,7 +65,7 @@ interface BytebackEngine {
   getAuditLog(maxLines?: number): string[]
   verifyAuditLog(): { ok: boolean; entries: number; brokenAt: number; detail: string }
   logAuditEvent(event: string): boolean
-  readSectors(driveIndex: number, offset: number, size: number): {
+  readSectors(driveIndex: number, offset: number, size: number, volumePath?: string): {
     success: boolean
     bytesRead: number
     error: string
@@ -85,6 +86,7 @@ interface BytebackEngine {
     destPath: string,
     callback: (data: any) => void,
     format?: 'raw' | 'ewf',
+    volumePath?: string,
   ): boolean
   stopImaging(): void
   startWipe(targetPath: string): Promise<boolean>
@@ -93,7 +95,7 @@ interface BytebackEngine {
   setBitLockerPassword(driveIndex: number, password: string): string
   startPhysicalWipe(driveIndex: number, typedSerial: string): Promise<boolean>
   detectRaid(driveIndices: number[]): RaidDetection
-  reconstructRaid(driveIndices: number[], raidLevel: number): RaidAssemblyResult
+  reconstructRaid(driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number): RaidAssemblyResult
   failRaidDisk(diskIndex: number): boolean
   // Synced with the native emission (bridge_wipe.cpp GetRaidState): both index
   // arrays are always present, empty when the array is inactive.
@@ -115,7 +117,7 @@ interface BytebackEngine {
   scanLostPartitions(
     driveIndex: number,
     stepSectors?: number,
-  ): Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>>
+  ): Promise<LostPartitionScanResult>
   setSignatureOverlay(path: string): boolean
   readFilePreview(driveIndex: number, scanId: number, fileId: number): FilePreviewResult
   getCaseInfo(): {

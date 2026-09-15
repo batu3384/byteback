@@ -2,18 +2,26 @@ import React, { useState, useEffect, useRef } from 'react'
 import './HexEditor.css'
 import { Binary, ChevronLeft, ChevronRight, Search, Server } from 'lucide-react'
 import { calculateEntropy, classifyEntropy } from '../../../shared/entropy'
+import { HEX_RAID_DRIVE_INDEX, probeRaidState } from '../../../shared/hex-read'
 import { useI18n, tFormat } from '../../i18n'
+import InlineAlert from '../InlineAlert'
 
 interface HexEditorProps {
   driveIndex?: number | null
   sectorSize?: number
   scanBusy?: boolean
+  /** Scan-bound Windows volume device (`\\.\X:`). Examiner can switch I/O. */
+  volumePath?: string
+  /** DriveCard opened hex as a PhysicalDrive dump — default off the volume device. */
+  forceDisk?: boolean
 }
+
+type HexSource = 'disk' | 'volume' | 'raid'
 
 // Static cache to preserve sector across unmounts
 let globalSectorCache = 0;
 
-function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): React.ReactElement {
+function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDisk }: HexEditorProps): React.ReactElement {
   const { t } = useI18n()
   const [sector, setSector] = useState(globalSectorCache)
   const [data, setData] = useState<number[]>([])
@@ -21,18 +29,54 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
   const [readError, setReadError] = useState<string | null>(null)
   const [atDiskEnd, setAtDiskEnd] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [raidActive, setRaidActive] = useState(false)
+  const [raidStateUnread, setRaidStateUnread] = useState(false)
+  const [source, setSource] = useState<HexSource>('disk')
   // Generation guard: rapid prev/next clicks fire overlapping reads; only the
   // latest one may paint the grid (out-of-order IPC would show the wrong
   // sector's bytes and dead-stale loading state).
   const fetchGenRef = useRef(0)
+
+  const canHexDisk = driveIndex !== undefined && driveIndex !== null && driveIndex >= 0
+  const raidIntended = driveIndex === HEX_RAID_DRIVE_INDEX
+  const canHexRaid = raidActive || raidIntended
 
   // Update cache whenever sector changes
   useEffect(() => {
     globalSectorCache = sector;
   }, [sector]);
 
+  useEffect(() => {
+    let alive = true
+    void probeRaidState(window.api?.getRaidState).then((probe) => {
+      if (!alive) return
+      if (probe.status === 'unread') {
+        setRaidActive(false)
+        setRaidStateUnread(true)
+        return
+      }
+      setRaidStateUnread(false)
+      setRaidActive(!!probe.state.active)
+    })
+    return () => { alive = false }
+  }, [driveIndex])
+
+  useEffect(() => {
+    if (raidIntended || (canHexRaid && !canHexDisk && !volumePath)) {
+      setSource('raid')
+    } else if (volumePath && !forceDisk) {
+      setSource('volume')
+    } else if (canHexDisk) {
+      setSource('disk')
+    } else if (canHexRaid) {
+      setSource('raid')
+    }
+  }, [volumePath, forceDisk, driveIndex, canHexRaid, canHexDisk, raidIntended])
+
   const fetchSector = async (secIndex: number) => {
-    if (driveIndex === undefined || driveIndex === null) return
+    const idx = source === 'raid' ? HEX_RAID_DRIVE_INDEX : driveIndex
+    if (idx === undefined || idx === null) return
+    if (source !== 'raid' && idx < 0) return
     const gen = ++fetchGenRef.current
     if (scanBusy) {
       setReadFailed(true)
@@ -44,7 +88,8 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
     try {
       const offset = secIndex * sectorSize
       if (window.api && window.api.readHexData) {
-        const result = await window.api.readHexData(driveIndex, offset, sectorSize)
+        const boundVolume = source === 'volume' && volumePath ? volumePath : undefined
+        const result = await window.api.readHexData(idx, offset, sectorSize, boundVolume)
         if (gen !== fetchGenRef.current) return
         if (result.data && result.data.length > 0) {
           setReadFailed(false)
@@ -72,10 +117,10 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
   }
 
   useEffect(() => {
-    if (driveIndex !== undefined && driveIndex !== null) {
-      fetchSector(sector)
-    }
-  }, [driveIndex, sector, scanBusy])
+    const ready = source === 'raid' ? canHexRaid : source === 'volume' ? !!volumePath : canHexDisk
+    if (ready) fetchSector(sector)
+  }, [driveIndex, sector, scanBusy, source, volumePath, canHexRaid, canHexDisk])
+
 
   const currentEntropy = calculateEntropy(data);
   const entropyRatio = (currentEntropy / 8) * 100;
@@ -84,29 +129,67 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
   const toHex = (num: number, padding: number = 2) => num.toString(16).toUpperCase().padStart(padding, '0')
   const toAscii = (num: number) => (num >= 32 && num <= 126 ? String.fromCharCode(num) : '.')
 
-  if (driveIndex === undefined || driveIndex === null) {
+  const raidStateBanner = raidStateUnread ? (
+    <InlineAlert variant="error" testId="hex-raid-state-error">{t('hex.raidStateFailed')}</InlineAlert>
+  ) : null
+
+  if (!canHexDisk && !canHexRaid) {
     return (
-      <div className="hex-editor empty glass-panel" style={{ padding: '60px', textAlign: 'center', margin: '40px' }}>
-        <Binary size={48} style={{ margin: '0 auto 16px', color: 'var(--panel-border)' }} />
-        <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>{t('hex.noDriveTitle')}</h3>
-        <p style={{ color: 'var(--text-muted)' }}>{t('hex.noDriveBody')}</p>
+      <>
+        {raidStateBanner}
+        <div className="hex-editor empty glass-panel examiner-empty" data-testid="hex-empty" role="status">
+        <div className="examiner-icon neutral" aria-hidden="true">
+          <Binary size={28} color="var(--text-main)" />
+        </div>
+        <h3>{t('hex.noDriveTitle')}</h3>
+        <p>{t('hex.noDriveBody')}</p>
       </div>
+      </>
     )
   }
 
+  const showSourceSelect =
+    [canHexDisk, !!volumePath, canHexRaid].filter(Boolean).length > 1
+
   return (
     <div className="hex-editor">
-      <div className="hex-toolbar glass-panel" style={{ display: 'flex', justifyContent: 'space-between', padding: '16px 24px', alignItems: 'center', marginBottom: '16px' }}>
-        <div className="toolbar-info" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Server size={20} color="var(--accent-blue)" />
-          <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{tFormat('drive.physical', { n: String(driveIndex) })}</h3>
-          <span className="badge" style={{ fontSize: '0.7rem', padding: '2px 6px', border: '1px solid var(--alert-red)', color: 'var(--alert-red)', borderRadius: '4px' }}>{t('hex.readonly')}</span>
+      {raidStateBanner}
+      <div className="hex-toolbar glass-panel">
+        <div className="toolbar-info">
+          <Server size={20} color="var(--accent-blue)" aria-hidden="true" />
+          {showSourceSelect ? (
+            <label className="hex-source-label">
+              <span className="sr-only">{t('hex.sourceLabel')}</span>
+              <select
+                className="hex-source"
+                data-testid="hex-source"
+                value={source}
+                onChange={(e) => setSource(e.target.value as HexSource)}
+                aria-label={t('hex.sourceLabel')}
+              >
+                {canHexDisk && (
+                  <option value="disk">{tFormat('drive.physical', { n: String(driveIndex) })}</option>
+                )}
+                {volumePath && (
+                  <option value="volume">{tFormat('hex.volumeDevice', { p: volumePath })}</option>
+                )}
+                {canHexRaid && (
+                  <option value="raid">{t('hex.raidArray')}</option>
+                )}
+              </select>
+            </label>
+          ) : (
+            <h3>{source === 'raid' ? t('hex.raidArray') : tFormat('drive.physical', { n: String(driveIndex) })}</h3>
+          )}
+          <span className="badge hex-readonly">{t('hex.readonly')}</span>
         </div>
-        <div className="sector-navigation" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <button className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} disabled={sector <= 0} style={{ padding: '6px 12px' }}><ChevronLeft size={16} /> {t('scan.prev')}</button>
-          <div className="sector-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--well-bg)', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
-            <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('scan.sector')}</label>
+        <div className="sector-navigation">
+          <button type="button" className="btn-secondary" onClick={() => setSector(s => Math.max(0, s - 1))} disabled={sector <= 0}><ChevronLeft size={16} aria-hidden="true" /> {t('scan.prev')}</button>
+          <div className="sector-input-group">
+            <label htmlFor="hex-sector">{t('scan.sector')}</label>
             <input
+              id="hex-sector"
+              className="sector-input"
               type="number"
               defaultValue={sector}
               key={sector}
@@ -120,76 +203,74 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
                 if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
               }}
               min="0"
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', width: '80px', fontFamily: 'monospace' }}
             />
           </div>
-          <button className="btn-secondary" onClick={() => setSector(s => s + 1)} disabled={atDiskEnd || loading} style={{ padding: '6px 12px' }}>{t('scan.next')} <ChevronRight size={16} /></button>
-          <button className="btn-primary" onClick={() => fetchSector(sector)} style={{ padding: '6px 12px' }}><Search size={16} /> {t('hex.go')}</button>
+          <button type="button" className="btn-secondary" onClick={() => setSector(s => s + 1)} disabled={atDiskEnd || loading}>{t('scan.next')} <ChevronRight size={16} aria-hidden="true" /></button>
+          <button type="button" className="btn-primary" onClick={() => fetchSector(sector)}><Search size={16} aria-hidden="true" /> {t('hex.go')}</button>
         </div>
       </div>
 
       {readFailed && (
-        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', marginBottom: '16px', borderLeft: '4px solid var(--alert-red)' }}>
+        <InlineAlert variant="error">
           {readError ?? t('hex.readFailedShort')} {t('hex.zeroGridNote')}
-        </div>
+        </InlineAlert>
       )}
 
       {!readFailed && (
-      <div className="entropy-indicator glass-panel" style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-main)', width: '120px' }}>{t('hex.entropyLabel')}</span>
-        <div style={{ flex: 1, height: '6px', background: 'var(--panel-border)', borderRadius: '3px', overflow: 'hidden' }}>
-          <div className={`entropy-bar-fill ${entropyClass}`} style={{ width: `${entropyRatio}%`, height: '100%', transition: 'width 0.3s ease', background: currentEntropy > 7.0 ? 'var(--alert-red)' : currentEntropy > 4.5 ? 'var(--warning-yellow)' : 'var(--success-green)' }}></div>
+      <div className="entropy-indicator glass-panel">
+        <span className="entropy-label">{t('hex.entropyLabel')}</span>
+        <div className="entropy-track" role="meter" aria-valuemin={0} aria-valuemax={8} aria-valuenow={Number(currentEntropy.toFixed(2))} aria-label={t('hex.entropyLabel')}>
+          <div className={`entropy-bar-fill ${entropyClass}`} style={{ width: `${entropyRatio}%` }}></div>
         </div>
-        <span style={{ minWidth: '60px', textAlign: 'right', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+        <span className="entropy-value">
           {currentEntropy.toFixed(2)} / 8
         </span>
-        <span style={{ fontSize: '0.8rem', color: currentEntropy > 7.0 ? 'var(--alert-red)' : 'var(--text-muted)', width: '160px' }}>
+        <span className={`entropy-hint${currentEntropy > 7.0 ? ' is-high' : ''}`}>
           {currentEntropy > 7.0 ? t('hex.entropyHigh') : t('hex.entropyLow')}
         </span>
       </div>
       )}
 
-      {/* Data Template Engine */}
       {data.length >= 512 && data[0] === 0x46 && data[1] === 0x49 && data[2] === 0x4C && data[3] === 0x45 && (
-        <div className="template-panel glass-panel" style={{ marginBottom: '16px', padding: '16px', borderLeft: '4px solid #b700ff' }}>
-          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>{t('hex.mftTitle')}</h4>
-          <div style={{ display: 'flex', gap: '24px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x00:</strong> <span style={{color: '#b700ff'}}>"FILE"</span> {t('hex.signature')}</div>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x04:</strong> {data[4] + (data[5] << 8)} {t('hex.updateArrayOffset')}</div>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x16:</strong> {data[22] === 0x01 ? t('hex.inUse') : t('scan.deleted')}</div>
+        <div className="template-panel glass-panel">
+          <h4>{t('hex.mftTitle')}</h4>
+          <div className="template-fields">
+            <div><strong>0x00:</strong> <span className="field-accent">"FILE"</span> {t('hex.signature')}</div>
+            <div><strong>0x04:</strong> {data[4] + (data[5] << 8)} {t('hex.updateArrayOffset')}</div>
+            <div><strong>0x16:</strong> {data[22] === 0x01 ? t('hex.inUse') : t('scan.deleted')}</div>
           </div>
         </div>
       )}
 
       {data.length >= 512 && data[0] === 0xEB && data[2] === 0x90 && (
-        <div className="template-panel glass-panel" style={{ marginBottom: '16px', padding: '16px', borderLeft: '4px solid var(--accent-blue)' }}>
-          <h4 style={{ fontSize: '0.95rem', marginBottom: '8px' }}>{t('hex.bootTitle')}</h4>
-          <div style={{ display: 'flex', gap: '24px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x03:</strong> <span style={{color: 'var(--accent-blue)'}}>{String.fromCharCode(...data.slice(3, 11))}</span> {t('hex.oemName')}</div>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x0B:</strong> {data[11] + (data[12] << 8)} {t('hex.bytesPerSector')}</div>
-            <div><strong style={{ color: 'var(--text-main)' }}>0x0D:</strong> {data[13]} {t('hex.sectorsPerCluster')}</div>
+        <div className="template-panel glass-panel">
+          <h4>{t('hex.bootTitle')}</h4>
+          <div className="template-fields">
+            <div><strong>0x03:</strong> <span className="field-accent">{String.fromCharCode(...data.slice(3, 11))}</span> {t('hex.oemName')}</div>
+            <div><strong>0x0B:</strong> {data[11] + (data[12] << 8)} {t('hex.bytesPerSector')}</div>
+            <div><strong>0x0D:</strong> {data[13]} {t('hex.sectorsPerCluster')}</div>
           </div>
         </div>
       )}
 
-      <div className={`hex-view glass-panel ${currentEntropy > 7.0 ? 'entropy-mode' : ''}`} style={{ padding: '16px', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+      <div className={`hex-view glass-panel ${currentEntropy > 7.0 ? 'entropy-mode' : ''}`}>
         {loading ? (
-          <div className="loading-state" style={{ padding: '40px', textAlign: 'center' }}>
-            <Search size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
+          <div className="hex-loading" role="status">
+            <Search size={32} className="spinner" />
             <p>{t('hex.loading')}</p>
           </div>
         ) : readFailed || data.length === 0 ? (
-          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div className="hex-cannot">
             {t('hex.cannotDisplay')}
           </div>
         ) : (
-          <div className="hex-grid" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <div className="hex-header" style={{ display: 'flex', color: 'var(--text-muted)', marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid var(--panel-border)' }}>
-              <div className="offset-col" style={{ width: '80px' }}>{t('hex.offset')}</div>
-              <div className="data-col" style={{ flex: 1, display: 'flex', gap: '8px' }}>
-                {Array.from({ length: 16 }).map((_, i) => <span key={i} style={{ width: '20px', textAlign: 'center' }}>{toHex(i)}</span>)}
+          <div className="hex-grid">
+            <div className="hex-header">
+              <div className="offset-col">{t('hex.offset')}</div>
+              <div className="data-col">
+                {Array.from({ length: 16 }).map((_, i) => <span key={i}>{toHex(i)}</span>)}
               </div>
-              <div className="ascii-col" style={{ width: '160px', paddingLeft: '16px' }}>ASCII</div>
+              <div className="ascii-col">{t('hex.ascii')}</div>
             </div>
             
             <div className="hex-body">
@@ -199,16 +280,16 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy }: HexEditorProps): 
                 while (rowData.length < 16) rowData.push(0)
 
                 return (
-                  <div key={row} className="hex-row" style={{ display: 'flex', padding: '2px 0' }}>
-                    <div className="offset-col" style={{ width: '80px', color: 'var(--text-muted)' }}>{toHex(rowOffset, 4)}</div>
-                    <div className="data-col" style={{ flex: 1, display: 'flex', gap: '8px' }}>
+                  <div key={row} className="hex-row">
+                    <div className="offset-col">{toHex(rowOffset, 4)}</div>
+                    <div className="data-col">
                       {rowData.map((byte, col) => (
-                        <span key={col} style={{ width: '20px', textAlign: 'center', color: byte === 0 ? 'var(--text-muted)' : 'var(--text-main)', opacity: byte === 0 ? 0.3 : 1 }}>
+                        <span key={col} className={byte === 0 ? 'zero-byte' : 'active-byte'}>
                           {toHex(byte)}
                         </span>
                       ))}
                     </div>
-                    <div className="ascii-col" style={{ width: '160px', paddingLeft: '16px', color: 'var(--text-muted)', letterSpacing: '1px' }}>
+                    <div className="ascii-col">
                       {rowData.map((byte, col) => (
                         <span key={col}>{toAscii(byte)}</span>
                       ))}

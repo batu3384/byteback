@@ -62,7 +62,7 @@ function Sidebar({ activePage, activeScanId, scanState, scanBusy, onNavigate }: 
         </div>
         <h1>Byteback</h1>
       </div>
-      <nav className="sidebar-nav" aria-label={t('nav.groupTitle.inspect')}>
+      <nav className="sidebar-nav" aria-label={t('chrome.navLabel')}>
         {GROUPS.map((group) => (
           <div key={group.titleKey} className="nav-group">
             <h2 className="nav-group-title">{t(group.titleKey)}</h2>

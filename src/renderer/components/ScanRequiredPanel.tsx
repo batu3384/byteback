@@ -16,20 +16,10 @@ export default function ScanRequiredPanel({
     <div
       className="scan-required-panel glass-panel"
       role="note"
-      style={{
-        maxWidth: '560px',
-        margin: '48px auto',
-        padding: '32px',
-        textAlign: 'center',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: '16px',
-      }}
     >
       <FolderSearch size={48} color="var(--accent-blue)" aria-hidden="true" />
-      <h3 style={{ fontSize: '1.25rem' }}>{title ?? t('needscan.title')}</h3>
-      <p style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+      <h3>{title ?? t('needscan.title')}</h3>
+      <p>
         {t('needscan.body')}
       </p>
       {onGoDashboard && (

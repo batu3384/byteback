@@ -10,6 +10,29 @@ describe('sourceLabelKey', () => {
 
   it('marks HFS catalog ceiling records', () => {
     expect(sourceLabelKey('hfs_limit')).toBe('source.hfs_limit')
+    expect(sourceLabelKey('hfs_catalog')).toBe('source.hfs_catalog')
+    expect(sourceLabelKey('hfs_catalog_unread')).toBe('source.hfs_catalog_unread')
+    expect(sourceLabelKey('hfs_linear_unread')).toBe('source.hfs_linear_unread')
+    expect(sourceLabelKey('apfs_nxsb_unread')).toBe('source.apfs_nxsb_unread')
+    expect(sourceLabelKey('apfs_block_unread')).toBe('source.apfs_block_unread')
+    expect(sourceLabelKey('apfs_linear_unread')).toBe('source.apfs_linear_unread')
+    expect(sourceLabelKey('refs_supb_unread')).toBe('source.refs_supb_unread')
+    expect(sourceLabelKey('refs_page_unread')).toBe('source.refs_page_unread')
+    expect(sourceLabelKey('refs_volume')).toBe('source.refs_volume')
+    expect(sourceLabelKey('fat_dir_unread')).toBe('source.fat_dir_unread')
+    expect(sourceLabelKey('fat_chain_unread')).toBe('source.fat_chain_unread')
+    expect(sourceLabelKey('ext4_dir_unread')).toBe('source.ext4_dir_unread')
+    expect(sourceLabelKey('xfs_dir_unread')).toBe('source.xfs_dir_unread')
+    expect(sourceLabelKey('xfs_sb_unread')).toBe('source.xfs_sb_unread')
+    expect(sourceLabelKey('xfs_inode_unread')).toBe('source.xfs_inode_unread')
+    expect(sourceLabelKey('xfs_bmap_unread')).toBe('source.xfs_bmap_unread')
+    expect(sourceLabelKey('unalloc_map_unread')).toBe('source.unalloc_map_unread')
+    expect(sourceLabelKey('ntfs_i30_unread')).toBe('source.ntfs_i30_unread')
+    expect(sourceLabelKey('ntfs_logfile_unread')).toBe('source.ntfs_logfile_unread')
+    expect(sourceLabelKey('usn_unread')).toBe('source.usn_unread')
+    expect(sourceLabelKey('ntfs_mft_unread')).toBe('source.ntfs_mft_unread')
+    expect(sourceLabelKey('probe_unread')).toBe('source.probe_unread')
+    expect(sourceLabelKey('carver_unread')).toBe('source.carver_unread')
   })
 
   it('maps unbound VSS and BitLocker discovery', () => {
@@ -67,12 +90,16 @@ describe('isDiscoveryOnlySource', () => {
       'apfs_container', 'apfs_volume', 'apfs_file',
       'bitlocker_detect', 'bitlocker_fve',
       'vss_unbound', 'vss_bind', 'vss_snapshot',
-      'hfs_limit', 'hfs_vh', 'hfs_catalog',
-      'usn_journal', 'ntfs_logfile', 'ntfs_logfile_restart', 'ntfs_recycle_meta',
-      'ntfs_i30', 'Folder', 'refs_volume',
+      'hfs_limit', 'hfs_vh', 'hfs_catalog_unread', 'hfs_linear_unread', 'apfs_nxsb_unread', 'apfs_block_unread', 'apfs_linear_unread',
+      'usn_journal', 'usn_unread', 'ntfs_logfile', 'ntfs_logfile_restart', 'ntfs_logfile_unread', 'ntfs_recycle_meta',
+      'ntfs_i30', 'ntfs_i30_unread', 'ntfs_mft_unread', 'Folder', 'refs_volume', 'refs_supb_unread', 'refs_page_unread',
+      'fat_dir_unread', 'fat_chain_unread', 'ext4_dir_unread', 'xfs_dir_unread', 'xfs_sb_unread', 'xfs_inode_unread', 'xfs_bmap_unread',
+      'unalloc_map_unread', 'probe_unread', 'carver_unread',
     ]
     for (const s of expected) expect(isDiscoveryOnlySource(s)).toBe(true)
-    expect(isDiscoveryOnlySource('carver_duplicate')).toBe(false) // duplicate gate separate in TS
+    expect(isDiscoveryOnlySource('hfs_catalog')).toBe(false)
+    expect(canRecoverSource('hfs_catalog', true)).toBe(true)
+    expect(canRecoverSource('hfs_catalog', false)).toBe(false)
     expect(isDuplicateSource('carver_duplicate')).toBe(true)
   })
 })

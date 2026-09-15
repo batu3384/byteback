@@ -24,16 +24,6 @@
   font-size: 0.9rem;
 }
 
-.case-alert {
-  padding: var(--space-md);
-  border-left: 4px solid var(--alert-red);
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.case-alert h3 {
-  margin-bottom: 4px;
-}
-
 .case-form,
 .case-nsrl {
   display: flex;
@@ -47,7 +37,7 @@
   padding: 10px 12px;
   background: var(--well-bg);
   border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--text-main);
 }
 
@@ -72,4 +62,18 @@
   align-items: center;
   gap: 8px;
   width: fit-content;
+}
+
+.case-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.case-path-row code {
+  flex: 1;
+  font-size: 0.78rem;
+  word-break: break-all;
+  color: var(--text-muted);
 }

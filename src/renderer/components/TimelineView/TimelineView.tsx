@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import type { TimelineEvent } from '../../../shared/types'
 import { useI18n, tFormat, formatInt } from '../../i18n'
+import InlineAlert from '../InlineAlert'
 
 interface TimelineViewProps {
   scanId: number
@@ -90,28 +91,29 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
   }, {})
 
   return (
-    <div className="timeline-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
-      <div className="timeline-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px' }}>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}>
+    <div className="timeline-view">
+      <div className="timeline-header glass-panel">
+        <div className="timeline-header-info">
+          <div className="examiner-icon">
             <Clock size={32} color="var(--accent-blue)" />
           </div>
           <div>
-            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('tl.title')}</h2>
-            <p style={{ color: 'var(--text-muted)' }}>
+            <h2>{t('tl.title')}</h2>
+            <p>
               {tFormat('tl.subtitle', { n: String(scanId), total: formatInt(total) })}
             </p>
           </div>
         </div>
-        <button className="btn-secondary" onClick={() => fetchTimeline(page, filter)} disabled={loading} style={{ display: 'flex', gap: '8px' }}>
+        <button className="btn-secondary" onClick={() => fetchTimeline(page, filter)} disabled={loading}>
           <RefreshCw size={16} className={loading ? 'spinner' : ''} /> {t('dash.refresh')}
         </button>
       </div>
 
-      <div className="timeline-filters glass-panel" style={{ display: 'flex', gap: '8px', padding: '16px 24px', flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="timeline-filters glass-panel">
         <button
+          type="button"
           className={`btn-secondary ${filter === '' ? 'active' : ''}`}
-          style={{ padding: '6px 16px', background: filter === '' ? 'var(--panel-border)' : 'transparent' }}
+          aria-pressed={filter === ''}
           onClick={() => setFilter('')}
         >
           {t('scan.all')}
@@ -119,8 +121,10 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
         {Object.entries(EVENT_META).map(([key, meta]) => (
           <button
             key={key}
+            type="button"
             className={`btn-secondary ${filter === key ? 'active' : ''}`}
-            style={{ padding: '6px 16px', background: filter === key ? 'var(--panel-border)' : 'transparent', color: meta.color, display: 'flex', gap: '6px', alignItems: 'center' }}
+            style={{ '--event-color': meta.color } as React.CSSProperties}
+            aria-pressed={filter === key}
             onClick={() => setFilter(key)}
           >
             {meta.icon} {t(meta.labelKey)}
@@ -128,27 +132,25 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
         ))}
       </div>
 
-      <div className="timeline-content glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+      <div className="timeline-content glass-panel">
         {loading ? (
-          <div role="status" style={{ padding: '60px', textAlign: 'center' }}>
-            <RefreshCw size={32} className="spinner" style={{ margin: '0 auto 16px', color: 'var(--accent-blue)' }} />
-            <p style={{ color: 'var(--text-muted)' }}>{t('tl.loading')}</p>
+          <div className="examiner-empty timeline-load" role="status">
+            <RefreshCw size={32} className="spinner" />
+            <p>{t('tl.loading')}</p>
           </div>
         ) : loadError ? (
-          <div role="alert" style={{ padding: '60px', textAlign: 'center', color: 'var(--alert-red)' }}>
-            {loadError}
-          </div>
+          <InlineAlert variant="error">{loadError}</InlineAlert>
         ) : events.length === 0 ? (
-          <div style={{ padding: '60px', textAlign: 'center' }}>
-            <Clock size={48} style={{ margin: '0 auto 16px', color: 'var(--panel-border)' }} />
-            <h3 style={{ fontSize: '1.2rem', marginBottom: '8px' }}>{t('tl.emptyTitle')}</h3>
-            <p style={{ color: 'var(--text-muted)' }}>
+          <div className="examiner-empty" role="status">
+            <Clock size={48} className="timeline-empty-ico" aria-hidden="true" />
+            <h3>{t('tl.emptyTitle')}</h3>
+            <p>
               {t('tl.emptyBody')}
             </p>
           </div>
         ) : (
           <>
-            <div style={{ padding: '8px 24px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <div className="timeline-summary">
               {tFormat('tl.pageSummary', { list: Object.entries(typeCounts).map(([k, c]) => `${EVENT_META[k] ? t(EVENT_META[k].labelKey) : k}: ${c}`).join(' · ') })}
             </div>
             {events.map((ev) => {
@@ -157,32 +159,16 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
                 <div
                   key={ev.id}
                   className="timeline-row"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '16px',
-                    padding: '10px 24px',
-                    borderBottom: '1px solid rgba(255,255,255,0.03)',
-                  }}
+                  style={{ '--event-color': meta.color } as React.CSSProperties}
                 >
-                  <div
-                    className="timeline-marker"
-                    style={{
-                      width: '10px',
-                      height: '10px',
-                      borderRadius: '50%',
-                      background: meta.color,
-                      flexShrink: 0,
-                      boxShadow: `0 0 8px ${meta.color}`,
-                    }}
-                  />
-                  <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-muted)', minWidth: '170px', flexShrink: 0 }}>
+                  <div className="timeline-marker" />
+                  <div className="timeline-time">
                     {formatTimestamp(ev.timestamp)}
                   </div>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', color: meta.color, fontSize: '0.8rem', minWidth: '180px', flexShrink: 0 }}>
+                  <div className="timeline-kind">
                     {meta.icon} {t(meta.labelKey)}
                   </div>
-                  <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.fileName}>
+                  <div className="timeline-file" title={ev.fileName}>
                     {ev.fileName || t('tl.unnamed')}
                   </div>
                 </div>
@@ -192,15 +178,15 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
         )}
       </div>
 
-      <div className="timeline-pagination" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '16px', paddingBottom: '8px' }}>
-        <button className="btn-secondary" onClick={() => goPage(page - 1)} disabled={page === 0 || loading} style={{ display: 'flex', gap: '6px' }}>
-          <ChevronLeft size={16} /> {t('scan.prev')}
+      <div className="timeline-pagination">
+        <button type="button" className="btn-secondary" onClick={() => goPage(page - 1)} disabled={page === 0 || loading}>
+          <ChevronLeft size={16} aria-hidden="true" /> {t('scan.prev')}
         </button>
-        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+        <span className="timeline-page">
           {tFormat('tl.pageOf', { cur: String(page + 1), total: String(pageCount) })}
         </span>
-        <button className="btn-secondary" onClick={() => goPage(page + 1)} disabled={page + 1 >= pageCount || loading} style={{ display: 'flex', gap: '6px' }}>
-          {t('scan.next')} <ChevronRight size={16} />
+        <button type="button" className="btn-secondary" onClick={() => goPage(page + 1)} disabled={page + 1 >= pageCount || loading}>
+          {t('scan.next')} <ChevronRight size={16} aria-hidden="true" />
         </button>
       </div>
     </div>

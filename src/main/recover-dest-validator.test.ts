@@ -10,6 +10,8 @@ import {
   ERR_DEST_REQUIRED,
   ERR_DEST_BLOCKED,
   ERR_DEST_UNRESOLVED,
+  ERR_DEST_ON_SOURCE,
+  ERR_RAID_STATE_UNREAD,
 } from './recover-dest-validator'
 
 // Policy is Windows-only by design (recovery targets are local drive paths);
@@ -146,5 +148,14 @@ describe('validateRecoverDestDir (structural + resolution, Windows host)', () =>
 
   it('resolves through strictResolveDest helper directly', () => {
     expect(strictResolveDest('C:\\Windows\\System32')).not.toBeNull()
+  })
+
+  it('exports dest-on-source block copy for recover IPC', () => {
+    expect(ERR_DEST_ON_SOURCE).toMatch(/kanıt/)
+  })
+
+  it('exports RAID-unread dest copy so recover does not skip member checks', () => {
+    expect(ERR_RAID_STATE_UNREAD).toMatch(/RAID/)
+    expect(ERR_RAID_STATE_UNREAD).toMatch(/okunamadı/)
   })
 })

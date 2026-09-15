@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import './RaidBuilder.css';
-import { Layers, HardDrive, Cpu, Settings2, Play, CheckCircle, Radar } from 'lucide-react';
+import { Layers, HardDrive, Cpu, Settings2, Play, Radar } from 'lucide-react';
 import InlineAlert from '../InlineAlert';
 import { useI18n, tFormat } from '../../i18n';
+import {
+  RAID_OFFSET_SECTORS_MAX,
+  RAID_STRIPE_BYTES,
+  formatRaidStripe,
+  isRaidStripeSize,
+  raid5StripeAmbiguous,
+} from '../../../shared/raid-geometry';
 
 interface Disk {
   id: string;
@@ -32,6 +39,8 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   const [assembled, setAssembled] = useState(false);
   const [failedSlots, setFailedSlots] = useState<Set<number>>(new Set());
   const [raidNotice, setRaidNotice] = useState<{ variant: 'success' | 'error' | 'warning'; message: string } | null>(null);
+  const [stripeBytes, setStripeBytes] = useState(65536);
+  const [offsetSectors, setOffsetSectors] = useState(0);
 
   useEffect(() => {
     if (window.api && window.api.listDrives) {
@@ -96,17 +105,24 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
       if (res && res.found && typeof res.raidLevel === 'number') {
         const label = RAID_LEVEL_TO_LABEL[res.raidLevel] ?? String(res.raidLevel);
         setRaidType(label);
+        if (isRaidStripeSize(res.blockSize)) setStripeBytes(res.blockSize);
+        if (typeof res.dataOffsetSectors === 'number' && Number.isInteger(res.dataOffsetSectors) && res.dataOffsetSectors >= 0) {
+          setOffsetSectors(Math.min(res.dataOffsetSectors, RAID_OFFSET_SECTORS_MAX));
+        }
         const confPct = res.confidence != null ? Math.round(res.confidence * 100) : null;
-        const sizeMb = res.blockSize != null ? (res.blockSize / (1024 * 1024)).toFixed(0) : null;
+        const stripeLabel = isRaidStripeSize(res.blockSize) ? formatRaidStripe(res.blockSize) : null;
         const details = [
           confPct != null ? tFormat('raid.detectConfidence', { n: String(confPct) }) : '',
-          sizeMb != null ? tFormat('raid.detectStripe', { n: sizeMb }) : '',
+          stripeLabel != null ? tFormat('raid.detectStripe', { n: stripeLabel }) : '',
+          res.dataOffsetSectors != null ? tFormat('raid.detectOffset', { n: String(res.dataOffsetSectors) }) : '',
         ].filter(Boolean).join(' · ');
+        const ambiguous = raid5StripeAmbiguous(res.raidLevel, res.confidence);
         setRaidNotice({
-          variant: 'success',
-          message: details
+          variant: ambiguous ? 'warning' : 'success',
+          message: (details
             ? tFormat('raid.detectOk', { type: label }) + ' — ' + details
-            : tFormat('raid.detectOk', { type: label }),
+            : tFormat('raid.detectOk', { type: label }))
+            + (ambiguous ? ' ' + t('raid.stripeAmbiguous') : ''),
         });
       } else {
         // Honest fail: RAID 0 carries no parity and is never guessed.
@@ -139,7 +155,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
       return;
     }
     try {
-      const res = await window.api.reconstructRaid(driveIndices, raidLevel);
+      const res = await window.api.reconstructRaid(driveIndices, raidLevel, stripeBytes, offsetSectors);
       if (res && res.success) {
         setAssembled(true);
         setFailedSlots(new Set());
@@ -170,14 +186,14 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
   };
 
   return (
-    <div className="raid-builder-container" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '1000px', margin: '0 auto' }}>
-      <div className="raid-header glass-panel" style={{ padding: '24px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-        <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}>
+    <div className="raid-builder-container">
+      <div className="raid-header glass-panel">
+        <div className="examiner-icon" aria-hidden="true">
           <Layers size={32} color="var(--accent-blue)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('raid.title')}</h2>
-          <p style={{ color: 'var(--text-muted)' }}>{t('raid.subtitle')}</p>
+          <h2>{t('raid.title')}</h2>
+          <p>{t('raid.subtitle')}</p>
         </div>
       </div>
 
@@ -187,70 +203,61 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
         </InlineAlert>
       )}
 
-      <div className="raid-workspace" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', flex: 1, minHeight: 0 }}>
-        
-        {/* Available Disks Column */}
-        <div 
+      <div className="raid-workspace">
+        <div
           className="raid-column glass-panel available-column"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => handleDrop(e, 'available')}
-          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
         >
-          <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <HardDrive size={20} color="var(--accent-blue)" />
-            <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{t('raid.available')}</h3>
+          <div className="raid-col-head">
+            <HardDrive size={20} color="var(--accent-blue)" aria-hidden="true" />
+            <h3>{t('raid.available')}</h3>
           </div>
-          <div className="disk-list" style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="disk-list" role="list" aria-label={t('raid.available')}>
             {availableDisks.map(disk => (
-              <div 
-                key={disk.id} 
-                className="disk-item" 
-                draggable 
+              <div
+                key={disk.id}
+                className="disk-item"
+                role="listitem"
+                draggable
                 onDragStart={(e) => handleDragStart(e, disk.id, 'available')}
-                style={{ 
-                  padding: '16px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)', 
-                  borderRadius: '8px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: '16px',
-                  transition: 'var(--transition-smooth)'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
               >
-                <HardDrive size={24} color="var(--text-muted)" />
-                <div className="disk-info" style={{ flex: 1 }}>
-                  <div className="disk-name" style={{ fontWeight: 500, color: 'var(--text-main)', marginBottom: '4px' }}>{disk.name}</div>
-                  <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{disk.capacity}</div>
+                <HardDrive size={24} color="var(--text-muted)" aria-hidden="true" />
+                <div className="disk-info">
+                  <div className="disk-name">{disk.name}</div>
+                  <div className="disk-capacity">{disk.capacity}</div>
                 </div>
                 <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'available', 'array')}>{t('raid.addToArray')}</button>
               </div>
             ))}
             {availableDisks.length === 0 && (
-              <div className="empty-state" style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto', padding: '40px 0' }}>
-                <HardDrive size={48} style={{ margin: '0 auto 16px', opacity: 0.2 }} />
+              <div className="examiner-empty" role="status">
+                <div className="examiner-icon" aria-hidden="true">
+                  <HardDrive size={28} />
+                </div>
                 <p>{t('raid.emptyAvailable')}</p>
               </div>
             )}
           </div>
         </div>
 
-        {/* RAID Array Column */}
-        <div 
+        <div
           className="raid-column glass-panel array-column"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => handleDrop(e, 'array')}
-          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid var(--accent-blue-soft, rgba(59, 130, 246, 0.3))', boxShadow: 'inset 0 0 40px rgba(59, 130, 246, 0.05)' }}
         >
-          <div className="array-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--panel-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <Cpu size={20} color="var(--accent-blue)" />
-              <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{t('raid.arrayTitle')}</h3>
+          <div className="array-header">
+            <div className="array-header-title">
+              <Cpu size={20} color="var(--accent-blue)" aria-hidden="true" />
+              <h3>{t('raid.arrayTitle')}</h3>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Settings2 size={16} color="var(--text-muted)" />
+            <div className="array-header-tools">
+              <Settings2 size={16} color="var(--text-muted)" aria-hidden="true" />
               <select
                 className="raid-type-select"
                 value={raidType}
                 onChange={(e) => setRaidType(e.target.value)}
-                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '6px 12px', borderRadius: '6px' }}
+                aria-label={t('raid.arrayTitle')}
               >
                 <option value="RAID 0">{t('raid.raid0')}</option>
                 <option value="RAID 1">{t('raid.raid1')}</option>
@@ -258,30 +265,56 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 <option value="RAID 6">{t('raid.raid6')}</option>
                 <option value="RAID 10">{t('raid.raid10')}</option>
               </select>
+              <select
+                className="raid-type-select"
+                data-testid="raid-stripe-select"
+                value={String(stripeBytes)}
+                disabled={raidType === 'RAID 1' || assembled}
+                aria-label={t('raid.stripeLabel')}
+                onChange={(e) => setStripeBytes(Number(e.target.value))}
+              >
+                {RAID_STRIPE_BYTES.map((n) => (
+                  <option key={n} value={n}>{formatRaidStripe(n)}</option>
+                ))}
+              </select>
+              <label className="raid-offset-label">
+                {t('raid.offsetLabel')}
+                <input
+                  data-testid="raid-offset-sectors"
+                  type="number"
+                  min={0}
+                  max={RAID_OFFSET_SECTORS_MAX}
+                  step={1}
+                  value={offsetSectors}
+                  disabled={assembled}
+                  aria-label={t('raid.offsetLabel')}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (Number.isInteger(n) && n >= 0 && n <= RAID_OFFSET_SECTORS_MAX) setOffsetSectors(n)
+                  }}
+                />
+              </label>
             </div>
           </div>
 
-          <div className="disk-list raid-slots" style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', background: 'rgba(59, 130, 246, 0.02)' }}>
+          <div className="disk-list raid-slots" role="list" aria-label={t('raid.arrayTitle')}>
             {raidArray.map((disk, index) => (
               <div
                 key={disk.id}
                 className="disk-item in-array"
+                role="listitem"
                 draggable
                 onDragStart={(e) => handleDragStart(e, disk.id, 'array')}
-                style={{
-                  padding: '16px', background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)',
-                  borderRadius: '8px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: '16px'
-                }}
               >
-                <div style={{ background: 'var(--accent-blue)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>{tFormat('raid.slot', { n: String(index) })}</div>
-                <HardDrive size={24} color="white" />
-                <div className="disk-info" style={{ flex: 1 }}>
-                  <div className="disk-name" style={{ fontWeight: 500, color: 'white', marginBottom: '4px' }}>{disk.name}</div>
-                  <div className="disk-capacity" style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)' }}>{disk.capacity}</div>
+                <div className="raid-slot">{tFormat('raid.slot', { n: String(index) })}</div>
+                <HardDrive size={24} color="var(--accent-blue)" aria-hidden="true" />
+                <div className="disk-info">
+                  <div className="disk-name">{disk.name}</div>
+                  <div className="disk-capacity">{disk.capacity}</div>
                 </div>
                 <button type="button" className="btn-secondary" onClick={() => moveDisk(disk.id, 'array', 'available')}>{t('raid.remove')}</button>
                 {assembled && (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'rgba(255,255,255,0.85)', cursor: 'pointer' }}>
+                  <label className="fail-member">
                     <input
                       type="checkbox"
                       checked={failedSlots.has(index)}
@@ -304,22 +337,21 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
               </div>
             ))}
             {raidArray.length === 0 && (
-              <div className="empty-state" style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto', padding: '40px 0' }}>
-                <div style={{ padding: '20px', border: '2px dashed var(--panel-border)', borderRadius: '12px', display: 'inline-block', marginBottom: '16px' }}>
-                  <HardDrive size={32} style={{ opacity: 0.5 }} />
+              <div className="examiner-empty" data-testid="raid-empty-array" role="status">
+                <div className="examiner-icon" aria-hidden="true">
+                  <HardDrive size={28} />
                 </div>
                 <p>{t('raid.emptyArray')}</p>
               </div>
             )}
           </div>
 
-          <div style={{ padding: '24px', borderTop: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="raid-footer">
             <button
               type="button"
               className="btn-secondary"
               disabled={raidArray.length < 2 || isDetecting || assembled}
               onClick={detectRaid}
-              style={{ width: '100%', padding: '12px', fontSize: '0.95rem', fontWeight: 500, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px' }}
             >
               {isDetecting ? (
                 <>
@@ -332,10 +364,10 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
               )}
             </button>
             <button
+              type="button"
               className="btn-primary build-btn"
               disabled={raidArray.length < 2 || isBuilding}
               onClick={buildRaid}
-              style={{ width: '100%', padding: '16px', fontSize: '1.1rem', fontWeight: 600, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}
             >
               {isBuilding ? (
                 <>
@@ -347,7 +379,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 </>
               )}
             </button>
-            <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
+            <p className="raid-hint">
               {t('raid.hint')}
             </p>
           </div>

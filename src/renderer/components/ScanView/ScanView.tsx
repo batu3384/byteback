@@ -8,10 +8,13 @@ import {
   etaFromMonotonicWindow,
   formatEtaClock,
   scanStepIndex,
+  scanPhaseI18nKey,
   type EtaSample,
 } from '../../../shared/scan-eta'
 import type { ScanPhase } from '../../../shared/scan-required'
 import { useI18n, tFormat, formatInt, localeTag } from '../../i18n'
+import InlineAlert from '../InlineAlert'
+import { loadScanHonestyFlags } from '../../../shared/scan-honesty'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -35,14 +38,6 @@ const TYPE_CHIPS: { id: string; labelKey: string; category: string }[] = [
   { id: 'archive', labelKey: 'scan.archive', category: 'Archive' },
 ]
 
-/** i18n key for the engine phase — shared/scan-eta's label is TR-only. */
-function phaseLabelKey(phase?: string): string {
-  if (phase === 'carve') return 'scan.phase.carve'
-  if (phase === 'carve_skipped') return 'scan.phase.carveSkipped'
-  if (phase === 'carve_only') return 'scan.phase.carveOnly'
-  return 'scan.phase.metadata'
-}
-
 function ScanView({
   driveIndex, scanType,
   progress, status, phase,
@@ -64,6 +59,22 @@ function ScanView({
   const [listLoading, setListLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<any>(null)
   const [hfsTruncated, setHfsTruncated] = useState(false)
+  const [hfsCatalogUnread, setHfsCatalogUnread] = useState(false)
+  const [apfsNxsbUnread, setApfsNxsbUnread] = useState(false)
+  const [refsProbeCapped, setRefsProbeCapped] = useState(false)
+  const [refsSupbUnread, setRefsSupbUnread] = useState(false)
+  const [fatDirUnread, setFatDirUnread] = useState(false)
+  const [ext4DirUnread, setExt4DirUnread] = useState(false)
+  const [xfsDirUnread, setXfsDirUnread] = useState(false)
+  const [ntfsI30Unread, setNtfsI30Unread] = useState(false)
+  const [unallocMapUnread, setUnallocMapUnread] = useState(false)
+  const [ntfsLogfileUnread, setNtfsLogfileUnread] = useState(false)
+  const [usnUnread, setUsnUnread] = useState(false)
+  const [ntfsMftUnread, setNtfsMftUnread] = useState(false)
+  const [probeUnread, setProbeUnread] = useState(false)
+  const [carverUnread, setCarverUnread] = useState(false)
+  const [honestyLoadFailed, setHonestyLoadFailed] = useState(false)
+  const [listError, setListError] = useState<string | null>(null)
   const limit = 50
 
   const speedHistoryRef = useRef<EtaSample[]>([])
@@ -142,6 +153,7 @@ function ScanView({
         window.api.getScanSummary ? window.api.getScanSummary(activeScanId) : Promise.resolve(null),
       ])
       if (gen !== loadGenRef.current) return
+      setListError(null)
       setTotalFiles(typeof count === 'number' && count >= 0 ? count : 0)
       setListCount(typeof listed === 'number' && listed >= 0 ? listed : 0)
       setFilesFound(pageData ?? [])
@@ -152,10 +164,11 @@ function ScanView({
     } catch (e) {
       if (gen !== loadGenRef.current) return
       console.error('Pagination error', e)
+      setListError(t('scan.listFailed'))
     } finally {
       if (gen === loadGenRef.current) setListLoading(false)
     }
-  }, [activeScanId, listFilter])
+  }, [activeScanId, listFilter, t])
 
   useEffect(() => {
     if (driveIndex === null || activeScanId <= 0) return
@@ -173,18 +186,32 @@ function ScanView({
   }, [listCount, page, limit])
 
   useEffect(() => {
-    if (filesFound.some((f) => f.source === 'hfs_limit')) {
-      setHfsTruncated(true)
-      return
-    }
-    if (activeScanId <= 0 || !window.api?.searchFiles) {
-      setHfsTruncated(false)
-      return
-    }
-    void window.api
-      .searchFiles(activeScanId, 'catalog truncated', 0, 8)
-      .then((res) => setHfsTruncated(res.rows.some((r: { source?: string }) => r.source === 'hfs_limit')))
-      .catch(() => setHfsTruncated(false))
+    let cancelled = false
+    void loadScanHonestyFlags(activeScanId, window.api?.getFilesPage, filesFound)
+      .then((flags) => {
+        if (cancelled) return
+        setHonestyLoadFailed(false)
+        setHfsTruncated(flags.hfsLimit)
+        setHfsCatalogUnread(flags.hfsCatalogUnread)
+        setApfsNxsbUnread(flags.apfsNxsbUnread)
+        setRefsProbeCapped(flags.refsProbeCapped)
+        setRefsSupbUnread(flags.refsSupbUnread)
+        setFatDirUnread(flags.fatDirUnread)
+        setExt4DirUnread(flags.ext4DirUnread)
+        setXfsDirUnread(flags.xfsDirUnread)
+        setNtfsI30Unread(flags.ntfsI30Unread)
+        setUnallocMapUnread(flags.unallocMapUnread)
+        setNtfsLogfileUnread(flags.ntfsLogfileUnread)
+        setUsnUnread(flags.usnUnread)
+        setNtfsMftUnread(flags.ntfsMftUnread)
+        setProbeUnread(flags.probeUnread)
+        setCarverUnread(flags.carverUnread)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setHonestyLoadFailed(true)
+      })
+    return () => { cancelled = true }
   }, [filesFound, activeScanId])
 
   const formatElapsed = (seconds: number) => {
@@ -238,42 +265,37 @@ function ScanView({
   const rangeEnd = Math.min((page + 1) * limit, listCount)
 
   return (
-    <div className="scan-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)' }}>
-      
-      <div className="scan-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-xl)' }}>
-        <div className="scan-info" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
-          <div className="scan-icon" style={{ 
-            background: isFinished ? 'rgba(16, 185, 129, 0.1)' : isFailed ? 'rgba(239, 68, 68, 0.1)' : isPaused ? 'rgba(245, 158, 11, 0.1)' : 'rgba(59, 130, 246, 0.1)', 
-            padding: '16px', borderRadius: '12px',
-            color: isFinished ? 'var(--success-green)' : isFailed ? 'var(--alert-red)' : isPaused ? 'var(--warning-yellow)' : 'var(--accent-blue)'
-          }}>
-            {isFinished ? <CheckCircle size={32} /> : isFailed ? <AlertTriangle size={32} /> : isPaused ? <Pause size={32} /> : <Search size={32} className="spinner" />}
+    <div className="scan-view">
+      <div className="scan-header glass-panel">
+        <div className="scan-info">
+          <div className={`scan-icon${isFinished ? ' ok' : isFailed ? ' fail' : isPaused ? ' warn' : ''}`} aria-hidden="true">
+            {isFinished ? <CheckCircle size={20} /> : isFailed ? <AlertTriangle size={20} /> : isPaused ? <Pause size={20} /> : <Search size={20} className="spinner" />}
           </div>
           <div>
-            <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>
+            <h2>
               {scanTitle}
             </h2>
-            <p style={{ color: 'var(--text-muted)' }}>
+            <p>
               {profileLabel} • {statusLabel}
             </p>
           </div>
         </div>
-        <div className="scan-stats" style={{ display: 'flex', gap: 'var(--space-md)' }}>
-          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.records')}</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatInt(totalFiles)}</span>
-            <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+        <div className="scan-stats">
+          <div className="stat-pill">
+            <span className="pill-label">{t('scan.records')}</span>
+            <span className="pill-value">{formatInt(totalFiles)}</span>
+            <span className="pill-sub">
               {tFormat('scan.deletedOf', { n: formatInt(deletedCount) })}
               {carvedCount > 0 ? ` · ${tFormat('scan.carvedOf', { n: formatInt(carvedCount) })}` : ''}
             </span>
           </div>
-          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center' }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.elapsed')}</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600 }}>{formatElapsed(elapsed)}</span>
+          <div className="stat-pill">
+            <span className="pill-label">{t('scan.elapsed')}</span>
+            <span className="pill-value">{formatElapsed(elapsed)}</span>
           </div>
-          <div className="stat-pill" style={{ background: 'var(--surface-overlay)', padding: '12px 24px', borderRadius: '8px', textAlign: 'center', opacity: isTerminal ? 0.3 : 1 }}>
-            <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.remaining')}</span>
-            <span style={{ display: 'block', fontSize: '1.25rem', fontWeight: 600, color: etaSeconds > 0 && !etaStalled ? 'var(--accent-blue)' : 'inherit' }}>
+          <div className={`stat-pill${isTerminal ? ' dim' : ''}`}>
+            <span className="pill-label">{t('scan.remaining')}</span>
+            <span className={`pill-value${etaSeconds > 0 && !etaStalled ? ' eta-live' : ''}`}>
               {remainingLabel}
             </span>
           </div>
@@ -281,27 +303,72 @@ function ScanView({
       </div>
 
       {hfsTruncated && (
-        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          {t('scan.hfsLimit')}
-        </div>
+        <InlineAlert variant="warning" testId="hfs-limit-banner">{t('scan.hfsLimit')}</InlineAlert>
       )}
-      {/* CA-041: bad-sector telemetry from failed reads, surfaced at last. */}
+      {hfsCatalogUnread && (
+        <InlineAlert variant="warning" testId="hfs-catalog-unread">{t('scan.hfsCatalogUnread')}</InlineAlert>
+      )}
+      {apfsNxsbUnread && (
+        <InlineAlert variant="warning" testId="apfs-nxsb-unread">{t('scan.apfsNxsbUnread')}</InlineAlert>
+      )}
+      {refsProbeCapped && (
+        <InlineAlert variant="warning" testId="refs-probe-capped">{t('scan.refsProbeCapped')}</InlineAlert>
+      )}
+      {refsSupbUnread && (
+        <InlineAlert variant="warning" testId="refs-supb-unread">{t('scan.refsSupbUnread')}</InlineAlert>
+      )}
+      {fatDirUnread && (
+        <InlineAlert variant="warning" testId="fat-dir-unread">{t('scan.fatDirUnread')}</InlineAlert>
+      )}
+      {ext4DirUnread && (
+        <InlineAlert variant="warning" testId="ext4-dir-unread">{t('scan.ext4DirUnread')}</InlineAlert>
+      )}
+      {xfsDirUnread && (
+        <InlineAlert variant="warning" testId="xfs-dir-unread">{t('scan.xfsDirUnread')}</InlineAlert>
+      )}
+      {ntfsI30Unread && (
+        <InlineAlert variant="warning" testId="ntfs-i30-unread">{t('scan.ntfsI30Unread')}</InlineAlert>
+      )}
+      {unallocMapUnread && (
+        <InlineAlert variant="warning" testId="unalloc-map-unread">{t('scan.unallocMapUnread')}</InlineAlert>
+      )}
+      {ntfsLogfileUnread && (
+        <InlineAlert variant="warning" testId="ntfs-logfile-unread">{t('scan.ntfsLogfileUnread')}</InlineAlert>
+      )}
+      {usnUnread && (
+        <InlineAlert variant="warning" testId="usn-unread">{t('scan.usnUnread')}</InlineAlert>
+      )}
+      {ntfsMftUnread && (
+        <InlineAlert variant="warning" testId="ntfs-mft-unread">{t('scan.ntfsMftUnread')}</InlineAlert>
+      )}
+      {probeUnread && (
+        <InlineAlert variant="warning" testId="probe-unread">{t('scan.probeUnread')}</InlineAlert>
+      )}
+      {carverUnread && (
+        <InlineAlert variant="warning" testId="carver-unread">{t('scan.carverUnread')}</InlineAlert>
+      )}
+      {honestyLoadFailed && (
+        <InlineAlert variant="warning" testId="scan-honesty-load-error">{t('scan.honestyLoadFailed')}</InlineAlert>
+      )}
+      {listError && (
+        <InlineAlert variant="error" testId="scan-list-error">{listError}</InlineAlert>
+      )}
       {progress.badSectors && progress.badSectors.length > 0 && (
-        <div className="glass-panel" role="alert" style={{ padding: '12px 24px', borderLeft: '4px solid var(--alert-red)', fontSize: '0.85rem' }}>
+        <InlineAlert variant="error">
           {tFormat('scan.badSectors', { n: formatInt(progress.badSectors.length) })}
-        </div>
+        </InlineAlert>
       )}
-      <div className="glass-panel" role="note" style={{ padding: '12px 24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+      <div className="glass-panel scan-note" role="note">
         {progress.phase === 'carve_skipped'
           ? t('scan.carveSkipped')
           : scanType === 'carve_only'
-          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
+          ? tFormat('scan.noteCarveOnly', { step: String(step.step), of: String(step.of), phase: t(scanPhaseI18nKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
           : scanType === 'deep' || scanType === 'full_carve'
-          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: t(phaseLabelKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
+          ? tFormat('scan.noteCarveDeep', { step: String(step.step), of: String(step.of), phase: t(scanPhaseI18nKey(progress.phase)), sigs: carveSignatureCount != null ? tFormat('scan.sigs', { n: formatInt(carveSignatureCount) }) : '' })
           : t('scan.noteQuick')}
       </div>
 
-      <div className="scan-progress-card glass-panel" style={{ padding: 'var(--space-xl)' }}>
+      <div className="scan-progress-card glass-panel">
         <DiskMapVisualizer
           totalSectors={progress.total}
           currentSector={progress.current}
@@ -309,15 +376,15 @@ function ScanView({
           filesFound={totalFiles}
           deletedCount={deletedCount}
         />
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--space-md)', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-          <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {t(phaseLabelKey(progress.phase))}</span>
-          <span style={{ color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{formatSpeed(currentSpeed)}</span>
+        <div className="scan-progress-meta">
+          <span>{tFormat('scan.stepOf', { step: String(step.step), of: String(step.of) })} · {t(scanPhaseI18nKey(progress.phase))}</span>
+          <span className="speed">{formatSpeed(currentSpeed)}</span>
           <span>{tFormat('common.percent', { n: String(percent) })}</span>
         </div>
-        <div style={{ width: '100%', height: '6px', background: 'var(--surface-overlay-strong)', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
-          <div style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
+        <div className="scan-progress-track">
+          <div className="scan-progress-fill" style={{ width: `${percent}%` }}></div>
         </div>
-        <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+        <div className="scan-progress-footer">
           <span>{tFormat('scan.sectorRange', { cur: formatInt(progress.current), total: progress.total ? formatInt(progress.total) : '—' })}</span>
           {progress.phaseCurrent != null && progress.phaseTotal != null && progress.phaseTotal > 0 && (
             <span>{tFormat('scan.phaseProgress', { pct: String(Math.min(100, Math.floor(progress.phaseCurrent * 100 / progress.phaseTotal))) })}</span>
@@ -325,9 +392,9 @@ function ScanView({
         </div>
       </div>
 
-      <div className="scan-live-results glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-md) var(--space-xl)', borderBottom: '1px solid var(--panel-border)', flexWrap: 'wrap', gap: '8px' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 500 }}>
+      <div className="scan-live-results glass-panel">
+        <div className="scan-live-toolbar">
+          <h3>
             {tFormat('scan.deletedRange', { range: rangeStart > 0 ? `${rangeStart}–${rangeEnd} / ${formatInt(listCount)}` : '0' })}
             {listLoading ? ' …' : ''}
           </h3>
@@ -347,20 +414,22 @@ function ScanView({
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
-            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={page === 0 || listLoading} onClick={() => setPage(p => p - 1)}>
-              <ChevronLeft size={16} /> {t('scan.prev')}
+          <div className="scan-pager">
+            <button type="button" className="btn-secondary" disabled={page === 0 || listLoading} onClick={() => setPage(p => p - 1)}>
+              <ChevronLeft size={16} aria-hidden="true" /> {t('scan.prev')}
             </button>
-            <button className="btn-secondary" style={{ padding: '6px 12px' }} disabled={(page + 1) * limit >= listCount || listLoading} onClick={() => setPage(p => p + 1)}>
-              {t('scan.next')} <ChevronRight size={16} />
+            <button type="button" className="btn-secondary" disabled={(page + 1) * limit >= listCount || listLoading} onClick={() => setPage(p => p + 1)}>
+              {t('scan.next')} <ChevronRight size={16} aria-hidden="true" />
             </button>
           </div>
         </div>
-        <div style={{ padding: 'var(--space-md)', overflowY: 'auto', flex: 1, display: 'flex', gap: 'var(--space-md)' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="scan-live-body">
+          <div className="scan-live-list">
             {filesFound.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '2rem' }}>
-                {listLoading
+              <div className="scan-live-empty examiner-empty" role="status" data-testid="scan-live-empty">
+                {listError
+                  ? t('scan.listFailed')
+                  : listLoading
                   ? t('scan.listLoading')
                   : typeChip !== 'all'
                     ? t('scan.noDeletedOfType')
@@ -369,7 +438,7 @@ function ScanView({
                       : t('scan.noFiles')}
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div className="scan-file-rows">
                 {filesFound.map((f) => {
                   const rowKey = f.id ?? `${f.name}-${f.startSector}`
                   const isSelected = selectedFile && selectedFile.id === f.id
@@ -379,18 +448,12 @@ function ScanView({
                       key={rowKey}
                       onClick={() => setSelectedFile(f)}
                       aria-pressed={!!isSelected}
-                      style={{
-                      display: 'flex', alignItems: 'center', padding: '12px 16px', width: '100%',
-                      background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'var(--surface-overlay)', borderRadius: '6px', cursor: 'pointer',
-                      border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.4)' : 'transparent'}`, transition: 'all 0.2s', color: 'inherit', textAlign: 'left'
-                    }}
-                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'var(--panel-border)' }}
-                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.borderColor = 'transparent' }}
+                      className="scan-file-row"
                     >
-                      <File size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
-                      <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                      <span style={{ marginLeft: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', background: 'var(--surface-overlay)', padding: '2px 8px', borderRadius: '12px', flexShrink: 0 }}>{f.category}</span>
-                      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem', flexShrink: 0 }}>
+                      <File size={18} className="file-ico" aria-hidden="true" />
+                      <span className="file-name">{f.name}</span>
+                      <span className="file-cat">{f.category}</span>
+                      <span className="file-size">
                         {formatSize(f.sizeBytes || f.size || 0)}
                       </span>
                     </button>
@@ -401,12 +464,12 @@ function ScanView({
           </div>
 
           {selectedFile && (
-            <div style={{ width: '320px', flexShrink: 0, background: 'var(--well-bg)', borderRadius: '8px', padding: 'var(--space-md)', border: '1px solid var(--panel-border)', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
-                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('scan.fileDetail')}</h4>
-                <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center' }} onClick={() => setSelectedFile(null)} aria-label={t('common.close')}><X size={14} aria-hidden="true" /></button>
+            <aside className="scan-file-detail">
+              <div className="scan-file-detail-head">
+                <h4>{t('scan.fileDetail')}</h4>
+                <button type="button" className="btn-secondary" onClick={() => setSelectedFile(null)} aria-label={t('common.close')}><X size={14} aria-hidden="true" /></button>
               </div>
-              <div style={{ fontFamily: 'monospace', fontSize: '0.9rem', wordBreak: 'break-all', marginBottom: 'var(--space-md)', color: 'var(--text-main)' }}>
+              <div className="scan-file-detail-name">
                 {selectedFile.name}
               </div>
               {[
@@ -422,35 +485,34 @@ function ScanView({
                 [t('scan.modified'), selectedFile.modifiedAt ? new Date(selectedFile.modifiedAt * 1000).toLocaleString(localeTag()) : '—'],
                 [t('scan.path'), selectedFile.path ?? '—'],
               ].map(([k, v]) => (
-                <div key={String(k)} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '6px 0', borderBottom: '1px solid var(--surface-overlay)', fontSize: '0.8rem' }}>
-                  <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{k}</span>
-                  <span style={{ textAlign: 'right', wordBreak: 'break-all' }}>{String(v)}</span>
+                <div key={String(k)} className="scan-kv">
+                  <span className="scan-kv-k">{k}</span>
+                  <span className="scan-kv-v">{String(v)}</span>
                 </div>
               ))}
-            </div>
+            </aside>
           )}
         </div>
       </div>
 
-      <div className="scan-actions" style={{ display: 'flex', gap: 'var(--space-md)', justifyContent: 'flex-end', marginTop: 'var(--space-md)' }}>
+      <div className="scan-actions">
         {!isTerminal && !stopping && (
-          <button className="btn-danger" onClick={onStop} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button type="button" className="btn-danger" onClick={onStop}>
             <Square size={16} fill="currentColor" /> {t('scan.stop')}
           </button>
         )}
         {(isFinished || isPaused) && (
-          <button className="btn-primary" onClick={onViewResults}>
+          <button type="button" className="btn-primary" onClick={onViewResults}>
             {t('scan.viewResults')}
           </button>
         )}
         {isTerminal && (
-          <button className="btn-secondary" onClick={onCancel}>{t('scan.backHome')}</button>
+          <button type="button" className="btn-secondary" onClick={onCancel}>{t('scan.backHome')}</button>
         )}
         {stopping && (
-          <span style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>{t('scan.stopping')}</span>
+          <span className="stopping">{t('scan.stopping')}</span>
         )}
       </div>
-
     </div>
   )
 }

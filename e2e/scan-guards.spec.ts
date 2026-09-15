@@ -21,7 +21,7 @@ test('scan-dependent nav stays on dashboard when report is forced', async () => 
     const reportBtn = win.getByTestId('nav-report')
     await expect(reportBtn).toBeDisabled()
     await reportBtn.click({ force: true })
-    await expect(win.locator('.header-title h2')).toHaveText('Ana Ekran')
+    await expect(win.locator('.header-title h2')).toHaveText('Kaynaklar')
   } finally {
     await closeApp(launched)
   }

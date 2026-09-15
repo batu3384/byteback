@@ -28,8 +28,8 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('scan-complete', handler)
   },
   
-  startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') =>
-    ipcRenderer.send('start-imaging', driveIndex, destPath, format),
+  startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf', volumePath?: string) =>
+    ipcRenderer.send('start-imaging', driveIndex, destPath, format, volumePath),
   stopImaging: () => ipcRenderer.send('stop-imaging'),
 
   onImagingProgress: (callback: (data: { current: number, total: number, md5?: string, error?: string, status?: 'cancelled' }) => void) => {
@@ -40,16 +40,16 @@ contextBridge.exposeInMainWorld('api', {
   
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
   getDataPaths: () => ipcRenderer.invoke('get-data-paths'),
-  readHexData: (driveIndex: number, offset: number, size: number) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size),
+  readHexData: (driveIndex: number, offset: number, size: number, volumePath?: string) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size, volumePath),
 
   getFileCount: (scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-file-count', scanId, filter),
   getFilesPage: (scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-files-page', scanId, offset, limit, filter),
   searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) =>
     ipcRenderer.invoke('search-files', scanId, query, offset, limit, useRegex, category),
-  searchFileContent: (scanId: number, query: string, offset: number, limit: number) =>
-    ipcRenderer.invoke('search-file-content', scanId, query, offset, limit),
-  startContentSearch: (scanId: number, query: string) =>
-    ipcRenderer.invoke('start-content-search', scanId, query),
+  searchFileContent: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) =>
+    ipcRenderer.invoke('search-file-content', scanId, query, offset, limit, !!useRegex),
+  startContentSearch: (scanId: number, query: string, useRegex?: boolean) =>
+    ipcRenderer.invoke('start-content-search', scanId, query, !!useRegex),
   stopContentSearch: () => ipcRenderer.send('stop-content-search'),
   onContentSearchProgress: (callback: (data: { current: number; total: number }) => void) => {
     const handler = (_event: IpcRendererEvent, data: any) => callback(data)
@@ -89,8 +89,8 @@ contextBridge.exposeInMainWorld('api', {
   setBitLockerPassword: (driveIndex: number, password: string) =>
     ipcRenderer.invoke('set-bitlocker-password', driveIndex, password),
   detectRaid: (driveIndices: number[]) => ipcRenderer.invoke('detect-raid', driveIndices),
-  reconstructRaid: (driveIndices: number[], raidLevel: number) =>
-    ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel),
+  reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number) =>
+    ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel, blockSize, dataOffsetSectors),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),
   getRaidState: () => ipcRenderer.invoke('get-raid-state'),
   recoverFile: (driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) =>
@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('recover-files-batch', driveIndex, fileIds, destDir, scanId, preservePaths),
   scanLostPartitions: (driveIndex: number, stepSectors?: number) =>
     ipcRenderer.invoke('scan-lost-partitions', driveIndex, stepSectors),
-  setSignatureOverlay: (path: string) => ipcRenderer.invoke('set-signature-overlay', path),
+  pickAndSetSignatureOverlay: () => ipcRenderer.invoke('pick-and-set-signature-overlay'),
   readFilePreview: (driveIndex: number, scanId: number, fileId: number) =>
     ipcRenderer.invoke('read-file-preview', driveIndex, scanId, fileId),
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),

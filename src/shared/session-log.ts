@@ -8,6 +8,7 @@ export function parseSessionEvent(line: string): string {
 // has to match Turkish substrings of the human summary.
 export type SessionLogCode =
   | 'no_scan'
+  | 'unread'
   | 'crash'
   | 'complete'
   | 'fail'
@@ -40,6 +41,7 @@ export function sessionLogCode(lines: string[]): SessionLogCode {
 
 const SUMMARY_TR: Record<SessionLogCode, string> = {
   no_scan: 'Bu oturumda tarama kaydı yok.',
+  unread: 'Oturum günlüğü okunamadı. Çökme veya yarım tarama yok sanma — dosya yüklenemedi.',
   crash: 'Uygulama çöktü. Aşağıdaki günlüğe bak.',
   complete: 'Son tarama tamamlandı.',
   fail: 'Son tarama hata ile bitti.',
@@ -51,6 +53,15 @@ const SUMMARY_TR: Record<SessionLogCode, string> = {
   incomplete: 'Son tarama yarıda kaldı. Devam et ile sürdürebilirsin.',
 }
 
+export function summarizeSessionCode(code: SessionLogCode): string {
+  return SUMMARY_TR[code]
+}
+
 export function summarizeSessionLines(lines: string[]): string {
-  return SUMMARY_TR[sessionLogCode(lines)]
+  return summarizeSessionCode(sessionLogCode(lines))
+}
+
+/** Chrome hides healthy empty/complete logs. Unread is not empty. */
+export function sessionLogShowsBanner(code: string): boolean {
+  return code !== 'no_scan' && code !== 'complete'
 }

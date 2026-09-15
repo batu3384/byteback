@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './KeywordSearch.css';
-import { Search, FileText, Filter, AlertCircle, FileSearch, Keyboard } from 'lucide-react';
+import { Search, FileText, Filter, AlertCircle, Keyboard } from 'lucide-react';
 import type { FileRecord } from '../../../shared/ipc-contract';
+import { isContentSearchOpenFailed, isContentSearchQueryTooLong, isContentSearchRegexRejected, isContentSearchReadIncomplete, CONTENT_SEARCH_MAX_QUERY_BYTES, CONTENT_SEARCH_MAX_REGEX_CHARS, contentQueryByteLength } from '../../../shared/content-search-status';
 import { useI18n, tFormat } from '../../i18n';
-import { buildMatchParts, buildSnippetParts, type SnippetRecord } from './highlight';
+import { buildMatchParts, buildSnippetParts, isSafeHighlightRegex, type SnippetRecord } from './highlight';
+import InlineAlert from '../InlineAlert';
 
 interface KeywordSearchProps {
   scanId: number;
@@ -65,6 +67,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   const [category, setCategory] = useState('');
   const [regexError, setRegexError] = useState('');
   const [searchError, setSearchError] = useState('');
+  const [contentUnread, setContentUnread] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const cleanupRef = useRef<(() => void)[]>([]);
   // Content-search matches accumulate in a ref; the visible list gets one
@@ -94,8 +97,12 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
 
   const handleSearch = async () => {
     if (!query.trim()) return;
-    if (useRegex && query.length > 128) {
+    if (useRegex && query.length > CONTENT_SEARCH_MAX_REGEX_CHARS) {
       setRegexError(t('kw.regexTooLong'));
+      return;
+    }
+    if (searchContent && contentQueryByteLength(query) > CONTENT_SEARCH_MAX_QUERY_BYTES) {
+      setRegexError(t('kw.contentQueryTooLong'));
       return;
     }
     if (scanId <= 0) {
@@ -111,16 +118,22 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
     setSearchDone(false);
     setRegexError('');
     setSearchError('');
+    setContentUnread(false);
     stopFlush();
     matchesRef.current = [];
     setResults([]);
     setProgress({ current: 0, total: 0 });
 
-    if (useRegex && !searchContent) {
+    if (useRegex) {
       try {
         new RegExp(query, 'i');
       } catch (err: any) {
         setRegexError(tFormat('kw.invalidRegex', { err: err?.message ?? String(err) }));
+        setSearching(false);
+        return;
+      }
+      if (!isSafeHighlightRegex(query)) {
+        setRegexError(t('kw.regexUnsafe'));
         setSearching(false);
         return;
       }
@@ -143,11 +156,20 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       }
       if (window.api.onContentSearchComplete) {
         cleanupRef.current.push(
-          window.api.onContentSearchComplete(() => {
+          window.api.onContentSearchComplete((data) => {
             stopFlush();
             flushMatches();
             setSearching(false);
             setSearchDone(true);
+            if (isContentSearchOpenFailed(data.status)) {
+              setSearchError(t('kw.contentBindFailed'));
+            } else if (isContentSearchQueryTooLong(data.status)) {
+              setSearchError(t('kw.contentQueryTooLong'));
+            } else if (isContentSearchRegexRejected(data.status)) {
+              setSearchError(t('kw.regexRejected'));
+            } else if (isContentSearchReadIncomplete(data.status)) {
+              setContentUnread(true);
+            }
             cleanupRef.current.forEach((fn) => fn());
             cleanupRef.current = [];
           }),
@@ -159,18 +181,24 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
       flushTimerRef.current = setInterval(flushMatches, 100);
 
       try {
-        const res = await window.api.startContentSearch(scanId, query);
+        const res = await window.api.startContentSearch(scanId, query, useRegex);
         if (!res.ok) {
           stopFlush();
           flushMatches();
-          setRegexError(res.error ?? t('kw.contentStartFailed'))
+          setRegexError(
+            res.error === 'content query too long'
+              ? t('kw.contentQueryTooLong')
+              : res.error === 'regex rejected'
+                ? t('kw.regexRejected')
+              : (res.error ?? t('kw.contentStartFailed')),
+          )
           setSearching(false);
           setSearchDone(true);
         }
       } catch (e: unknown) {
         stopFlush();
         flushMatches();
-        setRegexError(e instanceof Error ? e.message : t('kw.contentError'))
+        setRegexError(e instanceof Error ? e.message : t('kw.unexpectedError'))
         setSearching(false);
         setSearchDone(true);
       }
@@ -213,53 +241,57 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
   const progressPct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 
   return (
-    <div className="keyword-search-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
-      <div className="search-header glass-panel" style={{ padding: '24px' }}>
-        <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('title.search')}</h2>
-        <p style={{ color: 'var(--text-muted)' }}>{t('kw.subtitle')}</p>
+    <div className="keyword-search-view">
+      <div className="search-header glass-panel">
+        <div className="examiner-icon">
+          <Search size={32} color="var(--accent-blue)" aria-hidden="true" />
+        </div>
+        <div>
+          <h2>{t('title.search')}</h2>
+          <p>{t('kw.subtitle')}</p>
+        </div>
       </div>
 
-      <div className="search-bar-container glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <div className="search-input-wrapper" style={{ display: 'flex', gap: '12px' }}>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--panel-border)', borderRadius: '8px', padding: '0 16px' }}>
+      <div className="search-bar-container glass-panel">
+        <div className="search-input-wrapper">
+          <div className="search-field">
             <Search size={20} color="var(--text-muted)" />
             <input
               type="text"
-              style={{ flex: 1, background: 'transparent', border: 'none', padding: '12px 16px', color: 'var(--text-main)', fontSize: '1rem' }}
+              className="search-input"
               placeholder={t('kw.queryPlaceholder')}
+              aria-label={t('kw.search')}
               value={query}
               maxLength={200}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !searching && handleSearch()}
             />
           </div>
-          <button className="btn-primary search-btn" onClick={handleSearch} disabled={searching} style={{ padding: '0 32px' }}>
+          <button type="button" className="btn-primary search-btn" onClick={handleSearch} disabled={searching}>
             {searching ? t('kw.searching') : t('kw.search')}
           </button>
           {searching && searchContent && (
-            <button className="btn-secondary" onClick={handleStop} style={{ padding: '0 16px' }}>
+            <button type="button" className="btn-secondary search-stop" onClick={handleStop}>
               {t('kw.stop')}
             </button>
           )}
         </div>
 
         {regexError && (
-          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--alert-red)', fontSize: '0.85rem' }}>
-            <AlertCircle size={16} /> {regexError}
-          </div>
+          <InlineAlert variant="error">{regexError}</InlineAlert>
         )}
 
-        <div className="search-filters" style={{ display: 'flex', gap: '16px', color: 'var(--text-muted)', fontSize: '0.9rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)' }}>
+        <div className="search-filters">
+          <span className="search-filters-title">
             <Filter size={16} /> {t('kw.filters')}
           </span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <label className="search-filter-label">
             {t('scan.category')}:
             <select
               value={category}
               disabled={searchContent}
               onChange={(e) => setCategory(e.target.value)}
-              style={{ background: 'rgba(0,0,0,0.2)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px', padding: '4px 8px' }}
+              className="search-select"
             >
               {CATEGORIES.map((c) => (
                 <option key={c.value || 'all'} value={c.value}>{t(c.labelKey)}</option>
@@ -268,19 +300,18 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
           </label>
           {/* Single label wrapping the input — a nested <label htmlFor> made
               clicks on the text toggle the checkbox twice (net no-op). */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+          <label className="search-filter-label">
             <input
               type="checkbox"
               checked={searchContent}
-              onChange={(e) => { setSearchContent(e.target.checked); if (e.target.checked) setUseRegex(false); }}
+              onChange={(e) => { setSearchContent(e.target.checked); }}
             />
             {t('kw.contentSearch')}
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: useRegex ? 'pointer' : 'not-allowed', opacity: searchContent ? 0.5 : 1 }}>
+          <label className="search-filter-label">
             <input
               type="checkbox"
               checked={useRegex}
-              disabled={searchContent}
               onChange={(e) => { setUseRegex(e.target.checked); setRegexError(''); }}
             />
             {t('kw.regex')}
@@ -288,11 +319,11 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         </div>
       </div>
 
-      <div className="search-results glass-panel" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div className="search-results glass-panel">
         {searching && (
-          <div className="loading-state" style={{ margin: 'auto', textAlign: 'center', color: 'var(--accent-blue)' }}>
-            <Search size={48} className="spinner" style={{ margin: '0 auto 16px' }} />
-            <p style={{ color: 'var(--text-muted)' }}>
+          <div className="examiner-empty" role="status" data-testid="search-progress">
+            <Search size={48} className="spinner" aria-hidden="true" />
+            <p>
               {searchContent && progress.total > 0
                 ? tFormat('kw.contentProgress', { pct: String(progressPct), cur: String(progress.current), total: String(progress.total) })
                 : t('kw.scanningFound')}
@@ -301,39 +332,39 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         )}
 
         {searchError && (
-          <div role="alert" style={{ margin: '16px 24px', padding: '12px 16px', borderLeft: '4px solid var(--alert-red)', background: 'rgba(239,68,68,0.08)', color: 'var(--text-main)' }}>
-            {searchError}
-          </div>
+          <InlineAlert variant="error" testId="search-error">{searchError}</InlineAlert>
+        )}
+        {contentUnread && (
+          <InlineAlert variant="warning" testId="content-search-unread">{t('kw.contentUnread')}</InlineAlert>
         )}
 
         {searchDone && !searchError && !regexError && results.length === 0 && (
-          <div className="empty-state" style={{ margin: 'auto', textAlign: 'center' }}>
-            <AlertCircle size={48} color="var(--warning-yellow)" style={{ margin: '0 auto 16px' }} />
-            <p style={{ fontSize: '1.1rem', marginBottom: '8px' }}>{t('kw.noResultsLead')}<strong>{query}</strong>{t('kw.noResultsTail')}</p>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{t('kw.tryDifferent')}</p>
+          <div className="examiner-empty" role="status" data-testid="search-empty">
+            <div className="examiner-icon" aria-hidden="true">
+              <AlertCircle size={28} color="var(--warning-yellow)" />
+            </div>
+            <p className="empty-lead">{t('kw.noResultsLead')}<strong>{query}</strong>{t('kw.noResultsTail')}</p>
+            <p className="empty-hint">{t('kw.tryDifferent')}</p>
           </div>
         )}
 
         {results.length > 0 && (
-          <div className="results-list" style={{ padding: '16px 24px', overflowY: 'auto' }}>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>{tFormat('kw.foundCount', { n: String(results.length) })}</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="results-list">
+            <p className="search-count">{tFormat('kw.foundCount', { n: String(results.length) })}</p>
+            <div className="results-stack">
               {results.map((r, i) => {
                 const rec = r as SnippetRecord;
                 const snippet = typeof rec.snippet === 'string' ? rec.snippet : '';
                 return (
-                  <div key={`${r.id}-${i}`} style={{
-                    display: 'flex', flexWrap: 'wrap', alignItems: 'center', padding: '12px 16px',
-                    background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid transparent'
-                  }}>
-                    <FileText size={18} style={{ color: 'var(--accent-blue)', marginRight: '12px' }} />
-                    <span style={{ fontWeight: 500, flex: 1 }}>
+                  <div key={`${r.id}-${i}`} className="result-hit">
+                    <FileText size={18} className="result-hit-ico" />
+                    <span className="result-hit-name">
                       <HighlightText text={r.name} query={query.trim()} useRegex={useRegex && !searchContent} />
                     </span>
-                    <span style={{ color: 'var(--text-muted)', width: '200px', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.path || undefined}>
+                    <span className="result-hit-path" title={r.path || undefined}>
                       {r.path ? <HighlightText text={r.path} query={query.trim()} useRegex={useRegex && !searchContent} /> : (r.category || '—')}
                     </span>
-                    <span style={{ color: 'var(--text-muted)', width: '100px', textAlign: 'right', fontSize: '0.9rem' }}>
+                    <span className="result-hit-size">
                       {r.sizeBytes ? (r.sizeBytes / 1024).toFixed(2) + ' KB' : ''}
                     </span>
                     {snippet && (
@@ -346,7 +377,7 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
               })}
             </div>
             {!searching && results.length >= 500 && (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
+              <p className="search-truncated">
                 {t('kw.truncated')}
               </p>
             )}
@@ -354,9 +385,11 @@ const KeywordSearch: React.FC<KeywordSearchProps> = ({ scanId }) => {
         )}
 
         {!searching && !searchDone && (
-          <div className="empty-state" style={{ margin: 'auto', textAlign: 'center', color: 'var(--panel-border)' }}>
-            <Keyboard size={64} style={{ margin: '0 auto 16px' }} />
-            <p style={{ color: 'var(--text-muted)' }}>{t('kw.prompt')}</p>
+          <div className="examiner-empty" role="status" data-testid="search-prompt">
+            <div className="examiner-icon" aria-hidden="true">
+              <Keyboard size={28} />
+            </div>
+            <p>{t('kw.prompt')}</p>
           </div>
         )}
       </div>

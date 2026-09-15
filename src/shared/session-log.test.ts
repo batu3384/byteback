@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSessionEvent, sessionLogCode, summarizeSessionLines } from './session-log'
+import { parseSessionEvent, sessionLogCode, sessionLogShowsBanner, summarizeSessionLines } from './session-log'
 
 describe('session-log', () => {
   it('parses event token after timestamp', () => {
@@ -47,5 +47,9 @@ describe('session-log', () => {
     expect(sessionLogCode(['t SCAN_START', 't WINDOW_CLOSE'])).toBe('quit_early')
     expect(sessionLogCode(['t SCAN_START'])).toBe('running')
     expect(sessionLogCode(['t SCAN_START', 't MYSTERY_EVENT'])).toBe('incomplete')
+    expect(sessionLogShowsBanner('no_scan')).toBe(false)
+    expect(sessionLogShowsBanner('complete')).toBe(false)
+    expect(sessionLogShowsBanner('unread')).toBe(true)
+    expect(sessionLogShowsBanner('crash_during_scan')).toBe(true)
   })
 })
