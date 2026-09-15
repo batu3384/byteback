@@ -93,16 +93,53 @@ TEST(SignatureHygiene, OverlayLoadsAndResets) {
         std::ofstream f(file, std::ios::binary);
         f << R"([{"format":"Overlay Probe","extension":".bbprobe","category":"Document","header":"cafebabe1234","footer":"","max_size":1048576}])";
     }
-    CarvingEngine::setSignatureOverlay(file);
+    ASSERT_TRUE(CarvingEngine::setSignatureOverlay(file));
     {
         CarvingEngine carver;
         ASSERT_TRUE(carver.loadSignatures(""));
         const size_t withOverlay = carver.signatureCount();
-        CarvingEngine::setSignatureOverlay("");
+        ASSERT_TRUE(CarvingEngine::setSignatureOverlay(""));
         CarvingEngine plain;
         ASSERT_TRUE(plain.loadSignatures(""));
         EXPECT_EQ(withOverlay, plain.signatureCount() + 1);
     }
-    CarvingEngine::setSignatureOverlay("");
+    ASSERT_TRUE(CarvingEngine::setSignatureOverlay(""));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SignatureHygiene, OverlayRejectsUnparseableJson) {
+    const std::string dir = (std::filesystem::temp_directory_path() / "bb_overlay_bad").string();
+    std::filesystem::create_directories(dir);
+    const std::string good = dir + "/good.json";
+    const std::string bad = dir + "/bad.json";
+    {
+        std::ofstream f(good, std::ios::binary);
+        f << R"([{"format":"Overlay Probe","extension":".bbprobe","category":"Document","header":"cafebabe1234","footer":"","max_size":1048576}])";
+    }
+    {
+        std::ofstream f(bad, std::ios::binary);
+        f << "{\"not\":\"signatures\"}";
+    }
+    ASSERT_TRUE(CarvingEngine::setSignatureOverlay(good));
+    size_t withGood = 0;
+    {
+        CarvingEngine carver;
+        ASSERT_TRUE(carver.loadSignatures(""));
+        withGood = carver.signatureCount();
+    }
+    EXPECT_FALSE(CarvingEngine::setSignatureOverlay(bad));
+    {
+        CarvingEngine carver;
+        ASSERT_TRUE(carver.loadSignatures(""));
+        EXPECT_EQ(carver.signatureCount(), withGood);
+    }
+    ASSERT_TRUE(CarvingEngine::setSignatureOverlay(""));
+    EXPECT_FALSE(CarvingEngine::setSignatureOverlay(bad));
+    {
+        CarvingEngine plain;
+        ASSERT_TRUE(plain.loadSignatures(""));
+        EXPECT_EQ(plain.signatureCount() + 1, withGood);
+    }
+    ASSERT_TRUE(CarvingEngine::setSignatureOverlay(""));
     std::filesystem::remove_all(dir);
 }

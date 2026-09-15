@@ -1,6 +1,8 @@
 #include "byteback_imager.h"
 #include "byteback_memory.h"
 #include "crypto/byteback_md5.h"
+#include "fs/virtual_raid.h"
+#include "io/volume_mapper_win.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -176,11 +178,12 @@ DiskImager::~DiskImager() {
 }
 
 void DiskImager::startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
-                              ImageFormat format, const EwfOptions& ewfOpts) {
+                              ImageFormat format, const EwfOptions& ewfOpts, const std::string& volumePath) {
     stopImaging();
     isRunning_ = true;
     lastImageMd5_.clear();
-    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts);
+    imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts,
+                                 volumePath);
 }
 
 void DiskImager::startImagingFromReader(DiskReader& reader, const std::string& destPath,
@@ -191,9 +194,8 @@ void DiskImager::startImagingFromReader(DiskReader& reader, const std::string& d
     lastImageMd5_.clear();
     // Lifetime contract: `reader` is captured by reference and MUST outlive
     // the imaging thread (until stopImaging() joins it or the run completes).
-    // The production path (bridge_imager.cpp) only uses startImaging(driveIndex),
-    // which opens its own reader inside the worker — this overload is for
-    // tests/pre-loaded images whose caller keeps the reader alive.
+    // Production uses this for assembled RAID (ImagerContext::raidReader);
+    // PhysicalDrive/volume still go through imagingWorker.
     imagingThread_ = std::thread([this, &reader, destPath, onProgress, format, ewfOpts]() {
         imagingRun(reader, destPath, onProgress, format, ewfOpts);
     });
@@ -223,9 +225,16 @@ void DiskImager::stopImaging() {
 }
 
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
-                             ImageFormat format, EwfOptions ewfOpts) {
+                             ImageFormat format, EwfOptions ewfOpts, std::string volumePath) {
     DiskReader reader;
-    if (!reader.openDrive(driveIndex)) {
+    const bool bindVolume = isWin32VolumeDevicePath(volumePath);
+    if (bindVolume) {
+        if (!reader.openVolumePath(volumePath)) {
+            if (onProgress) onProgress(0, 0);
+            isRunning_ = false;
+            return;
+        }
+    } else if (!reader.openDrive(driveIndex)) {
         if (onProgress) onProgress(0, 0);
         isRunning_ = false;
         return;
@@ -234,16 +243,61 @@ void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCal
 }
 
 namespace {
+
+void appendHex(std::string& out, const uint8_t* p, size_t n) {
+    static const char kHex[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; ++i) {
+        out += kHex[p[i] >> 4];
+        out += kHex[p[i] & 0xf];
+    }
+}
+
+// Three 16-byte windows (head / mid / tail). Prefix-verify only sees the first
+// 1 MiB of a .part; two same-size volumes that share that window used to resume
+// into a hybrid image. ponytail: windows that match all three still collide.
+std::string sourceContentFingerprint(DiskReader& reader, uint64_t sizeBytes) {
+    auto hexAt = [&](uint64_t off) {
+        uint8_t buf[16] = {};
+        if (sizeBytes >= 16 && off + 16 <= sizeBytes) {
+            (void)reader.readBytes(off, 16, buf);
+        }
+        std::string h;
+        appendHex(h, buf, 16);
+        return h;
+    };
+    std::string k = ":fp=";
+    k += hexAt(0);
+    if (sizeBytes >= 48) {
+        k += '.';
+        k += hexAt(sizeBytes / 2);
+        k += '.';
+        k += hexAt(sizeBytes - 16);
+    }
+    return k;
+}
+
 // B2: identity of the imaging source — a resume may only continue from a
-// sidecar whose sourceKey and size match. Drives use index+size, memory
-// volumes size, file backends path+size.
-std::string imagingSourceKey(const DiskReader& reader, uint64_t sizeBytes) {
+// sidecar whose sourceKey matches. RAID uses VirtualRaid::resumeKey();
+// drive/memory add content fingerprints so same-size sources do not collide.
+std::string imagingSourceKey(DiskReader& reader, uint64_t sizeBytes) {
+    if (auto raid = reader.raidBackend()) return raid->resumeKey();
     const int idx = reader.getDriveIndex();
-    if (idx >= 0) return "drive:" + std::to_string(idx) + ":" + std::to_string(sizeBytes);
-    if (reader.hasMemoryVolume()) return "memory:" + std::to_string(sizeBytes);
+    if (idx >= 0) {
+        return "drive:" + std::to_string(idx) + ":" + std::to_string(sizeBytes)
+            + sourceContentFingerprint(reader, sizeBytes);
+    }
+    if (reader.hasMemoryVolume()) {
+        return "memory:" + std::to_string(sizeBytes)
+            + sourceContentFingerprint(reader, sizeBytes);
+    }
     const std::string path = reader.imageSourcePath();
-    if (!path.empty()) return "image:" + path + ":" + std::to_string(sizeBytes);
-    return "src:" + std::to_string(sizeBytes);
+    if (!path.empty()) {
+        const char* kind = isWin32VolumeDevicePath(path) ? "volume:" : "image:";
+        return std::string(kind) + path + ":" + std::to_string(sizeBytes)
+            + sourceContentFingerprint(reader, sizeBytes);
+    }
+    return "src:" + std::to_string(sizeBytes)
+        + sourceContentFingerprint(reader, sizeBytes);
 }
 
 bool writeResumeSidecar(const std::string& sidePath, const std::string& sourceKey,
@@ -280,17 +334,14 @@ bool writeResumeSidecar(const std::string& sidePath, const std::string& sourceKe
 //      the one the run continues with, so `loadState` never has to trust the
 //      sidecar blob on its own.
 //
-//   2) Source identity — the sidecar's sourceKey is geometry-derived
-//      ("memory:<size>", "drive:<index>:<size>") and cannot distinguish two
-//      DIFFERENT sources of the same size (swapped disk, re-attached volume).
-//      Resuming across such a swap would stitch one source's prefix onto the
-//      other's tail and still report a digest over the hybrid. Compare the
-//      first window of the CURRENT source against the same window of the
-//      .part; any difference restarts fresh.
+//   2) Source identity — the sidecar's sourceKey includes geometry plus a
+//      three-window content fingerprint (head/mid/tail). Prefix-verify still
+//      samples the first 1 MiB of the .part so a swapped source that collides
+//      on the fingerprint still fails here when the window differs.
 //
-// Ceiling: sources identical within the first kResumeSampleWindow bytes stay
-// confusable — full certainty would require re-reading the entire prefix from
-// the source, which is exactly the work resume exists to avoid.
+// Ceiling: sources matching all three 16-byte fingerprint windows AND the
+// first kResumeSampleWindow of a .part stay confusable — full certainty would
+// require re-reading the entire prefix, which is the work resume exists to avoid.
 constexpr uint64_t kResumeSampleWindow = 1024ull * 1024ull;
 
 bool verifyResumePrefix(const std::string& partPath, uint64_t resumeBytes,
@@ -363,6 +414,9 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
     const uint32_t chunkSize = chunkSectors * sectorSize;
     auto poolBuf = MemoryPool::getInstance().acquireBuffer(chunkSize);
 
+    const uint64_t sizeBytes = totalSectors * sectorSize;
+    const std::string srcKey = imagingSourceKey(reader, sizeBytes);
+
     const std::string partPath = destPath + ".part";
     const std::string sidePath = destPath + ".part.json";
 
@@ -400,19 +454,19 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             std::string json((std::istreambuf_iterator<char>(side)),
                              std::istreambuf_iterator<char>());
             side.close();
-            std::string fmt, srcKey, md5B64;
+            std::string fmt, sideSrcKey, md5B64;
             uint64_t totalBytes = 0, doneBytes = 0, sectorSizeSide = 0, md5Version = 0;
             if (jsonFindString(json, "format", fmt) &&
-                jsonFindString(json, "sourceKey", srcKey) &&
+                jsonFindString(json, "sourceKey", sideSrcKey) &&
                 jsonFindString(json, "md5StateBase64", md5B64) &&
                 jsonFindU64(json, "totalBytes", totalBytes) &&
                 jsonFindU64(json, "doneBytes", doneBytes) &&
                 jsonFindU64(json, "sectorSize", sectorSizeSide) &&
                 jsonFindU64(json, "md5StateVersion", md5Version) &&
                 fmt == kSidecarFormat && md5Version == kMd5StateVersion &&
-                totalBytes == totalSectors * sectorSize &&
+                totalBytes == sizeBytes &&
                 sectorSizeSide == sectorSize &&
-                srcKey == imagingSourceKey(reader, totalSectors * sectorSize) &&
+                sideSrcKey == srcKey &&
                 doneBytes <= totalBytes &&
                 doneBytes % sectorSize == 0) {
                 resumeBytes = doneBytes;
@@ -540,7 +594,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         if (!ewf && rawOut.is_open()) {
             rawOut.close();
             // Keep the resume point current even after a write error.
-            writeResumeSidecar(sidePath, imagingSourceKey(reader, totalSectors * sectorSize),
+            writeResumeSidecar(sidePath, srcKey,
                                totalSectors * sectorSize, sector * sectorSize, sectorSize, rawMd5);
         }
         fail();
@@ -571,7 +625,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
     } else {
         rawOut.close();
         if (stoppedEarly) {
-            writeResumeSidecar(sidePath, imagingSourceKey(reader, totalSectors * sectorSize),
+            writeResumeSidecar(sidePath, srcKey,
                                totalSectors * sectorSize, sector * sectorSize, sectorSize, rawMd5);
         } else {
             // Success: promote .part over the destination (removing any old

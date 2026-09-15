@@ -577,6 +577,49 @@ TEST(NtfsParser, WalksMftFromBootLcnIgnoresOrphan) {
     EXPECT_FALSE(orphan);
 }
 
+TEST(NtfsParser, BadMftSectorDoesNotDropSiblingRecords) {
+    auto img = buildNtfsBootMftWalkDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // rec1 (doc.txt) sits at byte 5120 = sectors 10-11. A 4 MiB chunk used
+    // to fail entirely on that overlap and drop rec0 as well.
+    reader.setMemoryFaultRange(10, 2);
+
+    bool sawDoc = false;
+    bool sawUnread = false;
+    int named = 0;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == kNtfsMftUnreadSource) sawUnread = true;
+        if (fr.id >= 0 && !fr.name.empty()) {
+            ++named;
+            if (fr.name == "doc.txt") sawDoc = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(sawDoc);
+    EXPECT_TRUE(sawUnread);
+    EXPECT_GE(named, 1);
+}
+
+TEST(NtfsParser, UnreadBootIsNotEmptyVolume) {
+    auto img = buildNtfsBootMftWalkDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(0, 1);
+
+    bool sawDoc = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == kNtfsMftUnreadSource) sawUnread = true;
+        if (fr.name == "doc.txt") sawDoc = true;
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(sawDoc);
+    EXPECT_TRUE(sawUnread);
+}
+
 TEST(NtfsParser, CarveOrphansFindsFileOutsideMftRuns) {
     auto img = buildNtfsBootMftWalkDisk();
     DiskReader reader;
@@ -664,6 +707,40 @@ TEST(NtfsParser, IndexRootSlackSurvivesMftReuse) {
     EXPECT_TRUE(goneIsI30);
 }
 
+TEST(NtfsParser, IndexAllocationNameEmitted) {
+    auto img = byteback::testfix::buildNtfsIndexAllocationVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool hit = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "indx_only.txt") {
+            hit = fr.source == "ntfs_i30" && fr.status == 0;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(hit);
+}
+
+TEST(NtfsParser, UnreadIndexAllocationIsSentinelNotSilentMiss) {
+    auto img = byteback::testfix::buildNtfsIndexAllocationVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // $I30 INDX at cluster 3, 8 sectors/cluster, 512 B → sectors 24-31.
+    reader.setMemoryFaultRange(24, 8);
+
+    bool sawName = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "indx_only.txt") sawName = true;
+        if (fr.source == "ntfs_i30_unread") sawUnread = true;
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(sawName) << "unread $I30 must not parse zeros as a missing indx_only.txt";
+    EXPECT_TRUE(sawUnread);
+}
+
 TEST(NtfsParser, OrphanIndxMagicDoesNotEmitI30) {
     auto img = buildNtfsBootMftWalkDisk();
     const size_t indx = 50 * 512;
@@ -714,6 +791,94 @@ TEST(NtfsParser, AdsSurvivesParentDedup) {
     EXPECT_TRUE(parent);
     EXPECT_TRUE(ads);
     EXPECT_EQ(adsConfidence, 45);
+}
+
+std::vector<uint8_t> buildNtfsUsnJournalDisk() {
+    auto img = buildNtfsBootMftWalkDisk();
+    const size_t rec1 = 8 * 512 + 1024;
+    const size_t fnValueLen = 66 + 7 * 2;
+    size_t attr = rec1 + 0x38 + 16 + 8 + fnValueLen + 29;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 0x48);
+    img[attr + 8] = 1;
+    img[attr + 9] = 2;
+    writeLe16(img, attr + 10, 0x40);
+    writeLe16(img, attr + 0x20, 0x44);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 80);
+    writeLe16(img, attr + 0x40, '$');
+    writeLe16(img, attr + 0x42, 'J');
+    img[attr + 0x44] = 0x11;
+    img[attr + 0x45] = 0x01;
+    img[attr + 0x46] = 0x04;
+    writeLe32(img, attr + 0x48, 0xFFFFFFFF);
+
+    const size_t jOff = 4 * 8 * 512;
+    const char* name = "secret.txt";
+    const size_t nameLen = std::strlen(name);
+    const uint16_t nameBytes = static_cast<uint16_t>(nameLen * 2);
+    const uint16_t nameOff = 60;
+    uint32_t recordLen = nameOff + nameBytes;
+    while (recordLen % 8 != 0) ++recordLen;
+    writeLe32(img, jOff + 0, recordLen);
+    writeLe32(img, jOff + 4, 2);
+    writeLe64(img, jOff + 8, 1234);
+    writeLe64(img, jOff + 16, 5);
+    writeLe64(img, jOff + 24, 99);
+    writeLe64(img, jOff + 32, 132223104000000000ULL);
+    writeLe32(img, jOff + 40, 0x00000001);
+    writeLe16(img, jOff + 56, nameBytes);
+    writeLe16(img, jOff + 58, nameOff);
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, jOff + nameOff + i * 2, static_cast<uint16_t>(name[i]));
+    return img;
+}
+
+TEST(NtfsParser, UsnJournalEmitsTimelineEvent) {
+    auto img = buildNtfsUsnJournalDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool saw = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "usn_journal" && fr.name == "secret.txt") saw = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(saw);
+}
+
+TEST(NtfsParser, PaddedUsnJournalIsNotEmptyJournal) {
+    auto img = buildNtfsUsnJournalDisk();
+    img.resize(4 * 8 * 512);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawEvent = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "usn_journal") sawEvent = true;
+        if (fr.source == kUsnUnreadSource) sawUnread = true;
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(sawEvent);
+    EXPECT_TRUE(sawUnread);
+}
+
+TEST(NtfsParser, FaultedUsnJournalEmitsUnread) {
+    auto img = buildNtfsUsnJournalDisk();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(32, 8);
+    bool sawEvent = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "usn_journal" && fr.name == "secret.txt") sawEvent = true;
+        if (fr.source == kUsnUnreadSource) sawUnread = true;
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(sawEvent);
+    EXPECT_TRUE(sawUnread);
 }
 
 TEST(NtfsParser, OversizedAttributeLengthDoesNotLoopForever) {

@@ -87,7 +87,8 @@ std::string utf16LeToUtf8(const uint16_t* data, size_t count) {
 }
 
 bool appendFromRuns(DiskReader& reader, const std::vector<FileRecord::DataRun>& runs,
-                    uint32_t sectorSize, std::vector<uint8_t>& out, uint32_t maxBytes) {
+                    uint32_t sectorSize, std::vector<uint8_t>& out, uint32_t maxBytes,
+                    bool* unread) {
     for (const auto& run : runs) {
         if (out.size() >= maxBytes) break;
         if (run.startSector == UINT64_MAX) continue;
@@ -96,9 +97,11 @@ bool appendFromRuns(DiskReader& reader, const std::vector<FileRecord::DataRun>& 
         if (want == 0) continue;
         size_t before = out.size();
         out.resize(before + static_cast<size_t>(want));
-        if (!reader.readSectors(run.startSector * sectorSize,
-                                static_cast<uint32_t>(want),
-                                out.data() + before).success) {
+        if (!readComplete(reader.readSectors(run.startSector * sectorSize,
+                                            static_cast<uint32_t>(want),
+                                            out.data() + before),
+                          want)) {
+            if (unread) *unread = true;
             out.resize(before);
             continue;
         }
@@ -108,7 +111,9 @@ bool appendFromRuns(DiskReader& reader, const std::vector<FileRecord::DataRun>& 
 
 bool collectUnnamedData(const uint8_t* mftRec, uint32_t mftSize, DiskReader& reader,
                         uint64_t volumeStartSector, uint32_t sectorSize, uint32_t spc,
-                        std::vector<uint8_t>& out, uint32_t maxBytes) {
+                        std::vector<uint8_t>& out, uint32_t maxBytes, bool* unread,
+                        bool* foundUnnamed) {
+    if (foundUnnamed) *foundUnnamed = false;
     if (mftSize < 64) return false;
     uint16_t attrOff = *reinterpret_cast<const uint16_t*>(mftRec + 0x14);
     if (attrOff < 0x38 || attrOff >= mftSize) return false;
@@ -119,6 +124,7 @@ bool collectUnnamedData(const uint8_t* mftRec, uint32_t mftSize, DiskReader& rea
         if (pos + attr->length > mftSize) break;
 
         if (attr->type == ntfs::ATTR_DATA && attr->nameLength == 0) {
+            if (foundUnnamed) *foundUnnamed = true;
             if (attr->nonResidentFlag == 0) {
                 if (pos + sizeof(MftAttrHeader) + sizeof(MftResidentAttr) <= mftSize) {
                     auto* res = reinterpret_cast<const MftResidentAttr*>(mftRec + pos + sizeof(MftAttrHeader));
@@ -170,7 +176,7 @@ bool collectUnnamedData(const uint8_t* mftRec, uint32_t mftSize, DiskReader& rea
                     runs.push_back(run);
                 }
                 out.clear();
-                return appendFromRuns(reader, runs, sectorSize, out, maxBytes);
+                return appendFromRuns(reader, runs, sectorSize, out, maxBytes, unread);
             }
         }
         pos += attr->length;
@@ -314,8 +320,24 @@ void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
     if (sectorSize == 0) sectorSize = 512;
     const uint64_t volumeStartSector = partitionOffsetBytes / sectorSize;
 
+    auto emitUnread = [&]() {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Ntfs_LogfileUnread";
+        fr.path = kNtfsLogfileUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kNtfsLogfileUnreadSource;
+        callback(fr);
+    };
+
     std::vector<uint8_t> boot(sectorSize);
-    if (!reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()).success) return;
+    if (!readComplete(reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()),
+                      sectorSize)) {
+        emitUnread();
+        return;
+    }
     if (boot.size() < 512 || boot[510] != 0x55 || boot[511] != 0xAA) return;
     if (std::memcmp(boot.data() + 3, "NTFS    ", 8) != 0) return;
     if (boot.size() < sizeof(BootSector)) return;
@@ -328,21 +350,34 @@ void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
     uint64_t logRecordOffset = mftOffset + 2ull * mftSize;
 
     std::vector<uint8_t> mftRec(mftSize);
-    if (!reader.readSectors(logRecordOffset, mftSize, mftRec.data()).success) return;
+    if (!readComplete(reader.readSectors(logRecordOffset, mftSize, mftRec.data()), mftSize)) {
+        emitUnread();
+        return;
+    }
     if (std::memcmp(mftRec.data(), "FILE", 4) != 0) return;
 
     const uint32_t kScanMax = 256u * 1024u * 1024u;
     std::vector<uint8_t> logBuf;
+    bool unread = false;
+    bool foundUnnamed = false;
     if (!collectUnnamedData(mftRec.data(), mftSize, reader, volumeStartSector, sectorSize, spc,
-                            logBuf, kScanMax)) {
+                            logBuf, kScanMax, &unread, &foundUnnamed)) {
+        if (foundUnnamed) {
+            emitUnread();
+            return;
+        }
         uint64_t disk = reader.getDiskSize();
         uint64_t off = logRecordOffset + mftSize;
         uint32_t take = 0;
         if (disk > off) take = static_cast<uint32_t>(std::min<uint64_t>(kScanMax, disk - off));
         if (take == 0) return;
         logBuf.resize(take);
-        if (!reader.readSectors(off, take, logBuf.data()).success) return;
+        if (!readComplete(reader.readSectors(off, take, logBuf.data()), take)) {
+            emitUnread();
+            return;
+        }
     }
+    if (unread) emitUnread();
 
     if (logBuf.size() >= 4 && std::memcmp(logBuf.data(), "RSTR", 4) == 0) {
         uint64_t lsn = 0;

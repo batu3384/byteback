@@ -105,6 +105,23 @@ TEST(FatChain, MaxClustersBoundsWalk) {
     EXPECT_EQ(runs.size(), 3u);
 }
 
+TEST(FatChain, UnreadStopIsNotEoc) {
+    // 2 -> unread: keep cluster 2, flag unread. Same shape as EOC after one
+    // hop, but unreadStop distinguishes a truncated chain from a complete file.
+    FatEntryReader r = [](uint32_t) { return kFatUnread; };
+    bool unread = false;
+    auto runs = chainRuns(std::move(r), 16, 2, 4, 100, 65536, &unread);
+    ASSERT_EQ(runs.size(), 1u);
+    EXPECT_EQ(runs[0].startSector, 100u);
+    EXPECT_TRUE(unread);
+
+    bool eocUnread = true;
+    FatEntryReader eocR = [](uint32_t) { return 0xFFF8u; };
+    auto eocRuns = chainRuns(std::move(eocR), 16, 2, 4, 100, 65536, &eocUnread);
+    EXPECT_EQ(eocRuns.size(), 1u);
+    EXPECT_FALSE(eocUnread);
+}
+
 TEST(FatChain, ExFatNumericConventions) {
     // exFAT uses FAT32-style 32-bit entries; same walk applies.
     auto runs = walk({{2, 9}, {9, 0xFFFFFFFF}}, 32, 2, 16, 2048);

@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <climits>
+#include <optional>
 #include "byteback_io.h"
 #include "byteback_fs.h"
 #include "byteback_carver.h"
@@ -17,6 +18,20 @@ namespace byteback {
 class VirtualRaid;
 
 using ScanProgressCallback = std::function<void(uint64_t currentSector, uint64_t totalSectors)>;
+
+/** Whole-string PhysicalDrive index. Partial `stoi("12abc")` must not become 12. */
+inline std::optional<int> parseDriveIndex(const std::string& drivePath) {
+    if (drivePath.empty() || drivePath == "raid") return std::nullopt;
+    std::size_t consumed = 0;
+    int v = 0;
+    try {
+        v = std::stoi(drivePath, &consumed);
+    } catch (...) {
+        return std::nullopt;
+    }
+    if (consumed != drivePath.size() || v < 0) return std::nullopt;
+    return v;
+}
 
 // When startSector != UINT64_MAX, scan is limited to that partition range.
 struct ScanBounds {
@@ -37,6 +52,9 @@ struct ScanTarget {
     // sequential path as a multiset — only emission order may differ, and the
     // DB insert assigns ids by insertion order (documented, accepted).
     bool parallelCarve = true;
+    // When set to "\\.\X:", scanWorker opens the Windows volume device
+    // (concatenated extents) instead of PhysicalDrive+LBA.
+    std::string volumePath;
     ScanBounds bounds() const {
         ScanBounds b;
         if (partitionStartSector >= 0 && partitionSizeSectors > 0) {

@@ -32,6 +32,10 @@ struct ReadResult {
     bool paddedZeros = false; // short/failed read was zero-padded
 };
 
+inline bool readComplete(const ReadResult& res, uint64_t need) {
+    return res.success && !res.paddedZeros && res.bytesRead >= need;
+}
+
 // A2: state of the memory-volume backend. Clones SHARE one instance, so the
 // image buffer is copied once and a fault injected via the original's
 // setMemoryFaultRange hook is visible to every clone (the buffer truly is the
@@ -92,6 +96,7 @@ public:
     // of the opened physical drive. openDrive clears any prior backend.
     void setRaidBackend(std::shared_ptr<VirtualRaid> raid);
     bool hasRaidBackend() const;
+    std::shared_ptr<VirtualRaid> raidBackend() const;
 
     // Read sectors from current drive
     // offset and size MUST be sector-aligned
@@ -236,13 +241,13 @@ public:
     void detachImageBackend();
     bool hasImageBackend() const;
 
-    // B2: source identity for imaging-resume sidecars. Empty for backends
-    // without a path (drives are identified by index+size, memory volumes by
-    // size alone — see DiskImager's sourceKey composition).
+    // B2: path backends for imaging-resume sidecars. Empty for drives/memory
+    // (those use index/size plus a content fingerprint in DiskImager).
     std::string imageSourcePath() const {
         std::lock_guard<std::mutex> lock(ioMutex_);
         if (!rawFilePath_.empty()) return rawFilePath_;
         if (!ewfPath_.empty()) return ewfPath_;
+        if (!volumePath_.empty()) return volumePath_;
         return {};
     }
 

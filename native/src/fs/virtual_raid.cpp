@@ -2,11 +2,56 @@
 #include "fs/raid_layout.h"
 #include <algorithm>
 #include <cstring>
+#include <limits>
+#include <string>
 
 namespace byteback {
 
-VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size)
-    : level_(level), num_disks_(drive_indices.size()), disk_size_(0), block_size_(block_size) {
+namespace {
+
+void appendHex(std::string& out, const uint8_t* p, size_t n) {
+    static const char kHex[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; ++i) {
+        out += kHex[p[i] >> 4];
+        out += kHex[p[i] & 0xf];
+    }
+}
+
+} // namespace
+
+std::string VirtualRaid::resumeKey() const {
+    std::string k = "raid:lv=";
+    k += std::to_string(static_cast<int>(level_));
+    k += ":n=";
+    k += std::to_string(num_disks_);
+    k += ":st=";
+    k += std::to_string(block_size_);
+    k += ":off=";
+    k += std::to_string(data_offset_bytes_);
+    k += ":sz=";
+    k += std::to_string(capacity());
+    k += ":f=";
+    for (size_t i = 0; i < disk_active_.size(); ++i) {
+        k += disk_active_[i] ? '1' : '0';
+    }
+    for (const auto& r : disk_readers_) {
+        const int idx = r ? r->getDriveIndex() : -2;
+        k += ":m";
+        k += std::to_string(idx);
+        uint8_t head[16] = {};
+        if (r && r->isOpen()) {
+            (void)r->readBytes(0, 16, head);
+        }
+        k += "h";
+        appendHex(k, head, sizeof(head));
+    }
+    return k;
+}
+
+VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size,
+                         uint64_t data_offset_bytes)
+    : level_(level), num_disks_(drive_indices.size()), disk_size_(0), block_size_(block_size),
+      data_offset_bytes_(data_offset_bytes) {
     if (num_disks_ < 2) {
         throw std::invalid_argument("RAID requires at least 2 disks.");
     }
@@ -32,13 +77,16 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
     initFromMembers(std::move(members));
 }
 
-VirtualRaid::VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size)
-    : level_(level), num_disks_(members.size()), disk_size_(0), block_size_(block_size) {
+VirtualRaid::VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size,
+                         uint64_t data_offset_bytes)
+    : level_(level), num_disks_(members.size()), disk_size_(0), block_size_(block_size),
+      data_offset_bytes_(data_offset_bytes) {
     if (num_disks_ < 2) throw std::invalid_argument("RAID requires at least 2 disks.");
     initFromMembers(std::move(members));
 }
 
-VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images, size_t block_size) {
+VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images, size_t block_size,
+                                    uint64_t data_offset_bytes) {
     std::vector<std::shared_ptr<DiskReader>> members;
     members.reserve(images.size());
     for (auto& img : images) {
@@ -46,7 +94,7 @@ VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uin
         reader->attachMemoryVolume(std::move(img));
         members.push_back(std::move(reader));
     }
-    return VirtualRaid(level, std::move(members), block_size);
+    return VirtualRaid(level, std::move(members), block_size, data_offset_bytes);
 }
 
 void VirtualRaid::initFromMembers(std::vector<std::shared_ptr<DiskReader>> members) {
@@ -62,20 +110,34 @@ void VirtualRaid::initFromMembers(std::vector<std::shared_ptr<DiskReader>> membe
         if (memberSize == 0) throw std::runtime_error("RAID member disk has zero size.");
         disk_size_ = (disk_size_ == 0) ? memberSize : std::min(disk_size_, memberSize);
     }
+    if (data_offset_bytes_ >= disk_size_) {
+        throw std::invalid_argument("RAID data offset exceeds member size.");
+    }
+    if (block_size_ == 0 && level_ != RaidLevel::RAID1) {
+        throw std::invalid_argument("RAID stripe size required");
+    }
 }
 
 void VirtualRaid::write(size_t, const std::vector<uint8_t>&) {
     throw std::runtime_error("Write unsupported on physical RAID mode (forensic read-only).");
 }
 
+uint64_t VirtualRaid::memberPayloadBytes() const {
+    return disk_size_ > data_offset_bytes_ ? disk_size_ - data_offset_bytes_ : 0;
+}
+
 uint64_t VirtualRaid::capacity() const {
     // Block-floored usable extent per member: a striped array never exposes
     // the tail of a partial last block — real controllers report floored
     // capacity and the dead zone is unreachable (reads throw honestly).
-    const uint64_t usable = (disk_size_ / block_size_) * block_size_;
+    // RAID1 is a mirror of the payload, not stripe-floored.
+    const uint64_t payload = memberPayloadBytes();
+    if (level_ == RaidLevel::RAID1) return payload;
+    if (block_size_ == 0) return 0;
+    const uint64_t usable = (payload / block_size_) * block_size_;
     switch (level_) {
         case RaidLevel::RAID0: return usable * num_disks_;
-        case RaidLevel::RAID1: return disk_size_;
+        case RaidLevel::RAID1: return payload;
         case RaidLevel::RAID5: return usable * (num_disks_ - 1);
         case RaidLevel::RAID6: return usable * (num_disks_ - 2);
         case RaidLevel::RAID10: return usable * (num_disks_ / 2);
@@ -85,6 +147,11 @@ uint64_t VirtualRaid::capacity() const {
 
 bool VirtualRaid::readMemberAligned(size_t disk_idx, uint64_t offset, size_t length, uint8_t* out) const {
     if (disk_idx >= num_disks_ || !disk_readers_[disk_idx]->isOpen()) return false;
+    if (data_offset_bytes_ > (std::numeric_limits<uint64_t>::max)() - offset) {
+        std::memset(out, 0, length);
+        return false;
+    }
+    offset += data_offset_bytes_;
 
     uint32_t sectorSize = disk_readers_[disk_idx]->getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
@@ -163,13 +230,13 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
         // block: when a member's size is not a multiple of block_size_, the
         // old full-block check rejected reads of valid tail bytes (last
         // member sector is not the last stripe byte).
-        if (disk_offset + read_len > disk_size_) {
+        if (disk_offset + read_len > memberPayloadBytes()) {
             throw std::out_of_range("Read exceeds RAID capacity");
         }
 
         if (!disk_active_[disk_idx] ||
             !readMemberAligned(disk_idx, disk_offset, read_len, &result[res_idx])) {
-            std::memset(&result[res_idx], 0, read_len);
+            throw std::runtime_error("RAID 0 read failed: member unreadable");
         }
 
         res_idx += read_len;
@@ -179,7 +246,8 @@ std::vector<uint8_t> VirtualRaid::read_raid0(size_t offset, size_t length) const
 }
 
 std::vector<uint8_t> VirtualRaid::read_raid1(size_t offset, size_t length) const {
-    if (offset + length > disk_size_) {
+    const uint64_t payload = memberPayloadBytes();
+    if (offset > payload || length > payload - offset) {
         throw std::out_of_range("Read exceeds RAID capacity");
     }
     for (size_t i = 0; i < num_disks_; ++i) {

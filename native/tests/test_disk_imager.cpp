@@ -4,6 +4,8 @@
 #include "byteback_io.h"
 #include "crypto/byteback_md5.h"
 #include "imager/ewf_reader.h"
+#include "fs/virtual_raid.h"
+#include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
@@ -26,6 +28,11 @@ std::vector<uint8_t> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
+}
+
+void writeRaw(const std::string& path, const std::vector<uint8_t>& v) {
+    std::ofstream o(path, std::ios::binary | std::ios::trunc);
+    o.write(reinterpret_cast<const char*>(v.data()), static_cast<std::streamsize>(v.size()));
 }
 
 // Cancel a RAW run right after the first chunk (deterministic 512 KiB point).
@@ -713,5 +720,208 @@ TEST(DiskImagerResume, RestartAfterSelfStopProducesByteExactImage) {
     EXPECT_EQ(out, vol);
     EXPECT_FALSE(std::filesystem::exists(part));
     EXPECT_FALSE(std::filesystem::exists(side));
+    std::filesystem::remove(dest);
+}
+
+// Same-size RAID0 arrays used to share sourceKey "raid:<capacity>" and a
+// cancelled job would stitch array A's prefix onto array B's tail.
+// Prefix-verify only samples the first 1 MiB of a .part. A 2 MiB first chunk
+// of two same-size volumes that share that window used to resume into a hybrid.
+TEST(DiskImagerResume, MemorySamePrefixDifferentTailStartsFresh) {
+    constexpr size_t kSectors = 8192; // 4 MiB
+    std::vector<uint8_t> volA(kSectors * 512, 0x11);
+    std::vector<uint8_t> volB(kSectors * 512, 0x11);
+    for (size_t i = 1024ull * 1024ull; i < volB.size(); ++i) volB[i] = 0x22;
+
+    const auto dest = (std::filesystem::temp_directory_path() / "bb_resume_prefix_tail.raw").string();
+    std::filesystem::remove(dest);
+    std::filesystem::remove(dest + ".part");
+    std::filesystem::remove(dest + ".part.json");
+
+    {
+        std::vector<uint8_t> copyA = volA;
+        DiskReader readerA;
+        readerA.attachMemoryVolume(std::move(copyA));
+        DiskImager imager;
+        imager.setChunkSectorsForTest(4096); // 2 MiB first chunk > 1 MiB sample window
+        std::atomic<bool> finished{false};
+        imager.startImagingFromReader(readerA, dest, [&](uint64_t cur, uint64_t total) {
+            if (cur == total) finished = true;
+            else imager.requestStop();
+        }, ImageFormat::Raw);
+        for (int i = 0; i < 400 && !finished; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        imager.stopImaging();
+        ASSERT_TRUE(finished.load());
+        ASSERT_TRUE(std::filesystem::exists(dest + ".part"));
+        ASSERT_TRUE(std::filesystem::exists(dest + ".part.json"));
+    }
+
+    DiskReader readerB;
+    readerB.attachMemoryVolume(std::move(volB));
+    DiskImager imager2;
+    std::atomic<bool> done{false};
+    imager2.startImagingFromReader(readerB, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 600 && !done; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    imager2.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    const std::vector<uint8_t> out = readFile(dest);
+    ASSERT_EQ(out.size(), volA.size());
+    EXPECT_EQ(out[0], 0x11);
+    EXPECT_EQ(out[1024ull * 1024ull], 0x22);
+    EXPECT_EQ(out.back(), 0x22);
+    // Must be source B in full — never A's 2 MiB prefix stitched onto B's tail.
+    std::vector<uint8_t> expectB(kSectors * 512, 0x11);
+    for (size_t i = 1024ull * 1024ull; i < expectB.size(); ++i) expectB[i] = 0x22;
+    EXPECT_EQ(out, expectB);
+    EXPECT_FALSE(std::filesystem::exists(dest + ".part"));
+    std::filesystem::remove(dest);
+}
+
+// Same image: path+size used to collide when the file at that path was replaced
+// with a same-size sibling that shared the 1 MiB prefix-verify window.
+TEST(DiskImagerResume, SamePathReplacedFileStartsFresh) {
+    constexpr size_t kSectors = 8192; // 4 MiB
+    std::vector<uint8_t> volA(kSectors * 512, 0x11);
+    std::vector<uint8_t> volB(kSectors * 512, 0x11);
+    for (size_t i = 1024ull * 1024ull; i < volB.size(); ++i) volB[i] = 0x33;
+
+    const auto tmp = std::filesystem::temp_directory_path();
+    const std::string srcPath = (tmp / "bb_resume_replaced.src").string();
+    const std::string dest = (tmp / "bb_resume_replaced.raw").string();
+    std::filesystem::remove(srcPath);
+    std::filesystem::remove(dest);
+    std::filesystem::remove(dest + ".part");
+    std::filesystem::remove(dest + ".part.json");
+    writeRaw(srcPath, volA);
+
+    {
+        DiskReader readerA;
+        std::string err;
+        ASSERT_TRUE(readerA.attachRawFile(srcPath, &err)) << err;
+        DiskImager imager;
+        imager.setChunkSectorsForTest(4096); // 2 MiB > 1 MiB sample window
+        std::atomic<bool> finished{false};
+        imager.startImagingFromReader(readerA, dest, [&](uint64_t cur, uint64_t total) {
+            if (cur == total) finished = true;
+            else imager.requestStop();
+        }, ImageFormat::Raw);
+        for (int i = 0; i < 400 && !finished; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        imager.stopImaging();
+        readerA.closeDrive();
+        ASSERT_TRUE(finished.load());
+        ASSERT_TRUE(std::filesystem::exists(dest + ".part"));
+    }
+
+    writeRaw(srcPath, volB);
+    DiskReader readerB;
+    std::string err;
+    ASSERT_TRUE(readerB.attachRawFile(srcPath, &err)) << err;
+    DiskImager imager2;
+    std::atomic<bool> done{false};
+    imager2.startImagingFromReader(readerB, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 600 && !done; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    imager2.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    const std::vector<uint8_t> out = readFile(dest);
+    ASSERT_EQ(out.size(), volB.size());
+    EXPECT_EQ(out, volB);
+    EXPECT_EQ(out[1024ull * 1024ull], 0x33);
+    EXPECT_FALSE(std::filesystem::exists(dest + ".part"));
+    readerB.closeDrive();
+    std::error_code ec;
+    std::filesystem::remove(dest, ec);
+    std::filesystem::remove(srcPath, ec);
+}
+
+TEST(DiskImagerResume, RaidSameSizeDifferentMembersStartsFresh) {
+    constexpr size_t kSize = 128 * 1024;
+    std::vector<uint8_t> a0(kSize, static_cast<uint8_t>('A'));
+    std::vector<uint8_t> a1(kSize, static_cast<uint8_t>('B'));
+    std::vector<uint8_t> b0(kSize, static_cast<uint8_t>('C'));
+    std::vector<uint8_t> b1(kSize, static_cast<uint8_t>('D'));
+    auto raidA = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {a0, a1}, 65536));
+    auto raidB = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {b0, b1}, 65536));
+    ASSERT_EQ(raidA->capacity(), raidB->capacity());
+    ASSERT_NE(raidA->resumeKey(), raidB->resumeKey());
+
+    const auto dest = (std::filesystem::temp_directory_path() / "bb_raid_resume_swap.raw").string();
+    std::filesystem::remove(dest);
+    std::filesystem::remove(dest + ".part");
+    std::filesystem::remove(dest + ".part.json");
+
+    {
+        DiskReader readerA;
+        readerA.setRaidBackend(raidA);
+        DiskImager imager;
+        imager.setChunkSectorsForTest(64); // 32 KiB — RAID volume is 256 KiB
+        std::atomic<bool> finished{false};
+        imager.startImagingFromReader(readerA, dest, [&](uint64_t cur, uint64_t total) {
+            if (cur == total) finished = true;
+            else imager.requestStop();
+        }, ImageFormat::Raw);
+        for (int i = 0; i < 400 && !finished; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        imager.stopImaging();
+        ASSERT_TRUE(finished.load());
+        ASSERT_TRUE(std::filesystem::exists(dest + ".part"));
+        ASSERT_TRUE(std::filesystem::exists(dest + ".part.json"));
+    }
+
+    DiskReader readerB;
+    readerB.setRaidBackend(raidB);
+    DiskImager imager2;
+    std::atomic<bool> done{false};
+    imager2.startImagingFromReader(readerB, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 600 && !done; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    imager2.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    const std::vector<uint8_t> out = readFile(dest);
+    const auto expectB = raidB->read(0, static_cast<size_t>(raidB->capacity()));
+    ASSERT_EQ(out.size(), expectB.size());
+    EXPECT_EQ(out, expectB);
+    EXPECT_EQ(out[0], static_cast<uint8_t>('C'));
+    EXPECT_EQ(out[65536], static_cast<uint8_t>('D'));
+    EXPECT_FALSE(std::filesystem::exists(dest + ".part"));
+    EXPECT_FALSE(std::filesystem::exists(dest + ".part.json"));
+    std::filesystem::remove(dest);
+}
+
+TEST(DiskImager, ImagesAssembledRaid0FromReader) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
+    DiskReader reader;
+    reader.setRaidBackend(raid);
+    const auto dest = (std::filesystem::temp_directory_path() / "byteback_raid0.img").string();
+    std::filesystem::remove(dest);
+    std::filesystem::remove(dest + ".part");
+    std::filesystem::remove(dest + ".part.json");
+    runToCompletion(reader, dest);
+    const std::vector<uint8_t> out = readFile(dest);
+    ASSERT_EQ(out.size(), raid->capacity());
+    EXPECT_EQ(out[0], static_cast<uint8_t>('A'));
+    EXPECT_EQ(out[65536], static_cast<uint8_t>('B'));
     std::filesystem::remove(dest);
 }

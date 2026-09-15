@@ -1,12 +1,13 @@
 // bridge_imager.cpp — disk imaging (raw/dd and EWF/E01 with on-the-fly MD5).
 // See bridge_common.h for the shared context.
 #include "bridge_common.h"
+#include "io/volume_mapper_win.h"
 
 Napi::Value StartImaging(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
     if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsFunction()) {
-        Napi::TypeError::New(env, "Expected driveIndex, destPath, callback, [format]").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected driveIndex, destPath, callback, [format, volumePath]").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -34,6 +35,21 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
         std::string f = info[3].As<Napi::String>().Utf8Value();
         if (f == "ewf" || f == "e01") format = byteback::ImageFormat::Ewf;
     }
+    std::string volumePath;
+    if (info.Length() >= 5 && info[4].IsString()) {
+        const std::string vp = info[4].As<Napi::String>().Utf8Value();
+        if (byteback::isWin32VolumeDevicePath(vp)) volumePath = vp;
+    }
+
+    if (driveIndex < 0 && driveIndex != -1) {
+        bdata->endHeavyOp();
+        return Napi::Boolean::New(env, false);
+    }
+    if (driveIndex == -1 && !bdata->raid) {
+        bdata->endHeavyOp();
+        return Napi::Boolean::New(env, false);
+    }
+    if (driveIndex == -1) volumePath.clear();
 
     auto context = std::make_shared<ImagerContext>();
     bdata->imagerContext = context;
@@ -86,9 +102,17 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
 
     forensic::AuditLogger::GetInstance().LogEvent(
         "IMAGING_START | drive=" + std::to_string(driveIndex) +
-        " | dest=" + destPath + " | format=" + (format == byteback::ImageFormat::Ewf ? "ewf" : "raw"));
+        " | dest=" + destPath + " | format=" + (format == byteback::ImageFormat::Ewf ? "ewf" : "raw") +
+        (driveIndex == -1 ? " | raid=1" : "") +
+        (volumePath.empty() ? "" : " | volume=" + volumePath));
 
-    context->imager.startImaging(driveIndex, destPath, onProgress, format, ewfOpts);
+    if (driveIndex == -1) {
+        context->raidReader.setRaidBackend(bdata->raid);
+        context->raidReader.copyXtsFvekFrom(bdata->engine.getDiskReader());
+        context->imager.startImagingFromReader(context->raidReader, destPath, onProgress, format, ewfOpts);
+    } else {
+        context->imager.startImaging(driveIndex, destPath, onProgress, format, ewfOpts, volumePath);
+    }
 
     return Napi::Boolean::New(env, true);
     NAPI_CATCH

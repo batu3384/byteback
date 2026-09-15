@@ -3,6 +3,7 @@
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,67 @@ TEST(FatParser, ScanAtPartitionOffset) {
     }, &running, 2048ull * 512));
 
     EXPECT_FALSE(names.empty());
+}
+
+TEST(FatParser, UnreadRootIsSentinelNotEmptyDirectory) {
+    auto img = byteback::testfix::buildFat16Volume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // reserved=1, 2 FATs × 16 sectors → root at sector 33.
+    reader.setMemoryFaultRange(33, 1);
+
+    std::vector<std::string> names;
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, &running));
+
+    bool sawTest = false;
+    bool sawUnread = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) sawTest = true;
+    }
+    for (const auto& s : sources) {
+        if (s == "fat_dir_unread") sawUnread = true;
+    }
+    EXPECT_FALSE(sawTest) << "unread FAT root must not parse 0x00 as an empty directory of TEST.TXT";
+    EXPECT_TRUE(sawUnread);
+}
+
+TEST(FatParser, UnreadFatTableIsChainSentinelNotCompleteFile) {
+    auto img = byteback::testfix::buildFat16Volume();
+    // Stretch TEST.TXT across clusters 2->3 (600 bytes) so a FAT unread after
+    // the first hop is distinguishable from a genuine one-cluster EOC.
+    byteback::testfix::writeLe16(img, 512 + 4, 3);       // FAT[2] = 3
+    byteback::testfix::writeLe16(img, 512 + 6, 0xFFFF);  // FAT[3] = EOC
+    byteback::testfix::writeLe32(img, 33 * 512 + 28, 600);
+    std::memset(img.data() + 34 * 512, 'A', 512);
+    std::memset(img.data() + 35 * 512, 'B', 88);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(1, 1); // FAT starts at reserved=1
+
+    std::vector<FileRecord> files;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        files.push_back(fr);
+    }, &running));
+
+    const FileRecord* test = nullptr;
+    bool sawChain = false;
+    for (const auto& fr : files) {
+        if (fr.name.find("TEST") != std::string::npos) test = &fr;
+        if (fr.source == "fat_chain_unread") sawChain = true;
+    }
+    ASSERT_NE(test, nullptr);
+    EXPECT_EQ(test->runs.size(), 1u) << "unread FAT must not invent the rest of the chain";
+    EXPECT_LE(test->confidence, 35);
+    EXPECT_TRUE(sawChain);
 }
 
 namespace {

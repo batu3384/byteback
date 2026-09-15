@@ -60,6 +60,7 @@ struct ScanContext {
 
 struct ImagerContext {
     byteback::DiskImager imager;
+    byteback::DiskReader raidReader;
     Napi::ThreadSafeFunction tsfn;
 };
 

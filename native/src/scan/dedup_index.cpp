@@ -18,7 +18,16 @@ void DedupIndex::clear() {
 bool DedupIndex::isMetadataSource(const std::string& source) {
     if (source.empty()) return false;
     if (isCarveSource(source) || source == "carver_duplicate") return false;
-    if (source == "usn_journal" || source == "ntfs_logfile" || source == "ntfs_logfile_restart") {
+    if (source == "usn_journal" || source == "usn_unread" || source == "ntfs_logfile" ||
+        source == "ntfs_logfile_restart" || source == "ntfs_logfile_unread" ||
+        source == "ntfs_mft_unread" || source == "probe_unread" ||
+        source == "xfs_sb_unread" || source == "hfs_catalog_unread" ||
+        source == "hfs_linear_unread" ||
+        source == "apfs_nxsb_unread" || source == "apfs_block_unread" ||
+        source == "apfs_linear_unread" ||
+        source == "refs_supb_unread" ||
+        source == "refs_page_unread" || source == "xfs_inode_unread" ||
+        source == "xfs_bmap_unread" || source == "carver_unread") {
         return false;
     }
     return true;

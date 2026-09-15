@@ -9,9 +9,16 @@
 
 namespace byteback {
 
+std::atomic<uint64_t> g_refsLinearProbeClusters{0};
+
 namespace {
 
 constexpr uint64_t kRefsSuperblockCluster = 30;
+
+uint64_t refsLinearProbeLimit() {
+    const uint64_t hook = g_refsLinearProbeClusters.load(std::memory_order_relaxed);
+    return hook > 0 ? hook : kRefsLinearProbeClustersDefault;
+}
 
 uint32_t readLe32(const uint8_t* p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -31,7 +38,7 @@ uint64_t readLe64(const uint8_t* p) {
 bool readAt(DiskReader& reader, uint64_t offset, uint32_t size, std::vector<uint8_t>& buf) {
     buf.resize(size);
     auto res = reader.readSectors(offset, size, buf.data());
-    return res.success && res.bytesRead >= size;
+    return readComplete(res, size);
 }
 
 std::string sanitizeRefsName(const std::string& raw) {
@@ -78,7 +85,7 @@ void scanMetadataPageForEntries(const uint8_t* page, size_t pageSize, uint64_t p
         fr.status = 0;
         fr.confidence = 65;
         fr.category = "Document";
-        fr.source = "refs";
+        fr.source = "refs_volume";
 
         // Optional integrity-stream trailer: +128 checksum, +136 payload len, +144 payload bytes.
         if (i + 144 < pageSize) {
@@ -86,6 +93,7 @@ void scanMetadataPageForEntries(const uint8_t* page, size_t pageSize, uint64_t p
             const uint16_t payloadLen = readLe16(page + i + 136);
             if (storedCrc != 0 && payloadLen > 0 &&
                 static_cast<size_t>(i) + 144u + payloadLen <= pageSize) {
+                fr.source = "refs";
                 fr.residentData.assign(page + i + 144, page + i + 144 + payloadLen);
                 fr.sizeBytes = payloadLen;
                 fr.integrityChecksum = storedCrc;
@@ -101,34 +109,32 @@ void walkMinistoreNode(DiskReader& reader, uint64_t partitionOffsetBytes, uint64
                        uint64_t blockCount, uint64_t blockNum, uint32_t sectorSize, int& fileIndex,
                        FileSystemParser::FileRecordCallback& callback,
                        std::unordered_set<uint64_t>& visitedBlocks,
-                       std::unordered_set<std::string>& seenNames) {
+                       std::unordered_set<std::string>& seenNames,
+                       bool& pageUnread) {
     if (blockNum == 0 || blockNum >= blockCount || visitedBlocks.count(blockNum)) return;
     visitedBlocks.insert(blockNum);
 
     std::vector<uint8_t> page;
     uint64_t off = partitionOffsetBytes + blockNum * blockSize;
-    if (!readAt(reader, off, static_cast<uint32_t>(blockSize), page)) return;
+    if (!readAt(reader, off, static_cast<uint32_t>(blockSize), page)) {
+        pageUnread = true;
+        return;
+    }
     if (page.size() < 8) return;
 
     scanMetadataPageForEntries(page.data(), page.size(), off, sectorSize, fileIndex, callback, seenNames);
 
     if (page.size() < 80 || std::memcmp(page.data(), "MSB+", 4) != 0) return;
-    uint16_t level = static_cast<uint16_t>(page[34] | (page[35] << 8));
     uint32_t nkeys = readLe32(page.data() + 36);
-    if (nkeys == 0 || nkeys > 64) return;
+    if (nkeys == 0 || nkeys > 256) return;
 
     for (uint32_t k = 0; k < nkeys; ++k) {
         uint32_t recOff = 56 + k * 24;
         if (recOff + 24 > page.size()) break;
         uint64_t child = readLe64(page.data() + recOff + 16);
         if (child == 0 || child >= blockCount || child == blockNum) continue;
-        if (level == 0) {
-            walkMinistoreNode(reader, partitionOffsetBytes, blockSize, blockCount, child,
-                              sectorSize, fileIndex, callback, visitedBlocks, seenNames);
-        } else {
-            walkMinistoreNode(reader, partitionOffsetBytes, blockSize, blockCount, child,
-                              sectorSize, fileIndex, callback, visitedBlocks, seenNames);
-        }
+        walkMinistoreNode(reader, partitionOffsetBytes, blockSize, blockCount, child,
+                          sectorSize, fileIndex, callback, visitedBlocks, seenNames, pageUnread);
     }
 }
 
@@ -167,26 +173,15 @@ bool RefsParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     uint64_t superOff = partitionOffsetBytes + kRefsSuperblockCluster * clusterSize;
 
     std::vector<uint8_t> supb;
-    if (!readAt(reader, superOff, static_cast<uint32_t>(clusterSize), supb)) return false;
-    if (supb.size() < 48 || std::memcmp(supb.data(), "SUPB", 4) != 0) return false;
+    bool supbUnread = false;
+    if (!readAt(reader, superOff, static_cast<uint32_t>(clusterSize), supb)) {
+        supbUnread = true;
+    } else if (supb.size() < 48 || std::memcmp(supb.data(), "SUPB", 4) != 0) {
+        return false;
+    }
 
     int supbIntegrityConf = 90;
-    const bool supbChecked = tryVerifyRefsMetadataPage(supb.data(), supb.size(), supbIntegrityConf);
-
-  {
-        FileRecord vol;
-        vol.id = -1;
-        vol.name = "ReFS_Volume";
-        vol.path = "/refs/";
-        vol.sizeBytes = partitionSizeBytes > 0 ? partitionSizeBytes : reader.getDiskSize();
-        vol.startSector = partitionOffsetBytes / sectorSize;
-        vol.endSector = vol.startSector + std::max<uint64_t>(1, vol.sizeBytes / sectorSize);
-        vol.status = 0;
-        vol.confidence = supbChecked ? supbIntegrityConf : 90;
-        vol.category = "System";
-        vol.source = "refs_volume";
-        callback(vol);
-    }
+    const bool supbChecked = !supbUnread && tryVerifyRefsMetadataPage(supb.data(), supb.size(), supbIntegrityConf);
 
     int fileIndex = 0;
     std::unordered_set<std::string> seenNames;
@@ -197,28 +192,87 @@ bool RefsParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     uint64_t blockCount = (spanBytes > partitionOffsetBytes)
                               ? (spanBytes - partitionOffsetBytes) / clusterSize
                               : 0;
+
+    bool usedProbe = false;
+    bool pageUnread = false;
+    if (blockCount > 0) {
+        if (!supbUnread) {
+            uint64_t chkOff = readLe32(supb.data() + 32);
+            if (chkOff + 16 <= supb.size()) {
+                uint64_t chkBlock = readLe64(supb.data() + chkOff);
+                if (chkBlock > 0 && chkBlock < blockCount) {
+                    walkMinistoreNode(reader, partitionOffsetBytes, clusterSize, blockCount, chkBlock,
+                                      sectorSize, fileIndex, callback, visitedBlocks, seenNames, pageUnread);
+                }
+            }
+        }
+        // Linear probe when checkpoint walk is empty. Cap is honesty-labeled
+        // (/refs-probe-capped/) so a complete scan does not imply a full tree.
+        // ponytail: unread during this spray sets pageUnread even for
+        // non-metadata clusters in the cap window. Upgrade: flag only
+        // checkpoint-walk I/O or pages that look like MSB+/entry records.
+        if (seenNames.empty()) {
+            usedProbe = true;
+            const uint64_t probeCap = refsLinearProbeLimit();
+            const uint64_t probe = std::min(blockCount, probeCap);
+            for (uint64_t b = 0; b < probe; ++b) {
+                if (isRunning && !(*isRunning)) break;
+                if (b == kRefsSuperblockCluster) continue;
+                walkMinistoreNode(reader, partitionOffsetBytes, clusterSize, blockCount, b,
+                                  sectorSize, fileIndex, callback, visitedBlocks, seenNames, pageUnread);
+            }
+        }
+    }
+
+    {
+        FileRecord vol;
+        vol.id = -1;
+        vol.name = "ReFS_Volume";
+        const uint64_t probeCap = refsLinearProbeLimit();
+        const bool probeCapped = usedProbe && blockCount > probeCap;
+        vol.path = probeCapped ? "/refs-probe-capped/" : (usedProbe ? "/refs-probe/" : "/refs/");
+        vol.sizeBytes = partitionSizeBytes > 0 ? partitionSizeBytes : reader.getDiskSize();
+        vol.startSector = partitionOffsetBytes / sectorSize;
+        vol.endSector = vol.startSector + std::max<uint64_t>(1, vol.sizeBytes / sectorSize);
+        vol.status = 0;
+        vol.confidence = supbChecked ? supbIntegrityConf : 90;
+        if (probeCapped) vol.confidence = std::min(vol.confidence, 35);
+        else if (usedProbe) vol.confidence = std::min(vol.confidence, 45);
+        if (supbUnread) vol.confidence = std::min(vol.confidence, 20);
+        if (pageUnread) vol.confidence = std::min(vol.confidence, 20);
+        vol.category = "System";
+        vol.source = "refs_volume";
+        callback(vol);
+    }
+
+    if (supbUnread) {
+        FileRecord sentinel;
+        sentinel.id = -1;
+        sentinel.name = "Refs_SupbUnread";
+        sentinel.path = kRefsSupbUnreadPath;
+        sentinel.source = kRefsSupbUnreadSource;
+        sentinel.category = "System";
+        sentinel.status = 0;
+        sentinel.confidence = 20;
+        sentinel.startSector = superOff / sectorSize;
+        const uint64_t nsec = (clusterSize + sectorSize - 1) / sectorSize;
+        sentinel.endSector = sentinel.startSector + (nsec == 0 ? 1 : nsec);
+        callback(sentinel);
+    }
+
+    if (pageUnread) {
+        FileRecord sentinel;
+        sentinel.id = -1;
+        sentinel.name = "Refs_PageUnread";
+        sentinel.path = kRefsPageUnreadPath;
+        sentinel.source = kRefsPageUnreadSource;
+        sentinel.category = "System";
+        sentinel.status = 0;
+        sentinel.confidence = 20;
+        callback(sentinel);
+    }
+
     if (blockCount == 0) return true;
-
-    // Checkpoint at SUPB+32 names ministore root blocks for directory trees.
-    uint64_t chkOff = readLe32(supb.data() + 32);
-    if (chkOff + 16 <= supb.size()) {
-        uint64_t chkBlock = readLe64(supb.data() + chkOff);
-        if (chkBlock > 0 && chkBlock < blockCount) {
-            walkMinistoreNode(reader, partitionOffsetBytes, clusterSize, blockCount, chkBlock,
-                              sectorSize, fileIndex, callback, visitedBlocks, seenNames);
-        }
-    }
-
-    // ponytail: linear metadata probe when checkpoint walk yields nothing.
-    if (seenNames.empty()) {
-        const uint64_t probe = std::min(blockCount, uint64_t{512});
-        for (uint64_t b = 0; b < probe; ++b) {
-            if (isRunning && !(*isRunning)) break;
-            if (b == kRefsSuperblockCluster) continue;
-            walkMinistoreNode(reader, partitionOffsetBytes, clusterSize, blockCount, b,
-                              sectorSize, fileIndex, callback, visitedBlocks, seenNames);
-        }
-    }
 
     FileRecord tick;
     tick.id = -1;

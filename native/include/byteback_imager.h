@@ -27,12 +27,13 @@ public:
 
     void startImaging(int driveIndex, const std::string& destPath, ProgressCallback onProgress,
                       ImageFormat format = ImageFormat::Raw,
-                      const EwfOptions& ewfOpts = EwfOptions());
+                      const EwfOptions& ewfOpts = EwfOptions(),
+                      const std::string& volumePath = {});
     void requestStop();
     void stopImaging();
 
-    // Test hook: image from an already-open reader (memory volumes) instead
-    // of opening a PhysicalDrive by index.
+    // Image from an already-open reader (memory volumes, assembled RAID).
+    // `reader` must outlive the imaging thread (stopImaging() join or completion).
     void startImagingFromReader(DiskReader& reader, const std::string& destPath, ProgressCallback onProgress,
                                 ImageFormat format = ImageFormat::Raw,
                                 const EwfOptions& ewfOpts = EwfOptions());
@@ -53,7 +54,7 @@ public:
 
 private:
     void imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
-                       ImageFormat format, EwfOptions ewfOpts);
+                       ImageFormat format, EwfOptions ewfOpts, std::string volumePath);
     // Shared imaging core over an open reader; driveIndex variant opens its own.
     void imagingRun(DiskReader& reader, const std::string& destPath, ProgressCallback onProgress,
                     ImageFormat format, EwfOptions ewfOpts);

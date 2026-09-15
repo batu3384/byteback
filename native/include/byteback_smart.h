@@ -47,6 +47,12 @@ struct SmartStatus {
 // ATA ACS / Backblaze triage: pre-fail counters 0x05 (reallocated) and
 // 0xC5 (pending). Any pending+realloc together is Bad; either alone is
 // Warning. No Weibull, no uncalibrated eta/beta.
+// Deep/carve without allowSsdDeepScan: known SSD, invalid SMART, or no
+// seek-penalty bit. Unread SMART is not "not an SSD".
+inline bool smartNeedsTrimAck(const SmartStatus& st) {
+    return st.isSsd || !st.isValid || !st.seekPenaltyKnown;
+}
+
 inline const char* ataHealthFromDefects(int reallocatedSectors, int pendingSectors) {
     if (reallocatedSectors < 0) reallocatedSectors = 0;
     if (pendingSectors < 0) pendingSectors = 0;

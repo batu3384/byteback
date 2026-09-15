@@ -27,8 +27,10 @@ int64_t dosTimestampToUnix(uint16_t dosDate, uint16_t dosTime) {
 
 std::vector<ChainRun> chainRuns(FatEntryReader readEntry, int fatBits,
                                 uint32_t firstCluster, uint32_t sectorsPerCluster,
-                                uint64_t dataStartSector, size_t maxClusters) {
+                                uint64_t dataStartSector, size_t maxClusters,
+                                bool* unreadStop) {
     std::vector<ChainRun> runs;
+    if (unreadStop) *unreadStop = false;
     if (!readEntry || firstCluster < 2 || sectorsPerCluster == 0) return runs;
 
     auto isEoc = [fatBits](uint32_t v) {
@@ -56,6 +58,10 @@ std::vector<ChainRun> chainRuns(FatEntryReader readEntry, int fatBits,
         runs.push_back(run);
 
         uint32_t next = readEntry(clus);
+        if (next == kFatUnread) {
+            if (unreadStop) *unreadStop = true;
+            break;
+        }
         if (next < 2 || isBad(next)) break;
         clus = next;
     }

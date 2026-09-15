@@ -7,6 +7,8 @@
 #include "fs/vss_scanner.h"
 #include "fs/virtual_raid.h"
 #include "scan/discovery_sources.h"
+#include "io/volume_mapper_win.h"
+#include "io/hex_bind.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -85,7 +87,8 @@ bool isDiscoveryOnlySource(const std::string& source) {
 }
 
 bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
-                         std::shared_ptr<VirtualRaid> raid, std::string& err) {
+                         std::shared_ptr<VirtualRaid> raid, std::string& err,
+                         const std::string& volumePath) {
     err.clear();
     const std::string vss = vssDevicePathFromRecord(rec);
     if (!vss.empty()) {
@@ -95,8 +98,19 @@ bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveInd
         }
         return true;
     }
-    if (raid) {
+    if (driveIndex == -1) {
+        if (!raid) {
+            err = "RAID array not assembled";
+            return false;
+        }
         reader.setRaidBackend(raid);
+        return true;
+    }
+    if (!volumePath.empty()) {
+        if (!isWin32VolumeDevicePath(volumePath) || !reader.openVolumePath(volumePath)) {
+            err = "volume device not available";
+            return false;
+        }
         return true;
     }
     if (driveIndex < 0) {

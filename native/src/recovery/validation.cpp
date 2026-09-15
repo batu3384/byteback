@@ -6,6 +6,7 @@
 #include "byteback_io.h"
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 
 namespace byteback {
@@ -50,6 +51,12 @@ bool hasStructuralValidator(const std::string& ext) {
            ext == "m4a" || ext == "qt" || ext == "3gp";
 }
 
+bool needsTailSample(const std::string& ext) {
+    return ext == "zip" || ext == "docx" || ext == "xlsx" || ext == "pptx" ||
+           ext == "odt" || ext == "ods" || ext == "odp" || ext == "epub" ||
+           ext == "jar" || ext == "pdf";
+}
+
 void checkSizeConsistency(RecoveryResult& result, const FileRecord& record) {
     if (record.sizeBytes == 0 || result.bytesRecovered == 0) return;
     if (result.bytesRecovered >= record.sizeBytes) return;
@@ -91,6 +98,28 @@ void validateRecoveredStructure(RecoveryResult& result, const FileRecord& record
 
     const std::string ext = extensionFromRecord(record);
     if (!hasStructuralValidator(ext)) return;
+
+    // ZIP EOCD / PDF %%EOF live at the file end. First-1-MiB-only used to
+    // fail intact archives larger than the head window.
+    if (needsTailSample(ext)) {
+        in.clear();
+        in.seekg(0, std::ios::end);
+        const std::streamoff endPos = in.tellg();
+        if (endPos > static_cast<std::streamoff>(n)) {
+            constexpr std::streamoff kTail = 64 * 1024;
+            const std::streamoff tailOff = endPos > kTail ? endPos - kTail : 0;
+            in.clear();
+            if (in.seekg(tailOff)) {
+                const size_t tailCap = static_cast<size_t>(endPos - tailOff);
+                std::vector<uint8_t> tail(tailCap);
+                in.read(reinterpret_cast<char*>(tail.data()), static_cast<std::streamsize>(tailCap));
+                const size_t tn = static_cast<size_t>(in.gcount());
+                buf.resize(n + tn);
+                if (tn > 0) std::memcpy(buf.data() + n, tail.data(), tn);
+                n += tn;
+            }
+        }
+    }
 
     const int score = validateCarvedBuffer(ext, buf.data(), n);
     result.validationScore = score;

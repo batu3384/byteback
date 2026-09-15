@@ -244,13 +244,6 @@ Napi::Value SetSignatureOverlay(const Napi::CallbackInfo& info) {
     NAPI_TRY
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     const std::string path = info[0].As<Napi::String>().Utf8Value();
-    if (path.empty()) {
-        byteback::CarvingEngine::setSignatureOverlay("");
-        return Napi::Boolean::New(env, true);
-    }
-    std::ifstream probe(path);
-    if (!probe.is_open()) return Napi::Boolean::New(env, false);
-    byteback::CarvingEngine::setSignatureOverlay(path);
-    return Napi::Boolean::New(env, true);
+    return Napi::Boolean::New(env, byteback::CarvingEngine::setSignatureOverlay(path));
     NAPI_CATCH
 }

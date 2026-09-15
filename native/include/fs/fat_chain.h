@@ -24,8 +24,12 @@ struct ChainRun {
     uint64_t sectorCount;
 };
 
-// FAT entry reader: returns the table value for a cluster. Callers translate
-// read failures into EOC (0xFFFFFFF8-class values) so the walk stops cleanly.
+// Adapter-only: FAT table unread/padded. Not an on-disk value (FAT32 adapters
+// mask to 28 bits on success). Walk stops and sets unreadStop — do not treat
+// as EOC (EOC would look like a complete shorter file).
+inline constexpr uint32_t kFatUnread = 0xFFFFFFF1;
+
+// FAT entry reader: returns the table value for a cluster, or kFatUnread.
 using FatEntryReader = std::function<uint32_t(uint32_t cluster)>;
 
 // Walk the cluster chain starting at firstCluster and emit physical sector
@@ -35,6 +39,7 @@ using FatEntryReader = std::function<uint32_t(uint32_t cluster)>;
 //   - stops at EOC (>=0xFF8/0xFFF8/0x0FFFFFF8 by fatBits) and bad-cluster
 //     markers (0xFF7/0xFFF7/0x0FFFFFF7),
 //   - stops on entries < 2 (free/reserved),
+//   - stops on kFatUnread and sets unreadStop (truncated by I/O, not EOC),
 //   - cycle-safe: a repeated cluster ends the walk with what was built,
 //   - bounded by maxClusters (deleted files can have cleared chains).
 //
@@ -42,7 +47,8 @@ using FatEntryReader = std::function<uint32_t(uint32_t cluster)>;
 // the same numeric conventions).
 std::vector<ChainRun> chainRuns(FatEntryReader readEntry, int fatBits,
                                 uint32_t firstCluster, uint32_t sectorsPerCluster,
-                                uint64_t dataStartSector, size_t maxClusters);
+                                uint64_t dataStartSector, size_t maxClusters,
+                                bool* unreadStop = nullptr);
 
 } // namespace fat
 } // namespace byteback

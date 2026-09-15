@@ -32,6 +32,16 @@ struct XfsSuperblock {
     bool hasV3Inodes() const { return (versionnum & 0x000f) == 5; }
 };
 
+// Discovery sentinel path when a directory data block could not be read.
+// Zero-fill is not an empty directory.
+inline constexpr const char* kXfsDirUnreadPath = "/xfs-dir-unread/";
+inline constexpr const char* kXfsSbUnreadPath = "/xfs-sb-unread/";
+inline constexpr const char* kXfsSbUnreadSource = "xfs_sb_unread";
+inline constexpr const char* kXfsInodeUnreadPath = "/xfs-inode-unread/";
+inline constexpr const char* kXfsInodeUnreadSource = "xfs_inode_unread";
+inline constexpr const char* kXfsBmapUnreadPath = "/xfs-bmap-unread/";
+inline constexpr const char* kXfsBmapUnreadSource = "xfs_bmap_unread";
+
 class XfsParser {
 public:
     using FileCallback = std::function<void(const std::string& path, uint64_t inodeNo,
@@ -49,6 +59,7 @@ private:
     DiskReader* reader_ = nullptr;
     uint64_t partOffset_ = 0;
     XfsSuperblock sb_{};
+    bool secondaryUnread_ = false;
 };
 
 } // namespace byteback

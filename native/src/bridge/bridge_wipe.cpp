@@ -8,8 +8,21 @@
 #include "recovery/path_util.h"
 #include "forensic/audit_logger.h"
 #include <filesystem>
+#include <cmath>
+#include <limits>
 
 namespace {
+
+bool parseU64Number(const Napi::Value& v, uint64_t& out) {
+    if (!v.IsNumber()) return false;
+    const double d = v.As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(d) || d < 0.0) return false;
+    if (d > static_cast<double>((std::numeric_limits<uint64_t>::max)())) return false;
+    const uint64_t u = static_cast<uint64_t>(d);
+    if (static_cast<double>(u) != d) return false;
+    out = u;
+    return true;
+}
 
 Napi::Object recoveryResultToJs(Napi::Env env, const byteback::RecoveryResult& r) {
     Napi::Object obj = Napi::Object::New(env);
@@ -327,7 +340,7 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     NAPI_TRY
     if (info.Length() < 2 || !info[0].IsArray() || !info[1].IsNumber()) {
-        Napi::TypeError::New(env, "Expected (driveIndices: number[], raidLevel: number)").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected (driveIndices: number[], raidLevel: number, blockSize?: number, dataOffsetSectors?: number)").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
@@ -365,12 +378,30 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         drives.push_back(v.As<Napi::Number>().Int32Value());
     }
 
-    // 64 KiB stripe unit — the most common hardware/Intel RST default.
-    constexpr size_t kStripeSize = 64 * 1024;
+    uint64_t blockSizeU = 0;
+    if (info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()) {
+        if (!parseU64Number(info[2], blockSizeU)) return fail("Invalid stripe size");
+    }
+    // RAID1 layout ignores stripe; a dummy constructor value is fine.
+    if (raidLevel == 1 && blockSizeU == 0) blockSizeU = 64 * 1024;
+    if (blockSizeU > (std::numeric_limits<size_t>::max)() ||
+        !byteback::isRaidStripeSize(static_cast<size_t>(blockSizeU))) {
+        return fail("Invalid stripe size");
+    }
+    const size_t blockSize = static_cast<size_t>(blockSizeU);
+
+    uint64_t offsetSectors = 0;
+    if (info.Length() >= 4 && !info[3].IsUndefined() && !info[3].IsNull()) {
+        if (!parseU64Number(info[3], offsetSectors)) return fail("Invalid data offset");
+    }
+    if (offsetSectors > (std::numeric_limits<uint64_t>::max)() / 512) {
+        return fail("Invalid data offset");
+    }
+    const uint64_t offsetBytes = offsetSectors * 512;
 
     try {
         auto level = static_cast<byteback::RaidLevel>(raidLevel);
-        auto raid = std::make_shared<byteback::VirtualRaid>(level, drives, kStripeSize);
+        auto raid = std::make_shared<byteback::VirtualRaid>(level, drives, blockSize, offsetBytes);
         // Probe the first block of the array to verify every member disk can
         // actually be read through the assembly before reporting success.
         auto probe = raid->read(0, 512);
@@ -433,7 +464,10 @@ public:
             }
             byteback::DiskReader reader;
             if (rec.residentData.empty()) {
-                if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                const std::string volumePath = scanId_ > 0
+                    ? engine_->getMetadataStore().getScanState(scanId_).volumePath
+                    : std::string{};
+                if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err, volumePath)) {
                     result_.success = false;
                     result_.error = err;
                     return;
@@ -560,6 +594,9 @@ public:
     void Execute() override {
         try {
             byteback::RecoveryEngine recovery;
+            const std::string volumePath = scanId_ > 0
+                ? engine_->getMetadataStore().getScanState(scanId_).volumePath
+                : std::string{};
             for (int64_t id : fileIds_) {
                 byteback::FileRecord rec;
                 std::string err;
@@ -573,7 +610,7 @@ public:
                 }
                 byteback::DiskReader reader;
                 if (rec.residentData.empty()) {
-                    if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err)) {
+                    if (!byteback::bindReaderForRecord(reader, rec, driveIndex_, raid_, err, volumePath)) {
                         one.success = false;
                         one.error = err;
                         summary_.results.push_back(one);
@@ -724,7 +761,10 @@ Napi::Value ReadFilePreview(const Napi::CallbackInfo& info) {
     if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
 
     byteback::DiskReader reader;
-    if (!byteback::bindReaderForRecord(reader, rec, driveIndex, bdata->raid, err)) {
+    const std::string volumePath = scanId > 0
+        ? bdata->engine.getMetadataStore().getScanState(scanId).volumePath
+        : std::string{};
+    if (!byteback::bindReaderForRecord(reader, rec, driveIndex, bdata->raid, err, volumePath)) {
         Napi::Object out = Napi::Object::New(env);
         out.Set("success", Napi::Boolean::New(env, false));
         out.Set("error", Napi::String::New(env, err));

@@ -4,7 +4,9 @@
 // assertions use hand-computed hex literals so an offset slip fails loudly.
 #include "byteback_io.h"
 #include "fs/xfs_parser.h"
+#include "scan_coordinator.h"
 #include <gtest/gtest.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -261,6 +263,42 @@ TEST(XfsParser, SuperblockRejectsSecondaryMismatch) {
     EXPECT_FALSE(p.open(reader, 0));
 }
 
+TEST(XfsParser, UnreadSecondarySbIsNotMissingFilesystem) {
+    Spec s;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteSfDir(img, s, 0x45, 0x45, {{"alfa", 7}}, false);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    // AG 1 copy of the superblock starts at agblocks*blocksize → sector 64.
+    reader.setMemoryFaultRange(64, 1);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    const auto hits = Walk(&p);
+    ASSERT_NE(FindHit(hits, "/alfa"), nullptr)
+        << "unread AG1 superblock copy must not skip the XFS walk as “not XFS”";
+    ASSERT_NE(FindHit(hits, kXfsSbUnreadPath), nullptr);
+}
+
+TEST(XfsParser, UnreadRootInodeIsSentinelNotEmptyTree) {
+    Spec s;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteSfDir(img, s, 0x45, 0x45, {{"alfa", 7}}, false);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    // rootino 0x45 lives at 0x8500 → sector 66. SB + AG1 copy stay readable.
+    reader.setMemoryFaultRange(66, 1);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    ASSERT_TRUE(p.walkTree([](const std::string&, uint64_t, uint64_t, bool,
+                              const std::vector<std::pair<uint64_t, uint64_t>>&) {}));
+    const auto hits = Walk(&p);
+    EXPECT_EQ(FindHit(hits, "/alfa"), nullptr)
+        << "unread root inode must not parse zeros as an empty successful tree of /alfa";
+    ASSERT_NE(FindHit(hits, kXfsInodeUnreadPath), nullptr);
+}
+
 TEST(XfsParser, UnopenedParserFails) {
     XfsParser p;
     std::vector<uint8_t> raw;
@@ -427,6 +465,61 @@ TEST(XfsParser, BlockDirWalk) {
     EXPECT_NE(FindHit(hits, "/"), nullptr);
 }
 
+TEST(XfsParser, UnreadBlockDirIsSentinelNotEmptyDirectory) {
+    Spec s;
+    auto img = BuildImage(s);
+    {
+        std::vector<uint8_t> f;
+        AppendExtRec(f, 0, 0, 20, 1);
+        WriteInode(img, s, 0x45, 0x41ED, 2, 512, f);
+    }
+    const size_t blk = static_cast<size_t>(20 * 512);
+    Wb32(img, blk, 0x58443242);
+    WriteDataEntry(img, blk + 16, 0x45, ".");
+    WriteDataEntry(img, blk + 32, 0x45, "..");
+    WriteDataEntry(img, blk + 48, 7, "doc");
+    WriteInode(img, s, 7, 0x81A4, 2, 1, OneExtentFork(50, 1));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    reader.setMemoryFaultRange(20, 1);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    const auto hits = Walk(&p);
+    EXPECT_EQ(FindHit(hits, "/doc"), nullptr)
+        << "unread XFS dir must not parse zeros as an empty listing of /doc";
+    ASSERT_NE(FindHit(hits, kXfsDirUnreadPath), nullptr);
+}
+
+TEST(XfsScan, UnreadDirSurfacesDiscoverySource) {
+    Spec s;
+    auto img = BuildImage(s);
+    {
+        std::vector<uint8_t> f;
+        AppendExtRec(f, 0, 0, 20, 1);
+        WriteInode(img, s, 0x45, 0x41ED, 2, 512, f);
+    }
+    const size_t blk = static_cast<size_t>(20 * 512);
+    Wb32(img, blk, 0x58443242);
+    WriteDataEntry(img, blk + 16, 0x45, ".");
+    WriteDataEntry(img, blk + 32, 0x45, "..");
+    WriteDataEntry(img, blk + 48, 7, "doc");
+    WriteInode(img, s, 7, 0x81A4, 2, 1, OneExtentFork(50, 1));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    reader.setMemoryFaultRange(20, 1);
+    std::atomic<bool> running{true};
+    bool sawDoc = false;
+    bool sawUnread = false;
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "doc") sawDoc = true;
+        if (fr.source == "xfs_dir_unread") sawUnread = true;
+    }, [](uint64_t, uint64_t) {}, &running);
+    EXPECT_FALSE(sawDoc);
+    EXPECT_TRUE(sawUnread);
+}
+
 // ---- leaf dir walk (XD2D data block + skipped index leaf block) -----------------
 
 TEST(XfsParser, LeafDirWalkSkipsIndexBlocks) {
@@ -529,6 +622,25 @@ TEST(XfsParser, BtreeFileWalkV2) {
     ASSERT_EQ(big->runs.size(), 1u);
     EXPECT_EQ(big->runs[0].first, 20480u); // 40*512
     EXPECT_EQ(big->runs[0].second, 1024u); // 2*512
+}
+
+TEST(XfsParser, UnreadBmapLeafIsSentinelNotEmptyRuns) {
+    auto img = BuildImage(Spec{});
+    WriteBtreeFile(img, Spec{}, 7, 30, 0x424D4150 /*'BMAP'*/);
+    WriteSfDir(img, Spec{}, 0x45, 0x45, {{"big", 7}}, false);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    // BMAP leaf at fsb 30 * 512 → sector 30. Inode + dir stay readable.
+    reader.setMemoryFaultRange(30, 1);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    const auto hits = Walk(&p);
+    const Hit* big = FindHit(hits, "/big");
+    ASSERT_NE(big, nullptr);
+    EXPECT_TRUE(big->runs.empty())
+        << "unread BMAP leaf must not decode zeros as a live extent";
+    ASSERT_NE(FindHit(hits, kXfsBmapUnreadPath), nullptr);
 }
 
 TEST(XfsParser, BtreeFileWalkV3) {

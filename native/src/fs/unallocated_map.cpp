@@ -2,13 +2,29 @@
 #include "fs/ntfs_util.h"
 #include "byteback_db.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
 namespace byteback {
 
+std::atomic<bool> g_unallocatedUsedFallback{false};
+std::atomic<bool> g_unallocatedMapUnread{false};
+
 namespace {
+
+void markUnallocatedMapUnread() {
+    g_unallocatedMapUnread.store(true, std::memory_order_relaxed);
+}
+
+bool readMapBytes(DiskReader& reader, uint64_t off, uint32_t n, uint8_t* buf) {
+    if (!readComplete(reader.readSectors(off, n, buf), n)) {
+        markUnallocatedMapUnread();
+        return false;
+    }
+    return true;
+}
 
 void pushRange(std::vector<SectorRange>& out, uint64_t start, uint64_t count) {
     if (count == 0) return;
@@ -143,7 +159,7 @@ bool readBytesFromRuns(DiskReader& reader, const std::vector<FileRecord::DataRun
         uint64_t readOff = run.startSector * ss + wantOff;
         uint64_t avail = runBytes - wantOff;
         uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(size - filled, avail));
-        if (!reader.readSectors(readOff, take, out + filled).success) return false;
+        if (!readMapBytes(reader, readOff, take, out + filled)) return false;
         filled += take;
         wantOff = 0;
         if (filled >= size) return true;
@@ -159,7 +175,7 @@ std::vector<SectorRange> buildNtfsUnallocated(DiskReader& reader, uint64_t volOf
     const uint64_t volumeStartSector = volOffsetBytes / sectorSize;
 
     std::vector<uint8_t> boot(sectorSize);
-    if (!reader.readSectors(volOffsetBytes, sectorSize, boot.data()).success) return out;
+    if (!readMapBytes(reader, volOffsetBytes, sectorSize, boot.data())) return out;
 
     uint32_t bps = sectorSize;
     uint32_t spc = 8;
@@ -176,7 +192,7 @@ std::vector<SectorRange> buildNtfsUnallocated(DiskReader& reader, uint64_t volOf
 
     std::vector<uint8_t> rec(recBytes, 0);
     const uint64_t bitmapOff = volOffsetBytes + mftLcn * clusterBytes + 6ull * recBytes;
-    if (!reader.readSectors(bitmapOff, recBytes, rec.data()).success) return out;
+    if (!readMapBytes(reader, bitmapOff, recBytes, rec.data())) return out;
     if (std::strncmp(reinterpret_cast<char*>(rec.data()), "FILE", 4) != 0) return out;
 
     const auto* hdr = reinterpret_cast<const uint16_t*>(rec.data() + 4);
@@ -237,7 +253,9 @@ std::vector<SectorRange> buildNtfsUnallocated(DiskReader& reader, uint64_t volOf
     for (uint64_t c = 0; c < totalClusters; ++c) {
         size_t byteIdx = static_cast<size_t>(c / 8);
         uint8_t bit = static_cast<uint8_t>(1u << (c % 8));
-        bool allocated = byteIdx < bitmap.size() && (bitmap[byteIdx] & bit);
+        // Missing bitmap bytes are allocated, not free — a short/padded $Bitmap
+        // must not look like a fully unused volume.
+        bool allocated = byteIdx >= bitmap.size() || (bitmap[byteIdx] & bit);
         if (!allocated) {
             if (runClusters == 0) runStart = c;
             runClusters++;
@@ -341,8 +359,7 @@ struct FatWindow {
         if (idx < bufStart || idx + 8 > bufStart + bufLen) {
             const uint64_t winStart = (idx / kFatWindowBytes) * kFatWindowBytes;
             const uint64_t len = std::min<uint64_t>(buf.size(), tableBytes - winStart);
-            if (!reader->readSectors(baseOffset + winStart,
-                                     static_cast<uint32_t>(len), buf.data()).success) {
+            if (!readMapBytes(*reader, baseOffset + winStart, static_cast<uint32_t>(len), buf.data())) {
                 return nullptr;
             }
             bufStart = winStart;
@@ -360,7 +377,7 @@ std::vector<SectorRange> buildExFatUnallocated(DiskReader& reader, uint64_t volO
     const uint64_t partitionOffset = volOffsetBytes / sectorSize;
 
     std::vector<uint8_t> buffer(sectorSize);
-    if (!reader.readSectors(volOffsetBytes, sectorSize, buffer.data()).success) return out;
+    if (!readMapBytes(reader, volOffsetBytes, sectorSize, buffer.data())) return out;
     if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) != 0) return out;
 
     const auto* bpb = reinterpret_cast<const ExFAT_BPB*>(buffer.data());
@@ -462,11 +479,11 @@ std::vector<SectorRange> buildExt4Unallocated(DiskReader& reader, uint64_t volOf
     if (sectorSize == 0) sectorSize = 512;
 
     std::vector<uint8_t> boot(sectorSize);
-    if (!reader.readSectors(volOffsetBytes, sectorSize, boot.data()).success) return out;
+    if (!readMapBytes(reader, volOffsetBytes, sectorSize, boot.data())) return out;
 
     const uint64_t sbOff = volOffsetBytes + 1024;
     std::vector<uint8_t> sbBuf(sectorSize);
-    if (!reader.readSectors(sbOff, sectorSize, sbBuf.data()).success) {
+    if (!readMapBytes(reader, sbOff, sectorSize, sbBuf.data())) {
         return out;
     }
     const auto* sb = reinterpret_cast<const Ext4_SuperBlock*>(sbBuf.data());
@@ -489,8 +506,8 @@ std::vector<SectorRange> buildExt4Unallocated(DiskReader& reader, uint64_t volOf
     for (uint32_t g = 0; g < numGroups; ++g) {
         std::vector<uint8_t> gdBuf(sectorSize);
         const uint64_t gdOff = gdtOff + static_cast<uint64_t>(g) * descSize;
-        if (gdOff % sectorSize != 0 ||
-            !reader.readSectors(gdOff - (gdOff % sectorSize), sectorSize, gdBuf.data()).success) {
+        if (gdOff % sectorSize + descSize > sectorSize) continue;
+        if (!readMapBytes(reader, gdOff - (gdOff % sectorSize), sectorSize, gdBuf.data())) {
             continue;
         }
         const auto* gd = reinterpret_cast<const Ext4_GroupDesc*>(gdBuf.data() + (gdOff % sectorSize));
@@ -506,7 +523,7 @@ std::vector<SectorRange> buildExt4Unallocated(DiskReader& reader, uint64_t volOf
                                   sectorSize);
         std::vector<uint8_t> bitmap(readBytes);
         const uint64_t bitmapReadOff = bitmapOff - (bitmapOff % sectorSize);
-        if (!reader.readSectors(bitmapReadOff, readBytes, bitmap.data()).success) continue;
+        if (!readMapBytes(reader, bitmapReadOff, readBytes, bitmap.data())) continue;
         const size_t bitmapSkip = static_cast<size_t>(bitmapOff % sectorSize);
 
         uint64_t runStartBlock = UINT64_MAX;
@@ -514,7 +531,7 @@ std::vector<SectorRange> buildExt4Unallocated(DiskReader& reader, uint64_t volOf
         for (uint32_t b = 0; b < blocksInGroup; ++b) {
             const size_t byteIdx = bitmapSkip + b / 8;
             const uint8_t mask = static_cast<uint8_t>(1u << (b % 8));
-            const bool allocated = byteIdx < bitmap.size() && (bitmap[byteIdx] & mask);
+            const bool allocated = byteIdx >= bitmap.size() || (bitmap[byteIdx] & mask);
             if (!allocated) {
                 if (runLen == 0) runStartBlock = groupBlockStart + b;
                 runLen++;
@@ -543,7 +560,7 @@ std::vector<SectorRange> buildFatUnallocated(DiskReader& reader, uint64_t volOff
     const uint64_t partitionOffset = volOffsetBytes / sectorSize;
 
     std::vector<uint8_t> buffer(sectorSize);
-    if (!reader.readSectors(volOffsetBytes, sectorSize, buffer.data()).success) return out;
+    if (!readMapBytes(reader, volOffsetBytes, sectorSize, buffer.data())) return out;
     if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) == 0) return out;
 
     const auto* bpb = reinterpret_cast<const FAT_BPB*>(buffer.data());
@@ -655,6 +672,7 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:
         case VolumeFsKind::Unknown:
+        case VolumeFsKind::Unread:
             return {};
     }
     return {};
@@ -666,6 +684,8 @@ namespace {
 std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
                                                    int64_t partitionStartSector,
                                                    uint64_t partitionSizeSectors) {
+    g_unallocatedUsedFallback.store(false, std::memory_order_relaxed);
+    g_unallocatedMapUnread.store(false, std::memory_order_relaxed);
     std::vector<SectorRange> out;
     if (!reader.isOpen() && !reader.hasRaidBackend()) return out;
 
@@ -699,14 +719,14 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
         auto u = buildUnallocatedRanges(reader, kind, offsetBytes, sizeBytes);
         out.insert(out.end(), u.begin(), u.end());
     }
-    // CA-022: when the unallocated map comes back empty — unsupported FS
-    // (ReFS/APFS/HFS), unknown FS, or a corrupt filesystem — fall back to
-    // carving the whole partition. The previous `sawUnsupported` gate kept the
-    // range set empty, so deep scans on exactly the damaged/unusual volumes
-    // this tool exists for carved zero sectors and still reported 100%. The
-    // carver's bounded-emission policy keeps the fallback from flooding
-    // results with phantom records.
+    // CA-022: empty map — unsupported FS (ReFS/APFS/HFS), unknown FS, corrupt
+    // filesystem, or unread/padded bitmap/FAT — fall back to carving the whole
+    // partition. The previous `sawUnsupported` gate kept the range set empty,
+    // so deep scans on exactly the damaged/unusual volumes this tool exists for
+    // carved zero sectors and still reported 100%. The carver's bounded-emission
+    // policy keeps the fallback from flooding results with phantom records.
     if (out.empty() && !parts.empty()) {
+        g_unallocatedUsedFallback.store(true, std::memory_order_relaxed);
         for (const auto& part : parts) {
             if (part.sizeInSectors > 0) pushRange(out, part.startSector, part.sizeInSectors);
         }

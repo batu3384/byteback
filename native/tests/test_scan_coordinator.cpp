@@ -1,5 +1,8 @@
 #include "scan_coordinator.h"
 #include "scan_progress.h"
+#include "fs/unallocated_map.h"
+#include "fs/partition_scanner.h"
+#include "fs/virtual_raid.h"
 #include "byteback_io.h"
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
@@ -96,6 +99,41 @@ TEST(ScanCoordinator, BitLockerDetectsFveHeader) {
     EXPECT_TRUE(bitlocker);
 }
 
+TEST(ScanCoordinator, UnreadPartitionProbeEmitsSentinelNotSilentSkip) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    constexpr uint32_t partStart = 2048;
+    auto disk = byteback::testfix::buildMbrDiskWithFatPartition(fatVol, partStart);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    reader.setMemoryFaultRange(partStart, 1);
+
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    bool sawProbeUnread = false;
+    for (const auto& s : sources) {
+        if (s == kProbeUnreadSource) sawProbeUnread = true;
+    }
+    EXPECT_TRUE(sawProbeUnread);
+}
+
+TEST(ScanCoordinator, EmptyMbrZerosDoNotEmitProbeUnread) {
+    std::vector<uint8_t> disk(512 * 8, 0);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    for (const auto& s : sources) EXPECT_NE(s, kProbeUnreadSource);
+}
+
 TEST(ScanCoordinator, BitLockerIgnoresFakeTenByteOem) {
     std::vector<uint8_t> disk(512 * 8, 0);
     std::memcpy(disk.data() + 3, "-FVEF-SYS-", 10);
@@ -111,6 +149,16 @@ TEST(ScanCoordinator, BitLockerIgnoresFakeTenByteOem) {
     for (const auto& s : sources) EXPECT_NE(s, "bitlocker_detect");
 }
 
+TEST(ScanCoordinator, ParseDriveIndexRejectsPartialAndNegative) {
+    EXPECT_EQ(parseDriveIndex("0").value_or(-99), 0);
+    EXPECT_EQ(parseDriveIndex("12").value_or(-99), 12);
+    EXPECT_FALSE(parseDriveIndex("12abc").has_value());
+    EXPECT_FALSE(parseDriveIndex("").has_value());
+    EXPECT_FALSE(parseDriveIndex("raid").has_value());
+    EXPECT_FALSE(parseDriveIndex("-1").has_value());
+    EXPECT_FALSE(parseDriveIndex("1.5").has_value());
+}
+
 TEST(ScanCoordinator, InvalidDriveStillCallsOnFinished) {
     ScanCoordinator coord;
     std::atomic<int> finished{-1};
@@ -122,6 +170,55 @@ TEST(ScanCoordinator, InvalidDriveStillCallsOnFinished) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_EQ(finished.load(), 3);
+}
+
+TEST(ScanCoordinator, InvalidVolumePathDoesNotFallBackToDriveZero) {
+    ScanCoordinator coord;
+    std::atomic<int> finished{-1};
+    ScanTarget t;
+    t.volumePath = "\\\\.\\PhysicalDrive0";
+    coord.startScan("0", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, nullptr,
+                    [&](int s) { finished = s; }, nullptr, t);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(finished.load(), 3);
+}
+
+TEST(ScanCoordinator, LiveRaidDoesNotHijackVolumeScan) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
+    ScanCoordinator coord;
+    std::atomic<int> finished{-1};
+    ScanTarget t;
+    t.volumePath = "\\\\.\\PhysicalDrive0";
+    coord.startScan("0", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, raid,
+                    [&](int s) { finished = s; }, nullptr, t);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(finished.load(), 3);
+}
+
+TEST(ScanCoordinator, RaidPathUsesAssembledArray) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
+    ScanCoordinator coord;
+    std::atomic<int> finished{-1};
+    coord.startScan("raid", "quick", [](const FileRecord&) {},
+                    [](uint64_t, uint64_t) {}, nullptr, raid,
+                    [&](int s) { finished = s; });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(finished.load(), 1);
 }
 
 TEST(ScanCoordinator, StartScanTwiceJoinsPreviousThread) {
@@ -362,7 +459,9 @@ TEST(ScanCoordinator, CarveUnallocatedOnlyFallsBackWhenNoBitmap) {
     }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
 
     EXPECT_GE(carved, 1u);
-    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve");
+    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve_fallback");
+    EXPECT_TRUE(g_unallocatedUsedFallback.load(std::memory_order_relaxed));
+    EXPECT_FALSE(g_carveInitFailed.load(std::memory_order_relaxed));
 }
 
 // A previous scan that errored/cancelled mid-carve must not leak its

@@ -1,5 +1,6 @@
 #include "fs/apfs_container.h"
 #include "fs/hfs_catalog.h"
+#include "byteback_fs.h"
 #include "byteback_io.h"
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -167,6 +168,60 @@ TEST(ApfsContainer, WalkFindsEmbeddedVolume) {
     EXPECT_TRUE(sawVolume);
 }
 
+TEST(ApfsContainer, UnreadNxsbTailIsSentinelNotMissingVolume) {
+    std::vector<uint8_t> img(32 * 4096, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeBe64(img.data() + 40, 4096);
+    writeBe64(img.data() + 48, 32);
+    std::memcpy(img.data() + 4096 + 32, "APSB", 4);
+    std::memcpy(img.data() + 4096 + 72, "Macintosh HD", 12);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // Probe reads 512 bytes (sector 0). Walk used a single 4096-byte NXSB read,
+    // so a fault in sectors 1–7 dropped the whole container as “not APFS”.
+    reader.setMemoryFaultRange(1, 7);
+
+    bool sawVolume = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    ASSERT_TRUE(walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_volume" && fr.name == "Macintosh HD") sawVolume = true;
+        if (fr.source == kApfsNxsbUnreadSource) sawUnread = true;
+    }, &running));
+
+    EXPECT_TRUE(sawVolume) << "unread NXSB tail must not hide a readable APSB at block 1";
+    EXPECT_TRUE(sawUnread);
+}
+
+TEST(ApfsContainer, UnreadApsbBlockIsSentinelNotEmptyContainer) {
+    std::vector<uint8_t> img(32 * 4096, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeBe64(img.data() + 40, 4096);
+    writeBe64(img.data() + 48, 32);
+    std::memcpy(img.data() + 4096 + 32, "APSB", 4);
+    std::memcpy(img.data() + 4096 + 72, "Macintosh HD", 12);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // APSB at block 1 = 4096/512 = sector 8, 8 sectors. NXSB at sector 0 stays readable.
+    reader.setMemoryFaultRange(8, 8);
+
+    bool sawContainer = false;
+    bool sawVolume = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    ASSERT_TRUE(walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_container") sawContainer = true;
+        if (fr.source == "apfs_volume" && fr.name == "Macintosh HD") sawVolume = true;
+        if (fr.source == kApfsBlockUnreadSource) sawUnread = true;
+    }, &running));
+
+    EXPECT_TRUE(sawContainer);
+    EXPECT_FALSE(sawVolume) << "unread APSB must not parse zeros as a missing Macintosh HD";
+    EXPECT_TRUE(sawUnread);
+}
+
 TEST(HfsCatalog, OverflowExtentsMergedIntoRuns) {
     const uint32_t bs = 4096;
     std::vector<uint8_t> img(64 * bs, 0);
@@ -191,6 +246,37 @@ TEST(HfsCatalog, OverflowExtentsMergedIntoRuns) {
         if (r.startSector == (40 * bs) / 512) hasOverflow = true;
     }
     EXPECT_TRUE(hasOverflow);
+}
+
+TEST(HfsCatalog, UnreadRootNodeIsSentinelNotEmptyCatalog) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(64 * bs, 0);
+    writeHfsVolumeHeader(img, 4, 5, bs);
+    writeCatalogFileLeaf(img, 4, 100, 12 * bs, bs);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // Catalog root is allocation block 4 → 4*4096/512 = sector 32, 8 sectors.
+    reader.setMemoryFaultRange(32, 8);
+
+    std::vector<std::string> names;
+    std::vector<std::string> sources;
+    std::atomic<bool> running{true};
+    ASSERT_TRUE(scanHfsPlusCatalog(reader, 0, 0, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, &running));
+
+    bool sawFile = false;
+    bool sawUnread = false;
+    for (const auto& n : names) {
+        if (n == "big.bin") sawFile = true;
+    }
+    for (const auto& s : sources) {
+        if (s == kHfsCatalogUnreadSource) sawUnread = true;
+    }
+    EXPECT_FALSE(sawFile) << "unread HFS catalog node must not parse zeros as an empty listing of big.bin";
+    EXPECT_TRUE(sawUnread);
 }
 
 TEST(HfsCatalog, EmptyRunsMarkedDeletedWithLowConfidence) {
@@ -551,4 +637,60 @@ TEST(ApfsContainer, SpecOffsetsResolveOmapAndVolumes) {
         if (fr.source == "apfs_file" && fr.name == "far.txt") sawFile = true;
     }, &running);
     EXPECT_TRUE(sawFile);
+}
+
+TEST(HFSParser, UnreadSiblingSectorDoesNotHideVolumeHeader) {
+    std::vector<uint8_t> img(64 * 1024, 0);
+    writeHfsVolumeHeader(img, 4, 3);
+    std::memset(img.data() + 1024 + 272, 0, 80); // empty catalog fork → linear fallback
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(0, 1); // blinds a 4 MiB linear chunk; VH lives at sector 2
+    HFSParser hfs;
+    bool sawVh = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    hfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "hfs_vh") sawVh = true;
+        if (fr.source == "hfs_linear_unread") sawUnread = true;
+    }, &running, 0, 0);
+    EXPECT_TRUE(sawVh) << "one unread sector must not hide a readable HFS volume header in the same 4 MiB window";
+    EXPECT_TRUE(sawUnread);
+}
+
+TEST(HFSParser, UnreadLinearChunkIsSentinelNotEmptyVolume) {
+    std::vector<uint8_t> img(64 * 1024, 0);
+    writeHfsVolumeHeader(img, 4, 3);
+    std::memset(img.data() + 1024 + 272, 0, 80);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(2, 1); // VH sector unread
+    HFSParser hfs;
+    bool sawVh = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    hfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "hfs_vh") sawVh = true;
+        if (fr.source == "hfs_linear_unread") sawUnread = true;
+    }, &running, 0, 0);
+    EXPECT_FALSE(sawVh) << "unread VH must not parse as a volume";
+    EXPECT_TRUE(sawUnread) << "empty HFS linear scan after unread I/O is not “no HFS”";
+}
+
+TEST(APFSParser, UnreadSiblingSectorDoesNotHideNxsb) {
+    std::vector<uint8_t> img(32 * 1024, 0);
+    std::memcpy(img.data() + 8192 + 32, "NXSB", 4); // after walk's 4096 prefix so linear runs
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(8, 1); // in the 4 MiB linear window; NXSB at sector 16
+    APFSParser apfs;
+    bool sawNxsb = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    apfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_nxsb") sawNxsb = true;
+        if (fr.source == "apfs_linear_unread") sawUnread = true;
+    }, &running, 0, 0);
+    EXPECT_TRUE(sawNxsb) << "one unread sector must not hide a readable NXSB in the same 4 MiB window";
+    EXPECT_TRUE(sawUnread);
 }

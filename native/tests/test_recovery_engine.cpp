@@ -2,6 +2,9 @@
 #include "byteback_io.h"
 #include "byteback_db.h"
 #include "carver/file_validators.h"
+#include "recovery/validation.h"
+#include "fs/virtual_raid.h"
+#include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstring>
@@ -277,6 +280,36 @@ TEST_F(RecoveryEngineTest, DiscoveryOnlySourcesRefuse) {
     EXPECT_NE(result.error.find("discovery"), std::string::npos);
 }
 
+TEST_F(RecoveryEngineTest, HfsCatalogWithRunsRecovers) {
+    auto jpeg = minimalJpegBytes();
+    jpeg.resize(512, 0);
+    DiskReader reader;
+    reader.attachMemoryVolume(jpeg);
+
+    FileRecord rec;
+    rec.name = "pic.bin";
+    rec.sizeBytes = 512;
+    rec.runs = {{0, 1}};
+    rec.source = "hfs_catalog";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    EXPECT_GT(result.bytesRecovered, 0u);
+}
+
+TEST_F(RecoveryEngineTest, HfsCatalogWithoutRunsRefuses) {
+    DiskReader reader;
+    reader.attachMemoryVolume(std::vector<uint8_t>(512, 0));
+    FileRecord rec;
+    rec.name = "empty.hfs";
+    rec.source = "hfs_catalog";
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error.find("no data runs"), std::string::npos);
+}
+
 TEST(RecoveryHelpers, BindReaderRejectsVssWithoutVolume) {
     DiskReader reader;
     FileRecord rec;
@@ -286,6 +319,29 @@ TEST(RecoveryHelpers, BindReaderRejectsVssWithoutVolume) {
     std::string err;
     EXPECT_FALSE(bindReaderForRecord(reader, rec, 0, nullptr, err));
     EXPECT_FALSE(err.empty());
+}
+
+TEST(RecoveryHelpers, BindRejectsPhysicalDriveAsVolumePath) {
+    DiskReader reader;
+    FileRecord rec;
+    rec.source = "ntfs_mft";
+    rec.runs = {{0, 1}};
+    std::string err;
+    EXPECT_FALSE(bindReaderForRecord(reader, rec, 0, nullptr, err, "\\\\.\\PhysicalDrive0"));
+    EXPECT_EQ(err, "volume device not available");
+}
+
+TEST(RecoveryHelpers, BindIgnoresLiveRaidWhenRecordIsPhysicalVolume) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
+    DiskReader reader;
+    FileRecord rec;
+    rec.source = "ntfs_mft";
+    rec.runs = {{0, 1}};
+    std::string err;
+    EXPECT_FALSE(bindReaderForRecord(reader, rec, 0, raid, err, "\\\\.\\PhysicalDrive0"));
+    EXPECT_EQ(err, "volume device not available");
 }
 
 TEST(RecoveryHelpers, ApplyBoundFvekSkipsVssCopiesPhysical) {
@@ -455,4 +511,32 @@ TEST_F(RecoveryEngineTest, HostileCarvedSizeClampsToMedium) {
     auto result = engine.recoverFile(reader, rec, dest_);
     EXPECT_TRUE(result.success) << result.error;
     EXPECT_EQ(result.bytesRecovered, 512u);
+}
+
+TEST_F(RecoveryEngineTest, ZipFooterPastFirstMegabyteStillValidates) {
+    const size_t kSize = (1u << 20) + 128;
+    std::vector<uint8_t> data(kSize, 0);
+    data[0] = 'P'; data[1] = 'K'; data[2] = 0x03; data[3] = 0x04;
+    data[kSize - 8] = 'P'; data[kSize - 7] = 'K'; data[kSize - 6] = 0x01; data[kSize - 5] = 0x02;
+    data[kSize - 4] = 'P'; data[kSize - 3] = 'K'; data[kSize - 2] = 0x05; data[kSize - 1] = 0x06;
+
+    const auto path = (std::filesystem::path(dest_) / "big.zip").string();
+    {
+        std::ofstream out(path, std::ios::binary);
+        ASSERT_TRUE(out.write(reinterpret_cast<const char*>(data.data()),
+                              static_cast<std::streamsize>(data.size())));
+    }
+
+    RecoveryResult result;
+    result.success = true;
+    result.destPath = path;
+    result.bytesRecovered = data.size();
+
+    FileRecord rec;
+    rec.name = "big.zip";
+    rec.source = "carver";
+    rec.sizeBytes = data.size();
+    applyPostRecoveryValidation(result, rec);
+    EXPECT_TRUE(result.success);
+    EXPECT_GE(result.validationScore, 70);
 }

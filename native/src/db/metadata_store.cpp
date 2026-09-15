@@ -8,6 +8,9 @@
 #include <mutex>
 #include <regex>
 #include <cctype>
+#include <algorithm>
+#include <sstream>
+#include <string>
 
 namespace byteback {
 
@@ -342,11 +345,15 @@ bool MetadataStore::open(const std::string& dbPath) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN carve_resume_sector INTEGER DEFAULT 0;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN volume_path TEXT DEFAULT '';", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN evidence_disks TEXT DEFAULT '';", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
         ensureFtsIndex(db_);
         ensureContentFtsIndex(db_);
         // CA-040/W7: stamp the schema version only AFTER migrations ran, and
         // refuse to open a database from a NEWER schema than this build knows.
-        constexpr int kSchemaVersion = 3;
+        constexpr int kSchemaVersion = 4;
         sqlite3_stmt* ver = nullptr;
         if (sqlite3_prepare_v2(db_, "PRAGMA user_version;", -1, &ver, nullptr) == SQLITE_OK) {
             if (sqlite3_step(ver) == SQLITE_ROW) {
@@ -362,7 +369,7 @@ bool MetadataStore::open(const std::string& dbPath) {
             sqlite3_finalize(ver);
         }
         char* verr = nullptr;
-        sqlite3_exec(db_, "PRAGMA user_version = 3;", nullptr, nullptr, &verr);
+        sqlite3_exec(db_, "PRAGMA user_version = 4;", nullptr, nullptr, &verr);
         if (verr) sqlite3_free(verr);
     }
     return ok;
@@ -593,6 +600,58 @@ bool MetadataStore::setScanPartition(int64_t scanId, int64_t partitionStartSecto
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_int64(stmt, 1, partitionStartSector);
     sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(partitionSizeSectors));
+    sqlite3_bind_int64(stmt, 3, now);
+    sqlite3_bind_int64(stmt, 4, scanId);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+namespace {
+
+std::string formatEvidenceDiskCsv(const std::vector<int>& disks) {
+    std::string s;
+    std::vector<int> seen;
+    for (int n : disks) {
+        if (n < 0) continue;
+        if (std::find(seen.begin(), seen.end(), n) != seen.end()) continue;
+        seen.push_back(n);
+        if (s.size() > 256) break;
+        if (!s.empty()) s += ',';
+        s += std::to_string(n);
+    }
+    return s;
+}
+
+std::vector<int> parseEvidenceDiskCsv(const char* text) {
+    std::vector<int> out;
+    if (!text || !*text) return out;
+    std::istringstream ss(text);
+    std::string tok;
+    while (std::getline(ss, tok, ',') && out.size() < 64) {
+        try {
+            std::size_t idx = 0;
+            const int v = std::stoi(tok, &idx);
+            if (idx != tok.size() || v < 0) continue;
+            if (std::find(out.begin(), out.end(), v) == out.end()) out.push_back(v);
+        } catch (...) {
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+bool MetadataStore::setScanVolumeBinding(int64_t scanId, const std::string& volumePath,
+                                         const std::vector<int>& evidenceDisks) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    const char* sql = "UPDATE scans SET volume_path = ?, evidence_disks = ?, updated_at = ? WHERE id = ?";
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    const std::string csv = formatEvidenceDiskCsv(evidenceDisks);
+    sqlite3_bind_text(stmt, 1, volumePath.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, csv.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, now);
     sqlite3_bind_int64(stmt, 4, scanId);
     int rc = sqlite3_step(stmt);
@@ -958,7 +1017,8 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
     const char* sql = R"(
         SELECT id, drive_index, scan_type, total_sectors, scanned_sectors, status,
                recovered_files, started_at, updated_at,
-               partition_start_sector, partition_size_sectors, metadata_complete, carve_resume_sector
+               partition_start_sector, partition_size_sectors, metadata_complete, carve_resume_sector,
+               volume_path, evidence_disks
         FROM scans WHERE id = ?
     )";
     ScanState state = {};
@@ -983,6 +1043,13 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
             state.partitionSizeSectors = static_cast<uint64_t>(sqlite3_column_int64(stmt, 10));
             state.metadataComplete = sqlite3_column_int(stmt, 11) != 0;
             state.carveResumeSector = static_cast<uint64_t>(sqlite3_column_int64(stmt, 12));
+        }
+        if (sqlite3_column_count(stmt) > 13) {
+            const unsigned char* vp = sqlite3_column_text(stmt, 13);
+            if (vp) state.volumePath = reinterpret_cast<const char*>(vp);
+            const unsigned char* disks = sqlite3_column_text(stmt, 14);
+            state.evidenceDisks = parseEvidenceDiskCsv(
+                disks ? reinterpret_cast<const char*>(disks) : nullptr);
         }
     }
     sqlite3_finalize(stmt);

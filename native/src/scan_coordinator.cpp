@@ -1,12 +1,17 @@
 #include "scan_coordinator.h"
 #include "scan_progress.h"
+#include "io/volume_mapper_win.h"
 #include "fs/partition_scanner.h"
 #include "fs/refs_parser.h"
 #include "fs/unallocated_map.h"
+#include "fs/ntfs_logfile.h"
+#include "fs/ntfs_util.h"
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_fve.h"
 #include "fs/xfs_parser.h"
+#include "fs/hfs_catalog.h"
+#include "fs/apfs_container.h"
 #include "byteback_fs.h"
 #include <iostream>
 #include <exception>
@@ -25,6 +30,7 @@ namespace byteback {
 std::atomic<const char*> g_scanPhase{"metadata"};
 std::atomic<uint64_t> g_phaseCurrent{0};
 std::atomic<uint64_t> g_phaseTotal{0};
+std::atomic<bool> g_carveInitFailed{false};
 
 namespace {
 
@@ -119,6 +125,54 @@ void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes
                    const std::vector<std::pair<uint64_t, uint64_t>>& runs,
                    uint64_t partitionOffsetBytes, uint32_t sectorSize,
                    const FileSystemParser::FileRecordCallback& cb) {
+    if (path == kXfsDirUnreadPath) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Xfs_DirectoryUnread";
+        fr.path = kXfsDirUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = "xfs_dir_unread";
+        cb(fr);
+        return;
+    }
+    if (path == kXfsSbUnreadPath) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Xfs_SuperblockUnread";
+        fr.path = kXfsSbUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kXfsSbUnreadSource;
+        cb(fr);
+        return;
+    }
+    if (path == kXfsInodeUnreadPath) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Xfs_InodeUnread";
+        fr.path = kXfsInodeUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kXfsInodeUnreadSource;
+        cb(fr);
+        return;
+    }
+    if (path == kXfsBmapUnreadPath) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Xfs_BmapUnread";
+        fr.path = kXfsBmapUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kXfsBmapUnreadSource;
+        cb(fr);
+        return;
+    }
     if (isDirectory) return;
     FileRecord fr;
     fr.id = static_cast<int64_t>(inodeNo & 0x7FFFFFFFFFFFFFFFLL);
@@ -145,6 +199,30 @@ void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes
     fr.confidence = 90;
     fr.category = "File";
     fr.source = "xfs_inode";
+    cb(fr);
+}
+
+void emitUnallocMapUnread(const FileSystemParser::FileRecordCallback& cb) {
+    FileRecord fr;
+    fr.id = -1;
+    fr.name = "Unalloc_MapUnread";
+    fr.path = kUnallocMapUnreadPath;
+    fr.status = 0;
+    fr.confidence = 20;
+    fr.category = "System";
+    fr.source = kUnallocMapUnreadSource;
+    cb(fr);
+}
+
+void emitProbeUnread(const FileSystemParser::FileRecordCallback& cb) {
+    FileRecord fr;
+    fr.id = -1;
+    fr.name = "Probe_Unread";
+    fr.path = kProbeUnreadPath;
+    fr.status = 0;
+    fr.confidence = 20;
+    fr.category = "System";
+    fr.source = kProbeUnreadSource;
     cb(fr);
 }
 
@@ -180,6 +258,8 @@ void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
     if (fr.source.empty()) return;
     if (fr.source == "vss_snapshot" || fr.source == "vss_unbound" || fr.source == "vss_bind" ||
         fr.source == "bitlocker_detect" || fr.source == "bitlocker_fve") return;
+    // Honesty sentinels must keep their source so LIKE filters still match.
+    if (fr.source.size() >= 7 && fr.source.compare(fr.source.size() - 7, 7, "_unread") == 0) return;
     if (fr.source.rfind("raid_", 0) == 0) return;
     fr.source = "raid_" + fr.source;
 }
@@ -267,6 +347,13 @@ void runQuickScan(DiskReader& reader,
     if (!gptParts.empty()) partitions = std::move(gptParts);
 
     bool anyFsScanned = false;
+    bool emittedProbeUnread = false;
+    auto emitProbeUnreadOnce = [&]() {
+        if (emittedProbeUnread) return;
+        emittedProbeUnread = true;
+        emitProbeUnread(callbackWrapper);
+    };
+    if (partScanner.tableUnread()) emitProbeUnreadOnce();
 
     auto scanPartition = [&](const PartitionInfo& part) {
         if (isRunning && !(*isRunning)) return;
@@ -343,6 +430,9 @@ void runQuickScan(DiskReader& reader,
                 }
                 break;
             }
+            case VolumeFsKind::Unread:
+                emitProbeUnreadOnce();
+                break;
             default:
                 break;
         }
@@ -428,6 +518,9 @@ void runQuickScan(DiskReader& reader,
                 }
                 break;
             }
+            case VolumeFsKind::Unread:
+                emitProbeUnreadOnce();
+                break;
             default: {
                 NTFSParser ntfs;
                 if (!ntfs.scan(reader, callbackWrapper, isRunning)) {
@@ -480,10 +573,18 @@ void runCarveScanImpl(DiskReader& reader,
         owned = prepareCarveRanges(reader, bounds, unallocatedOnly);
         ranges = &owned;
     }
+    if (unallocatedOnly && g_unallocatedMapUnread.load(std::memory_order_relaxed)) {
+        emitUnallocMapUnread(onFileFound);
+    }
     std::vector<SectorRange> carveRanges = *ranges; // copy: caller may still hold it
     if (carveRanges.empty()) {
         g_scanPhase.store("carve_skipped", std::memory_order_relaxed);
         return;
+    }
+    if (unallocatedOnly && g_unallocatedUsedFallback.load(std::memory_order_relaxed)) {
+        g_scanPhase.store("carve_fallback", std::memory_order_relaxed);
+    } else if (unallocatedOnly && g_unallocatedMapUnread.load(std::memory_order_relaxed)) {
+        g_scanPhase.store("carve_bitmap_unread", std::memory_order_relaxed);
     }
     runCarveScanRangesImpl(reader, onFileFound, onProgress, isRunning, badSectorOut,
                            std::move(carveRanges), resumeCarveSector, allowParallelCarve);
@@ -521,6 +622,8 @@ void runCarveScanRangesImpl(DiskReader& reader,
     CarvingEngine carver;
     if (!carver.loadSignatures("")) {
         std::cerr << "Failed to load carving signatures" << std::endl;
+        g_carveInitFailed.store(true, std::memory_order_relaxed);
+        return;
     }
 
     // ------------------------------------------------------------------
@@ -1023,22 +1126,25 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
         g_scanPhase.store("metadata", std::memory_order_relaxed);
         g_phaseCurrent.store(0, std::memory_order_relaxed);
         g_phaseTotal.store(0, std::memory_order_relaxed);
+        g_carveInitFailed.store(false, std::memory_order_relaxed);
+        g_unallocatedUsedFallback.store(false, std::memory_order_relaxed);
+        g_unallocatedMapUnread.store(false, std::memory_order_relaxed);
         DiskReader reader;
         bool opened = false;
-        if (raid) {
-            reader.setRaidBackend(std::move(raid));
-            opened = true;
-        } else if (drivePath == "raid") {
-            opened = false;
-        } else {
-            int driveIndex = 0;
-            bool parsed = true;
-            try {
-                driveIndex = std::stoi(drivePath);
-            } catch (...) {
-                parsed = false;
+        if (drivePath == "raid") {
+            if (raid) {
+                reader.setRaidBackend(std::move(raid));
+                opened = true;
             }
-            opened = parsed && reader.openDrive(driveIndex);
+        } else if (!target.volumePath.empty()) {
+            if (isWin32VolumeDevicePath(target.volumePath)) {
+                opened = reader.openVolumePath(target.volumePath);
+            }
+            target.partitionStartSector = -1;
+            target.partitionSizeSectors = 0;
+        } else {
+            const auto idx = parseDriveIndex(drivePath);
+            opened = idx.has_value() && reader.openDrive(*idx);
         }
 
         if (opened) {
@@ -1064,6 +1170,8 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
             } else {
                 status = 3;
             }
+
+            if (g_carveInitFailed.load(std::memory_order_relaxed)) status = 3;
 
             if (status == 1) {
                 syncBadSectors(reader, badSectorOut);
