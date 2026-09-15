@@ -52,7 +52,7 @@ awareness).
 
 ### Examiner UI (Electron + React)
 
-Dashboard, live scan with bad-sector map, directory tree and file detail pane,
+Dashboard, live scan progress bar (bad-sector count, not a layout map), directory tree and file detail pane,
 hex viewer (entropy + data templates), RAW/E01 imager (MD5 integrity panel),
 SMART panel, virtual RAID builder, USN event timeline, CSV export, HTML/PDF
 forensic report with SHA-256 summary, case/NSRL forms, light/dark theme.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { etaFromMonotonicWindow, formatEtaClock, scanPhaseLabel, scanStepIndex } from './scan-eta'
+import { etaFromMonotonicWindow, formatEtaClock, scanPhaseLabel, scanStepIndex, scanPhaseI18nKey } from './scan-eta'
 
 describe('scan-eta', () => {
   it('ignores a backward work tick so ETA does not invert', () => {
@@ -40,7 +40,12 @@ describe('scan-eta', () => {
     expect(scanPhaseLabel('carve')).toContain('Oyma')
     expect(scanPhaseLabel('carve_skipped')).toContain('atlandı')
     expect(scanPhaseLabel('metadata')).toContain('Metadata')
-    expect(scanStepIndex('carve_skipped', 'deep')).toEqual({ step: 2, of: 2 })
+    expect(scanPhaseLabel('carve_fallback')).toContain('tüm bölüm')
+    expect(scanStepIndex('carve_fallback', 'deep')).toEqual({ step: 2, of: 2 })
+    expect(scanPhaseI18nKey('carve_fallback')).toBe('scan.phase.carveFallback')
+    expect(scanPhaseLabel('carve_bitmap_unread')).toContain('kısmen')
+    expect(scanPhaseI18nKey('carve_bitmap_unread')).toBe('scan.phase.carveBitmapUnread')
+    expect(scanStepIndex('carve_bitmap_unread', 'deep')).toEqual({ step: 2, of: 2 })
   })
 
   it('uses a single step for quick scan and two for deep carve', () => {

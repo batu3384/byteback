@@ -1,6 +1,7 @@
 import React from 'react'
 import './DiskMap.css'
 import { useI18n, tFormat } from '../../i18n'
+import { scanPhaseI18nKey } from '../../../shared/scan-eta'
 
 interface DiskMapProps {
   totalSectors: number
@@ -21,7 +22,7 @@ const DiskMapVisualizer: React.FC<DiskMapProps> = ({
   const locale = lang === 'tr' ? 'tr-TR' : 'en-US'
   const ratio = totalSectors > 0 ? Math.min(1, currentSector / totalSectors) : 0
   const pct = Math.floor(ratio * 100)
-  const phaseLabel = t(phase === 'carve' || phase === 'carve_skipped' || phase === 'carve_only' ? 'scan.phase.carve' : 'scan.phase.metadata')
+  const phaseLabel = t(scanPhaseI18nKey(phase))
   const countLabel =
     filesFound > 0
       ? `${phaseLabel} · ${tFormat('diskmap.records', { n: filesFound.toLocaleString(locale) })}` +
@@ -34,6 +35,7 @@ const DiskMapVisualizer: React.FC<DiskMapProps> = ({
         <h3>{t('diskmap.title')}</h3>
         <span className="disk-map-phase">{countLabel}</span>
       </div>
+      <p className="disk-map-hint">{t('diskmap.hint')}</p>
       <div
         className="disk-map-bar"
         role="progressbar"

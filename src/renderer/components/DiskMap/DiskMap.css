@@ -21,6 +21,12 @@
   color: var(--text-muted);
 }
 
+.disk-map-hint {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .disk-map-bar {
   width: 100%;
   height: 10px;

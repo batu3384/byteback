@@ -1,10 +1,11 @@
 .sidebar {
-  width: 220px;
+  width: 232px;
+  min-width: 232px;
   background-color: var(--bg-surface);
   border-right: 1px solid var(--panel-border);
   display: flex;
   flex-direction: column;
-  padding: var(--space-md) var(--space-sm);
+  padding: 12px 8px;
   z-index: 10;
 }
 
@@ -17,11 +18,11 @@
 }
 
 .logo-icon {
-  width: 28px;
-  height: 28px;
-  background: var(--text-main);
-  color: var(--bg-color);
-  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  background: var(--accent-blue);
+  color: #fff;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -66,16 +67,16 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   text-align: left;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   border: none;
   cursor: pointer;
-  transition: var(--transition-smooth);
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .nav-btn:focus-visible {

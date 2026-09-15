@@ -5,7 +5,7 @@ vi.mock('electron', () => ({
 }))
 
 import { initSessionLog, appendSessionLog, readSessionLog, sessionLogPath } from './session-log'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -26,6 +26,20 @@ describe('session log rotation', () => {
     expect(tail.lines.join('\n')).toContain('AFTER_ROTATE')
     expect(tail.lines.join('\n')).not.toContain('BIG')
 
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not classify an unreadable log as no_scan', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'byteback-slog-unread-'))
+    initSessionLog(dir)
+    appendSessionLog('SCAN_START', 'drive=0')
+    const p = sessionLogPath()
+    rmSync(p)
+    mkdirSync(p)
+    const unread = readSessionLog(50)
+    expect(unread.code).toBe('unread')
+    expect(unread.lines).toEqual([])
+    expect(unread.summary).toMatch(/okunamadı/)
     rmSync(dir, { recursive: true, force: true })
   })
 })

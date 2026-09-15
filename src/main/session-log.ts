@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { powerSaveBlocker } from 'electron'
-import { sessionLogCode, summarizeSessionLines, SessionLogCode } from '../shared/session-log'
+import { sessionLogCode, summarizeSessionCode, summarizeSessionLines, SessionLogCode } from '../shared/session-log'
 
 // Long forensic scans run for days; without a cap session.log grows forever.
 const MAX_SESSION_LOG_BYTES = 5 * 1024 * 1024
@@ -84,7 +84,7 @@ export function readSessionLog(maxLines = 80): { path: string; lines: string[]; 
   try {
     text = readFileSync(path, 'utf8')
   } catch {
-    return { path, lines: [], summary: 'Günlük okunamadı.', code: 'no_scan' }
+    return { path, lines: [], summary: summarizeSessionCode('unread'), code: 'unread' }
   }
   const lines = text.split(/\r?\n/).filter(Boolean)
   const tail = lines.slice(Math.max(0, lines.length - maxLines))

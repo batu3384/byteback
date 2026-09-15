@@ -1,21 +1,23 @@
 .keyword-search-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--space-lg);
   height: 100%;
 }
 
 .search-header h2 {
-  font-size: 2rem;
-  color: var(--neon-cyan);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-main);
 }
 
 .search-header .subtitle {
   color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 .search-bar-container {
-  padding: var(--space-lg);
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
@@ -23,16 +25,22 @@
 
 .search-input-wrapper {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: var(--space-md);
+}
+
+.search-field {
+  flex: 1;
+  display: flex;
+  align-items: center;
   background: var(--well-bg);
-  padding: 5px;
-  border-radius: 8px;
   border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: 0 16px;
 }
 
 .search-icon {
-  font-size: 1.5rem;
+  font-size: 1.1rem;
   padding-left: var(--space-sm);
   color: var(--text-muted);
 }
@@ -42,19 +50,19 @@
   background: transparent;
   border: none;
   color: var(--text-main);
-  font-size: 1.1rem;
-  padding: 10px;
+  font-size: 0.95rem;
+  padding: 8px;
   outline: none;
 }
 
 .search-input:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
 }
 
 .search-btn {
-  padding: 10px 24px;
-  font-size: 1rem;
+  padding: 8px 16px;
+  font-size: 0.85rem;
   white-space: nowrap;
 }
 
@@ -68,14 +76,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px;
+  padding: 4px 10px;
   background: var(--surface-overlay);
   border: 1px solid var(--panel-border);
-  border-radius: 20px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
-  transition: all 0.2s ease;
 }
 
 .filter-chip:hover {
@@ -83,9 +90,9 @@
 }
 
 .filter-chip.active {
-  background: rgba(0, 229, 255, 0.1);
-  border-color: var(--neon-cyan);
-  color: var(--neon-cyan);
+  background: rgba(59, 130, 246, 0.12);
+  border-color: var(--accent-blue);
+  color: var(--text-main);
 }
 
 .search-results {
@@ -96,47 +103,22 @@
   flex-direction: column;
 }
 
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+.search-results .examiner-empty {
   height: 100%;
-  color: var(--text-muted);
-  text-align: center;
-  gap: var(--space-sm);
-}
-
-.empty-state p {
-  font-size: 1.2rem;
-}
-
-.empty-state .hint {
-  font-size: 0.9rem;
-  opacity: 0.7;
-}
-
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   justify-content: center;
-  height: 100%;
-  gap: var(--space-md);
-  color: var(--neon-cyan);
 }
 
 .results-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .result-item {
   background: var(--well-bg);
   padding: var(--space-md);
-  border-radius: 6px;
-  border-left: 3px solid var(--neon-cyan);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--accent-blue);
 }
 
 .result-file {
@@ -151,23 +133,18 @@
   margin-bottom: 8px;
 }
 
-/* Matched query substring inside result name/path. Solid pair that holds
-   >=4.5:1 in both themes without a theme override. */
 .kw-mark {
-  background: #FDE68A;
-  color: #78350F;
+  background: var(--mark-bg);
+  color: var(--mark-fg);
   border-radius: 2px;
   padding: 0 1px;
 }
 
-/* Content-search match context (FileRecord.snippet): one clamped line under
-   the file name. --well-bg + --text-main holds >=4.5:1 in both themes; the
-   [matchStart,matchEnd) span reuses .kw-mark. */
 .kw-snippet {
   flex-basis: 100%;
   margin-top: 8px;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   background: var(--well-bg);
   font-family: monospace;
   font-size: 0.8rem;
@@ -175,4 +152,149 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.search-header {
+  padding: 12px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.search-header p {
+  color: var(--text-muted);
+}
+
+.search-field .search-input {
+  padding: 12px 16px;
+  font-size: 1rem;
+}
+
+.search-btn {
+  padding: 0 32px;
+}
+
+.search-stop {
+  padding: 0 16px;
+}
+
+.search-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--alert-red);
+  font-size: 0.85rem;
+}
+
+.search-error {
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border-left: 4px solid var(--alert-red);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--text-main);
+}
+
+.search-filters {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  align-items: center;
+}
+
+.search-filters-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-main);
+}
+
+.search-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.search-filter-label.is-off {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.search-select {
+  background: var(--well-bg);
+  color: var(--text-main);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  padding: 4px 8px;
+}
+
+.search-results {
+  overflow: hidden;
+}
+
+.results-list {
+  padding: 16px 24px;
+  overflow-y: auto;
+}
+
+.search-count {
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.results-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.result-hit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--surface-overlay);
+  border-radius: var(--radius-md);
+}
+
+.result-hit-ico {
+  color: var(--accent-blue);
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.result-hit-name {
+  font-weight: 500;
+  flex: 1;
+}
+
+.result-hit-path {
+  color: var(--text-muted);
+  width: 200px;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-hit-size {
+  color: var(--text-muted);
+  width: 100px;
+  text-align: right;
+  font-size: 0.9rem;
+}
+
+.search-truncated {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: 12px;
+}
+
+.empty-lead {
+  font-size: 1.1rem;
+  margin-bottom: 8px;
+}
+
+.empty-hint {
+  color: var(--text-muted);
+  font-size: 0.9rem;
 }

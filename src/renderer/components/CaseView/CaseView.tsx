@@ -3,6 +3,7 @@ import './CaseView.css'
 import { Briefcase, FolderOpen, Copy } from 'lucide-react'
 import type { CaseInfo, NsrlStats } from '../../../shared/ipc-contract'
 import { useI18n, tFormat } from '../../i18n'
+import InlineAlert from '../InlineAlert'
 
 interface DataPaths {
   userData: string
@@ -25,8 +26,11 @@ function CaseView(): React.ReactElement {
   const [info, setInfo] = useState<CaseInfo>(emptyCase)
   const [nsrl, setNsrl] = useState<NsrlStats>({ count: 0, path: '' })
   const [saveError, setSaveError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [saved, setSaved] = useState(false)
   const [nsrlError, setNsrlError] = useState('')
+  const [overlayMsg, setOverlayMsg] = useState('')
+  const [overlayError, setOverlayError] = useState('')
   const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
   const [copiedPath, setCopiedPath] = useState('')
   // Stale-response guard for the mount load (and every unmount, once).
@@ -38,18 +42,29 @@ function CaseView(): React.ReactElement {
   }, [])
 
   const reload = async () => {
-    try {
-      if (window.api?.getCaseInfo) {
+    if (window.api?.getCaseInfo) {
+      try {
         const loaded = await window.api.getCaseInfo()
-        if (aliveRef.current) setInfo(loaded)
+        if (aliveRef.current) {
+          setInfo(loaded)
+          setLoadError('')
+        }
+      } catch (err) {
+        console.error(err)
+        if (aliveRef.current) setLoadError(t('case.loadFailed'))
       }
-      if (window.api?.getNsrlStats) {
+    }
+    if (window.api?.getNsrlStats) {
+      try {
         const stats = await window.api.getNsrlStats()
-        if (aliveRef.current) setNsrl(stats)
+        if (aliveRef.current) {
+          setNsrl(stats)
+          setNsrlError('')
+        }
+      } catch (err) {
+        console.error(err)
+        if (aliveRef.current) setNsrlError(t('case.nsrlStatsFailed'))
       }
-    } catch (err) {
-      console.error(err)
-      if (aliveRef.current) setNsrlError(t('case.loadFailed'))
     }
   }
 
@@ -118,21 +133,50 @@ function CaseView(): React.ReactElement {
     setNsrl(result)
   }
 
+  const handleOverlay = async () => {
+    setOverlayError('')
+    setOverlayMsg('')
+    if (!window.api?.pickAndSetSignatureOverlay) {
+      setOverlayError(t('case.engineNotReady'))
+      return
+    }
+    let result
+    try {
+      result = await window.api.pickAndSetSignatureOverlay()
+    } catch (err) {
+      console.error(err)
+      setOverlayError(t('case.overlayFailed'))
+      return
+    }
+    if (!result) return
+    if (!result.ok) {
+      setOverlayError(t('case.overlayFailed'))
+      return
+    }
+    setOverlayMsg(t('case.overlayLoaded'))
+  }
+
   return (
     <div className="case-view">
       <div className="case-header glass-panel">
-        <Briefcase size={28} color="var(--accent-blue)" aria-hidden="true" />
+        <div className="examiner-icon" aria-hidden="true">
+          <Briefcase size={28} color="var(--accent-blue)" />
+        </div>
         <div>
           <h2>{t('case.title')}</h2>
           <p>{t('case.subtitle')}</p>
         </div>
       </div>
 
+      {loadError && (
+        <InlineAlert variant="error" testId="case-load-error" title={t('case.loadFailedTitle')}>
+          {loadError}
+        </InlineAlert>
+      )}
       {saveError && (
-        <div className="case-alert" role="alert" tabIndex={-1}>
-          <h3>{t('case.saveErrorTitle')}</h3>
-          <p>{saveError}</p>
-        </div>
+        <InlineAlert variant="error" title={t('case.saveErrorTitle')}>
+          {saveError}
+        </InlineAlert>
       )}
 
       <form
@@ -180,13 +224,29 @@ function CaseView(): React.ReactElement {
       <div className="case-nsrl glass-panel">
         <h3>{t('case.nsrlTitle')}</h3>
         <p>{t('case.nsrlHint')}</p>
-        {nsrlError && <p className="case-field-error" role="alert">{nsrlError}</p>}
-        <p>{tFormat('case.loadedHashes', { n: String(nsrl.count) })}{nsrl.path ? ` · ${nsrl.path}` : ''}</p>
+        {nsrlError && (
+          <InlineAlert variant="error" testId="case-nsrl-error">{nsrlError}</InlineAlert>
+        )}
+        {!nsrlError && (
+          <p>{tFormat('case.loadedHashes', { n: String(nsrl.count) })}{nsrl.path ? ` · ${nsrl.path}` : ''}</p>
+        )}
         {nsrl.count === 0 && nsrl.path ? (
           <p className="case-field-error" role="status">{t('case.zeroLoaded')}</p>
         ) : null}
         <button type="button" className="btn-secondary" onClick={() => void handleNsrl()}>
           <FolderOpen size={16} aria-hidden="true" /> {t('case.pickNsrl')}
+        </button>
+      </div>
+
+      <div className="case-nsrl glass-panel">
+        <h3>{t('case.overlayTitle')}</h3>
+        <p>{t('case.overlayHint')}</p>
+        {overlayError && (
+          <InlineAlert variant="error">{overlayError}</InlineAlert>
+        )}
+        {overlayMsg && <p className="case-saved" role="status">{overlayMsg}</p>}
+        <button type="button" className="btn-secondary" onClick={() => void handleOverlay()}>
+          <FolderOpen size={16} aria-hidden="true" /> {t('case.pickOverlay')}
         </button>
       </div>
 
@@ -200,8 +260,8 @@ function CaseView(): React.ReactElement {
             ['sessionLog', dataPaths.sessionLog],
             ['auditLog', dataPaths.auditLog],
           ] as const).map(([label, value]) => (
-            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '6px 0' }}>
-              <code style={{ flex: 1, fontSize: '0.78rem', wordBreak: 'break-all', color: 'var(--text-muted)' }}>{value}</code>
+            <div key={label} className="case-path-row">
+              <code>{value}</code>
               <button
                 type="button"
                 className="btn-secondary"

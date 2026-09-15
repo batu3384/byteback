@@ -8,9 +8,10 @@ describe('recover guards', () => {
     expect(isRecoverableListSource('apfs_file')).toBe(false)
   })
 
-  it('allows APFS extent when runs exist', () => {
-    expect(canRecoverSource('apfs_extent', true)).toBe(true)
-    expect(canRecoverSource('apfs_extent', false)).toBe(false)
+  it('allows HFS catalog when runs exist', () => {
+    expect(canRecoverSource('hfs_catalog', true)).toBe(true)
+    expect(canRecoverSource('hfs_catalog', false)).toBe(false)
+    expect(isDiscoveryOnlySource('hfs_catalog')).toBe(false)
   })
 
   it('allows NTFS/MFT recoverable sources', () => {

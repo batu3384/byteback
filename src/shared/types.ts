@@ -13,6 +13,8 @@ export type {
   RaidDetection,
   BatchRecoverResult,
   PartitionInfo,
+  LostPartitionHit,
+  LostPartitionScanResult,
   ScanOptions,
   ResolvedVolume,
   TimelineEvent,
@@ -39,6 +41,7 @@ import type {
   RaidDetection,
   BatchRecoverResult,
   PartitionInfo,
+  LostPartitionScanResult,
   ScanOptions,
   ResolvedVolume,
   TimelineEvent,
@@ -71,19 +74,19 @@ declare global {
       /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
       seedScanFixture: (files: Array<Record<string, unknown>>) => Promise<number>
 
-      startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf') => void
+      startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf', volumePath?: string) => void
       stopImaging: () => void
       onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled' }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       getDataPaths: () => Promise<{ userData: string; dbPath: string; sessionLog: string; auditLog: string }>
-      readHexData: (driveIndex: number, offset: number, size: number) => Promise<HexReadResult>
+      readHexData: (driveIndex: number, offset: number, size: number, volumePath?: string) => Promise<HexReadResult>
 
       getFileCount: (scanId: number, filter?: FileListFilter) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number, filter?: FileListFilter) => Promise<FileRecord[]>
       searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<SearchFilesResult>
-      searchFileContent: (scanId: number, query: string, offset: number, limit: number) => Promise<SearchFilesResult>
-      startContentSearch: (scanId: number, query: string) => Promise<IpcOkResult>
+      searchFileContent: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) => Promise<SearchFilesResult>
+      startContentSearch: (scanId: number, query: string, useRegex?: boolean) => Promise<IpcOkResult>
       stopContentSearch: () => void
       onContentSearchProgress: (callback: (data: { current: number; total: number }) => void) => () => void
       onContentSearchMatch: (callback: (data: FileRecord) => void) => () => void
@@ -106,7 +109,7 @@ declare global {
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>
       setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>
       detectRaid: (driveIndices: number[]) => Promise<RaidDetection>
-      reconstructRaid: (driveIndices: number[], raidLevel: number) => Promise<RaidAssemblyResult>
+      reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[]; memberDriveIndices?: number[] }>
 
@@ -130,10 +133,10 @@ declare global {
       scanLostPartitions: (
         driveIndex: number,
         stepSectors?: number,
-      ) => Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>>
+      ) => Promise<LostPartitionScanResult>
 
-      /** P0-3: user signature overlay (resource-format JSON); '' disables. */
-      setSignatureOverlay: (path: string) => Promise<boolean>
+      /** P0-3: main-process file dialog; renderer never sends a path. */
+      pickAndSetSignatureOverlay: () => Promise<{ ok: boolean } | null>
 
       readFilePreview: (
         driveIndex: number,

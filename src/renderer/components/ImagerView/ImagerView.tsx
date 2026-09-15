@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
+import { defaultImagerUseVolume } from '../../../shared/win32-volume-path'
+import { HEX_RAID_DRIVE_INDEX, probeRaidState } from '../../../shared/hex-read'
 import InlineAlert from '../InlineAlert'
 import { useI18n, tFormat, formatInt } from '../../i18n'
 
@@ -18,6 +20,10 @@ interface ImagerViewProps {
   /** CA-032: lifted to App — survives navigation while the main process images. */
   imagingActive: boolean
   onImagingStateChange: (active: boolean) => void
+  /** Scan-bound `\\.\X:` — optional volume clone instead of PhysicalDrive. */
+  scanVolumePath?: string
+  /** >1 evidence disks: PhysicalDrive is one extent; default the volume device. */
+  spanned?: boolean
 }
 
 /** Status line stored as an i18n key (+ optional engine error detail), same
@@ -25,7 +31,7 @@ interface ImagerViewProps {
  *  mid-session language switch re-translates instead of showing stale copy. */
 interface ImagerStatusMessage { key: string; err?: string }
 
-function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): React.ReactElement {
+function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spanned }: ImagerViewProps): React.ReactElement {
   const { t } = useI18n()
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [selectedDrive, setSelectedDrive] = useState<number | ''>('')
@@ -40,6 +46,9 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   const [imageMd5, setImageMd5] = useState<string>('')
   const [formError, setFormError] = useState<string | null>(null)
   const [ewfConfirmOpen, setEwfConfirmOpen] = useState(false)
+  const [useVolume, setUseVolume] = useState(() => defaultImagerUseVolume(scanVolumePath))
+  const [raid, setRaid] = useState<{ active: boolean; capacity: number } | null>(null)
+  const [raidStateError, setRaidStateError] = useState<string | null>(null)
 
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const lastProgressTimeRef = useRef<number>(0)
@@ -48,15 +57,39 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   const cancelledRef = useRef(false)
 
   useEffect(() => {
+    setUseVolume(defaultImagerUseVolume(scanVolumePath))
+  }, [scanVolumePath])
+
+  useEffect(() => {
     // Load drives (guard: a late response after unmount must not setState)
     if (window.api && window.api.listDrives) {
       let alive = true
       window.api.listDrives().then((list) => {
-        if (alive) setDrives(list)
-      }).catch(console.error)
+        if (alive) {
+          setDrives(list)
+          setFormError(null)
+        }
+      }).catch(() => {
+        if (alive) setFormError(t('imager.drivesFailed'))
+      })
       return () => { alive = false }
     }
   }, [])
+
+  useEffect(() => {
+    let alive = true
+    void probeRaidState(window.api?.getRaidState).then((probe) => {
+      if (!alive) return
+      if (probe.status === 'unread') {
+        setRaid(null)
+        setRaidStateError(t('imager.raidStateFailed'))
+        return
+      }
+      setRaidStateError(null)
+      setRaid(probe.state.active ? { active: true, capacity: probe.state.capacity } : null)
+    })
+    return () => { alive = false }
+  }, [t])
 
   useEffect(() => {
     let cleanupProgress: (() => void) | undefined
@@ -142,7 +175,9 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
     setImageMd5('')
 
     if (window.api && window.api.startImaging) {
-      window.api.startImaging(Number(selectedDrive), destPath, format)
+      const raidSource = selectedDrive === HEX_RAID_DRIVE_INDEX
+      const vp = !raidSource && useVolume && scanVolumePath ? scanVolumePath : undefined
+      window.api.startImaging(Number(selectedDrive), destPath, format, vp)
     } else {
       setImaging(false)
       onImagingStateChange(false)
@@ -156,8 +191,10 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
     }
 
     if (format === 'ewf') {
-      const drive = drives.find(d => d.index === Number(selectedDrive))
-      if (drive && ewfWillRotateSegments(drive.sizeBytes)) {
+      const sizeBytes = selectedDrive === HEX_RAID_DRIVE_INDEX
+        ? raid?.capacity
+        : drives.find(d => d.index === Number(selectedDrive))?.sizeBytes
+      if (sizeBytes != null && ewfWillRotateSegments(sizeBytes)) {
         setEwfConfirmOpen(true)
         return
       }
@@ -186,81 +223,115 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
   // Key comparison, not localized-text matching — survives a language switch.
   const isImagingDone = status?.key === 'imager.done'
   const statusLabel = status ? tFormat(status.key, status.err != null ? { err: status.err } : {}) : ''
-  const selectedDriveInfo = selectedDrive === '' ? undefined : drives.find(d => d.index === Number(selectedDrive))
+  const raidSource = selectedDrive === HEX_RAID_DRIVE_INDEX
+  const selectedDriveInfo = selectedDrive === '' || raidSource
+    ? undefined
+    : drives.find(d => d.index === Number(selectedDrive))
+  const selectedSizeBytes = raidSource ? raid?.capacity : selectedDriveInfo?.sizeBytes
   const showEwfSegmentWarning =
-    format === 'ewf' && !!selectedDriveInfo && ewfWillRotateSegments(selectedDriveInfo.sizeBytes)
+    format === 'ewf' && selectedSizeBytes != null && ewfWillRotateSegments(selectedSizeBytes)
 
   return (
-    <div className="imager-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
-      <div className="imager-header glass-panel" style={{ padding: '24px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-        <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '16px', borderRadius: '12px' }}>
+    <div className="imager-view">
+      <div className="imager-header glass-panel">
+        <div className="examiner-icon">
           <Save size={32} color="var(--accent-blue)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('imager.title')}</h2>
-          <p style={{ color: 'var(--text-muted)' }}>{t('imager.subtitle')}</p>
+          <h2>{t('imager.title')}</h2>
+          <p>{t('imager.subtitle')}</p>
         </div>
       </div>
 
-      <div className="imager-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div className="imager-content glass-panel">
         {formError && (
-          <InlineAlert variant="error" onDismiss={() => setFormError(null)}>{formError}</InlineAlert>
+          <InlineAlert variant="error" testId="imager-form-error" onDismiss={() => setFormError(null)}>{formError}</InlineAlert>
+        )}
+        {raidStateError && (
+          <InlineAlert variant="error" testId="imager-raid-state-error">{raidStateError}</InlineAlert>
+        )}
+        {!imaging && drives.length === 0 && !raid?.active && (
+          <div className="examiner-empty" role="status" data-testid="imager-empty">
+            <h3>{t('imager.noDriveTitle')}</h3>
+            <p>{t('imager.noDriveBody')}</p>
+          </div>
         )}
         {ewfConfirmOpen && (
           <InlineAlert variant="warning" title={t('imager.ewfConfirmTitle')}>
             {t('imager.ewfConfirmBody')}
-            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <div className="imager-alert-actions">
               <button type="button" className="btn-primary" onClick={() => { setEwfConfirmOpen(false); beginImaging() }}>{t('dash.resume')}</button>
               <button type="button" className="btn-secondary" onClick={() => setEwfConfirmOpen(false)}>{t('ssd.cancel')}</button>
             </div>
           </InlineAlert>
         )}
-        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="form-group">
+          <label>
             <Server size={16} /> {t('imager.sourceLabel')}
           </label>
           <select
             className="form-select"
-            style={{ width: '100%', padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
+            data-testid="imager-source-select"
             value={selectedDrive}
             onChange={(e) => setSelectedDrive(e.target.value === '' ? '' : Number(e.target.value))}
             disabled={imaging}
           >
-            <option value="" style={{ background: 'var(--bg-surface)' }}>{t('imager.selectPlaceholder')}</option>
+            <option value="">{t('imager.selectPlaceholder')}</option>
+            {raid?.active && (
+              <option data-testid="imager-raid-source" value={HEX_RAID_DRIVE_INDEX}>
+                {t('hex.raidArray')} ({Math.floor(raid.capacity / (1024 * 1024 * 1024))} GB)
+              </option>
+            )}
             {drives.map(d => (
-              <option key={d.index} value={d.index} style={{ background: 'var(--bg-surface)' }}>
+              <option key={d.index} value={d.index}>
                 {tFormat('drive.physical', { n: String(d.index) })} - {d.model} ({Math.floor(d.sizeBytes / (1024*1024*1024))} GB)
               </option>
             ))}
           </select>
+          {raidSource && raid?.active && (
+            <p className="imager-volume-note">{t('imager.raidNote')}</p>
+          )}
+          {scanVolumePath && !raidSource && (
+            <div className="imager-volume-bind">
+              <p className="imager-volume-note">{spanned ? t('imager.spannedNote') : t('imager.volumeNote')}</p>
+              <label className="imager-volume-check">
+                <input
+                  type="checkbox"
+                  data-testid="imager-use-volume"
+                  checked={useVolume}
+                  disabled={imaging}
+                  onChange={(e) => setUseVolume(e.target.checked)}
+                />
+                {tFormat('imager.useVolume', { p: scanVolumePath })}
+              </label>
+            </div>
+          )}
         </div>
 
-        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('imager.formatLabel')}</label>
+        <div className="form-group">
+          <label>{t('imager.formatLabel')}</label>
           <select
             value={format}
             onChange={(e) => setFormat(e.target.value as 'raw' | 'ewf')}
             className="form-select"
-            style={{ width: '100%', padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
             disabled={imaging}
           >
-            <option value="raw" style={{ background: 'var(--bg-surface)' }}>{t('imager.formatRaw')}</option>
-            <option value="ewf" style={{ background: 'var(--bg-surface)' }}>{t('imager.formatEwf')}</option>
+            <option value="raw">{t('imager.formatRaw')}</option>
+            <option value="ewf">{t('imager.formatEwf')}</option>
           </select>
           {showEwfSegmentWarning && (
-            <p role="status" style={{ color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
+            <p role="status" className="imager-ewf-note">
               {t('imager.ewfMultiSegment')}
             </p>
           )}
         </div>
 
-        <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <label style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>{t('imager.destLabel')}</label>
-          <div style={{ display: 'flex', gap: '8px' }}>
+        <div className="form-group">
+          <label>{t('imager.destLabel')}</label>
+          <div className="path-input-group">
             <input 
               type="text" 
               className="form-input"
-              style={{ flex: 1, padding: '12px 16px', background: 'var(--well-bg)', border: '1px solid var(--panel-border)', borderRadius: '8px', color: 'var(--text-main)', fontSize: '1rem' }}
               placeholder={t('imager.destPlaceholder')}
               value={destPath}
               readOnly
@@ -275,79 +346,71 @@ function ImagerView({ imagingActive, onImagingStateChange }: ImagerViewProps): R
                 const picked = await window.api.pickSaveImage(format)
                 if (picked) setDestPath(picked)
               }}
-              style={{ padding: '0 16px', whiteSpace: 'nowrap' }}
             >
               {t('imager.browse')}
             </button>
           </div>
         </div>
 
-        <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
+        <div className="form-actions">
           {!imaging ? (
-            <button className="btn-primary start-btn" onClick={handleStartImaging} style={{ padding: '12px 32px', fontSize: '1rem' }}>
+            <button className="btn-primary start-btn" onClick={handleStartImaging}>
               <Play size={18} fill="currentColor" /> {t('imager.start')}
             </button>
           ) : (
-            <button className="btn-secondary stop-btn" onClick={handleStopImaging} style={{ padding: '12px 32px', fontSize: '1rem', color: 'var(--alert-red)', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+            <button className="btn-secondary stop-btn" onClick={handleStopImaging}>
               <Square size={18} fill="currentColor" /> {t('imager.cancelBtn')}
             </button>
           )}
         </div>
 
         {(imaging || status) && (
-          <div className="imager-progress-card glass-panel" style={{ marginTop: '8px', padding: '24px', background: 'var(--surface-overlay)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', alignItems: 'center' }}>
-              <span style={{ fontWeight: 500, color: isImagingDone ? 'var(--success-green)' : 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="imager-progress-card glass-panel">
+            <div className="progress-head">
+              <span className={`progress-status${isImagingDone ? ' is-done' : ''}`}>
                 {isImagingDone ? <CheckCircle size={18} /> : <Activity size={18} />} {statusLabel}
               </span>
-              <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{tFormat('imager.elapsed', { t: formatTime(elapsed) })}</span>
+              <span className="progress-elapsed">{tFormat('imager.elapsed', { t: formatTime(elapsed) })}</span>
             </div>
             
-            <div className="progress-labels" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+            <div className="progress-labels">
               <span>{tFormat('imager.sectorProgress', { cur: formatInt(progress.current), total: progress.total ? formatInt(progress.total) : '?' })}</span>
               <span>{tFormat('common.percent', { n: String(percent) })}</span>
             </div>
-            <div className="progress-bar-bg" style={{ width: '100%', height: '8px', background: 'var(--surface-overlay-strong)', borderRadius: '4px', overflow: 'hidden' }}>
-              <div className="progress-bar-fill" style={{ width: `${percent}%`, height: '100%', background: 'var(--accent-blue)', transition: 'width 0.3s ease' }}></div>
+            <div className="progress-bar-bg">
+              <div className="progress-bar-fill" style={{ width: `${percent}%` }}></div>
             </div>
 
             {imageMd5 && (
-              <div style={{ marginTop: '16px', padding: '12px 16px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px' }}>
-                <div style={{ fontSize: '0.8rem', color: 'var(--success-green)', marginBottom: '6px', fontWeight: 500 }}>
+              <div className="imager-md5">
+                <div className="imager-md5-label">
                   {t('imager.md5Title')}
                 </div>
-                <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--text-main)', wordBreak: 'break-all', userSelect: 'all' }}>
+                <div className="imager-md5-value">
                   MD5: {imageMd5}
                 </div>
               </div>
             )}
 
             {/* Predictive Latency Pulse Chart */}
-            <div className="latency-chart-container" style={{ marginTop: '24px', padding: '16px', backgroundColor: 'var(--well-bg)', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '0.85rem' }}>
-                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div className="latency-chart-container">
+              <div className="latency-chart-head">
+                <span className="latency-chart-label">
                   <Activity size={14} /> {t('imager.latencyChart')}
                 </span>
-                <span style={{ color: latencies[latencies.length - 1] > 100 ? 'var(--alert-red)' : 'var(--success-green)', fontFamily: 'monospace' }}>
+                <span className={`latency-chart-value${latencies[latencies.length - 1] > 100 ? ' is-high' : ''}`}>
                   {tFormat('imager.instant', { n: String(latencies.length > 0 ? latencies[latencies.length - 1] : 0) })}
                 </span>
               </div>
-              <div className="latency-chart" style={{ display: 'flex', alignItems: 'flex-end', height: '60px', gap: '2px', overflow: 'hidden' }}>
+              <div className="latency-chart">
                 {latencies.map((val, idx) => {
                   const heightPct = Math.min(100, (val / 200) * 100);
                   const isHigh = val > 100;
                   return (
                     <div 
                       key={idx} 
-                      style={{ 
-                        flex: 1, 
-                        height: `${heightPct}%`, 
-                        backgroundColor: isHigh ? 'var(--alert-red)' : 'var(--accent-blue)',
-                        opacity: 0.8,
-                        minHeight: '2px',
-                        transition: 'height 0.1s ease-out',
-                        borderRadius: '1px 1px 0 0'
-                      }} 
+                      className={`latency-bar${isHigh ? ' is-high' : ''}`}
+                      style={{ height: `${heightPct}%` }}
                       title={`${val} ms`}
                     />
                   )

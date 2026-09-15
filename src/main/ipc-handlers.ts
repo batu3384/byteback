@@ -2,19 +2,24 @@ import { existsSync } from 'fs'
 import { ipcMain, IpcMainEvent, app, BrowserWindow, dialog } from 'electron'
 import { basename, extname, join } from 'path'
 import { getEngine } from './native-bridge'
-import { hexDataOrNull } from '../shared/hex-read'
+import { hexDataOrNull, isHexDriveIndex } from '../shared/hex-read'
 import { diskBusyMessage } from '../shared/scan-required'
 import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
-import { validateRecoverDestDir } from './recover-dest-validator'
+import { validateRecoverDestDir, ERR_DEST_ON_SOURCE, ERR_RAID_STATE_UNREAD } from './recover-dest-validator'
+import { isDestOnEvidence } from '../shared/recover-dest-guard'
+import { isWin32VolumeDevicePath } from '../shared/win32-volume-path'
+import { raidOffsetSectorsForReconstruct, raidStripeForReconstruct } from '../shared/raid-geometry'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { findThumbPath, mimeForExt, storeThumb, thumbUrlFor, THUMB_DIR_NAME } from './thumb-cache'
 import { callNative } from './ipc-native'
-import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive } from './session-log'
+import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive, isScanLive } from './session-log'
+import { CONTENT_SEARCH_MAX_QUERY_BYTES } from '../shared/content-search-status'
 
 let dbReady = false
 let dbInitError: string | null = null
 let activeScanToken = 0
 let imagingLive = false
+let lastEvidenceDisks: number[] = []
 
 function assertDbReady(): void {
   if (!dbReady) {
@@ -27,6 +32,39 @@ function assertDriveIndex(v: unknown): void {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
     throw new Error('Geçersiz sürücü indeksi')
   }
+}
+
+function destOnEvidenceError(destDir: string, driveIndex: number, scanId?: number, extraDisks?: number[]): string | null {
+  const engine = getEngine()
+  let raid: { active: boolean; memberDriveIndices?: number[] }
+  try {
+    raid = engine.getRaidState()
+  } catch {
+    // Unread is not inactive: skipping memberDriveIndices would allow dest on a RAID member.
+    return ERR_RAID_STATE_UNREAD
+  }
+  const members = [
+    ...(raid.active ? (raid.memberDriveIndices ?? []) : []),
+  ]
+  if (typeof scanId === 'number' && scanId > 0) {
+    try {
+      const st = engine.getScanState(scanId)
+      const disks = Array.isArray(st?.evidenceDiskIndices) ? st.evidenceDiskIndices : []
+      const cleaned = disks.filter((n) => Number.isInteger(n) && n >= 0)
+      members.push(...(cleaned.length > 0 ? cleaned : lastEvidenceDisks))
+    } catch {
+      members.push(...lastEvidenceDisks)
+    }
+  } else {
+    members.push(...lastEvidenceDisks)
+  }
+  if (extraDisks) {
+    members.push(...extraDisks.filter((n) => Number.isInteger(n) && n >= 0))
+  }
+  if (isDestOnEvidence(destDir, driveIndex, members, (letter) => engine.resolveVolume(letter))) {
+    return ERR_DEST_ON_SOURCE
+  }
+  return null
 }
 
 /** Clamp renderer-supplied numeric args to a safe int range (NaN/±Infinity → fallback). */
@@ -219,8 +257,16 @@ export function registerIpcHandlers(): void {
       }
 
       const drivePath = driveIndex === -1 ? 'raid' : String(driveIndex)
-      console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType, 'opts:', scanOptions ?? {})
-      const opts = scanOptions && Object.keys(scanOptions).length > 0 ? scanOptions : undefined
+      const evidence = Array.isArray(scanOptions?.evidenceDiskIndices)
+        ? scanOptions.evidenceDiskIndices.filter((n) => Number.isInteger(n) && n >= 0)
+        : []
+      lastEvidenceDisks = evidence.length > 0 ? evidence : (driveIndex >= 0 ? [driveIndex] : [])
+      const optsIn: import('../shared/ipc-contract').ScanOptions = { ...(scanOptions ?? {}) }
+      if (typeof optsIn.volumePath === 'string') {
+        if (!isWin32VolumeDevicePath(optsIn.volumePath)) delete optsIn.volumePath
+      }
+      console.log('[IPC] start-scan drive:', drivePath, 'type:', scanType, 'opts:', optsIn)
+      const opts = Object.keys(optsIn).length > 0 ? optsIn : undefined
       const id = opts
         ? engine.startScan(drivePath, scanType, opts, callback)
         : engine.startScan(drivePath, scanType, {}, callback)
@@ -405,12 +451,12 @@ export function registerIpcHandlers(): void {
   // log into uselessness. Evidence access is recorded at operation
   // granularity instead: SCAN_START/SCAN_COMPLETE (bridge_scan.cpp), RECOVER /
   // PREVIEW (bridge_wipe.cpp and below), imaging events (bridge_imager.cpp).
-  ipcMain.handle('read-hex-data', (_event, driveIndex: number, offset: number, size: number) => {
+  ipcMain.handle('read-hex-data', (_event, driveIndex: number, offset: number, size: number, volumePath?: string) => {
     try {
       assertDbReady()
       // Align with assertDriveIndex: a fractional index would truncate in
       // native and read sectors from the wrong disk.
-      if (!Number.isInteger(driveIndex) || driveIndex < 0) {
+      if (!isHexDriveIndex(driveIndex)) {
         return { data: null, error: 'Geçersiz sürücü indeksi' }
       }
       if (!Number.isFinite(offset) || offset < 0) {
@@ -422,7 +468,10 @@ export function registerIpcHandlers(): void {
         return { data: null, error: `Okuma boyutu 1–${maxBytes} bayt arasında olmalı` }
       }
       const engine = getEngine()
-      const res = engine.readSectors(driveIndex, offset, reqSize)
+      const vp = typeof volumePath === 'string' && isWin32VolumeDevicePath(volumePath) ? volumePath : undefined
+      const res = vp
+        ? engine.readSectors(driveIndex, offset, reqSize, vp)
+        : engine.readSectors(driveIndex, offset, reqSize)
       const bytes = hexDataOrNull(res)
       if (bytes) return { data: bytes }
       const raw = res.error || 'Sektör okunamadı'
@@ -436,15 +485,44 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string) => {
+  ipcMain.on('start-imaging', (event: IpcMainEvent, driveIndex: number, destPath: string, format?: string, volumePath?: string) => {
     try {
       // Native Int32Value(NaN) is 0 — garbage must not image the wrong disk.
-      if (typeof driveIndex !== 'number' || !Number.isInteger(driveIndex) || driveIndex < 0) {
+      // -1 is the assembled RAID sentinel (same as hex/scan).
+      if (!isHexDriveIndex(driveIndex)) {
         event.reply('imaging-progress', { current: 0, total: 0, error: 'Geçersiz sürücü indeksi' })
         return
       }
       if (!destPath || !allowedImageDest.has(destPath)) {
         event.reply('imaging-progress', { current: 0, total: 0, error: 'Destination not in allowlist' })
+        return
+      }
+      const raidImaging = driveIndex === -1
+      if (raidImaging) {
+        const raid = getEngine().getRaidState()
+        if (!raid.active) {
+          event.reply('imaging-progress', { current: 0, total: 0, error: 'RAID dizisi birleştirilmedi' })
+          return
+        }
+      }
+      const vp = !raidImaging && typeof volumePath === 'string' && isWin32VolumeDevicePath(volumePath)
+        ? volumePath
+        : undefined
+      const extraDisks: number[] = []
+      if (vp) {
+        try {
+          const letter = vp.charAt(4)
+          const rv = getEngine().resolveVolume(letter)
+          if (rv) {
+            if (Number.isInteger(rv.driveIndex) && rv.driveIndex >= 0) extraDisks.push(rv.driveIndex)
+            if (Array.isArray(rv.diskNumbers)) extraDisks.push(...rv.diskNumbers)
+          }
+        } catch { /* dest-on-source still runs with driveIndex + lastEvidenceDisks */ }
+      }
+      const onSource = destOnEvidenceError(destPath, driveIndex, undefined, extraDisks)
+      if (onSource) {
+        appendSessionLog('IMAGE_FAIL', `drive=${driveIndex} dest_rejected: ${onSource}`)
+        event.reply('imaging-progress', { current: 0, total: 0, error: onSource })
         return
       }
       const engine = getEngine()
@@ -462,8 +540,10 @@ export function registerIpcHandlers(): void {
         }
       }
 
-      console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath, 'format:', format ?? 'raw')
-      const started = engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
+      console.log('[IPC] start-imaging drive:', driveIndex, 'dest:', destPath, 'format:', format ?? 'raw', vp ? `volume: ${vp}` : '')
+      const started = vp
+        ? engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw', vp)
+        : engine.startImaging(driveIndex, destPath, callback, format === 'ewf' ? 'ewf' : 'raw')
       imagingLive = !!started
       if (!started) {
         // Renderer treats {total: 0, error} as failure — reply or it waits forever.
@@ -559,7 +639,10 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number) => {
+  ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) => {
+    if (typeof query === 'string' && Buffer.byteLength(query, 'utf8') > CONTENT_SEARCH_MAX_QUERY_BYTES) {
+      return { rows: [], error: 'content query too long' }
+    }
     try {
       const engine = getEngine()
       const rows = engine.searchFileContent(
@@ -567,17 +650,22 @@ export function registerIpcHandlers(): void {
         query,
         clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
         clampInt(limit, 1, 1000, 100),
+        !!useRegex,
       )
       return { rows }
     } catch (err) {
       console.error('[IPC] search-file-content error:', err)
-      return { rows: [], error: err instanceof Error ? err.message : String(err) }
+      const raw = err instanceof Error ? err.message : String(err)
+      return { rows: [], error: raw }
     }
   })
 
-  ipcMain.handle('start-content-search', async (event, scanId: number, query: string) => {
+  ipcMain.handle('start-content-search', async (event, scanId: number, query: string, useRegex?: boolean) => {
     if (!dbReady) {
       return { ok: false, error: dbInitError ?? 'Veritabanı kullanılamıyor' }
+    }
+    if (typeof query !== 'string' || Buffer.byteLength(query, 'utf8') > CONTENT_SEARCH_MAX_QUERY_BYTES) {
+      return { ok: false, error: 'content query too long' }
     }
     try {
       const engine = getEngine()
@@ -590,7 +678,7 @@ export function registerIpcHandlers(): void {
           event.sender.send('content-search-complete', { status: data.status })
         }
       }
-      const ok = engine.startContentSearch(scanId, query, callback)
+      const ok = engine.startContentSearch(scanId, query, callback, !!useRegex)
       return { ok: !!ok }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -627,6 +715,11 @@ export function registerIpcHandlers(): void {
       }
 
       const target = picked.filePaths[0]
+      const onSource = destOnEvidenceError(target, -1)
+      if (onSource) {
+        appendSessionLog('WIPE_FAIL', `file dest_rejected: ${onSource}`)
+        return { ok: false, error: onSource }
+      }
       const win = focused ?? BrowserWindow.getAllWindows()[0]
       if (!win) return { ok: false, error: 'Onay penceresi açılamadı' }
       const confirm = await dialog.showMessageBox(win, {
@@ -663,6 +756,11 @@ export function registerIpcHandlers(): void {
       }
 
       const target = picked.filePaths[0]
+      const onSource = destOnEvidenceError(target, -1)
+      if (onSource) {
+        appendSessionLog('WIPE_FAIL', `freespace dest_rejected: ${onSource}`)
+        return { ok: false, error: onSource }
+      }
       const win = focused ?? BrowserWindow.getAllWindows()[0]
       if (!win) return { ok: false, error: 'Onay penceresi açılamadı' }
       const confirm = await dialog.showMessageBox(win, {
@@ -727,6 +825,14 @@ export function registerIpcHandlers(): void {
       if (confirmPhrase !== 'IMHA') {
         return { ok: false, error: 'Onay ifadesi IMHA olmalı' }
       }
+      if (isScanLive() && lastEvidenceDisks.includes(driveIndex)) {
+        appendSessionLog('WIPE_FAIL', `physical dest_rejected drive=${driveIndex}`)
+        return { ok: false, error: 'Tarama sürerken kanıt diski imha edilemez' }
+      }
+      if (imagingLive) {
+        appendSessionLog('WIPE_FAIL', `physical dest_rejected imaging_live drive=${driveIndex}`)
+        return { ok: false, error: 'İmaj sürerken disk imha edilemez' }
+      }
       const engine = getEngine()
       const drives = engine.listDrives()
       const target = drives.find((d) => d.index === driveIndex)
@@ -768,7 +874,7 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number) => {
+  ipcMain.handle('reconstruct-raid', (_event, driveIndices: number[], raidLevel: number, blockSize: unknown, dataOffsetSectors?: unknown) => {
     try {
       // Same bounded/deduped member set as detect-raid: duplicate members would
       // assemble a bogus array, an unbounded array would freeze the main process.
@@ -776,9 +882,14 @@ export function registerIpcHandlers(): void {
       if (indices.length < 1 || typeof raidLevel !== 'number' || !Number.isInteger(raidLevel)) {
         return { success: false, capacity: 0, numDisks: 0, error: 'Geçersiz RAID argümanları' }
       }
+      const stripe = raidStripeForReconstruct(raidLevel, blockSize)
+      const offset = raidOffsetSectorsForReconstruct(dataOffsetSectors)
+      if (stripe === null || offset === null) {
+        return { success: false, capacity: 0, numDisks: 0, error: 'Geçersiz RAID şerit/offset' }
+      }
       const engine = getEngine()
-      console.log('[IPC] reconstruct-raid drives:', indices, 'level:', raidLevel)
-      return engine.reconstructRaid(indices, raidLevel)
+      console.log('[IPC] reconstruct-raid drives:', indices, 'level:', raidLevel, 'stripe:', stripe, 'offsetSectors:', offset)
+      return engine.reconstructRaid(indices, raidLevel, stripe, offset)
     } catch (err) {
       console.error('[IPC] reconstruct-raid error:', err)
       // Renderer expects RaidAssemblyResult, never a bare boolean.
@@ -857,6 +968,11 @@ export function registerIpcHandlers(): void {
         appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} dest_rejected: ${dest.error}`)
         return { success: false, error: dest.error }
       }
+      const onSource = destOnEvidenceError(dest.destDir, driveIndex, parsed.scanId)
+      if (onSource) {
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} dest_rejected: ${onSource}`)
+        return { success: false, error: onSource }
+      }
       const engine = getEngine()
       const result = await engine.recoverFile(driveIndex, parsed.fileId, dest.destDir, parsed.scanId, preservePaths)
       // Native audit-logs only successful recovery (bridge_wipe.cpp RECOVER
@@ -890,6 +1006,11 @@ export function registerIpcHandlers(): void {
         appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} files=${parsed.fileIds.length} dest_rejected: ${dest.error}`)
         return { succeeded: 0, failed: parsed.fileIds.length, results: [], error: dest.error }
       }
+      const onSource = destOnEvidenceError(dest.destDir, driveIndex, parsed.scanId)
+      if (onSource) {
+        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} files=${parsed.fileIds.length} dest_rejected: ${onSource}`)
+        return { succeeded: 0, failed: parsed.fileIds.length, results: [], error: onSource }
+      }
       const engine = getEngine()
       const result = await engine.recoverFilesBatch(driveIndex, parsed.fileIds, dest.destDir, parsed.scanId, preservePaths)
       // One bounded summary line per batch — per-file failure lines would
@@ -911,21 +1032,39 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('scan-lost-partitions', (_event, driveIndex: number, stepSectors?: number) => {
     assertDriveIndex(driveIndex)
     return callNative('scan-lost-partitions', () =>
-      (getEngine() as unknown as { scanLostPartitions: (d: number, s?: number) => Promise<Array<{ startSector: number; sizeSectors: number; fs: string }>> })
-        .scanLostPartitions(driveIndex, stepSectors))
+      getEngine().scanLostPartitions(driveIndex, stepSectors))
   })
 
-  // P0-3: user signature overlay (resource-format JSON). existsSync before the
-  // absolute path crosses into native — a missing file is a silent no-op there.
-  ipcMain.handle('set-signature-overlay', (_event, path: string) =>
-    callNative('set-signature-overlay', () => {
-      if (typeof path !== 'string' || !path || !existsSync(path)) return false
-      return (getEngine() as unknown as { setSignatureOverlay: (p: string) => boolean }).setSignatureOverlay(path)
-    })
-  )
+  // P0-3: user signature overlay (resource-format JSON). Native returns false
+  // if the file is missing or has no parseable signature objects.
+  ipcMain.handle('pick-and-set-signature-overlay', async () => {
+    try {
+      const focused = BrowserWindow.getFocusedWindow()
+      const opts: Electron.OpenDialogOptions = {
+        title: 'İmza overlay JSON',
+        properties: ['openFile'],
+        filters: [
+          { name: 'JSON', extensions: ['json'] },
+          { name: 'All files', extensions: ['*'] },
+        ],
+      }
+      const picked = focused
+        ? await dialog.showOpenDialog(focused, opts)
+        : await dialog.showOpenDialog(opts)
+      if (picked.canceled || picked.filePaths.length === 0) return null
+      const path = picked.filePaths[0]
+      if (!path || !existsSync(path)) return { ok: false }
+      const ok = (getEngine() as unknown as { setSignatureOverlay: (p: string) => boolean }).setSignatureOverlay(path)
+      return { ok: !!ok }
+    } catch (err) {
+      console.error('[IPC] pick-and-set-signature-overlay error:', err)
+      return { ok: false }
+    }
+  })
 
   ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {
     try {
+      assertDbReady()
       // -1 is the RAID virtual array; everything else must be an integer >= 0.
       if (driveIndex !== -1) assertDriveIndex(driveIndex)
       const parsed = parseRecoverIds(scanId, fileId)
@@ -948,25 +1087,9 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('get-raid-state', () => {
-    try {
-      return getEngine().getRaidState()
-    } catch (err) {
-      console.error('[IPC] get-raid-state error:', err)
-      // Shape mirrors the native inactive branch (bridge_wipe.cpp GetRaidState):
-      // both index arrays are always present, possibly empty.
-      return { active: false, capacity: 0, numDisks: 0, level: -1, failedDisks: [], memberDriveIndices: [] }
-    }
-  })
+  ipcMain.handle('get-raid-state', () => callNative('get-raid-state', () => getEngine().getRaidState()))
 
-  ipcMain.handle('get-case-info', () => {
-    try {
-      return getEngine().getCaseInfo()
-    } catch (err) {
-      console.error('[IPC] get-case-info error:', err)
-      return { caseNumber: '', investigator: '', agency: '', notes: '', createdAt: 0, updatedAt: 0 }
-    }
-  })
+  ipcMain.handle('get-case-info', () => callNative('get-case-info', () => getEngine().getCaseInfo()))
 
   ipcMain.handle('set-case-info', (_event, info: Record<string, string>) => {
     try {
@@ -977,23 +1100,12 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('lookup-nsrl', (_event, md5Hex: string) => {
-    try {
-      return getEngine().lookupNsrl(md5Hex)
-    } catch (err) {
-      console.error('[IPC] lookup-nsrl error:', err)
-      return false
-    }
-  })
+  ipcMain.handle('lookup-nsrl', (_event, md5Hex: string) => callNative('lookup-nsrl', () => {
+    assertDbReady()
+    return getEngine().lookupNsrl(md5Hex)
+  }))
 
-  ipcMain.handle('get-nsrl-stats', () => {
-    try {
-      return getEngine().getNsrlStats()
-    } catch (err) {
-      console.error('[IPC] get-nsrl-stats error:', err)
-      return { count: 0, path: '' }
-    }
-  })
+  ipcMain.handle('get-nsrl-stats', () => callNative('get-nsrl-stats', () => getEngine().getNsrlStats()))
 
   ipcMain.handle('pick-and-load-nsrl', async () => {
     try {

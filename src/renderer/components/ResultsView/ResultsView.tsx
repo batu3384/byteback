@@ -3,9 +3,11 @@ import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
+import { loadScanHonestyFlags } from '../../../shared/scan-honesty'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import { previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
+import { probeRaidState } from '../../../shared/hex-read'
 import { useI18n, tFormat, formatInt } from '../../i18n'
 import InlineAlert from '../InlineAlert'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
@@ -28,8 +30,6 @@ import {
   type PageCursor,
 } from './results-view-utils'
 import { computeVirtualWindow, estimateRowHeight, DEFAULT_ROW_HEIGHT, ROW_OVERSCAN, type VirtualWindow } from './virtual-rows'
-
-const INACTIVE_RAID: RaidState = { active: false, capacity: 0, numDisks: 0, level: -1, memberDriveIndices: [] }
 
 interface ResultsViewProps {
   filesFound: any[]
@@ -81,7 +81,7 @@ function ThumbCard({ f, thumb, thumbUrl, onVisible, onOpen, noPreviewLabel, aria
   return (
     <div
       ref={imgRef}
-      style={{ border: '1px solid var(--panel-border)', borderRadius: '8px', overflow: 'hidden', background: 'var(--surface-overlay)', cursor: 'pointer' }}
+      className="results-thumb"
       onClick={() => onOpen(f.id)}
       role="button"
       tabIndex={0}
@@ -90,16 +90,16 @@ function ThumbCard({ f, thumb, thumbUrl, onVisible, onOpen, noPreviewLabel, aria
       }}
       aria-label={ariaLabel}
     >
-      <div style={{ aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--well-bg)' }}>
+      <div className="results-thumb-frame">
         {imgSrc ? (
-          <img src={imgSrc} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+          <img src={imgSrc} alt={f.name} loading="lazy" />
         ) : thumb ? (
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '8px', textAlign: 'center' }}>{noPreviewLabel}</span>
+          <span className="results-thumb-empty">{noPreviewLabel}</span>
         ) : (
           <Loader2 size={20} className="spinner" color="var(--text-muted)" />
         )}
       </div>
-      <div style={{ padding: '6px 8px', fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }} title={f.name}>
+      <div className="results-thumb-name" title={f.name}>
         {f.name}
       </div>
     </div>
@@ -116,10 +116,6 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [showDuplicates, setShowDuplicates] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set())
   const [isRecovering, setIsRecovering] = useState(false)
-  const [destWarning, setDestWarning] = useState<{
-    proceed: () => void
-    messageKey: 'results.confirmDestOnDrive' | 'results.confirmDestOnRaid'
-  } | null>(null)
   const [viewMode, setViewMode] = useState<'tree' | 'flat' | 'gallery'>('flat')
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [dbFiles, setDbFiles] = useState<FileRecord[]>([])
@@ -129,6 +125,21 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [listError, setListError] = useState(false)
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
   const [hfsTruncated, setHfsTruncated] = useState(false)
+  const [hfsCatalogUnread, setHfsCatalogUnread] = useState(false)
+  const [apfsNxsbUnread, setApfsNxsbUnread] = useState(false)
+  const [refsProbeCapped, setRefsProbeCapped] = useState(false)
+  const [refsSupbUnread, setRefsSupbUnread] = useState(false)
+  const [fatDirUnread, setFatDirUnread] = useState(false)
+  const [ext4DirUnread, setExt4DirUnread] = useState(false)
+  const [xfsDirUnread, setXfsDirUnread] = useState(false)
+  const [ntfsI30Unread, setNtfsI30Unread] = useState(false)
+  const [unallocMapUnread, setUnallocMapUnread] = useState(false)
+  const [ntfsLogfileUnread, setNtfsLogfileUnread] = useState(false)
+  const [usnUnread, setUsnUnread] = useState(false)
+  const [ntfsMftUnread, setNtfsMftUnread] = useState(false)
+  const [probeUnread, setProbeUnread] = useState(false)
+  const [carverUnread, setCarverUnread] = useState(false)
+  const [honestyLoadFailed, setHonestyLoadFailed] = useState(false)
   const [recoverReport, setRecoverReport] = useState<string | null>(null)
   const [recoverStats, setRecoverStats] = useState<{ failed: number; zero: number; bad: number } | null>(null)
   const [preview, setPreview] = useState<FilePreviewResult | null>(null)
@@ -172,15 +183,25 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const effectiveScanId = scanId && scanId > 0 ? scanId : -1
 
   const loadPreview = async (fileId: number) => {
+    if (scanBusy) {
+      setPreview({ success: false, error: t('results.previewWhileBusy') })
+      return
+    }
     if (effectiveScanId <= 0 || !window.api?.readFilePreview) {
       setPreview({ success: false, error: t('results.previewNeedsScan') })
       return
     }
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+    const raidProbe = await probeRaidState(window.api?.getRaidState)
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
-    if (effectiveDrive < 0 && !raidState.active) {
-      setPreview({ success: false, error: t('results.previewNeedsDrive') })
-      return
+    if (effectiveDrive < 0) {
+      if (raidProbe.status === 'unread') {
+        setPreview({ success: false, error: t('results.raidStateFailed') })
+        return
+      }
+      if (!raidProbe.state.active) {
+        setPreview({ success: false, error: t('results.previewNeedsDrive') })
+        return
+      }
     }
     // CA-028: generation guard — rapid A/B clicks can resolve out of order;
     // only the latest request may touch the panel.
@@ -307,21 +328,33 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   }, [effectiveScanId, page, loadPage, filesFound.length])
 
   useEffect(() => {
-    const localHit = (effectiveScanId > 0 ? dbFiles : filesFound).some(
-      (f: { source?: string }) => f.source === 'hfs_limit',
-    )
-    if (localHit) {
-      setHfsTruncated(true)
-      return
-    }
-    if (effectiveScanId <= 0 || !window.api?.searchFiles) {
-      setHfsTruncated(false)
-      return
-    }
-    void window.api
-      .searchFiles(effectiveScanId, 'catalog truncated', 0, 8)
-      .then((res) => setHfsTruncated(res.rows.some((r: { source?: string }) => r.source === 'hfs_limit')))
-      .catch(() => setHfsTruncated(false))
+    const localRows = effectiveScanId > 0 ? dbFiles : filesFound
+    let cancelled = false
+    void loadScanHonestyFlags(effectiveScanId, window.api?.getFilesPage, localRows)
+      .then((flags) => {
+        if (cancelled) return
+        setHonestyLoadFailed(false)
+        setHfsTruncated(flags.hfsLimit)
+        setHfsCatalogUnread(flags.hfsCatalogUnread)
+        setApfsNxsbUnread(flags.apfsNxsbUnread)
+        setRefsProbeCapped(flags.refsProbeCapped)
+        setRefsSupbUnread(flags.refsSupbUnread)
+        setFatDirUnread(flags.fatDirUnread)
+        setExt4DirUnread(flags.ext4DirUnread)
+        setXfsDirUnread(flags.xfsDirUnread)
+        setNtfsI30Unread(flags.ntfsI30Unread)
+        setUnallocMapUnread(flags.unallocMapUnread)
+        setNtfsLogfileUnread(flags.ntfsLogfileUnread)
+        setUsnUnread(flags.usnUnread)
+        setNtfsMftUnread(flags.ntfsMftUnread)
+        setProbeUnread(flags.probeUnread)
+        setCarverUnread(flags.carverUnread)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setHonestyLoadFailed(true)
+      })
+    return () => { cancelled = true }
   }, [effectiveScanId, dbFiles, filesFound])
 
   const sourceFiles: FileRecord[] = effectiveScanId > 0
@@ -396,7 +429,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             const known = await window.api.lookupNsrl(res.md5Hash)
             if (known) nsrlLine += t('results.nsrlKnown')
           } catch {
-            /* NSRL lookup optional */
+            nsrlLine += t('results.nsrlUnread')
           }
         }
         verified.push(nsrlLine)
@@ -474,7 +507,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       return
     }
     if (selectedFiles.size === 0) return
-    const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+    const raidProbe = await probeRaidState(window.api?.getRaidState)
+    if (raidProbe.status === 'unread') {
+      setRecoverReport(t('results.raidStateFailed'))
+      return
+    }
+    const raidState = raidProbe.state
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
     if (effectiveDrive < 0 && !raidState.active) {
       setRecoverReport(t('results.recoverNeedsDrive'))
@@ -488,8 +526,6 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     setIsRecovering(true)
     setRecoverReport(null)
     setRecoverStats(null)
-    setDestWarning(null)
-    let warned = false
     try {
       const destDir = await window.api.pickDirectory()
       if (!destDir) return
@@ -498,11 +534,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         window.api.resolveVolume &&
         (await isDestOnScannedDrive(destDir, effectiveDrive, (letter) => window.api.resolveVolume(letter)))
       ) {
-        warned = true
-        setDestWarning({
-          proceed: () => { setDestWarning(null); void runRecover(destDir, effectiveDrive, raidState) },
-          messageKey: 'results.confirmDestOnDrive',
-        })
+        setRecoverReport(t('results.destOnSourceBlocked'))
         return
       }
       if (
@@ -514,17 +546,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           (letter) => window.api.resolveVolume(letter),
         ))
       ) {
-        warned = true
-        setDestWarning({
-          proceed: () => { setDestWarning(null); void runRecover(destDir, effectiveDrive, raidState) },
-          messageKey: 'results.confirmDestOnRaid',
-        })
+        setRecoverReport(t('results.destOnRaidBlocked'))
         return
       }
       await runRecover(destDir, effectiveDrive, raidState)
     } finally {
-      // Inline-confirm hand-off: keep isRecovering while the warning waits.
-      if (!warned) setIsRecovering(false)
+      setIsRecovering(false)
     }
   }
 
@@ -601,6 +628,18 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const filteredFiles = mappedFiles
   const treeRoot = buildTree(filteredFiles)
   const galleryFiles = filteredFiles.filter((f) => f.type === 'img')
+  // Unread list ≠ empty filter: the banner already carries the error; the
+  // table/gallery/tree must not also claim "no files in this filter".
+  const listEmptyMessage = listError
+    ? t('results.loadErrorTitle')
+    : loading
+      ? t('results.loading')
+      : t('results.empty')
+  const galleryEmptyMessage = listError
+    ? t('results.loadErrorTitle')
+    : loading
+      ? t('results.loading')
+      : t('results.noImages')
 
   // FAZ 1.3a — virtual window for the flat table (gallery/tree keep their own
   // dynamics and render everything, as before).
@@ -661,8 +700,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const sortIndicator = (field: SortField): React.ReactNode =>
     sortField === field ? (
       sortDir === 'asc'
-        ? <ChevronUp size={14} style={{ verticalAlign: 'middle', marginLeft: 2 }} />
-        : <ChevronDown size={14} style={{ verticalAlign: 'middle', marginLeft: 2 }} />
+        ? <ChevronUp size={14} className="sort-ico" />
+        : <ChevronDown size={14} className="sort-ico" />
     ) : null
 
   // Sortable column headers are keyboard-operable and expose aria-sort.
@@ -692,9 +731,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           return
         }
       }
-      const raidState = window.api?.getRaidState ? await window.api.getRaidState() : INACTIVE_RAID
+      const raidProbe = await probeRaidState(window.api?.getRaidState)
       const effectiveDrive = driveIndex !== null ? driveIndex : -1
-      if (effectiveDrive < 0 && !raidState.active) return
+      if (effectiveDrive < 0) {
+        if (raidProbe.status === 'unread' || !raidProbe.state.active) return
+      }
       if (!window.api?.readFilePreview) return
       const res = await window.api.readFilePreview(effectiveDrive, effectiveScanId, id)
       setThumbs((prev) => {
@@ -755,13 +796,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             else next.add(dir.path)
             setExpandedDirs(next)
           }}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', cursor: 'pointer', marginLeft: depth * 16, borderRadius: '4px', width: 'calc(100% - ' + (depth * 16) + 'px)', background: 'transparent', border: 'none', color: 'inherit', textAlign: 'left' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-overlay)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          className="tree-dir"
+          style={{ '--indent': `${depth * 16}px` } as React.CSSProperties}
         >
           {isOpen ? <FolderOpen size={16} color="var(--accent-blue)" /> : <Folder size={16} color="var(--accent-blue)" />}
-          <span style={{ fontWeight: 500 }}>{dir.name}</span>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{tFormat('results.items', { n: String(childCount) })}</span>
+          <span className="tree-dir-name">{dir.name}</span>
+          <span className="tree-dir-count">{tFormat('results.items', { n: String(childCount) })}</span>
         </button>
       )
       if (isOpen) out.push(...renderTreeNode(dir, depth + 1))
@@ -773,13 +813,14 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           key={'f:' + f.id}
           aria-pressed={selectedFiles.has(f.id)}
           onClick={() => toggleSelection(f.id)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', marginLeft: (depth + 1) * 16, cursor: 'pointer', borderRadius: '4px', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', border: 'none', color: 'inherit', textAlign: 'left', width: 'calc(100% - ' + ((depth + 1) * 16) + 'px)' }}
+          className={`tree-file${selectedFiles.has(f.id) ? ' is-selected' : ''}`}
+          style={{ '--indent': `${(depth + 1) * 16}px` } as React.CSSProperties}
         >
-          <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} onClick={(e) => e.stopPropagation()} style={{ width: 14, height: 14 }} aria-hidden="true" tabIndex={-1} />
+          <input type="checkbox" className="tree-check" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} onClick={(e) => e.stopPropagation()} aria-hidden="true" tabIndex={-1} />
           {getIconForType(f.type)}
-          <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-          {f.sourceLabel ? <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', flexShrink: 0 }}>{f.sourceLabel}</span> : null}
-          <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>{f.size}</span>
+          <span className="tree-file-name">{f.name}</span>
+          {f.sourceLabel ? <span className="tree-file-src">{f.sourceLabel}</span> : null}
+          <span className="tree-file-size">{f.size}</span>
         </button>
       )
     }
@@ -801,17 +842,17 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE))
 
   return (
-    <div className="results-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%' }}>
-      <div className="results-header glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px' }}>
+    <div className="results-view">
+      <div className="results-header glass-panel">
         <div className="results-info">
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('results.title')}</h2>
-          <p style={{ color: 'var(--text-muted)' }}>
+          <h2>{t('results.title')}</h2>
+          <p>
             {tFormat('results.inFilterCount', { n: formatInt(displayTotal) })}
             {effectiveScanId > 0 && totalPages > 1 ? tFormat('results.pageOf', { cur: String(page + 1), total: String(totalPages) }) : ''}
             {loading ? t('results.loadingShort') : ''}
           </p>
           {effectiveScanId > 0 && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
+            <p className="results-summary">
               {tFormat('results.deletedCount', { n: formatInt(summary.deletedFiles) })}
               {' · '}{tFormat('results.allocatedCount', { n: formatInt(Math.max(0, summary.totalFiles - summary.deletedFiles - (summary.carvedFiles ?? 0))) })}
               {' · '}{tFormat('results.carvedCount', { n: formatInt(summary.carvedFiles ?? 0) })}
@@ -819,26 +860,26 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             </p>
           )}
         </div>
-        <div className="results-actions" style={{ display: 'flex', gap: '12px' }}>
+        <div className="results-actions">
           <button
-            className="btn-secondary"
-            style={{ display: 'flex', gap: '8px', opacity: selectedFiles.size !== 1 ? 0.5 : 1 }}
+            type="button"
+            className={`btn-secondary${selectedFiles.size !== 1 ? ' is-idle' : ''}`}
             onClick={handlePreviewSelected}
-            disabled={selectedFiles.size !== 1 || previewLoading || effectiveScanId <= 0}
-            title={t('results.previewHint')}
+            disabled={selectedFiles.size !== 1 || previewLoading || effectiveScanId <= 0 || !!scanBusy}
+            title={scanBusy ? t('results.previewWhileBusy') : t('results.previewHint')}
           >
             <Eye size={16} /> {previewLoading ? t('results.previewing') : t('results.preview')}
           </button>
-          <button className="btn-secondary" style={{ display: 'flex', gap: '8px' }} onClick={exportCsv} disabled={filteredFiles.length === 0 || csvExporting}>
+          <button type="button" className="btn-secondary" onClick={exportCsv} disabled={filteredFiles.length === 0 || csvExporting}>
             <Download size={16} /> {csvExporting ? t('results.exporting') : t('results.exportCsv')}
           </button>
-          <label className="dup-toggle" title={t('results.preservePathsTitle')} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+          <label className="dup-toggle" title={t('results.preservePathsTitle')}>
             <input type="checkbox" checked={preservePaths} onChange={(e) => setPreservePaths(e.target.checked)} data-testid="preserve-paths" />
             {t('results.preservePaths')}
           </label>
           <button
-            className="btn-primary"
-            style={{ display: 'flex', gap: '8px', opacity: selectedFiles.size === 0 ? 0.5 : 1, cursor: selectedFiles.size === 0 ? 'not-allowed' : 'pointer' }}
+            type="button"
+            className={`btn-primary${selectedFiles.size === 0 ? ' is-idle' : ''}`}
             onClick={handleRecover}
             disabled={selectedFiles.size === 0 || isRecovering || !!scanBusy}
             title={scanBusy ? t('results.recoverBusyTitle') : undefined}
@@ -849,36 +890,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         </div>
       </div>
 
-      {destWarning && (
-        <InlineAlert variant="warning" role="alert">
-          <div style={{ whiteSpace: 'pre-wrap' }}>{t(destWarning.messageKey)}</div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-            <button type="button" className="btn-primary" onClick={destWarning.proceed}>
-              {t('results.confirmProceed')}
-            </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => { setDestWarning(null); setIsRecovering(false) }}
-            >
-              {t('results.confirmCancel')}
-            </button>
-          </div>
-        </InlineAlert>
-      )}
       {recoverReport && (
         <div
-          className="glass-panel"
+          className={`glass-panel results-report ${!!recoverStats && (recoverStats.failed > 0 || recoverStats.zero > 0 || recoverStats.bad > 0) ? 'bad' : 'ok'}`}
           role={!!recoverStats && (recoverStats.failed > 0 || recoverStats.zero > 0 || recoverStats.bad > 0) ? 'alert' : 'status'}
-          style={{
-            padding: '16px 24px',
-            borderLeft: `4px solid ${
-              !!recoverStats && (recoverStats.failed > 0 || recoverStats.zero > 0 || recoverStats.bad > 0)
-                ? 'var(--alert-red)'
-                : 'var(--accent-blue)'
-            }`,
-            whiteSpace: 'pre-wrap',
-          }}
         >
           {recoverReport}
         </div>
@@ -899,12 +914,55 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         />
       )}
       {hfsTruncated && (
-        <div className="glass-panel" role="alert" style={{ padding: '16px 24px', borderLeft: '4px solid var(--warning-yellow)' }}>
-          {t('results.hfsLimit')}
-        </div>
+        <InlineAlert variant="warning" testId="hfs-limit-banner">{t('results.hfsLimit')}</InlineAlert>
+      )}
+      {hfsCatalogUnread && (
+        <InlineAlert variant="warning" testId="hfs-catalog-unread">{t('results.hfsCatalogUnread')}</InlineAlert>
+      )}
+      {apfsNxsbUnread && (
+        <InlineAlert variant="warning" testId="apfs-nxsb-unread">{t('results.apfsNxsbUnread')}</InlineAlert>
+      )}
+      {refsProbeCapped && (
+        <InlineAlert variant="warning" testId="refs-probe-capped">{t('results.refsProbeCapped')}</InlineAlert>
+      )}
+      {refsSupbUnread && (
+        <InlineAlert variant="warning" testId="refs-supb-unread">{t('results.refsSupbUnread')}</InlineAlert>
+      )}
+      {fatDirUnread && (
+        <InlineAlert variant="warning" testId="fat-dir-unread">{t('results.fatDirUnread')}</InlineAlert>
+      )}
+      {ext4DirUnread && (
+        <InlineAlert variant="warning" testId="ext4-dir-unread">{t('results.ext4DirUnread')}</InlineAlert>
+      )}
+      {xfsDirUnread && (
+        <InlineAlert variant="warning" testId="xfs-dir-unread">{t('results.xfsDirUnread')}</InlineAlert>
+      )}
+      {ntfsI30Unread && (
+        <InlineAlert variant="warning" testId="ntfs-i30-unread">{t('results.ntfsI30Unread')}</InlineAlert>
+      )}
+      {unallocMapUnread && (
+        <InlineAlert variant="warning" testId="unalloc-map-unread">{t('results.unallocMapUnread')}</InlineAlert>
+      )}
+      {ntfsLogfileUnread && (
+        <InlineAlert variant="warning" testId="ntfs-logfile-unread">{t('results.ntfsLogfileUnread')}</InlineAlert>
+      )}
+      {usnUnread && (
+        <InlineAlert variant="warning" testId="usn-unread">{t('results.usnUnread')}</InlineAlert>
+      )}
+      {ntfsMftUnread && (
+        <InlineAlert variant="warning" testId="ntfs-mft-unread">{t('results.ntfsMftUnread')}</InlineAlert>
+      )}
+      {probeUnread && (
+        <InlineAlert variant="warning" testId="probe-unread">{t('results.probeUnread')}</InlineAlert>
+      )}
+      {carverUnread && (
+        <InlineAlert variant="warning" testId="carver-unread">{t('results.carverUnread')}</InlineAlert>
+      )}
+      {honestyLoadFailed && (
+        <InlineAlert variant="warning" testId="results-honesty-load-error">{t('results.honestyLoadFailed')}</InlineAlert>
       )}
       {listError && (
-        <InlineAlert variant="error" title={t('results.loadErrorTitle')}>
+        <InlineAlert variant="error" testId="results-list-error" title={t('results.loadErrorTitle')}>
           {t('results.loadErrorBody')}
         </InlineAlert>
       )}
@@ -914,7 +972,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         </InlineAlert>
       )}
       {csvReport && (
-        <div className="glass-panel" role="status" style={{ padding: '16px 24px', borderLeft: '4px solid var(--success-green)', whiteSpace: 'pre-wrap' }}>
+        <div className="glass-panel results-report status-ok" role="status">
           {csvReport}
         </div>
       )}
@@ -953,7 +1011,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             </div>
           ) : null}
 
-      <div className="results-content glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div className="results-content glass-panel">
         <div className="filters">
           <div className="filter-row">
             <span className="filter-label">{t('results.statusFilter')}</span>
@@ -984,27 +1042,25 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
             />
             <button
               type="button"
-              className="btn-secondary"
+              className="btn-secondary view-toggle is-end"
               title={viewMode !== 'flat' ? t('results.flatTitle') : t('results.galleryViewTitle')}
               onClick={() => setViewMode(viewMode === 'gallery' ? 'flat' : 'gallery')}
-              style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center', marginLeft: 'auto' }}
             >
               {viewMode === 'gallery' ? <List size={16} /> : <LayoutGrid size={16} />}
               {viewMode === 'gallery' ? t('results.list') : t('results.gallery')}
             </button>
             <button
               type="button"
-              className="btn-secondary"
+              className="btn-secondary view-toggle"
               title={viewMode === 'tree' ? t('results.flatTitle') : t('results.treeViewTitle')}
               onClick={() => setViewMode(viewMode === 'tree' ? 'flat' : 'tree')}
-              style={{ padding: '6px 12px', display: 'flex', gap: '6px', alignItems: 'center' }}
             >
               {viewMode === 'tree' ? <List size={16} /> : <ListTree size={16} />}
               {viewMode === 'tree' ? t('results.list') : t('results.tree')}
             </button>
           </div>
           {/* P0-4: size/date filters — MB inputs and date range map to SQL bounds. */}
-          <div className="filter-row" style={{ alignItems: 'center', gap: '8px' }}>
+          <div className="filter-row metrics">
             <span className="filter-label">{t('results.sizeFilterLabel')}</span>
             <input
               type="number"
@@ -1014,8 +1070,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               onChange={(e) => setSizeMinInput(e.target.value)}
               placeholder={t('results.sizeMinPlaceholder')}
               aria-label={t('results.sizeMinAria')}
-              className="name-search"
-              style={{ width: '110px', padding: '4px 8px' }}
+              className="name-search narrow"
             />
             <span aria-hidden="true">–</span>
             <input
@@ -1026,16 +1081,15 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               onChange={(e) => setSizeMaxInput(e.target.value)}
               placeholder={t('results.sizeMaxPlaceholder')}
               aria-label={t('results.sizeMaxAria')}
-              className="name-search"
-              style={{ width: '110px', padding: '4px 8px' }}
+              className="name-search narrow"
             />
-            <span className="filter-label" style={{ marginLeft: '12px' }}>{t('results.dateFilterLabel')}</span>
+            <span className="filter-label spaced">{t('results.dateFilterLabel')}</span>
             <input
               type="date"
               value={dateFromInput}
               onChange={(e) => setDateFromInput(e.target.value)}
               aria-label={t('results.dateFromAria')}
-              style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
+              className="date-input"
             />
             <span aria-hidden="true">–</span>
             <input
@@ -1043,13 +1097,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               value={dateToInput}
               onChange={(e) => setDateToInput(e.target.value)}
               aria-label={t('results.dateToAria')}
-              style={{ padding: '4px 8px', background: 'var(--bg-main)', color: 'var(--text-main)', border: '1px solid var(--panel-border)', borderRadius: '4px' }}
+              className="date-input"
             />
             {(sizeMinInput || sizeMaxInput || dateFromInput || dateToInput) && (
               <button
                 type="button"
-                className="btn-secondary"
-                style={{ padding: '4px 10px' }}
+                className="btn-secondary btn-compact"
                 onClick={() => { setSizeMinInput(''); setSizeMaxInput(''); setDateFromInput(''); setDateToInput('') }}
               >
                 {t('results.clearFilters')}
@@ -1058,20 +1111,20 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           </div>
         </div>
 
-        <div ref={scrollRef} onScroll={recomputeWindow} style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }} className={viewMode === 'tree' ? 'tree-container' : ''} data-testid="results-scroll">
+        <div ref={scrollRef} onScroll={recomputeWindow} className={`results-scroll${viewMode === 'tree' ? ' tree-container' : ''}`} data-testid="results-scroll">
           {viewMode === 'tree' && totalCount > PAGE_SIZE && (
-            <p style={{ padding: '8px 0', color: 'var(--warning-yellow)', fontSize: '0.85rem' }}>
+            <p className="tree-page-note">
               {tFormat('results.treePageNote', { n: String(filteredFiles.length), total: formatInt(totalCount) })}
             </p>
           )}
           {viewMode === 'gallery' ? (
-            <div style={{ padding: '16px 0' }}>
+            <div className="results-gallery">
               {galleryFiles.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                  {loading ? t('results.loading') : t('results.noImages')}
+                <div className="results-empty examiner-empty" role="status" data-testid="results-empty">
+                  {galleryEmptyMessage}
                 </div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' }}>
+                <div className="results-gallery-grid">
                   {galleryFiles.map((f) => (
                     <ThumbCard
                       key={f.id}
@@ -1091,25 +1144,25 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               )}
             </div>
           ) : viewMode === 'tree' ? (
-          <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <div className="results-tree-list">
             {filteredFiles.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                {loading ? t('results.loading') : t('results.empty')}
+              <div className="results-empty examiner-empty" role="status" data-testid="results-empty">
+                {listEmptyMessage}
               </div>
             ) : renderTreeNode(treeRoot, 0)}
           </div>
           ) : (
-          <table className="results-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-            <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-surface)', zIndex: 1 }}>
+          <table className="results-table">
+            <thead>
               <tr>
-                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', width: '40px' }}>
+                <th className="check">
                   <input type="checkbox" checked={allPageSelected} onChange={toggleAll} aria-label={t('results.selectAllPage')} />
                 </th>
                 {([
                   [t('results.col.name'), 'name'],
                   [t('results.col.path'), 'path'],
                 ] as const).map(([label, field]) => (
-                  <th key={field} {...sortableTh(field)} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                  <th key={field} {...sortableTh(field)} className="sortable">
                     {label}
                     <span aria-hidden="true">{sortIndicator(field)}</span>
                   </th>
@@ -1118,23 +1171,25 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   [t('results.col.size'), 'size'],
                   [t('results.col.date'), 'date'],
                 ] as const).map(([label, field]) => (
-                  <th key={field} {...sortableTh(field)} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                  <th key={field} {...sortableTh(field)} className="sortable">
                     {label}
                     <span aria-hidden="true">{sortIndicator(field)}</span>
                   </th>
                 ))}
-                <th {...sortableTh('confidence')} style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)', cursor: 'pointer', userSelect: 'none' }}>
+                <th {...sortableTh('confidence')} className="sortable">
                   {t('results.col.confidence')}<span aria-hidden="true">{sortIndicator('confidence')}</span>
                 </th>
-                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.source')}</th>
-                <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--panel-border)' }}>{t('results.col.status')}</th>
+                <th>{t('results.col.source')}</th>
+                <th>{t('results.col.status')}</th>
               </tr>
             </thead>
             <tbody>
               {filteredFiles.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                    {loading ? t('results.loading') : t('results.empty')}
+                  <td colSpan={8} className="results-empty-cell">
+                    <div className="examiner-empty" role="status" data-testid="results-empty">
+                      {listEmptyMessage}
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -1144,24 +1199,19 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                       data-testid="result-row" contract is unchanged. */}
                   {vWindow.start > 0 && (
                     <tr aria-hidden="true" style={{ height: vWindow.start * rowHeight }}>
-                      <td colSpan={8} style={{ padding: 0, border: 'none' }} />
+                      <td colSpan={8} className="spacer-cell" />
                     </tr>
                   )}
                   {visibleFiles.map((f, idx) => {
                   const titleParts = [f.path !== '—' ? tFormat('results.locationPrefix', { path: f.path }) : null, f.qualityLabel !== '—' ? tFormat('results.qualityPrefix', { q: f.qualityLabel }) : null]
                     .filter(Boolean)
                     .join(' · ')
-                  const tierColor = f.confidenceTier === 'high' ? 'var(--success-green)' : f.confidenceTier === 'mid' ? 'var(--warning-yellow)' : 'var(--alert-red)'
-                  // Forensic semantics: deleted=red (loss), carved=blue (signature
-                  // recovery), allocated/in-use=green. Text colors are theme tokens;
-                  // both pairs compute >=4.5:1 on their 10% tints in dark and light.
-                  const statusTone =
+                  const statusClass =
                     f.statusKey === 'status.deleted'
-                      ? { color: 'var(--alert-red)', background: 'rgba(239, 68, 68, 0.1)' }
+                      ? 'status-deleted'
                       : f.statusKey === 'status.carved'
-                        ? { color: 'var(--accent-blue-text)', background: 'rgba(59, 130, 246, 0.1)' }
-                        : { color: 'var(--success-green)', background: 'rgba(16, 185, 129, 0.1)' }
-                  const cellPad = { padding: '7px 12px' } as const
+                        ? 'status-carved'
+                        : 'status-allocated'
                   return (
                   <tr
                     key={f.id}
@@ -1179,50 +1229,39 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                       setSelectedFiles(new Set([f.id]))
                       void loadPreview(f.id)
                     }}
-                    style={{ borderBottom: '1px solid var(--surface-overlay)', background: selectedFiles.has(f.id) ? 'rgba(59, 130, 246, 0.1)' : 'transparent', cursor: 'default' }}
+                    className={selectedFiles.has(f.id) ? 'is-selected' : undefined}
                   >
-                    <td style={{ ...cellPad }}>
+                    <td>
                       <input type="checkbox" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} aria-label={tFormat('results.selectFile', { name: f.name })} />
                     </td>
-                    <td className="file-name-cell" style={{ ...cellPad, display: 'flex', alignItems: 'center', gap: '12px', fontFamily: 'monospace' }}>
+                    <td className="file-name-cell">
                       {getIconForType(f.type)}
                       {f.name}
                     </td>
                     <td
                       className="path-cell"
-                      style={{ ...cellPad, color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.8rem', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                       title={f.path !== '—' ? f.path : undefined}
                     >
                       {f.path}
                     </td>
-                    <td style={{ ...cellPad, color: 'var(--text-muted)' }}>{f.size}</td>
-                    <td style={{ ...cellPad, color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{f.dateLabel}</td>
-                    <td style={{ ...cellPad }}>
+                    <td className="cell-muted">{f.size}</td>
+                    <td className="cell-date">{f.dateLabel}</td>
+                    <td>
                       {f.confidenceTier === 'none' ? (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>—</span>
+                        <span className="confidence-badge tier-none">—</span>
                       ) : (
                         <span
                           data-testid={`confidence-${f.confidence ?? 0}`}
-                          style={{
-                            padding: '3px 8px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: 600,
-                            color: tierColor,
-                            border: `1px solid ${tierColor}`,
-                            background: f.confidenceTier === 'high' ? 'rgba(16, 185, 129, 0.08)' : f.confidenceTier === 'mid' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                          }}
+                          className={`confidence-badge tier-${f.confidenceTier}`}
                           title={f.qualityLabel}
                         >
                           {f.confidence ?? 0}
                         </span>
                       )}
                     </td>
-                    <td style={{ ...cellPad, color: 'var(--text-muted)', fontSize: '0.8rem' }}>{f.sourceLabel}</td>
-                    <td style={{ ...cellPad }}>
-                      <span style={{
-                        padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                        background: statusTone.background,
-                        color: statusTone.color,
-                        border: `1px solid ${statusTone.color}`
-                      }}>
+                    <td className="cell-source">{f.sourceLabel}</td>
+                    <td>
+                      <span className={`status-badge ${statusClass}`}>
                         {f.status}
                       </span>
                     </td>
@@ -1231,7 +1270,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                   })}
                   {vWindow.end < filteredFiles.length && (
                     <tr aria-hidden="true" style={{ height: (filteredFiles.length - vWindow.end) * rowHeight }}>
-                      <td colSpan={8} style={{ padding: 0, border: 'none' }} />
+                      <td colSpan={8} className="spacer-cell" />
                     </tr>
                   )}
                 </>

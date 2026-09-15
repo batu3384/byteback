@@ -71,6 +71,8 @@ export interface ScanState {
   carveResumeSector?: number
   startedAt?: number
   updatedAt?: number
+  volumePath?: string
+  evidenceDiskIndices?: number[]
 }
 
 export interface RecoverResult {
@@ -204,6 +206,19 @@ export interface PartitionInfo {
   isActive: boolean
 }
 
+/** TestDisk-style lost-partition hit. Size is neighbor-LBA estimate from the bridge. */
+export interface LostPartitionHit {
+  startSector: number
+  sizeSectors: number
+  fs: string
+}
+
+export interface LostPartitionScanResult {
+  partitions: LostPartitionHit[]
+  /** Step or EXT superblock I/O failed. Empty partitions is not “no volumes”. */
+  unread: boolean
+}
+
 /** Optional partition scope for startScan (whole disk when omitted). */
 export interface ScanOptions {
   partitionIndex?: number
@@ -212,6 +227,10 @@ export interface ScanOptions {
   resumeScanId?: number
   /** Required for deep/full_carve on SSD after TRIM warning. */
   allowSsdDeepScan?: boolean
+  /** Windows volume device "\\.\X:" — scan binds this instead of PhysicalDrive+LBA. */
+  volumePath?: string
+  /** PhysicalDrive indices of a spanned/striped volume (dest-on-source). */
+  evidenceDiskIndices?: number[]
 }
 
 /** Logical drive letter resolved to PhysicalDrive + partition extent. */
@@ -220,6 +239,10 @@ export interface ResolvedVolume {
   startSector: number
   sizeSectors: number
   fsType: string
+  /** Windows disk-extent count. >1 = spanned/striped; scan uses volumePath. */
+  diskExtentCount?: number
+  volumePath?: string
+  diskNumbers?: number[]
 }
 
 export interface CaseInfo {

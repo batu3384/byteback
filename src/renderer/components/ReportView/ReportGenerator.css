@@ -1,50 +1,182 @@
 .report-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--space-lg);
   height: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.report-header {
+  padding: 12px 16px;
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
 }
 
 .report-header h2 {
-  font-size: 2rem;
-  color: var(--neon-cyan);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-main);
 }
 
 .report-header .subtitle {
   color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 .report-content {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: var(--space-xl);
-  gap: var(--space-md);
+  align-items: stretch;
+  text-align: left;
+  padding: 32px;
+  gap: 24px;
 }
 
 .report-icon-wrapper {
-  width: 80px;
-  height: 80px;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 3rem;
-  background: rgba(0, 229, 255, 0.08);
-  border-radius: 50%;
-  border: 2px solid var(--neon-cyan);
+  font-size: 1.5rem;
+  background: var(--well-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
 }
 
 .generating-state {
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  color: var(--neon-cyan);
+  color: var(--text-main);
 }
 
 .report-ready {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-sm);
+  gap: 16px;
+}
+
+.report-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.report-card {
+  padding: 16px;
+  background: var(--surface-overlay);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.report-card h4 {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.report-card p {
+  font-weight: 500;
+}
+
+.report-card .card-body {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.report-included {
+  background: var(--well-bg);
+  padding: 24px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
+}
+
+.report-included h3 {
+  font-size: 1.1rem;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-included ul {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin-left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.report-generate {
+  padding: 16px 32px;
+  font-size: 1.1rem;
+  background: var(--success-green);
+  color: var(--on-success);
+}
+
+.report-generate:disabled {
+  opacity: 0.5;
+}
+
+.generating-state {
+  color: var(--success-green);
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.report-ready-title {
+  color: var(--success-green);
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.2rem;
+}
+
+.report-hash,
+.report-pdf-path {
+  font-family: monospace;
+  word-break: break-all;
+}
+
+.report-hash {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  max-width: 600px;
+}
+
+.report-pdf-path {
+  font-size: 0.85rem;
+  color: var(--success-green);
+}
+
+.report-ready-row {
+  display: flex;
+  gap: 12px;
+}
+
+.report-ready-row .btn-primary,
+.report-ready-row .btn-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-pdf-btn {
+  background: var(--btn-primary-bg);
+  color: #fff;
 }

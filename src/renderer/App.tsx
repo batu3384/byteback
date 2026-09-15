@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Sidebar from './components/Layout/Sidebar'
 import Header from './components/Layout/Header'
+import StatusBar from './components/Layout/StatusBar'
 import Dashboard from './components/Dashboard/Dashboard'
 import ScanView from './components/ScanView/ScanView'
 import ResultsView from './components/ResultsView/ResultsView'
@@ -16,6 +17,7 @@ import CaseView from './components/CaseView/CaseView'
 import ScanRequiredPanel from './components/ScanRequiredPanel'
 import InlineAlert from './components/InlineAlert'
 import { hasValidScanId, isLiveScanPhase, isScanDependentPage, isDiskBusyPage, scanPhaseFromStatusCode, type ScanPhase } from '../shared/scan-required'
+import { sessionLogShowsBanner, type SessionLogCode } from '../shared/session-log'
 import { SCAN_STATUS, scanPhaseFromState } from '../shared/scan-session'
 import type { ScanState } from '../shared/ipc-contract'
 import { t, tFormat, useI18n } from './i18n'
@@ -32,6 +34,8 @@ function App(): React.ReactElement {
   const [scanConfig, setScanConfig] = useState<{ driveIndex: number | null, scanType: string }>({ driveIndex: null, scanType: 'quick' })
   const [selectedDrive, setSelectedDrive] = useState<number | null>(null)
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
+  /** DriveCard hex = PhysicalDrive dump. Sidebar hex keeps scan volume device. */
+  const [hexForceDisk, setHexForceDisk] = useState(false)
 
   // Global Scan State (Persists across tab changes)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, badSectors: [] as number[], phase: 'metadata' })
@@ -41,10 +45,13 @@ function App(): React.ReactElement {
   const [activeScanId, setActiveScanId] = useState<number>(-1)
   const [scanRowState, setScanRowState] = useState<ScanState | null>(null)
   const [dbError, setDbError] = useState<string | null>(null)
-  const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[]; code: string } | null>(null)
+  const [engineError, setEngineError] = useState<string | null>(null)
+  const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[]; code: SessionLogCode } | null>(null)
+  const [hydrateError, setHydrateError] = useState<string | null>(null)
   // CA-032: imaging runs in the main process; the flag survives navigation so
   // the progress card re-appears when the user returns to the imager page.
   const [imagingActive, setImagingActive] = useState(false)
+  const [caseNumber, setCaseNumber] = useState('')
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeScanIdRef = useRef(activeScanId)
@@ -84,9 +91,11 @@ function App(): React.ReactElement {
       .catch(() => setDbError(t('dash.dbStatusError')))
     window.api?.getSessionLog?.(60)
       .then((log) => {
-        if (log?.summary) setSessionNote({ summary: log.summary, path: log.path, lines: log.lines ?? [], code: log.code ?? 'incomplete' })
+        if (log?.summary) setSessionNote({ summary: log.summary, path: log.path, lines: log.lines ?? [], code: (log.code ?? 'incomplete') as SessionLogCode })
       })
-      .catch(() => { /* günlük yoksa sessiz */ })
+      .catch(() => {
+        setSessionNote({ summary: t('dash.sessionLogUnread'), path: '', lines: [], code: 'unread' })
+      })
 
     if (!window.api?.getLatestUsableScanId || !window.api.getScanState) return
     window.api.getLatestUsableScanId()
@@ -99,6 +108,7 @@ function App(): React.ReactElement {
         const state = await window.api!.getScanState(id)
         if (!state || state.id <= 0) return
         if (scanStartAttemptRef.current > 0) return
+        setHydrateError(null)
         hydrateFromScanState(state)
         if (state.status === SCAN_STATUS.paused) {
           setScanStatus({ key: 'scan.pausedResumable' })
@@ -108,15 +118,28 @@ function App(): React.ReactElement {
           setScanPhase('complete')
         }
       })
-      .catch(() => { /* ilk açılışta kayıt yok */ })
+      .catch(() => {
+        setHydrateError(t('dash.sessionLoadFailed'))
+      })
   }, [hydrateFromScanState])
+
+  useEffect(() => {
+    if (!window.api?.getCaseInfo) return
+    window.api.getCaseInfo()
+      .then((info) => { setCaseNumber(info?.caseNumber ?? '') })
+      .catch(() => { /* keep last header case number; unread is not an empty case */ })
+  }, [activePage])
 
   // System Engine Ready
   useEffect(() => {
     if (window.api && window.api.getVersion) {
       window.api.getVersion().then((ver: string) => {
         console.log("Byteback Engine Ready. Version:", ver);
-      }).catch((e: Error) => console.error("Engine failure:", e));
+        setEngineError(null)
+      }).catch((e: Error) => {
+        console.error("Engine failure:", e);
+        setEngineError(t('dash.engineFailed'))
+      });
     }
     
     // Setup Global IPC Listeners ONLY ONCE
@@ -340,6 +363,7 @@ function App(): React.ReactElement {
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
     if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
+    if (page === 'hex') setHexForceDisk(true)
     setActivePage(page)
   }
 
@@ -349,6 +373,7 @@ function App(): React.ReactElement {
     // render a bogus "Sürücü undefined taranıyor" with a live stop button.
     if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
+    if (page === 'hex') setHexForceDisk(false)
     setActivePage(page as Page)
   }
 
@@ -393,11 +418,26 @@ function App(): React.ReactElement {
       case 'report':
         return <ReportGenerator scanId={activeScanId} scanElapsed={scanElapsed} scanState={scanRowState} />
       case 'hex':
-        return <HexEditor driveIndex={selectedDrive} sectorSize={selectedDriveSectorSize} scanBusy={scanBusy} />
+        return (
+          <HexEditor
+            driveIndex={selectedDrive}
+            sectorSize={selectedDriveSectorSize}
+            scanBusy={scanBusy}
+            volumePath={scanRowState?.volumePath}
+            forceDisk={hexForceDisk}
+          />
+        )
       case 'smart':
         return <SmartView driveIndex={selectedDrive} />
       case 'imager':
-        return <ImagerView imagingActive={imagingActive} onImagingStateChange={setImagingActive} />
+        return (
+          <ImagerView
+            imagingActive={imagingActive}
+            onImagingStateChange={setImagingActive}
+            scanVolumePath={scanRowState?.volumePath}
+            spanned={(scanRowState?.evidenceDiskIndices?.length ?? 0) > 1}
+          />
+        )
       case 'shredder':
         return <ShredderView />
       case 'raid':
@@ -419,34 +459,48 @@ function App(): React.ReactElement {
 
   return (
     <div className="app-layout">
+      <a className="skip-link" href="#main-content" data-testid="skip-to-main">{t('chrome.skipToMain')}</a>
+      <div className="app-body">
       <Sidebar activePage={activePage} activeScanId={activeScanId} scanState={scanRowState} scanBusy={scanBusy} onNavigate={handleNavigate} />
       <div className="app-main">
         <Header
           title={activePage}
+          caseNumber={caseNumber}
           scanBusy={scanBusy}
           scanPercent={scanProgress.total > 0 ? Math.min(100, Math.floor((scanProgress.current / scanProgress.total) * 100)) : undefined}
           onOpenScan={() => handleNavigate('scan')}
         />
-        <main className="app-content">
+        <main id="main-content" className="app-content" tabIndex={-1}>
           {dbError && (
             <InlineAlert variant="error" title={t('dash.dbAlertTitle')}>
               {tFormat('dash.dbAlertBody', { err: dbError })}
             </InlineAlert>
           )}
-          {sessionNote && sessionNote.code !== 'no_scan' && sessionNote.code !== 'complete' && (
+          {engineError && (
+            <InlineAlert variant="error" testId="engine-load-error">
+              {engineError}
+            </InlineAlert>
+          )}
+          {hydrateError && (
+            <InlineAlert variant="error" testId="scan-hydrate-error">
+              {hydrateError}
+            </InlineAlert>
+          )}
+          {sessionNote && sessionLogShowsBanner(sessionNote.code) && (
             <InlineAlert
-              variant={sessionNote.code === 'crash' || sessionNote.code === 'crash_during_scan' || sessionNote.code === 'fail' ? 'error' : 'warning'}
+              variant={sessionNote.code === 'crash' || sessionNote.code === 'crash_during_scan' || sessionNote.code === 'fail' || sessionNote.code === 'unread' ? 'error' : 'warning'}
               title={t('dash.lastScanTitle')}
+              testId={sessionNote.code === 'unread' ? 'session-log-unread-error' : undefined}
               onDismiss={() => setSessionNote(null)}
             >
-              <div>{sessionNote.summary}</div>
+              <div>{sessionNote.code === 'unread' ? t('dash.sessionLogUnread') : sessionNote.summary}</div>
               {sessionNote.path ? (
-                <div style={{ marginTop: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                <div className="session-log-path">
                   {tFormat('dash.logPrefix', { path: sessionNote.path })}
                 </div>
               ) : null}
               {sessionNote.lines.length > 0 ? (
-                <pre style={{ marginTop: '8px', maxHeight: '140px', overflow: 'auto', fontSize: '0.72rem', whiteSpace: 'pre-wrap' }}>
+                <pre className="session-log-pre">
                   {sessionNote.lines.slice(-12).join('\n')}
                 </pre>
               ) : null}
@@ -455,6 +509,13 @@ function App(): React.ReactElement {
           {renderPage()}
         </main>
       </div>
+      </div>
+      <StatusBar
+        caseNumber={caseNumber}
+        scanBusy={scanBusy}
+        scanPercent={scanProgress.total > 0 ? Math.min(100, Math.floor((scanProgress.current / scanProgress.total) * 100)) : undefined}
+        driveIndex={selectedDrive}
+      />
     </div>
   )
 }

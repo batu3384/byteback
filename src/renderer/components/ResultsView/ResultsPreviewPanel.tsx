@@ -4,6 +4,7 @@ import { formatPreviewHex, previewDataUrl, resolvePreviewImageMime } from '../..
 import { extractJpegExifUnix, extractPdfInfo, sniffMediaContainer } from '../../../shared/embedded-metadata'
 import { formatFsTimestamp, getExtension } from './results-view-utils'
 import { localizeNote, t, tFormat, localeTag } from '../../i18n'
+import InlineAlert from '../InlineAlert'
 
 interface ResultsPreviewPanelProps {
   preview: FilePreviewResult | null
@@ -73,18 +74,18 @@ export default function ResultsPreviewPanel({
   if (!preview && !previewLoading) return null
 
   return (
-    <div className="glass-panel" style={{ padding: '16px 24px', borderLeft: '4px solid var(--accent-blue)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+    <div className="glass-panel preview-panel">
+      <div className="preview-head">
         <strong>{previewRecord ? tFormat('preview.titleWithName', { name: previewRecord.name }) : t('preview.title')}</strong>
-        <button type="button" className="btn-secondary" style={{ padding: '4px 10px' }} onClick={onClose} autoFocus>
+        <button type="button" className="btn-secondary btn-compact" onClick={onClose} autoFocus>
           {t('preview.close')}
         </button>
       </div>
       {previewLoading && !preview ? (
-        <p style={{ color: 'var(--text-muted)' }}>{t('preview.reading')}</p>
+        <p className="preview-meta">{t('preview.reading')}</p>
       ) : preview?.success ? (
         <>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '8px' }}>
+          <p className="preview-meta">
             {typeMetaLine(preview, previewRecord)} · {tFormat('preview.bytes', { n: String(preview.data?.length ?? 0) })}
             {(preview.data?.length ?? 0) >= 64 * 1024 ? t('preview.first64kb') : ''}
             {embeddedDate ? ` · ${embeddedDate}` : ''}
@@ -96,20 +97,18 @@ export default function ResultsPreviewPanel({
               src={previewImgUrl}
               alt={previewRecord?.name ?? t('preview.alt')}
               onError={() => setFailedKey(previewKey)}
-              style={{ maxWidth: '100%', maxHeight: '240px', objectFit: 'contain', borderRadius: '4px' }}
+              className="preview-img"
             />
           ) : preview.kind === 'image' && (imgFailed || !detectedMime) ? (
-            <p role="alert" style={{ color: 'var(--alert-red)' }}>
-              {t('preview.imageMismatch')}
-            </p>
+            <InlineAlert variant="error">{t('preview.imageMismatch')}</InlineAlert>
           ) : preview.kind === 'text' && preview.data ? (
-            <pre style={{ fontFamily: 'monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
+            <pre className="preview-text">
               {new TextDecoder('utf-8', { fatal: false }).decode(preview.data.slice(0, 4096))}
             </pre>
           ) : preview.kind === 'pdf' ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <div className="preview-pdf">
               <p>{t('preview.pdfSummary')}</p>
-              <ul style={{ margin: '4px 0 0 16px' }}>
+              <ul>
                 {pdfInfo?.version ? <li>{tFormat('preview.pdfVersion', { v: pdfInfo.version })}</li> : null}
                 {pdfInfo?.creationDate ? <li>{tFormat('preview.pdfCreated', { d: pdfInfo.creationDate })}</li> : null}
                 {pdfInfo?.title ? <li>{tFormat('preview.pdfTitle', { title: pdfInfo.title })}</li> : null}
@@ -119,11 +118,11 @@ export default function ResultsPreviewPanel({
               </ul>
             </div>
           ) : preview.kind === 'binary' && (preview.note || mediaHint) ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <div className="preview-binary">
               {preview.note ? (
-                <p style={{ margin: mediaHint && !preview.note.includes('video.ffmpeg.first_frame') ? '0 0 8px' : 0 }}>
+                <p className={mediaHint && !preview.note.includes('video.ffmpeg.first_frame') ? 'preview-note-gap' : undefined}>
                   {preview.note.startsWith('video.ffmpeg.first_frame') ? (
-                    <span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>{localizeNote(preview.note)}</span>
+                    <span className="preview-ffmpeg">{localizeNote(preview.note)}</span>
                   ) : (
                     localizeNote(preview.note)
                   )}
@@ -136,21 +135,21 @@ export default function ResultsPreviewPanel({
               ) : null}
             </div>
           ) : preview.kind === 'binary' ? (
-            <p style={{ color: 'var(--text-muted)' }}>{t('preview.noBinary')}</p>
+            <p className="preview-meta">{t('preview.noBinary')}</p>
           ) : null}
           {preview.data && preview.data.length > 0 && preview.kind !== 'text' ? (
-            <details style={{ marginTop: '12px' }}>
-              <summary style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <details className="preview-details">
+              <summary>
                 {t('preview.detailsHex')}
               </summary>
-              <pre style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '8px', maxHeight: '160px', overflow: 'auto' }}>
+              <pre className="preview-hex">
                 {formatPreviewHex(preview.data)}
               </pre>
             </details>
           ) : null}
         </>
       ) : (
-        <p role="alert" style={{ color: 'var(--alert-red)' }}>{preview?.error ?? t('preview.failed')}</p>
+        <InlineAlert variant="error">{preview?.error ?? t('preview.failed')}</InlineAlert>
       )}
     </div>
   )

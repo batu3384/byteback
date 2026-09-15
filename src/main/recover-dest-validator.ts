@@ -21,10 +21,10 @@ import { basename, dirname, resolve } from 'path'
  *     walk-up over not-yet-existing segments) so 8.3 / subst / symlink aliases
  *     collapse onto their real target before the blocklist check
  *
- * NOTE: paths inside the scanned evidence source are NOT rejected here — the
- * source is known only as a driveIndex and mapping it to a volume letter is
- * not cheaply available in main (native listDrives would be needed). The
- * native layer still refuses to open the source device for writing.
+ * NOTE: paths inside the scanned evidence source are rejected separately
+ * (isDestOnEvidence in recover-dest-guard) after this structural check, using
+ * native resolveVolume + RAID memberDriveIndices. This validator stays
+ * source-agnostic so tests do not need a live disk map.
  */
 
 export type RecoverDestVerdict =
@@ -44,6 +44,8 @@ export const ERR_DEST_REQUIRED = 'Hedef klasör seçilmedi'
 export const ERR_DEST_NOT_ABSOLUTE = 'Hedef klasör reddedildi: mutlak yerel Windows yolu gerekli'
 export const ERR_DEST_UNRESOLVED = 'Hedef klasör çözümlenemedi'
 export const ERR_DEST_BLOCKED = 'Hedef klasör reddedildi: sistem veya otomatik başlangıç konumu'
+export const ERR_DEST_ON_SOURCE = 'Hedef klasör kanıt diskinde; başka bir birim seç'
+export const ERR_RAID_STATE_UNREAD = 'RAID durumu okunamadı; hedef kanıt üyesi doğrulanamadı'
 
 function stripExtendedPrefix(raw: string): { path: string; unc: boolean } {
   const p = raw.trim()

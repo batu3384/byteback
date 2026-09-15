@@ -5,6 +5,12 @@ import type { ScanSummary } from '../../../shared/ipc-contract';
 import { APP_VERSION } from '../../../shared/app-version';
 import { htmlEscape } from '../../../shared/html-escape';
 import { canGenerateReport } from '../../../shared/scan-required';
+import {
+  shouldEmitAuditReportSection,
+  auditReportLinesKind,
+  auditReportChainKind,
+  type AuditChainStatus,
+} from '../../../shared/report-audit';
 import InlineAlert from '../InlineAlert';
 import { useI18n, tFormat, getLang } from '../../i18n';
 
@@ -35,6 +41,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
 
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [chain, setChain] = useState<{ ok: boolean; entries: number; brokenAt: number; detail: string } | null>(null);
+  const [chainFailed, setChainFailed] = useState(false);
 
   const [rowState, setRowState] = useState<import('../../../shared/ipc-contract').ScanState | null>(scanState ?? null)
 
@@ -57,9 +64,15 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
     if (!window.api?.verifyAuditLog) return
     let alive = true
     window.api.verifyAuditLog().then((v) => {
-      if (alive) setChain(v)
+      if (alive) {
+        setChainFailed(false)
+        setChain(v)
+      }
     }).catch(() => {
-      if (alive) setChain(null)
+      if (alive) {
+        setChain(null)
+        setChainFailed(true)
+      }
     })
     return () => { alive = false }
   }, [])
@@ -114,28 +127,49 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
       // native engine (scan/imaging/wipe events). Embedded verbatim so the
       // report reflects what actually happened, not what we wish happened.
       let auditLines: string[] = [];
-      let chainStatus: { ok: boolean; entries: number; brokenAt: number; detail: string } | null = null;
+      let auditLinesUnread = false;
+      let chainStatus: AuditChainStatus | null = null;
+      let chainUnread = false;
       try {
         auditLines = (await window.api?.getAuditLog?.(50)) ?? [];
-      } catch { /* audit log optional in report */ }
+      } catch {
+        auditLinesUnread = true;
+      }
       try {
         chainStatus = (await window.api?.verifyAuditLog?.()) ?? null;
-      } catch { /* verification optional in report */ }
-      const chainLine = chainStatus
-        ? `<div><strong>${t('report.chainLabel')}</strong> ${
-            chainStatus.ok
-              ? tFormat('report.chainOk', { n: String(chainStatus.entries) })
-              : tFormat('report.chainBroken', { line: String(chainStatus.brokenAt), detail: chainStatus.detail })
-          }</div>`
-        : '';
-      const auditSection = auditLines.length > 0 ? `
-<h2>${t('report.auditHeading')}</h2>
-<p>${tFormat('report.auditIntro', { n: String(auditLines.length) })}</p>
-${chainLine}
+      } catch {
+        chainUnread = true;
+      }
+      const auditProbe = {
+        linesUnread: auditLinesUnread,
+        lines: auditLines,
+        chainUnread,
+        chain: chainStatus,
+      };
+      const chainKind = auditReportChainKind(auditProbe);
+      const chainLine =
+        chainKind === 'unread'
+          ? `<div><strong>${t('report.chainLabel')}</strong> ${htmlEscape(t('report.chainReadFailed'))}</div>`
+          : chainKind === 'ok' && chainStatus
+            ? `<div><strong>${t('report.chainLabel')}</strong> ${htmlEscape(tFormat('report.chainOk', { n: String(chainStatus.entries) }))}</div>`
+          : chainKind === 'broken' && chainStatus
+            ? `<div><strong>${t('report.chainLabel')}</strong> ${htmlEscape(tFormat('report.chainBroken', { line: String(chainStatus.brokenAt), detail: chainStatus.detail }))}</div>`
+            : '';
+      const linesKind = auditReportLinesKind(auditProbe);
+      const auditBody =
+        linesKind === 'unread'
+          ? `<p>${htmlEscape(t('report.auditUnread'))}</p>`
+          : linesKind === 'present'
+            ? `<p>${tFormat('report.auditIntro', { n: String(auditLines.length) })}</p>
 <table>
   <tr><th>${t('report.auditEventTh')}</th></tr>
   ${auditLines.map((l) => `<tr><td style="font-family:monospace;font-size:0.8rem;">${htmlEscape(l)}</td></tr>`).join('\n  ')}
-</table>
+</table>`
+            : '';
+      const auditSection = shouldEmitAuditReportSection(auditProbe) ? `
+<h2>${t('report.auditHeading')}</h2>
+${auditBody}
+${chainLine}
 ` : '';
 
       const imgCount = summary?.imageFiles ?? 0;
@@ -153,26 +187,29 @@ ${chainLine}
       let caseNumber = ''
       let investigator = ''
       let agency = ''
+      let caseUnread = false
       try {
         const caseInfo = await window.api?.getCaseInfo?.()
         caseNumber = caseInfo?.caseNumber?.trim() ?? ''
         investigator = caseInfo?.investigator?.trim() ?? ''
         agency = caseInfo?.agency?.trim() ?? ''
-      } catch { /* case metadata optional */ }
+      } catch {
+        caseUnread = true
+      }
 
       const body = `
 <h1>${t('report.h1')}</h1>
 <div class="header-meta">
   <div><strong>${t('report.dateLabel')}</strong> ${htmlEscape(dateStr)} ${htmlEscape(timeStr)}</div>
   <div><strong>${t('report.softwareLabel')}</strong> Byteback v${htmlEscape(APP_VERSION)}</div>
-  <div><strong>${t('report.investigatorLabel')}</strong> ${htmlEscape(investigator || t('report.noInvestigator'))}</div>
+  <div><strong>${t('report.investigatorLabel')}</strong> ${htmlEscape(caseUnread ? t('report.caseUnread') : (investigator || t('report.noInvestigator')))}</div>
 </div>
 
 <h2>${t('report.caseInfoHeading')}</h2>
 <table>
   <tr><th>${t('report.fieldTh')}</th><th>${t('report.valueTh')}</th></tr>
-  <tr><td>${t('report.caseNumberTd')}</td><td>${htmlEscape(caseNumber || t('report.noCaseNumber'))}</td></tr>
-  <tr><td>${t('report.agencyTd')}</td><td>${htmlEscape(agency || '—')}</td></tr>
+  <tr><td>${t('report.caseNumberTd')}</td><td>${htmlEscape(caseUnread ? t('report.caseUnread') : (caseNumber || t('report.noCaseNumber')))}</td></tr>
+  <tr><td>${t('report.agencyTd')}</td><td>${htmlEscape(caseUnread ? t('report.caseUnread') : (agency || '—'))}</td></tr>
   <tr><td>${t('report.reportDateTd')}</td><td>${htmlEscape(now.toLocaleString(getLang() === 'en' ? 'en-US' : 'tr-TR'))}</td></tr>
   <tr><td>${t('report.softwareVersionTd')}</td><td>Byteback ${htmlEscape(APP_VERSION)} (Native C++ Engine)</td></tr>
   <tr><td>${t('report.osTd')}</td><td>Windows</td></tr>
@@ -274,23 +311,28 @@ ${body}
   };
 
   return (
-    <div className="report-view" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg)', height: '100%', maxWidth: '800px', margin: '0 auto' }}>
-      <div className="report-header glass-panel" style={{ padding: '24px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-        <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '16px', borderRadius: '12px' }}>
+    <div className="report-view">
+      <div className="report-header glass-panel">
+        <div className="examiner-icon ok">
           <FileText size={32} color="var(--success-green)" />
         </div>
         <div>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '4px' }}>{t('report.title')}</h2>
-          <p style={{ color: 'var(--text-muted)' }}>{t('report.subtitle')}</p>
+          <h2>{t('report.title')}</h2>
+          <p className="subtitle">{t('report.subtitle')}</p>
         </div>
       </div>
 
-      <div className="report-content glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div className="report-content glass-panel">
 
         {!reportAllowed && (
           <InlineAlert variant="warning" title={t('report.scanRequiredTitle')}>
             {t('report.scanRequiredBody')}
           </InlineAlert>
+        )}
+        {reportAllowed && !reportHtml && !generating && (
+          <div className="examiner-empty" role="status" data-testid="report-empty">
+            <p>{t('report.emptyBody')}</p>
+          </div>
         )}
 
         {formError && (
@@ -305,30 +347,32 @@ ${body}
           </InlineAlert>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-          <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div className="report-cards">
+          <div className="report-card">
             <ShieldCheck size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.custodyCardTitle')}</h4>
-              <p style={{ fontWeight: 500 }}>{t('report.custodyCardSub')}</p>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{t('report.custodyCardBody')}</p>
+              <h4>{t('report.custodyCardTitle')}</h4>
+              <p>{t('report.custodyCardSub')}</p>
+              <p className="card-body">{t('report.custodyCardBody')}</p>
             </div>
           </div>
 
-          <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="report-card">
             <PieChart size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.foundFilesTitle')}</h4>
-              <p style={{ fontWeight: 500 }}>{summary?.totalFiles ?? (scanId > 0 ? '…' : '0')}</p>
+              <h4>{t('report.foundFilesTitle')}</h4>
+              <p>{summary?.totalFiles ?? (scanId > 0 ? '…' : '0')}</p>
             </div>
           </div>
 
-          <div data-testid="report-chain-status" role="status" style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="report-card" data-testid="report-chain-status" role="status">
             <Clock size={24} color="var(--accent-blue)" />
             <div>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{t('report.verifyTitle')}</h4>
-              <p style={{ fontWeight: 500 }}>
-                {chain == null
+              <h4>{t('report.verifyTitle')}</h4>
+              <p>
+                {chainFailed
+                  ? t('report.chainReadFailed')
+                  : chain == null
                   ? t('report.chainChecking')
                   : chain.ok
                     ? tFormat('report.chainOk', { n: String(chain.entries) })
@@ -338,11 +382,11 @@ ${body}
           </div>
         </div>
 
-        <div style={{ background: 'rgba(0,0,0,0.2)', padding: '24px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
-          <h3 style={{ fontSize: '1.1rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="report-included">
+          <h3>
             <FileText size={18} color="var(--success-green)" /> {t('report.includedTitle')}
           </h3>
-          <ul style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginLeft: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <ul>
             <li>{t('report.included1')}</li>
             <li>{t('report.included2')}</li>
             <li>{t('report.included3')}</li>
@@ -350,52 +394,52 @@ ${body}
           </ul>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '16px' }}>
+        <div className="report-actions">
           {!reportHtml && !generating && (
             <button
-              className="btn-primary"
+              type="button"
+              className="btn-primary report-generate"
               onClick={generateReport}
               disabled={!reportAllowed}
               title={!reportAllowed ? t('report.generateBlockedTitle') : undefined}
-              style={{ padding: '16px 32px', fontSize: '1.1rem', background: 'var(--success-green)', color: '#000', opacity: reportAllowed ? 1 : 0.5 }}
             >
               {t('report.generateBtn')}
             </button>
           )}
 
           {generating && (
-            <div className="generating-state" style={{ display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--success-green)' }}>
+            <div className="generating-state">
               <Clock size={24} className="spinner" />
-              <span style={{ fontSize: '1.1rem', fontWeight: 500 }}>{t('report.generating')}</span>
+              <span>{t('report.generating')}</span>
             </div>
           )}
 
           {reportHtml && !generating && (
-            <div className="report-ready" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-              <span style={{ color: 'var(--success-green)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.2rem' }}>
+            <div className="report-ready">
+              <span className="report-ready-title">
                 <CheckCircle size={24} /> {t('report.ready')}
               </span>
-              <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all', maxWidth: '600px' }}>
+              <div className="report-hash">
                 SHA-256: {reportHash}
               </div>
               {pdfDone && (
-                <div style={{ fontSize: '0.85rem', color: 'var(--success-green)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                <div className="report-pdf-path">
                   {tFormat('report.pdfSaved', { path: pdfDone })}
                 </div>
               )}
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button className="btn-primary" onClick={downloadReport} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div className="report-ready-row">
+                <button type="button" className="btn-primary" onClick={downloadReport}>
                   <Download size={18} /> {t('report.downloadHtml')}
                 </button>
                 <button
-                  className="btn-primary"
+                  type="button"
+                  className="btn-primary report-pdf-btn"
                   onClick={downloadPdf}
                   disabled={pdfBusy}
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--accent-blue)', color: '#fff' }}
                 >
                   <Download size={18} /> {pdfBusy ? t('report.pdfBuilding') : t('report.downloadPdf')}
                 </button>
-                <button className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); setPdfDone(''); }}>
+                <button type="button" className="btn-secondary" onClick={() => { setReportHtml(null); setReportHash(''); setPdfDone(''); }}>
                   {t('report.regenerate')}
                 </button>
               </div>

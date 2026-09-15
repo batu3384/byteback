@@ -15,7 +15,14 @@ export function volumeLetterOfPath(path: string): string | null {
   return m ? m[1]!.toUpperCase() : null
 }
 
-export type VolumeResolver = (letter: string) => Promise<{ driveIndex: number } | null | undefined>
+export type VolumeResolver = (letter: string) => Promise<{ driveIndex: number; diskNumbers?: number[] } | null | undefined>
+
+function disksOf(vol: { driveIndex: number; diskNumbers?: number[] }): number[] {
+  if (vol.diskNumbers && vol.diskNumbers.length > 0) {
+    return vol.diskNumbers.filter((n) => Number.isInteger(n) && n >= 0)
+  }
+  return vol.driveIndex >= 0 ? [vol.driveIndex] : []
+}
 
 /**
  * True when destination sits on the same physical drive index as the scan.
@@ -30,7 +37,8 @@ export async function isDestOnScannedDrive(
   const letter = volumeLetterOfPath(destDir)
   if (!letter) return false
   const resolved = await resolveVolume(letter)
-  return resolved?.driveIndex === driveIndex
+  if (resolved == null) return false
+  return disksOf(resolved).includes(driveIndex)
 }
 
 /** RAID recover: warn when dest sits on any member disk of the virtual array. */
@@ -43,6 +51,25 @@ export async function isDestOnRaidMemberDrive(
   const letter = volumeLetterOfPath(destDir)
   if (!letter) return false
   const resolved = await resolveVolume(letter)
-  if (resolved == null || resolved.driveIndex < 0) return false
-  return memberDriveIndices.includes(resolved.driveIndex)
+  if (resolved == null) return false
+  const destDisks = disksOf(resolved)
+  return destDisks.some((d) => memberDriveIndices.includes(d))
+}
+
+export type VolumeLookup = (letter: string) => { driveIndex: number; diskNumbers?: number[] } | null | undefined
+
+/** Sync variant for main-process recover IPC (resolveVolume is not async there). */
+export function isDestOnEvidence(
+  destDir: string,
+  scannedDriveIndex: number,
+  raidMemberIndices: readonly number[],
+  resolveVolume: VolumeLookup,
+): boolean {
+  const letter = volumeLetterOfPath(destDir)
+  if (!letter) return false
+  const vol = resolveVolume(letter)
+  if (vol == null) return false
+  const destDisks = disksOf(vol)
+  if (scannedDriveIndex >= 0 && destDisks.includes(scannedDriveIndex)) return true
+  return destDisks.some((d) => raidMemberIndices.includes(d))
 }

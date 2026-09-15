@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import type { DriveInfo, PartitionInfo, ScanOptions } from '../../../shared/types'
 import type { ScanProfile } from '../../../shared/scan-profiles'
-import { scanNeedsSsdDeepAck } from '../../../shared/scan-profiles'
+import { mediaNeedsTrimAck, smartTrimSignals } from '../../../shared/scan-profiles'
 import SsdTrimModal from './SsdTrimModal'
 import InlineAlert from '../InlineAlert'
 import { useI18n, tFormat } from '../../i18n'
@@ -27,8 +27,10 @@ function formatBytes(bytes: number): string {
 function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCardProps): React.ReactElement {
   const { t } = useI18n()
   const [partitions, setPartitions] = useState<PartitionInfo[]>([])
+  const [partTableUnread, setPartTableUnread] = useState(false)
   const [partitionIndex, setPartitionIndex] = useState(-1)
   const [isSsd, setIsSsd] = useState(drive.type === 'SSD')
+  const [smartUnread, setSmartUnread] = useState(false)
   const [pendingScan, setPendingScan] = useState<ScanProfile | null>(null)
   const [showTrimModal, setShowTrimModal] = useState(false)
   const [adminNotice, setAdminNotice] = useState<string | null>(null)
@@ -39,11 +41,14 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
     let alive = true
     window.api.listPartitions(drive.index).then((list) => {
       if (!alive) return
-      setPartitions(list)
+      const unread = list.some((p) => p.type === 'table_unread')
+      setPartTableUnread(unread)
+      setPartitions(list.filter((p) => p.type !== 'table_unread'))
     }).catch((e: unknown) => {
       console.warn('[DriveCard] listPartitions failed', e)
       if (!alive) return
       setPartitions([])
+      setPartTableUnread(false)
       setAdminNotice(t('drive.partTableError'))
     })
     return () => { alive = false }
@@ -52,20 +57,31 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
   useEffect(() => {
     if (drive.type === 'SSD') {
       setIsSsd(true)
+      setSmartUnread(false)
       return
     }
-    if (!window.api?.getSmartStatus) return
+    if (!window.api?.getSmartStatus) {
+      setSmartUnread(true)
+      return
+    }
     let alive = true
     window.api.getSmartStatus(drive.index).then((s) => {
-      if (alive && s.isValid && s.isSsd) setIsSsd(true)
-    }).catch((e: unknown) => console.warn('[DriveCard] getSmartStatus failed', e))
+      if (!alive) return
+      const sig = smartTrimSignals(s)
+      setIsSsd(sig.saysSsd)
+      setSmartUnread(sig.unread)
+    }).catch((e: unknown) => {
+      console.warn('[DriveCard] getSmartStatus failed', e)
+      if (!alive) return
+      setSmartUnread(true)
+    })
     return () => { alive = false }
   }, [drive.index, drive.type])
 
   const scanOptions = (): ScanOptions | undefined => {
     if (partitionIndex < 0) return undefined
     const p = partitions[partitionIndex]
-    if (!p) return { partitionIndex }
+    if (!p) return undefined
     return {
       partitionIndex,
       partitionStartSector: p.startSector,
@@ -74,6 +90,10 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
   }
 
   const launchScan = (scanType: ScanProfile, extra?: ScanOptions) => {
+    if (partitionIndex >= 0 && !partitions[partitionIndex]) {
+      setAdminNotice(t('drive.partMissing'))
+      return
+    }
     onStartScan && onStartScan(drive.index, scanType, { ...scanOptions(), ...extra })
   }
 
@@ -82,7 +102,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
       setAdminNotice(t('drive.adminRequired'))
       return
     }
-    if (isSsd && scanNeedsSsdDeepAck(scanType)) {
+    if (mediaNeedsTrimAck(scanType, drive.type, { unread: smartUnread, saysSsd: isSsd })) {
       setPendingScan(scanType)
       setShowTrimModal(true)
       return
@@ -94,7 +114,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
     setShowTrimModal(false)
     if (pendingScan) {
       const extra =
-        pendingScan && scanNeedsSsdDeepAck(pendingScan)
+        pendingScan && mediaNeedsTrimAck(pendingScan, drive.type, { unread: smartUnread, saysSsd: isSsd })
           ? { allowSsdDeepScan: true }
           : undefined
       launchScan(pendingScan, extra)
@@ -112,63 +132,61 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
       <SsdTrimModal
         open={showTrimModal}
         scanType={pendingScan ?? 'deep'}
+        unknownMedia={smartUnread && !isSsd && drive.type !== 'SSD'}
         onConfirm={confirmTrim}
         onCancel={cancelTrim}
       />
       {adminNotice && (
-        <div style={{ marginBottom: '8px' }}>
+        <div className="drive-admin-notice">
           <InlineAlert variant="warning" onDismiss={() => setAdminNotice(null)}>{adminNotice}</InlineAlert>
         </div>
       )}
-      <div className="drive-card glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', transition: 'transform 0.2s ease, border-color 0.2s ease' }}>
-        <div className="drive-card-header" style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-          <div className="drive-icon-container" style={{ 
-            background: drive.type === 'SSD' || isSsd ? 'rgba(59, 130, 246, 0.1)' : 'var(--surface-overlay)', 
-            padding: '16px', borderRadius: '12px',
-            color: drive.type === 'SSD' || isSsd ? 'var(--accent-blue)' : 'var(--text-main)'
-          }}>
-            {drive.type === 'USB' ? <Usb size={32} /> : <HardDrive size={32} />}
+      <div className="drive-card glass-panel">
+        <div className="drive-card-header">
+          <div className={`drive-icon-container${drive.type === 'SSD' || isSsd ? ' is-ssd' : ''}`}>
+            {drive.type === 'USB' ? <Usb size={24} /> : <HardDrive size={24} />}
           </div>
-          <div className="drive-title" style={{ flex: 1 }}>
-            <h3 style={{ fontSize: '1.2rem', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="drive-title">
+            <h3>
               {tFormat('drive.physical', { n: String(drive.index) })}
-              <span className={`drive-type-badge`} style={{ 
-                fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px',
-                background: (drive.type === 'SSD' || isSsd) ? 'rgba(59, 130, 246, 0.1)' : 'var(--surface-overlay-strong)',
-                color: (drive.type === 'SSD' || isSsd) ? 'var(--accent-blue)' : 'var(--text-muted)',
-                border: '1px solid currentColor',
-                opacity: 0.8,
-                fontWeight: 600
-              }}>{isSsd ? 'SSD' : drive.type}</span>
+              <span className="drive-type-badge">{isSsd ? 'SSD' : drive.type}</span>
             </h3>
-            <span className="drive-model" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{drive.model || t('drive.unknownModel')}</span>
+            <span className="drive-model">{drive.model || t('drive.unknownModel')}</span>
           </div>
         </div>
         
-        <div className="drive-details" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'var(--well-bg)', padding: '16px', borderRadius: '8px', border: '1px solid var(--panel-border)' }}>
-          <div className="detail-row" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span className="detail-label" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{t('drive.capacity')}</span>
-            <span className="detail-value highlight" style={{ fontSize: '1.2rem', fontWeight: 600, color: 'var(--text-main)' }}>{formatBytes(drive.sizeBytes)}</span>
+        <div className="drive-details">
+          <div className="detail-row">
+            <span className="detail-label">{t('drive.capacity')}</span>
+            <span className="detail-value">{formatBytes(drive.sizeBytes)}</span>
           </div>
-          <div className="detail-row" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span className="detail-label" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{t('drive.sectorSize')}</span>
-            <span className="detail-value" style={{ fontSize: '1.2rem', fontWeight: 600 }}>{drive.sectorSize} B</span>
+          <div className="detail-row">
+            <span className="detail-label">{t('drive.sectorSize')}</span>
+            <span className="detail-value">{drive.sectorSize} B</span>
           </div>
         </div>
 
         {isSsd && (
-          <div style={{ fontSize: '0.8rem', color: 'var(--warning-yellow)', display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <div className="drive-trim">
             <AlertTriangle size={14} /> {t('drive.trimWarning')}
           </div>
         )}
+        {!isSsd && smartUnread && (
+          <div className="drive-trim">
+            <AlertTriangle size={14} /> {t('drive.trimUnread')}
+          </div>
+        )}
+        {partTableUnread && (
+          <InlineAlert variant="warning" testId="part-table-unread">{t('drive.partTableUnread')}</InlineAlert>
+        )}
 
         {partitions.length > 0 && (
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.85rem' }}>
-            <span style={{ color: 'var(--text-muted)' }}>{t('drive.scope')}</span>
+          <label className="drive-scope">
+            <span className="drive-scope-label">{t('drive.scope')}</span>
             <select
               value={partitionIndex}
               onChange={(e) => setPartitionIndex(Number(e.target.value))}
-              style={{ padding: '8px', borderRadius: '6px', background: 'var(--well-bg)', color: 'var(--text-main)', border: '1px solid var(--panel-border)' }}
+              className="drive-scope-select"
             >
               <option value={-1}>{t('drive.wholeDisk')}</option>
               {partitions.map((p, i) => (
@@ -180,7 +198,7 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
           </label>
         )}
 
-        <div className="drive-actions" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div className="drive-actions">
           <button 
             className="btn-primary" 
             type="button"
@@ -188,9 +206,8 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
             data-testid="scan-mode-quick"
             title={t('profile.quick.detail')}
             onClick={() => requestScan('quick')}
-            style={{ padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px' }}
           >
-            <Zap size={18} fill="currentColor" /> {t('profile.quick.label')}
+            <Zap size={16} fill="currentColor" /> {t('profile.quick.label')}
           </button>
           <button 
             className="btn-secondary"
@@ -199,9 +216,8 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
             data-testid="scan-mode-deep"
             title={t('profile.deep.detail')}
             onClick={() => requestScan('deep')}
-            style={{ padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px' }}
           >
-            <Search size={18} /> {t('profile.deep.label')}
+            <Search size={16} /> {t('profile.deep.label')}
           </button>
           <button 
             className="btn-secondary"
@@ -210,7 +226,6 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
             data-testid="scan-mode-carve-only"
             title={t('profile.carve_only.detail')}
             onClick={() => requestScan('carve_only')}
-            style={{ padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px', borderColor: 'var(--warning-yellow)' }}
           >
             <Binary size={16} /> {t('profile.carve_only.label')}
           </button>
@@ -221,27 +236,24 @@ function DriveCard({ drive, onStartScan, onAction, isAdmin, diskBusy }: DriveCar
             data-testid="scan-mode-full-carve"
             title={t('profile.full_carve.detail')}
             onClick={() => requestScan('full_carve')}
-            style={{ padding: '12px', display: 'flex', justifyContent: 'center', gap: '8px', borderColor: 'var(--warning-yellow)' }}
           >
             <AlertTriangle size={16} /> {t('profile.full_carve.label')}
           </button>
           
-          <div style={{ display: 'flex', gap: '12px' }}>
+          <div className="drive-actions-row">
             <button 
-              className="btn-secondary" 
+              className="btn-secondary"
               disabled={diskBusy}
               onClick={() => onAction && onAction('hex', { driveIndex: drive.index, sectorSize: drive.sectorSize })}
               title={diskBusy ? t('drive.hexBusyTitle') : t('drive.hexTitle')}
-              style={{ flex: 1, fontSize: '0.85rem', padding: '8px', display: 'flex', justifyContent: 'center', gap: '6px' }}
             >
               <Binary size={16} /> {t('drive.hex')}
             </button>
             <button 
-              className="btn-secondary" 
+              className="btn-secondary"
               disabled={diskBusy}
               onClick={() => onAction && onAction('smart', { driveIndex: drive.index })}
               title={diskBusy ? t('drive.smartBusyTitle') : t('drive.smartTitle')}
-              style={{ flex: 1, fontSize: '0.85rem', padding: '8px', display: 'flex', justifyContent: 'center', gap: '6px' }}
             >
               <Activity size={16} /> {t('drive.smart')}
             </button>

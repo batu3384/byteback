@@ -1,19 +1,36 @@
 .app-header {
-  height: 64px;
+  height: 48px;
+  min-height: 48px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 var(--space-xl);
-  background-color: var(--bg-color);
+  padding: 0 var(--space-lg);
+  background-color: var(--bg-surface);
   border-bottom: 1px solid var(--panel-border);
   z-index: 5;
 }
 
+.header-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
 .header-title h2 {
-  font-size: 1.1rem;
+  font-size: 0.95rem;
   color: var(--text-main);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.header-case {
+  font-size: 0.75rem;
+  color: var(--text-muted);
   font-weight: 500;
-  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-actions {
@@ -23,12 +40,12 @@
 }
 
 .scan-pill {
-  padding: 6px 12px;
-  border-radius: 999px;
+  padding: 4px 10px;
+  border-radius: 4px;
   border: 1px solid var(--accent-blue);
   background: rgba(59, 130, 246, 0.12);
   color: var(--text-main);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -51,12 +68,13 @@
   cursor: pointer;
 }
 
+.icon-btn .lang-code {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 .icon-btn:hover {
   background: var(--surface-overlay);
   color: var(--text-main);
   border-color: var(--panel-border);
-}
-
-.icon-btn:active {
-  transform: translateY(1px) scale(0.95);
 }

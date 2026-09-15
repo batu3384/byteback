@@ -20,12 +20,13 @@ const pageTitleKeys: Record<string, string> = {
 
 interface HeaderProps {
   title: string
+  caseNumber?: string
   scanBusy?: boolean
   scanPercent?: number
   onOpenScan?: () => void
 }
 
-function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): React.ReactElement {
+function Header({ title, caseNumber, scanBusy, scanPercent, onOpenScan }: HeaderProps): React.ReactElement {
   const { t, lang, setLang } = useI18n()
   const [theme, setTheme] = useState<'dark' | 'light'>(() =>
     (localStorage.getItem('byteback-theme') as 'dark' | 'light') || 'dark'
@@ -40,6 +41,9 @@ function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): Reac
     <header className="app-header">
       <div className="header-title">
         <h2>{pageTitleKeys[title] ? t(pageTitleKeys[title]) : title.toUpperCase()}</h2>
+        {caseNumber?.trim() ? (
+          <span className="header-case">{tFormat('chrome.statusCase', { n: caseNumber.trim() })}</span>
+        ) : null}
       </div>
       <div className="header-actions">
         {scanBusy && onOpenScan && title !== 'scan' && (
@@ -54,7 +58,7 @@ function Header({ title, scanBusy, scanPercent, onOpenScan }: HeaderProps): Reac
           title={t('header.toEnglish')}
           onClick={() => setLang(lang === 'tr' ? 'en' : 'tr')}
         >
-          <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{lang === 'tr' ? 'EN' : 'TR'}</span>
+          <span className="lang-code">{lang === 'tr' ? 'EN' : 'TR'}</span>
         </button>
         <button
           className="icon-btn"
