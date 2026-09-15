@@ -1,5 +1,6 @@
 #include "fs/ntfs_logfile.h"
 #include "fs/ntfs_util.h"
+#include "byteback_fs.h"
 #include "byteback_io.h"
 #include <gtest/gtest.h>
 #include <atomic>
@@ -158,6 +159,66 @@ TEST(NtfsLogfile, RestartPageEmitsLsn) {
         if (fr.source == "ntfs_logfile_restart" && fr.name.find("42") != std::string::npos) saw = true;
     }, &running);
     EXPECT_TRUE(saw);
+}
+
+TEST(NtfsLogfile, PaddedLogfileRecordIsNotCleanJournal) {
+    auto disk = buildLogfileHintDisk();
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr uint32_t mftSize = 1024;
+    const size_t logMft = spc * ss + 2 * mftSize;
+    disk.resize(logMft);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    bool sawUnread = false;
+    bool sawHint = false;
+    std::atomic<bool> running{true};
+    scanNtfsLogFileHints(reader, 0, [&](const FileRecord& fr) {
+        if (fr.source == kNtfsLogfileUnreadSource) sawUnread = true;
+        if (fr.name.find("lost.doc") != std::string::npos) sawHint = true;
+    }, &running, nullptr);
+    EXPECT_TRUE(sawUnread);
+    EXPECT_FALSE(sawHint);
+}
+
+TEST(NtfsLogfile, FaultedLogfileRecordEmitsUnread) {
+    auto disk = buildLogfileHintDisk();
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr uint32_t mftSize = 1024;
+    const size_t logMft = spc * ss + 2 * mftSize;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    reader.setMemoryFaultRange(logMft / ss, mftSize / ss);
+
+    bool sawUnread = false;
+    bool sawHint = false;
+    std::atomic<bool> running{true};
+    scanNtfsLogFileHints(reader, 0, [&](const FileRecord& fr) {
+        if (fr.source == kNtfsLogfileUnreadSource) sawUnread = true;
+        if (fr.name.find("lost.doc") != std::string::npos) sawHint = true;
+    }, &running, nullptr);
+    EXPECT_TRUE(sawUnread);
+    EXPECT_FALSE(sawHint);
+}
+
+TEST(NtfsLogfile, ParserForwardsUnreadSentinel) {
+    auto disk = buildLogfileHintDisk();
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr uint32_t mftSize = 1024;
+    disk.resize(spc * ss + 2 * mftSize);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == kNtfsLogfileUnreadSource) sawUnread = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(sawUnread);
 }
 
 TEST(MftConfidence, DeletedWithRunsScoresHigherThanMetadataOnly) {

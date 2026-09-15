@@ -77,13 +77,31 @@ TEST(RefsParser, ProbeAndListFileFromMetadataPage) {
 
     EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Refs);
 
+    FileRecord found;
     bool sawFile = false;
+    std::string volPath;
     std::atomic<bool> running{true};
     RefsParser refs;
     ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
-        if (fr.source == "refs" && fr.name == "report.docx") sawFile = true;
+        if (fr.source == "refs_volume") volPath = fr.path;
+        if (fr.name == "report.docx") {
+            sawFile = true;
+            found = fr;
+        }
     }, &running));
     EXPECT_TRUE(sawFile);
+    EXPECT_EQ(volPath, "/refs-probe/");
+    EXPECT_EQ(found.source, "refs_volume");
+    EXPECT_TRUE(found.residentData.empty());
+
+    const auto dest = (std::filesystem::temp_directory_path() / "byteback_refs_nameonly_out").string();
+    std::filesystem::remove_all(dest);
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto res = engine.recoverFile(reader, found, dest);
+    EXPECT_FALSE(res.success);
+    EXPECT_NE(res.error.find("discovery"), std::string::npos);
+    std::filesystem::remove_all(dest);
 }
 
 TEST(RefsParser, RejectsNonRefsBoot) {
@@ -164,4 +182,112 @@ TEST(RefsParser, SupbChecksumFailureLowersVolumeConfidence) {
         if (fr.source == "refs_volume") volConf = fr.confidence;
     }, &running));
     EXPECT_EQ(volConf, 35);
+}
+
+TEST(RefsParser, LinearProbeCapLabelsCappedPath) {
+    g_refsLinearProbeClusters.store(2);
+    struct Reset {
+        ~Reset() { g_refsLinearProbeClusters.store(0); }
+    } reset;
+
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 2, 0);
+    writeRefsBoot(img);
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::string volPath;
+    int volConf = -1;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "refs_volume") {
+            volPath = fr.path;
+            volConf = fr.confidence;
+        }
+    }, &running));
+    EXPECT_EQ(volPath, "/refs-probe-capped/");
+    EXPECT_EQ(volConf, 35);
+}
+
+TEST(RefsParser, UnreadSupbIsSentinelNotMissingVolume) {
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 2, 0);
+    writeRefsBoot(img);
+
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    uint8_t* page = img.data() + cluster;
+    page[0] = 0x30;
+    page[1] = 0x00;
+    page[2] = 0x01;
+    page[3] = 0x00;
+    embedUtf16Name(page, 4, "report.docx");
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // Cluster 30 = 30 * 4096 / 512 = sector 240, 8 sectors. Boot (sector 0)
+    // stays readable so probeVolumeAt still says ReFS.
+    reader.setMemoryFaultRange(240, 8);
+
+    EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Refs);
+
+    bool sawFile = false;
+    bool sawUnread = false;
+    std::string volPath;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "refs_volume") volPath = fr.path;
+        if (fr.name == "report.docx") sawFile = true;
+        if (fr.source == kRefsSupbUnreadSource) sawUnread = true;
+    }, &running));
+    EXPECT_TRUE(sawFile) << "unread ReFS SUPB must not hide a readable metadata page at cluster 1";
+    EXPECT_TRUE(sawUnread);
+    EXPECT_FALSE(volPath.empty());
+}
+
+TEST(RefsParser, UnreadMetadataPageIsSentinelNotEmptyListing) {
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 2, 0);
+    writeRefsBoot(img);
+
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    uint8_t* page = img.data() + cluster;
+    page[0] = 0x30;
+    page[1] = 0x00;
+    page[2] = 0x01;
+    page[3] = 0x00;
+    embedUtf16Name(page, 4, "report.docx");
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // Cluster 1 = sector 8, 8 sectors. SUPB at cluster 30 stays readable.
+    reader.setMemoryFaultRange(8, 8);
+
+    bool sawFile = false;
+    bool sawUnread = false;
+    bool sawVolume = false;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "refs_volume" && fr.name == "ReFS_Volume") sawVolume = true;
+        if (fr.name == "report.docx") sawFile = true;
+        if (fr.source == kRefsPageUnreadSource) sawUnread = true;
+    }, &running));
+    EXPECT_TRUE(sawVolume);
+    EXPECT_FALSE(sawFile) << "unread ministore page must not parse zeros as a missing report.docx";
+    EXPECT_TRUE(sawUnread);
 }

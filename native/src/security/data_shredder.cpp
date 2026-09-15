@@ -38,9 +38,11 @@ bool DataShredder::shred_physical_drive(int driveIndex, const std::string& typed
     char path[64];
     snprintf(path, sizeof(path), "\\\\.\\PhysicalDrive%d", driveIndex);
     const std::size_t n = static_cast<std::size_t>(sizeBytes);
+    const uint32_t seed = std::random_device{}();
     if (!overwrite_pass(path, n, 0x00, false)) return false;
     if (!overwrite_pass(path, n, 0xFF, false)) return false;
-    return overwrite_pass(path, n, 0x00, true);
+    if (!overwrite_pass(path, n, 0x00, true, seed)) return false;
+    return verify_pass(path, n, 0x00, true, seed);
 #else
     (void)driveIndex;
     return false;
@@ -164,24 +166,13 @@ bool DataShredder::shred_file(const std::string& file_path) {
         return false;
     }
 
-    if (!overwrite_pass(file_path, size, 0x00, false)) {
-        return false;
-    }
-
-    if (!overwrite_pass(file_path, size, 0xFF, false)) {
-        return false;
-    }
-
-    // Verify the final pass (DoD 5220.22-M): the read-back must equal what was
-    // written. ponytail: only the last pass is verified; a silent mismatch in
-    // pass 1/2 is only caught if it also corrupts pass 3.
+    if (!overwrite_pass(file_path, size, 0x00, false)) return false;
+    if (!verify_pass(file_path, size, 0x00, false, 0)) return false;
+    if (!overwrite_pass(file_path, size, 0xFF, false)) return false;
+    if (!verify_pass(file_path, size, 0xFF, false, 0)) return false;
     const uint32_t seed = std::random_device{}();
-    if (!overwrite_pass(file_path, size, 0x00, true, seed)) {
-        return false;
-    }
-    if (!verify_pass(file_path, size, 0x00, true, seed)) {
-        return false;
-    }
+    if (!overwrite_pass(file_path, size, 0x00, true, seed)) return false;
+    if (!verify_pass(file_path, size, 0x00, true, seed)) return false;
 
     std::error_code ec;
     return std::filesystem::remove(file_path, ec);

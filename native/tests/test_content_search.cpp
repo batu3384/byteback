@@ -1,12 +1,16 @@
 #include "byteback_db.h"
 #include "search/content_search.h"
 #include "byteback_io.h"
+#include "fs/virtual_raid.h"
+#include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <cstring>
 #include <chrono>
 #include <atomic>
 #include <string>
+#include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -290,6 +294,35 @@ TEST_F(ContentSearchTest, SnippetSpansDefault256KiBChunkBoundary) {
               query);
 }
 
+TEST_F(ContentSearchTest, LongQueryStraddlesBeyond4KiBOverlap) {
+    const size_t ss = 512;
+    const size_t sectors = 1024;
+    std::vector<uint8_t> img(ss * sectors, 0x00);
+    const std::string query(5000, 'Q');
+    const size_t payloadOff = 256 * 1024 - 2500;
+    std::memcpy(img.data() + payloadOff, query.data(), query.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "long.bin";
+    r.sizeBytes = ss * sectors;
+    r.startSector = 0;
+    r.endSector = sectors;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, query, opts, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+}
+
 // CA-031: regex queries locate their FIRST match; the span covers exactly the
 // regex match text. Invalid patterns match nothing (never throw).
 TEST_F(ContentSearchTest, SnippetRegexQueryFirstMatch) {
@@ -406,10 +439,9 @@ TEST_F(ContentSearchTest, SnippetSanitizeKeepsLengthAndOffsets) {
     EXPECT_TRUE(validUtf8);
 }
 
-// ReDoS guard regression pin: a nested-quantifier pattern ("(a+)+$") must fall
-// back to literal search instead of compiling — the compiled form explodes on
-// an 'a'*N+'b' haystack (renderer's isSafeHighlightRegex policy mirrored).
-TEST_F(ContentSearchTest, BacktrackingRegexFallsBackToLiteral) {
+// ReDoS guard: nested-quantifier "(a+)+$" is refused — not compiled, not
+// walked as a literal (that would look like "zero hits" for a regex query).
+TEST_F(ContentSearchTest, BacktrackingRegexIsRefused) {
     std::vector<uint8_t> img(512 * 4, '.');
     for (int i = 0; i < 64; ++i) img[100 + i] = 'a';
     img[164] = 'b'; // classic (a+)+$ bomb trigger
@@ -438,8 +470,9 @@ TEST_F(ContentSearchTest, BacktrackingRegexFallsBackToLiteral) {
 
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
-    // Literal fallback: the literal string "(a+)+$" does not occur → no hits,
+    // Unsafe regex is refused: the literal string "(a+)+$" is not searched,
     // and the scan completes in bounded time (pre-fix: minutes-to-forever).
+    EXPECT_FALSE(contentRegexQueryOk("(a+)+$"));
     EXPECT_TRUE(hits.empty());
     EXPECT_LT(elapsedMs, 10000);
 }
@@ -623,4 +656,299 @@ TEST_F(ContentSearchTest, SnippetBinaryContextSanitizedAggressively) {
         ASSERT_LE(c, 126) << "byte " << static_cast<int>(c);
     }
     EXPECT_NE(f.snippet.find('.'), std::string::npos); // filler was replaced
+}
+
+TEST_F(ContentSearchTest, InvalidVolumePathDoesNotFallBackToDriveZero) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_TRUE(store_.setScanVolumeBinding(scanId, "\\\\.\\PhysicalDrive0", {}));
+
+    ContentSearchCoordinator coord;
+    std::atomic<int> finished{0};
+    coord.startSearch(store_, 0, nullptr, scanId, "x", {}, nullptr, nullptr,
+                      [&](int st) { finished.store(st); }, nullptr);
+    for (int i = 0; i < 200 && finished.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(finished.load(), kContentSearchOpenFailed);
+    coord.stopSearch();
+}
+
+TEST_F(ContentSearchTest, LiveRaidDoesNotHijackVolumeSearch) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ASSERT_TRUE(store_.setScanVolumeBinding(scanId, "\\\\.\\PhysicalDrive0", {}));
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
+
+    ContentSearchCoordinator coord;
+    std::atomic<int> finished{0};
+    coord.startSearch(store_, 0, raid, scanId, "x", {}, nullptr, nullptr,
+                      [&](int st) { finished.store(st); }, nullptr);
+    for (int i = 0; i < 200 && finished.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(finished.load(), kContentSearchOpenFailed);
+    coord.stopSearch();
+}
+
+TEST_F(ContentSearchTest, QueryLongerThanMaxBytesIsRefusedNotWalked) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "x.bin";
+    r.sizeBytes = 512;
+    r.startSector = 0;
+    r.endSector = 1;
+    store_.insertFile(scanId, r);
+
+    ContentSearchCoordinator coord;
+    std::atomic<int> finished{0};
+    std::atomic<int> matches{0};
+    const std::string tooLong(kMaxContentQueryBytes + 1, 'A');
+    coord.startSearch(store_, 0, nullptr, scanId, tooLong, {},
+                      [&](const FileRecord&) { matches.fetch_add(1); }, nullptr,
+                      [&](int st) { finished.store(st); }, nullptr);
+    for (int i = 0; i < 50 && finished.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(finished.load(), kContentSearchQueryTooLong);
+    EXPECT_EQ(matches.load(), 0);
+    coord.stopSearch();
+}
+
+TEST_F(ContentSearchTest, UnsafeRegexIsRefusedNotWalkedAsLiteral) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "x.bin";
+    r.sizeBytes = 512;
+    r.startSector = 0;
+    r.endSector = 1;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+    ContentSearchCoordinator coord;
+    std::atomic<int> finished{0};
+    std::atomic<int> matches{0};
+    coord.startSearch(store_, 0, nullptr, scanId, "(a+)+$", opts,
+                      [&](const FileRecord&) { matches.fetch_add(1); }, nullptr,
+                      [&](int st) { finished.store(st); }, nullptr);
+    for (int i = 0; i < 50 && finished.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(finished.load(), kContentSearchRegexRejected);
+    EXPECT_EQ(matches.load(), 0);
+    coord.stopSearch();
+}
+
+TEST_F(ContentSearchTest, InvalidRegexIsRefusedNotSilentMiss) {
+    EXPECT_FALSE(contentRegexQueryOk("["));
+    EXPECT_TRUE(contentRegexQueryOk("TOKEN_\\d+"));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+    ContentSearchCoordinator coord;
+    std::atomic<int> finished{0};
+    coord.startSearch(store_, 0, nullptr, scanId, "[", opts, nullptr, nullptr,
+                      [&](int st) { finished.store(st); }, nullptr);
+    for (int i = 0; i < 50 && finished.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(finished.load(), kContentSearchRegexRejected);
+    coord.stopSearch();
+}
+
+TEST_F(ContentSearchTest, LongLiteralSpanningDefaultChunkHits) {
+    constexpr size_t kQ = 5000;
+    std::string query(kQ, 'Q');
+    const size_t chunk = 256 * 1024;
+    std::vector<uint8_t> img(chunk + kQ, 0);
+    // Starts 100 bytes before the 256 KiB boundary, ends 4900 bytes after —
+    // the 4 KiB overlap floor would miss the tail; query-sized overlap hits.
+    const size_t off = chunk - 100;
+    std::memcpy(img.data() + off, query.data(), query.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "longspan.bin";
+    r.sizeBytes = chunk + kQ;
+    r.startSector = 0;
+    r.endSector = (chunk + kQ + 511) / 512;
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runContentSearch(store_, reader, scanId, query, {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0].name, "longspan.bin");
+}
+
+TEST_F(ContentSearchTest, FailedRunZerosAreNotAContentHit) {
+    // Unread I/O used to leave the pre-zeroed buffer in the match window.
+    // sanitizeContentSample maps NUL to space, so a spaces query looked like
+    // a hit on evidence that was never read.
+    std::vector<uint8_t> img(512 * 4, 0);
+    const char payload[] = "SECRET_AFTER_FAULT";
+    std::memcpy(img.data() + 512 * 2, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(0, 1);
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "split.bin";
+    r.sizeBytes = 512 * 2;
+    r.status = 0;
+    r.runs = {{0, 1}, {2, 1}};
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> spaceHits;
+    std::atomic<bool> running{true};
+    const std::string spaces(500, ' ');
+    runContentSearch(store_, reader, scanId, spaces, {}, [&](const FileRecord& f) {
+        spaceHits.push_back(f);
+    }, nullptr, &running);
+    EXPECT_TRUE(spaceHits.empty());
+
+    std::vector<FileRecord> secretHits;
+    running = true;
+    runContentSearch(store_, reader, scanId, "SECRET_AFTER_FAULT", {}, [&](const FileRecord& f) {
+        secretHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(secretHits.size(), 1u);
+    EXPECT_EQ(secretHits[0].name, "split.bin");
+}
+
+TEST_F(ContentSearchTest, UnreadRunIsNotCleanComplete) {
+    std::vector<uint8_t> img(512 * 4, 0);
+    const char payload[] = "SECRET_AFTER_FAULT";
+    std::memcpy(img.data() + 512 * 2, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(0, 1);
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "split.bin";
+    r.sizeBytes = 512 * 2;
+    r.status = 0;
+    r.runs = {{0, 1}, {2, 1}};
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    const int status = runContentSearch(store_, reader, scanId, "SECRET_AFTER_FAULT", {},
+        [&](const FileRecord& f) { hits.push_back(f); }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u) << "readable sibling run must still match";
+    EXPECT_EQ(status, kContentSearchReadIncomplete)
+        << "unread run is not a clean complete; empty would not mean no match";
+}
+
+TEST_F(ContentSearchTest, PaddedPastEndIsNotASpaceHit) {
+    std::vector<uint8_t> img(512, 0);
+    const char hello[] = "HELLO";
+    std::memcpy(img.data(), hello, sizeof(hello) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "short.bin";
+    r.sizeBytes = 512 * 8;
+    r.startSector = 0;
+    r.endSector = 8;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    const std::string spaces(600, ' ');
+    runContentSearch(store_, reader, scanId, spaces, {}, [&](const FileRecord& f) {
+        hits.push_back(f);
+    }, nullptr, &running);
+    EXPECT_TRUE(hits.empty());
+
+    running = true;
+    std::vector<FileRecord> helloHits;
+    const int helloStatus = runContentSearch(store_, reader, scanId, "HELLO", {}, [&](const FileRecord& f) {
+        helloHits.push_back(f);
+    }, nullptr, &running);
+    ASSERT_EQ(helloHits.size(), 1u);
+    EXPECT_EQ(helloStatus, kContentSearchComplete)
+        << "past-EOF pad is not unread I/O";
+}
+
+TEST(ContentSearchWalkStatus, DistinguishesRefuseFromEmptyHits) {
+    EXPECT_EQ(contentSearchWalkStatus("ok"), 0);
+    EXPECT_EQ(contentSearchWalkStatus(std::string(kMaxContentQueryBytes, 'a')), 0);
+    EXPECT_EQ(contentSearchWalkStatus(std::string(kMaxContentQueryBytes + 1, 'a')),
+              kContentSearchQueryTooLong);
+    ContentSearchOptions re;
+    re.useRegex = true;
+    EXPECT_EQ(contentSearchWalkStatus("TOKEN_[0-9]+", re), 0);
+    EXPECT_EQ(contentSearchWalkStatus("(a+)+$", re), kContentSearchRegexRejected);
+    EXPECT_EQ(contentSearchWalkStatus("[unterminated", re), kContentSearchRegexRejected);
+}
+
+TEST_F(ContentSearchTest, SyncApiRefusesOversizeQueryNotSilentHit) {
+    const size_t n = kMaxContentQueryBytes + 16;
+    std::string query(n, 'Q');
+    std::vector<uint8_t> img(n + 64, 0);
+    std::memcpy(img.data() + 16, query.data(), query.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "oversize.bin";
+    r.sizeBytes = n + 64;
+    r.startSector = 0;
+    r.endSector = (n + 64 + 511) / 512;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    EXPECT_EQ(contentSearchWalkStatus(query, {}), kContentSearchQueryTooLong);
+    EXPECT_TRUE(searchFileContent(store_, reader, scanId, query, 0, 10).empty());
+    EXPECT_EQ(searchFileContentCount(store_, reader, scanId, query), 0);
+
+    auto shortHits = searchFileContent(store_, reader, scanId, std::string(5000, 'Q'), 0, 10);
+    ASSERT_EQ(shortHits.size(), 1u);
+    EXPECT_EQ(shortHits[0].name, "oversize.bin");
+}
+
+TEST_F(ContentSearchTest, SyncApiRefusesUnsafeRegexNotWalkedAsLiteral) {
+    std::vector<uint8_t> img(512, '.');
+    const char literal[] = "(a+)+$";
+    std::memcpy(img.data() + 32, literal, sizeof(literal) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "re.bin";
+    r.sizeBytes = 512;
+    r.startSector = 0;
+    r.endSector = 1;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    ContentSearchOptions opts;
+    opts.useRegex = true;
+    EXPECT_EQ(contentSearchWalkStatus("(a+)+$", opts), kContentSearchRegexRejected);
+    EXPECT_TRUE(searchFileContent(store_, reader, scanId, "(a+)+$", 0, 10, opts).empty());
+
+    // Literal walk still finds the pattern text when regex is off.
+    auto lit = searchFileContent(store_, reader, scanId, "(a+)+$", 0, 10);
+    ASSERT_EQ(lit.size(), 1u);
+    EXPECT_EQ(lit[0].name, "re.bin");
 }

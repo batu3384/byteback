@@ -1,4 +1,6 @@
 #include "fs/partition_scanner.h"
+#include <algorithm>
+#include <climits>
 #include <cstring>
 #include <iostream>
 
@@ -9,8 +11,8 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
     if (sectorSize == 0) sectorSize = 512;
 
     std::vector<uint8_t> boot(sectorSize);
-    if (!reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()).success) {
-        return VolumeFsKind::Unknown;
+    if (!readComplete(reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()), sectorSize)) {
+        return VolumeFsKind::Unread;
     }
 
     if (boot.size() >= 40 && std::memcmp(boot.data() + 3, "ReFS\x00\x00\x00\x00", 8) == 0 &&
@@ -48,8 +50,10 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
 
     uint32_t hfsRead = ((1024 + 2 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> hfsBuf(hfsRead);
-    if (reader.readSectors(partitionOffsetBytes, hfsRead, hfsBuf.data()).success &&
-        hfsBuf.size() >= 1026) {
+    if (!readComplete(reader.readSectors(partitionOffsetBytes, hfsRead, hfsBuf.data()), hfsRead)) {
+        return VolumeFsKind::Unread;
+    }
+    if (hfsBuf.size() >= 1026) {
         if (hfsBuf[1024] == 0x48 && (hfsBuf[1025] == 0x2B || hfsBuf[1025] == 0x58)) {
             return VolumeFsKind::Hfs;
         }
@@ -57,8 +61,10 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
 
     uint32_t sbRead = ((2048 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> extBuf(sbRead);
-    if (reader.readSectors(partitionOffsetBytes, sbRead, extBuf.data()).success &&
-        extBuf.size() >= 1026) {
+    if (!readComplete(reader.readSectors(partitionOffsetBytes, sbRead, extBuf.data()), sbRead)) {
+        return VolumeFsKind::Unread;
+    }
+    if (extBuf.size() >= 1026) {
         uint16_t magic = *reinterpret_cast<uint16_t*>(extBuf.data() + 1024 + 0x38);
         if (magic == 0xEF53) return VolumeFsKind::Ext4;
     }
@@ -97,7 +103,10 @@ std::vector<PartitionInfo> PartitionScanner::parseMBR() {
 
     std::vector<uint8_t> buffer(sectorSize);
     auto res = reader_->readSectors(0, sectorSize, buffer.data());
-    if (!res.success) return partitions;
+    if (!readComplete(res, sectorSize)) {
+        tableUnread_ = true;
+        return partitions;
+    }
 
     if (buffer[510] != 0x55 || buffer[511] != 0xAA) return partitions;
 
@@ -130,11 +139,14 @@ std::vector<PartitionInfo> PartitionScanner::parseGPT() {
     if (!reader_ || !reader_->isOpen()) return partitions;
 
     uint32_t sectorSize = reader_->getSectorSize();
+    if (sectorSize < 512) return partitions;
     std::vector<uint8_t> buffer(sectorSize);
-    
-    // Read LBA 1
+
     auto res = reader_->readSectors(sectorSize, sectorSize, buffer.data());
-    if (!res.success) return partitions;
+    if (!readComplete(res, sectorSize)) {
+        tableUnread_ = true;
+        return partitions;
+    }
 
     if (std::memcmp(buffer.data(), "EFI PART", 8) != 0) return partitions;
 
@@ -142,18 +154,11 @@ std::vector<PartitionInfo> PartitionScanner::parseGPT() {
     uint32_t numPartitionEntries = *reinterpret_cast<uint32_t*>(buffer.data() + 80);
     uint32_t partitionEntrySize = *reinterpret_cast<uint32_t*>(buffer.data() + 84);
 
-    if (partitionEntrySize < sizeof(GPTPartitionEntry)) return partitions;
+    if (partitionEntrySize < sizeof(GPTPartitionEntry) || partitionEntrySize == 0) return partitions;
+    if (numPartitionEntries == 0) return partitions;
 
-    uint32_t entriesPerSector = sectorSize / partitionEntrySize;
-    uint32_t sectorsToRead = (numPartitionEntries + entriesPerSector - 1) / entriesPerSector;
-
-    std::vector<uint8_t> entryBuffer(sectorsToRead * sectorSize);
-    res = reader_->readSectors(partitionEntryLBA * sectorSize, sectorsToRead * sectorSize, entryBuffer.data());
-    if (!res.success) return partitions;
-
-    for (uint32_t i = 0; i < numPartitionEntries; ++i) {
-        GPTPartitionEntry* entry = reinterpret_cast<GPTPartitionEntry*>(entryBuffer.data() + i * partitionEntrySize);
-        
+    auto consumeEntry = [&](const uint8_t* raw) {
+        const GPTPartitionEntry* entry = reinterpret_cast<const GPTPartitionEntry*>(raw);
         bool isEmpty = true;
         for (int j = 0; j < 16; ++j) {
             if (entry->typeGUID[j] != 0) {
@@ -161,17 +166,16 @@ std::vector<PartitionInfo> PartitionScanner::parseGPT() {
                 break;
             }
         }
-        if (isEmpty) continue;
+        if (isEmpty) return;
 
         PartitionInfo info;
         info.startSector = entry->startingLBA;
         info.sizeInSectors = entry->endingLBA - entry->startingLBA + 1;
-        info.isActive = false; // GPT uses attributes, but typically not a simple boot flag like MBR
-        
-        // Very basic GUID check (first dword)
-        uint32_t guid1 = *reinterpret_cast<uint32_t*>(entry->typeGUID);
-        if (guid1 == 0xEBD0A0A2) info.type = "Windows Basic Data"; // NTFS/FAT/exFAT
-        else if (guid1 == 0x0FC63DAF) info.type = "Linux Data"; // EXT/XFS
+        info.isActive = false;
+
+        uint32_t guid1 = *reinterpret_cast<const uint32_t*>(entry->typeGUID);
+        if (guid1 == 0xEBD0A0A2) info.type = "Windows Basic Data";
+        else if (guid1 == 0x0FC63DAF) info.type = "Linux Data";
         else if (guid1 == 0xC12A7328) info.type = "EFI System";
         else info.type = "Unknown GUID";
 
@@ -181,8 +185,51 @@ std::vector<PartitionInfo> PartitionScanner::parseGPT() {
             label += static_cast<char>(entry->partitionName[j]);
         }
         info.label = label;
-
         partitions.push_back(info);
+    };
+
+    uint32_t entriesPerSector = sectorSize / partitionEntrySize;
+    if (entriesPerSector == 0) {
+        const uint64_t bytes = static_cast<uint64_t>(numPartitionEntries) * partitionEntrySize;
+        const uint64_t aligned = ((bytes + sectorSize - 1) / sectorSize) * sectorSize;
+        if (aligned > UINT32_MAX) {
+            tableUnread_ = true;
+            return partitions;
+        }
+        std::vector<uint8_t> entryBuffer(static_cast<size_t>(aligned));
+        res = reader_->readSectors(partitionEntryLBA * sectorSize,
+                                   static_cast<uint32_t>(aligned), entryBuffer.data());
+        if (!readComplete(res, aligned)) {
+            tableUnread_ = true;
+            const uint64_t walk = res.success ? std::min<uint64_t>(res.bytesRead, aligned) : 0;
+            uint32_t n = static_cast<uint32_t>(walk / partitionEntrySize);
+            if (n > numPartitionEntries) n = numPartitionEntries;
+            for (uint32_t i = 0; i < n; ++i) {
+                consumeEntry(entryBuffer.data() + i * partitionEntrySize);
+            }
+            return partitions;
+        }
+        for (uint32_t i = 0; i < numPartitionEntries; ++i) {
+            consumeEntry(entryBuffer.data() + i * partitionEntrySize);
+        }
+        return partitions;
+    }
+
+    // Sector-at-a-time: a faulted later LBA must not drop already-read entries
+    // as “empty GUID / no partitions”.
+    const uint32_t sectorsToRead = (numPartitionEntries + entriesPerSector - 1) / entriesPerSector;
+    std::vector<uint8_t> sector(sectorSize);
+    uint32_t parsed = 0;
+    for (uint32_t s = 0; s < sectorsToRead && parsed < numPartitionEntries; ++s) {
+        res = reader_->readSectors((partitionEntryLBA + s) * sectorSize, sectorSize, sector.data());
+        if (!readComplete(res, sectorSize)) {
+            tableUnread_ = true;
+            parsed += entriesPerSector;
+            continue;
+        }
+        for (uint32_t e = 0; e < entriesPerSector && parsed < numPartitionEntries; ++e, ++parsed) {
+            consumeEntry(sector.data() + e * partitionEntrySize);
+        }
     }
 
     return partitions;
@@ -190,6 +237,7 @@ std::vector<PartitionInfo> PartitionScanner::parseGPT() {
 
 std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSectors, ProgressCallback progressCallback) {
     std::vector<PartitionInfo> partitions;
+    scanUnread_ = false;
     if (!reader_ || !reader_->isOpen()) return partitions;
 
     uint64_t totalSectors = reader_->getDiskSize() / reader_->getSectorSize();
@@ -204,7 +252,10 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
         }
 
         auto res = reader_->readSectors(sector * sectorSize, sectorSize, buffer.data());
-        if (!res.success) continue;
+        if (!readComplete(res, sectorSize)) {
+            scanUnread_ = true;
+            continue;
+        }
 
         bool found = false;
         PartitionInfo info;
@@ -245,7 +296,9 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
                 }
             } else {
                 auto extRes = reader_->readSectors(sector * sectorSize, 2048, extBuffer.data());
-                if (extRes.success) {
+                if (!readComplete(extRes, 2048)) {
+                    scanUnread_ = true;
+                } else {
                     uint16_t magic = *reinterpret_cast<uint16_t*>(extBuffer.data() + 1024 + 0x38);
                     if (magic == 0xEF53) {
                         info.type = "EXT";

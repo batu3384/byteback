@@ -222,11 +222,11 @@ inline std::vector<uint8_t> buildExt4Volume() {
         writeLe32(img, off + 0x28, block); // i_block[0]
     };
 
-    writeInode(12, 0x4000, bs, 6, 2); // directory (inode >= 11)
+    writeInode(12, 0x4000, bs, 3, 2); // directory at block 3 (inode table occupies 5-6)
     writeInode(13, 0x8000, 8, 7); // file at block 7
 
-    // Directory block 6: dirent for note.txt -> inode 13
-    size_t dir = 6 * bs;
+    // Directory block 3: dirent for note.txt -> inode 13
+    size_t dir = 3 * bs;
     writeLe32(img, dir + 0x00, 13);
     writeLe16(img, dir + 0x04, 16); // rec_len (8 header + 8 name)
     img[dir + 0x06] = 8;  // name_len
@@ -671,6 +671,131 @@ inline std::vector<uint8_t> buildNtfsIndexRootReuseVolume() {
     std::memcpy(img.data() + attr + 24, "live", 4);
     attr += 32;
     writeLe32(img, attr + 0, 0xFFFFFFFF);
+    return img;
+}
+
+// Directory $INDEX_ALLOCATION ($I30) INDX names indx_only.txt (MFT 99, no FILE).
+inline std::vector<uint8_t> buildNtfsIndexAllocationVolume() {
+    constexpr uint32_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, ss);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 3072);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x03);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* dirName = "Dir";
+    const size_t dirLen = 3;
+    const size_t dirFn = 66 + dirLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + dirFn));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(dirFn));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(dirLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < dirLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(dirName[i]));
+    attr += 16 + 8 + dirFn;
+
+    writeLe32(img, attr + 0, 0x90);
+    writeLe32(img, attr + 4, 80);
+    img[attr + 8] = 0;
+    img[attr + 9] = 4;
+    writeLe16(img, attr + 10, 24);
+    writeLe32(img, attr + 16, 48);
+    writeLe16(img, attr + 20, 32);
+    writeLe16(img, attr + 24, '$');
+    writeLe16(img, attr + 26, 'I');
+    writeLe16(img, attr + 28, '3');
+    writeLe16(img, attr + 30, '0');
+    writeLe32(img, attr + 32, 0x30);
+    writeLe32(img, attr + 36, 1);
+    writeLe32(img, attr + 40, 4096);
+    img[attr + 44] = 1;
+    writeLe32(img, attr + 48, 16);
+    writeLe32(img, attr + 52, 32);
+    writeLe32(img, attr + 56, 32);
+    img[attr + 64 + 8] = 16;
+    img[attr + 64 + 12] = 0x02;
+    attr += 80;
+
+    writeLe32(img, attr + 0, 0xA0);
+    writeLe32(img, attr + 4, 80);
+    img[attr + 8] = 1;
+    img[attr + 9] = 4;
+    writeLe16(img, attr + 10, 0x40);
+    writeLe16(img, attr + 0x20, 0x48);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    writeLe16(img, attr + 0x40, '$');
+    writeLe16(img, attr + 0x42, 'I');
+    writeLe16(img, attr + 0x44, '3');
+    writeLe16(img, attr + 0x46, '0');
+    img[attr + 0x48] = 0x11;
+    img[attr + 0x49] = 0x01;
+    img[attr + 0x4A] = 0x03;
+    img[attr + 0x4B] = 0x00;
+    writeLe32(img, attr + 80, 0xFFFFFFFF);
+
+    const size_t indxOff = 3 * 4096;
+    std::vector<uint8_t> indx(0x40, 0);
+    std::memcpy(indx.data(), "INDX", 4);
+    writeLe16(indx, 4, 0x28);
+    writeLe32(indx, 0x18, 0x28);
+    const char* n = "indx_only.txt";
+    const size_t nlen = std::strlen(n);
+    const uint16_t keyLen = static_cast<uint16_t>(66 + nlen * 2);
+    const uint16_t entryLen = static_cast<uint16_t>(16 + keyLen);
+    const size_t start = indx.size();
+    indx.resize(start + entryLen, 0);
+    indx[start] = 99;
+    indx[start + 8] = static_cast<uint8_t>(entryLen & 0xFF);
+    indx[start + 9] = static_cast<uint8_t>((entryLen >> 8) & 0xFF);
+    indx[start + 10] = static_cast<uint8_t>(keyLen & 0xFF);
+    indx[start + 11] = static_cast<uint8_t>((keyLen >> 8) & 0xFF);
+    indx[start + 16] = 5;
+    indx[start + 16 + 64] = static_cast<uint8_t>(nlen);
+    indx[start + 16 + 65] = 1;
+    for (size_t i = 0; i < nlen; ++i)
+        indx[start + 16 + 66 + i * 2] = static_cast<uint8_t>(n[i]);
+    const size_t lastAt = indx.size();
+    indx.resize(lastAt + 16, 0);
+    indx[lastAt + 8] = 16;
+    indx[lastAt + 12] = 0x02;
+    const uint32_t usedRel = static_cast<uint32_t>(indx.size() - 0x18);
+    writeLe32(indx, 0x1C, usedRel);
+    writeLe32(indx, 0x20, usedRel);
+    indx.resize(4096, 0);
+    std::memcpy(img.data() + indxOff, indx.data(), indx.size());
     return img;
 }
 

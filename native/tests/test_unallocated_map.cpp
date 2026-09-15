@@ -1,5 +1,6 @@
 #include "fs/unallocated_map.h"
 #include "scan_coordinator.h"
+#include "scan_progress.h"
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
@@ -307,4 +308,88 @@ TEST(UnallocatedMap, Fat12EntryPastTableEndIsNotFree) {
     // cluster 341 on is (conservatively) allocated.
     ASSERT_EQ(ranges.size(), 1u);
     EXPECT_TRUE(rangeEquals(ranges, 0, 3, 339));
+}
+
+// A FAT window that past-EOF zero-pads (success+paddedZeros) used to look like
+// a fully unused table — every unread cluster became a free run, so unallocated
+// carve would walk allocated data. Unreadable FAT => empty map (CA-022 fallback).
+TEST(UnallocatedMap, PaddedFatTableIsNotAllFree) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    fatVol.resize(8 * 512);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(fatVol));
+    g_unallocatedMapUnread.store(false, std::memory_order_relaxed);
+
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Fat, 0, reader.getDiskSize());
+    EXPECT_TRUE(ranges.empty());
+    EXPECT_TRUE(g_unallocatedMapUnread.load(std::memory_order_relaxed));
+}
+
+// Same lie on ext4: a padded block-bitmap is all-zero bits = "every block free".
+// Truncate at the bitmap LBA so the bitmap read zero-pads; allocated block 7
+// must not enter the unallocated map.
+TEST(UnallocatedMap, PaddedExt4BitmapIsNotAllFree) {
+    auto extVol = byteback::testfix::buildExt4CarveVolume();
+    extVol.resize(4 * 1024);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(extVol));
+    g_unallocatedMapUnread.store(false, std::memory_order_relaxed);
+
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ext4, 0, reader.getDiskSize());
+    const uint64_t allocatedSector = 7 * 2;
+    EXPECT_FALSE(rangeCovers(ranges, allocatedSector));
+    EXPECT_TRUE(ranges.empty());
+    EXPECT_TRUE(g_unallocatedMapUnread.load(std::memory_order_relaxed));
+}
+
+TEST(UnallocatedMap, UnreadExt4GroupKeepsSiblingMapAndMarksUnread) {
+    auto extVol = byteback::testfix::buildExt4CarveVolume();
+    constexpr uint32_t bs = 1024;
+    extVol.resize(128 * bs, 0);
+    byteback::testfix::writeLe32(extVol, bs + 4, 128); // s_blocks_count_lo: two groups
+    byteback::testfix::writeLe32(extVol, 2 * bs + 32, 68); // group 1 bitmap at block 68
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(extVol));
+    reader.setMemoryFaultRange(68 * 2, 2);
+    g_unallocatedMapUnread.store(false, std::memory_order_relaxed);
+
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ext4, 0, reader.getDiskSize());
+    EXPECT_TRUE(g_unallocatedMapUnread.load(std::memory_order_relaxed));
+    EXPECT_FALSE(rangeCovers(ranges, 7 * 2));  // group 0 allocated block 7
+    EXPECT_TRUE(rangeCovers(ranges, 8 * 2));   // group 0 free block 8
+    EXPECT_FALSE(rangeCovers(ranges, 64 * 2)); // unread group 1 is not all-free
+
+    auto collected = collectUnallocatedForScan(reader, 0, reader.getDiskSize() / 512);
+    EXPECT_TRUE(g_unallocatedMapUnread.load(std::memory_order_relaxed));
+    EXPECT_FALSE(g_unallocatedUsedFallback.load(std::memory_order_relaxed));
+    EXPECT_FALSE(rangeCovers(collected, 7 * 2));
+    EXPECT_TRUE(rangeCovers(collected, 8 * 2));
+}
+
+TEST(UnallocatedMap, UnreadBitmapEmitsDiscoverySentinel) {
+    auto extVol = byteback::testfix::buildExt4CarveVolume();
+    constexpr uint32_t bs = 1024;
+    extVol.resize(128 * bs, 0);
+    byteback::testfix::writeLe32(extVol, bs + 4, 128);
+    byteback::testfix::writeLe32(extVol, 2 * bs + 32, 68);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(extVol));
+    reader.setMemoryFaultRange(68 * 2, 2);
+
+    std::atomic<bool> running{true};
+    std::vector<std::string> sources;
+    runCarveScan(reader, [&](const FileRecord& fr) {
+        if (!fr.source.empty()) sources.push_back(fr.source);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr, {}, true);
+
+    bool sawUnread = false;
+    for (const auto& s : sources) {
+        if (s == kUnallocMapUnreadSource) sawUnread = true;
+    }
+    EXPECT_TRUE(sawUnread);
+    EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve_bitmap_unread");
 }

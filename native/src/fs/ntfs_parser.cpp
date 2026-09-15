@@ -243,7 +243,23 @@ struct ParsedMftRecord {
     std::vector<uint8_t> residentBytes;
     std::vector<ParsedMftAds> adsEntries;
     std::vector<ntfs::IndexNameHint> i30Hints;
+    std::vector<FileRecord::DataRun> i30AllocRuns;
+    uint32_t i30RecordSize = 0;
 };
+
+bool attrNameEquals(const uint8_t* rec, uint32_t recordSize, uint32_t attrOffset,
+                    const NTFS_AttributeHeader* attr, const char* ascii) {
+    if (!rec || !attr || !ascii) return false;
+    const size_t n = std::strlen(ascii);
+    if (static_cast<size_t>(attr->nameLength) != n) return false;
+    const size_t namePos = static_cast<size_t>(attrOffset) + attr->nameOffset;
+    if (namePos + n * sizeof(uint16_t) > recordSize) return false;
+    const auto* units = reinterpret_cast<const uint16_t*>(rec + namePos);
+    for (size_t i = 0; i < n; ++i) {
+        if (units[i] != static_cast<unsigned char>(ascii[i])) return false;
+    }
+    return true;
+}
 
 void parseMftRecord(uint8_t* rec, uint32_t recordSize, uint32_t sectorSize,
                     uint64_t volumeStartSector, uint32_t sectorsPerCluster,
@@ -450,6 +466,47 @@ void parseMftRecord(uint8_t* rec, uint32_t recordSize, uint32_t sectorSize,
                 if (valLen > 0 && valOff + valLen <= recordSize) {
                     auto hints = ntfs::parseIndexRoot(rec + valOff, valLen);
                     out.i30Hints.insert(out.i30Hints.end(), hints.begin(), hints.end());
+                    const uint32_t bsz = ntfs::indexRootBlockSize(rec + valOff, valLen);
+                    if (bsz) out.i30RecordSize = bsz;
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_INDEX_ALLOCATION && attr->nonResidentFlag != 0
+            && attrNameEquals(rec, recordSize, attrOffset, attr, "$I30")) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <= recordSize) {
+                auto* nonResAttr = reinterpret_cast<NTFS_NonResidentHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                size_t currentRunPos = attrOffset + nonResAttr->dataRunOffset;
+                int64_t previousLcn = 0;
+                while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize) {
+                    uint8_t headerByte = rec[currentRunPos];
+                    if (headerByte == 0x00) break;
+                    uint8_t lenSize = headerByte & 0x0F;
+                    uint8_t offSize = (headerByte >> 4) & 0x0F;
+                    currentRunPos++;
+                    if (currentRunPos + lenSize + offSize > recordSize) break;
+                    uint64_t clusterCount = 0;
+                    for (int j = 0; j < lenSize; j++)
+                        clusterCount |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                    currentRunPos += lenSize;
+                    bool sparse = (offSize == 0);
+                    int64_t lcnOffset = 0;
+                    if (!sparse) {
+                        for (int j = 0; j < offSize; j++)
+                            lcnOffset |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                        if (rec[currentRunPos + offSize - 1] & 0x80) {
+                            for (int j = offSize; j < 8; j++)
+                                lcnOffset |= static_cast<int64_t>(0xFF) << (j * 8);
+                        }
+                        previousLcn += lcnOffset;
+                    }
+                    currentRunPos += offSize;
+                    if (sparse || clusterCount == 0) continue;
+                    FileRecord::DataRun run;
+                    run.startSector = volumeStartSector + static_cast<uint64_t>(previousLcn) * sectorsPerCluster;
+                    run.sectorCount = clusterCount * sectorsPerCluster;
+                    out.i30AllocRuns.push_back(run);
                 }
             }
         }
@@ -485,12 +542,27 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     if (sectorSize == 0) sectorSize = 512;
 
     const uint64_t volumeStartSector = partitionOffsetBytes / sectorSize;
+    bool mftUnread = false;
+    auto emitMftUnread = [&]() {
+        FileRecord fr{};
+        fr.id = -1;
+        fr.name = "Ntfs_MftUnread";
+        fr.path = kNtfsMftUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kNtfsMftUnreadSource;
+        callback(fr);
+    };
 
     uint32_t sectorsPerCluster = 8;
     uint64_t mftStartCluster = 0;
     uint32_t mftRecordBytes = 1024;
     std::vector<uint8_t> bootSector(sectorSize);
-    if (reader.readSectors(partitionOffsetBytes, sectorSize, bootSector.data()).success) {
+    if (!readComplete(reader.readSectors(partitionOffsetBytes, sectorSize, bootSector.data()),
+                      sectorSize)) {
+        mftUnread = true;
+    } else {
         uint32_t bootBps = sectorSize;
         uint32_t recBytes = 1024;
         uint64_t lcn = 0;
@@ -517,8 +589,9 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     if (mftStartCluster > 0) {
         std::vector<uint8_t> rec0(mftRecordBytes, 0);
         uint64_t rec0Off = partitionOffsetBytes + mftStartCluster * static_cast<uint64_t>(sectorsPerCluster) * sectorSize;
-        if (reader.readSectors(rec0Off, mftRecordBytes, rec0.data()).success &&
-            std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) == 0) {
+        if (!readComplete(reader.readSectors(rec0Off, mftRecordBytes, rec0.data()), mftRecordBytes)) {
+            mftUnread = true;
+        } else if (std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) == 0) {
             auto runs = unnamedDataRunsFromRecord(rec0.data(), mftRecordBytes, volumeStartSector,
                                                   sectorsPerCluster);
             for (const auto& r : runs) {
@@ -557,6 +630,11 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     // post-pass). Populated only when the journal attribute survives.
     std::vector<FileRecord::DataRun> usnJournalRuns;
     std::vector<std::vector<uint8_t>> usnJournalInline;
+    struct I30AllocStream {
+        std::vector<FileRecord::DataRun> runs;
+        uint32_t recBytes = 4096;
+    };
+    std::vector<I30AllocStream> i30Allocs;
 
     auto mftRecFromAbsByte = [&](uint64_t absByte) -> uint64_t {
         uint64_t acc = 0;
@@ -583,7 +661,10 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     std::vector<ScanPass> passes;
     if (!ranges.empty()) passes.push_back({ranges, false});
     if (!orphanRanges.empty()) passes.push_back({orphanRanges, true});
-    if (passes.empty()) return true;
+    if (passes.empty()) {
+        if (mftUnread) emitMftUnread();
+        return true;
+    }
 
     for (const auto& pass : passes) {
     for (const auto& rg : pass.ranges) {
@@ -594,11 +675,28 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
         uint64_t remain = rangeEnd - sector;
         uint32_t thisSectors = static_cast<uint32_t>(std::min<uint64_t>(chunkSectors, remain));
-        uint32_t thisSize = thisSectors * sectorSize;
-        auto res = reader.readSectors(sector * sectorSize, thisSize, currentBuf->data());
-        if (!res.success) continue;
-
+        struct SubRead { uint64_t sec; uint32_t sectors; };
+        std::vector<SubRead> subReads{{sector, thisSectors}};
         const uint32_t step = pass.orphan ? sectorSize : mftRecordBytes;
+        while (!subReads.empty()) {
+            if (isRunning && !(*isRunning)) break;
+            const auto sub = subReads.back();
+            subReads.pop_back();
+            const uint32_t wantBytes = sub.sectors * sectorSize;
+            auto res = reader.readSectors(sub.sec * sectorSize, wantBytes, currentBuf->data());
+            const bool incomplete = !res.success || res.paddedZeros || res.bytesRead < wantBytes;
+            if (incomplete && sub.sectors > 1) {
+                const uint32_t half = sub.sectors / 2;
+                subReads.push_back({sub.sec + half, sub.sectors - half});
+                subReads.push_back({sub.sec, half});
+                continue;
+            }
+            if (!res.success || res.bytesRead < 1024) {
+                mftUnread = true;
+                continue;
+            }
+            if (res.paddedZeros || res.bytesRead < wantBytes) mftUnread = true;
+
         for (uint32_t i = 0; i + 1024 <= res.bytesRead; i += step) {
             MFT_RecordHeader* header = reinterpret_cast<MFT_RecordHeader*>(currentBuf->data() + i);
 
@@ -622,9 +720,8 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 const bool isDirectory = parsed.flags & ntfs::RECORD_FLAG_DIRECTORY;
                 const bool inUse = parsed.flags & ntfs::RECORD_FLAG_IN_USE;
 
-                // ponytail: resident $INDEX_ROOT only. Slack names stay off the
-                // MFT map so reuse cannot overwrite the live FILE name. Full
-                // $INDEX_ALLOCATION recarve later.
+                // Slack / INDX names stay off the MFT map so reuse cannot
+                // overwrite the live FILE name.
                 i30Hints.insert(i30Hints.end(), parsed.i30Hints.begin(), parsed.i30Hints.end());
 
                 // $UsnJrnl's journal data lives in an ADS named ":$J". Capture
@@ -641,7 +738,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     }
                 }
 
-                const uint64_t absByte = sector * sectorSize + i;
+                const uint64_t absByte = sub.sec * sectorSize + i;
                 // CA-032: resolve the MFT record number in BOTH passes. The
                 // orphan pass re-scans the live MFT zone, so every record the
                 // main pass indexed must be skipped here or it would emit a
@@ -657,6 +754,13 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     ? mftRec
                     : (absByte | kOrphanEntryKeyBit);
                 if (mftEntries.count(key)) continue; // duplicate sighting: first wins
+
+                if (!parsed.i30AllocRuns.empty()) {
+                    I30AllocStream stream;
+                    stream.runs = parsed.i30AllocRuns;
+                    stream.recBytes = parsed.i30RecordSize ? parsed.i30RecordSize : 4096u;
+                    i30Allocs.push_back(std::move(stream));
+                }
 
                 MftEntry entry;
                 entry.byteOffset = absByte;
@@ -679,6 +783,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 }
             }
         }
+        }
     }
     }
     }
@@ -689,11 +794,23 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     NtfsLogHintCollector logHints;
     scanNtfsLogFileHints(reader, partitionOffsetBytes,
                          [&](const FileRecord& fr) {
-                             if (fr.source == "ntfs_logfile_restart") callback(fr);
+                             if (fr.source == "ntfs_logfile_restart" ||
+                                 fr.source == kNtfsLogfileUnreadSource) callback(fr);
                          },
                          isRunning, &logHints);
 
     std::unordered_set<uint64_t> usnDeletedRefs;
+    bool usnUnread = false;
+    auto readUsnChunk = [&](uint64_t byteOff, uint32_t take, uint8_t* buf) -> uint32_t {
+        auto res = reader.readSectors(byteOff, take, buf);
+        if (!res.success || res.bytesRead == 0) {
+            usnUnread = true;
+            return 0;
+        }
+        uint32_t walk = static_cast<uint32_t>(std::min<uint64_t>(res.bytesRead, take));
+        if (res.paddedZeros || walk < take) usnUnread = true;
+        return walk;
+    };
     if (!usnJournalRuns.empty() || !usnJournalInline.empty()) {
         const uint32_t kUsnChunk = 1u << 20;
         std::vector<uint8_t> buf(kUsnChunk);
@@ -705,11 +822,12 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             while (pos < runBytes) {
                 if (isRunning && !(*isRunning)) break;
                 uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(kUsnChunk, runBytes - pos));
-                if (!reader.readSectors(run.startSector * sectorSize + pos, take, buf.data()).success) {
+                uint32_t walk = readUsnChunk(run.startSector * sectorSize + pos, take, buf.data());
+                if (walk == 0) {
                     pos += take;
                     continue;
                 }
-                ntfs::harvestUsnDeletedMftRefs(buf.data(), take, usnDeletedRefs);
+                ntfs::harvestUsnDeletedMftRefs(buf.data(), walk, usnDeletedRefs);
                 pos += take;
             }
         }
@@ -795,7 +913,10 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         // on 4096-byte-sector media); the aligned backend read + slice keeps
         // every backend contract intact.
         const auto res = reader.readBytes(entry.byteOffset, entry.byteLen, recBuf.data());
-        if (!res.success || res.bytesRead < entry.byteLen) continue; // K1 sweep covers it
+        if (!res.success || res.bytesRead < entry.byteLen || res.paddedZeros) {
+            mftUnread = true;
+            continue; // K1 sweep covers it
+        }
 
         ParsedMftRecord parsed;
         parsed.filename = "UnknownFile_" + std::to_string(emitId) + ".bin";
@@ -933,8 +1054,35 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         callback(fr);
     }
 
-    // ponytail: resident $INDEX_ROOT only. Slack names stay off the MFT map so
-    // reuse cannot overwrite the live FILE name. Full $INDEX_ALLOCATION recarve later.
+    // $INDEX_ALLOCATION ($I30) INDX records. Names that live only in the
+    // B-tree (not resident INDEX_ROOT) plus INDX slack. Unreferenced INDX
+    // clusters are not walked (see OrphanIndxMagicDoesNotEmitI30).
+    bool i30Unread = false;
+    for (const auto& stream : i30Allocs) {
+        if (isRunning && !(*isRunning)) break;
+        uint32_t recBytes = stream.recBytes ? stream.recBytes : 4096u;
+        if (recBytes < 512 || recBytes > 65536) recBytes = 4096;
+        if (sectorSize == 0 || recBytes % sectorSize != 0) continue;
+        std::vector<uint8_t> rec(recBytes);
+        for (const auto& run : stream.runs) {
+            if (isRunning && !(*isRunning)) break;
+            if (run.startSector == UINT64_MAX || run.sectorCount == 0) continue;
+            const uint64_t runBytes = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+            uint64_t pos = 0;
+            while (pos + recBytes <= runBytes) {
+                if (isRunning && !(*isRunning)) break;
+                if (!readComplete(reader.readSectors(run.startSector * sectorSize + pos, recBytes, rec.data()), recBytes)) {
+                    i30Unread = true;
+                    pos += recBytes;
+                    continue;
+                }
+                auto hints = ntfs::parseIndxRecord(rec.data(), recBytes, sectorSize);
+                i30Hints.insert(i30Hints.end(), hints.begin(), hints.end());
+                pos += recBytes;
+            }
+        }
+    }
+
     std::unordered_set<std::string> i30Seen;
     int64_t i30Id = 800000;
     for (const auto& h : i30Hints) {
@@ -953,6 +1101,18 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         fr.source = "ntfs_i30";
         fr.confidence = 35;
         fr.category = categoryForName(h.name);
+        callback(fr);
+    }
+
+    if (i30Unread) {
+        FileRecord fr{};
+        fr.id = -1;
+        fr.name = "Ntfs_I30Unread";
+        fr.path = "/ntfs-i30-unread/";
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = "ntfs_i30_unread";
         callback(fr);
     }
 
@@ -975,15 +1135,16 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         while (pos < runBytes) {
             if (isRunning && !(*isRunning)) break;
             uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(kUsnChunk, runBytes - pos));
-            if (!reader.readSectors(run.startSector * sectorSize + pos, take, buf.data()).success) {
-                pos += take; // bad sector in the journal: skip forward
+            uint32_t walk = readUsnChunk(run.startSector * sectorSize + pos, take, buf.data());
+            if (walk == 0) {
+                pos += take;
                 continue;
             }
 
             size_t off = 0;
-            while (off + 64 <= take) {
+            while (off + 64 <= walk) {
                 ntfs::UsnRecord usn;
-                if (!ntfs::parseUsnRecord(buf.data() + off, take - off, usn)) {
+                if (!ntfs::parseUsnRecord(buf.data() + off, walk - off, usn)) {
                     // Records are 8-byte aligned; step forward on a bad slot.
                     off += 8;
                     continue;
@@ -1015,6 +1176,19 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             }
             pos += take;
         }
+    }
+
+    if (mftUnread) emitMftUnread();
+    if (usnUnread) {
+        FileRecord fr{};
+        fr.id = -1;
+        fr.name = "Ntfs_UsnUnread";
+        fr.path = kUsnUnreadPath;
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = kUsnUnreadSource;
+        callback(fr);
     }
 
     return true;

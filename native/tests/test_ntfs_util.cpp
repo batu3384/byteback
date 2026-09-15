@@ -239,3 +239,47 @@ TEST(IndexRoot, SlackNameSurvivesAfterUsedWindow) {
     EXPECT_TRUE(live);
     EXPECT_TRUE(slack);
 }
+
+TEST(IndexRoot, BlockSizeFromHeader) {
+    std::vector<uint8_t> root(32, 0);
+    root[0] = 0x30;
+    root[8] = 0x00;
+    root[9] = 0x10; // 4096
+    EXPECT_EQ(byteback::ntfs::indexRootBlockSize(root.data(), root.size()), 4096u);
+    root[0] = 0x80;
+    EXPECT_EQ(byteback::ntfs::indexRootBlockSize(root.data(), root.size()), 0u);
+}
+
+TEST(IndxRecord, LiveNameFromAllocationBlock) {
+    std::vector<uint8_t> rec(1024, 0);
+    rec[0] = 'I'; rec[1] = 'N'; rec[2] = 'D'; rec[3] = 'X';
+    rec[4] = 0x28;
+    rec[0x18] = 0x28;
+    std::vector<uint8_t> body(rec.begin(), rec.begin() + 0x40);
+    appendFileNameIndexEntry(body, 9, 5, "from_indx.txt", false);
+    const size_t lastAt = body.size();
+    body.resize(lastAt + 16, 0);
+    body[lastAt + 8] = 16;
+    body[lastAt + 12] = 0x02;
+    const uint32_t used = static_cast<uint32_t>(body.size() - 0x18);
+    rec.assign(body.begin(), body.end());
+    rec.resize(1024, 0);
+    rec[0x1C] = static_cast<uint8_t>(used & 0xFF);
+    rec[0x1D] = static_cast<uint8_t>((used >> 8) & 0xFF);
+    rec[0x1E] = static_cast<uint8_t>((used >> 16) & 0xFF);
+    rec[0x1F] = static_cast<uint8_t>((used >> 24) & 0xFF);
+    rec[0x20] = rec[0x1C];
+    rec[0x21] = rec[0x1D];
+    rec[0x22] = rec[0x1E];
+    rec[0x23] = rec[0x1F];
+
+    auto hints = byteback::ntfs::parseIndxRecord(rec.data(), rec.size(), 512);
+    bool found = false;
+    for (const auto& h : hints) {
+        if (h.name == "from_indx.txt" && h.childMft == 9 && !h.fromSlack) found = true;
+    }
+    EXPECT_TRUE(found);
+
+    std::vector<uint8_t> junk(1024, 0);
+    EXPECT_TRUE(byteback::ntfs::parseIndxRecord(junk.data(), junk.size(), 512).empty());
+}

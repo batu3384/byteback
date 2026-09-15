@@ -153,7 +153,8 @@ void DecodeExtRec(const uint8_t* p, Extent* e) {
 
 // Deterministic inode location (XFS_INO_TO_AGNO / XFS_INO_TO_AGINO / XFS_AGINO_TO_OFFSET).
 bool ReadInodeAt(DiskReader& reader, uint64_t partOffset, const XfsSuperblock& sb,
-                 uint64_t ino, std::vector<uint8_t>* out) {
+                 uint64_t ino, std::vector<uint8_t>* out, bool* unread = nullptr) {
+    if (unread) *unread = false;
     if (sb.blocksize == 0 || sb.inodesize < 256 || sb.agcount == 0 || sb.agblocks == 0 ||
         sb.agblklog >= 64 || sb.inopblog >= 32 || sb.inodelog >= 32) {
         return false;
@@ -165,7 +166,11 @@ bool ReadInodeAt(DiskReader& reader, uint64_t partOffset, const XfsSuperblock& s
                          ((agino >> sb.inopblog) << sb.blocklog) +
                          ((agino & ((1u << sb.inopblog) - 1)) << sb.inodelog);
     out->assign(sb.inodesize, 0);
-    if (!reader.readBytes(off, sb.inodesize, out->data()).success) return false;
+    const auto res = reader.readBytes(off, sb.inodesize, out->data());
+    if (!readComplete(res, sb.inodesize)) {
+        if (unread) *unread = true;
+        return false;
+    }
     return Be16(out->data()) == kInodeMagic; // xfs_dinode.di_magic 'IN'
 }
 
@@ -176,6 +181,9 @@ struct WalkCtx {
     XfsSuperblock sb{};
     uint8_t dirblklogForDirs = 0; // dir block size = blocksize << this
     bool dirOk = false;           // dir entry walking enabled (dir v2 + sane dirblklog)
+    bool dirUnread = false;       // a dir data block failed/padded; not an empty listing
+    bool inodeUnread = false;     // an inode body failed/padded; not a missing file
+    bool bmapUnread = false;      // a bmap btree block failed/padded; not empty extents
 };
 
 // ---- B+tree data fork (format 3) --------------------------------------------
@@ -184,11 +192,13 @@ struct WalkCtx {
 // (XFS_BTREE_LBLOCK[_CRC]_LEN); leaf records are xfs_bmbt_rec, internal keys are
 // xfs_bmbt_key (8 bytes, br_startoff) with 8-byte pointers placed after the
 // maxrecs-sized key area (xfs_bmbt_ptr_addr: hdr + maxrecs*sizeof(key) + i*8).
-void BtreeBlock(const WalkCtx& ctx, uint64_t fsb, std::vector<Extent>* out, int depth) {
+void BtreeBlock(WalkCtx& ctx, uint64_t fsb, std::vector<Extent>* out, int depth) {
     if (depth <= 0 || fsb == 0 || fsb == ~0ull) return; // NULLFSBLOCK / absurd
     std::vector<uint8_t> buf(ctx.sb.blocksize);
-    if (!ctx.reader->readBytes(ctx.partOffset + fsb * ctx.sb.blocksize, ctx.sb.blocksize,
-                               buf.data()).success) {
+    auto res = ctx.reader->readBytes(ctx.partOffset + fsb * ctx.sb.blocksize, ctx.sb.blocksize,
+                                     buf.data());
+    if (!readComplete(res, ctx.sb.blocksize)) {
+        ctx.bmapUnread = true;
         return;
     }
     const uint8_t* b = buf.data();
@@ -222,7 +232,7 @@ void BtreeBlock(const WalkCtx& ctx, uint64_t fsb, std::vector<Extent>* out, int 
 // In-inode root (struct xfs_bmdr_block): level u16 BE@0, numrecs u16 BE@2; same
 // layout on v4 and v5 (no CRC fields in the inode root). Keys then pointers,
 // pointers after the maxrecs key area (xfs_bmdr_ptr_addr).
-bool BtreeRootFork(const WalkCtx& ctx, const uint8_t* fork, size_t forkLen,
+bool BtreeRootFork(WalkCtx& ctx, const uint8_t* fork, size_t forkLen,
                    std::vector<Extent>* out) {
     if (forkLen < 4) return false;
     const uint16_t level = Be16(fork);
@@ -246,7 +256,7 @@ bool BtreeRootFork(const WalkCtx& ctx, const uint8_t* fork, size_t forkLen,
 }
 
 // Data fork -> extent list. Unknown formats yield an empty list (honest skip).
-void ExtentsForInode(const WalkCtx& ctx, const InodeView& v, std::vector<Extent>* out) {
+void ExtentsForInode(WalkCtx& ctx, const InodeView& v, std::vector<Extent>* out) {
     if (v.format == kFmtExtents) {
         const size_t n = std::min<uint64_t>(v.nextents, v.forkLen / 16);
         for (size_t i = 0; i < n; ++i) {
@@ -345,7 +355,7 @@ void ParseDirBlock(const uint8_t* b, uint32_t len, bool blockDir, bool dir3,
 // 0xd2ff/0x3df1/0x3dff and node 0xfebe/0x3ebe in xfs_da_blkinfo.magic @8, and the
 // XD2F/XDF3 free-index blocks) hold no entries, so skipping them and scanning the
 // data blocks covers block, leaf, node and data dir formats uniformly.
-void CollectDirEntries(const WalkCtx& ctx, std::vector<Extent> runs, std::vector<DirEntryRef>* out) {
+void CollectDirEntries(WalkCtx& ctx, std::vector<Extent> runs, std::vector<DirEntryRef>* out) {
     std::sort(runs.begin(), runs.end(),
               [](const Extent& a, const Extent& b) { return a.startoff < b.startoff; });
     runs.erase(std::remove_if(runs.begin(), runs.end(),
@@ -364,7 +374,11 @@ void CollectDirEntries(const WalkCtx& ctx, std::vector<Extent> runs, std::vector
         const Extent& r = runs[ri];
         if (r.startoff > fsb || r.startoff + r.count < fsb + blkFsb) continue; // gap/split
         const uint64_t off = ctx.partOffset + (r.startblock + (fsb - r.startoff)) * ctx.sb.blocksize;
-        if (!ctx.reader->readBytes(off, blkBytes, buf.data()).success) continue;
+        auto dirRes = ctx.reader->readBytes(off, blkBytes, buf.data());
+        if (!readComplete(dirRes, blkBytes)) {
+            ctx.dirUnread = true;
+            continue;
+        }
         const uint32_t magic = Be32(buf.data());
         switch (magic) {
             case kDir2BlockMagic: ParseDirBlock(buf.data(), blkBytes, true, false, out); break;
@@ -383,7 +397,11 @@ void WalkInode(WalkCtx& ctx, uint64_t ino, const std::string& path,
     if (depth > kMaxWalkDepth) return;
     if (!visited->insert(ino).second) return; // cycle guard
     std::vector<uint8_t> raw;
-    if (!ReadInodeAt(*ctx.reader, ctx.partOffset, ctx.sb, ino, &raw)) return;
+    bool unread = false;
+    if (!ReadInodeAt(*ctx.reader, ctx.partOffset, ctx.sb, ino, &raw, &unread)) {
+        if (unread) ctx.inodeUnread = true;
+        return;
+    }
     const InodeView v = DecodeInode(raw);
     if (!v.ok) return; // unknown inode version/magic: skip honestly
 
@@ -421,10 +439,13 @@ void WalkInode(WalkCtx& ctx, uint64_t ino, const std::string& path,
 bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
     reader_ = nullptr;
     sb_ = {};
+    secondaryUnread_ = false;
     if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
 
     uint8_t buf[512] = {};
-    if (!reader.readBytes(partitionOffsetBytes, sizeof(buf), buf).success) return false;
+    if (!readComplete(reader.readBytes(partitionOffsetBytes, sizeof(buf), buf), sizeof(buf))) {
+        return false;
+    }
     if (Be32(buf) != kSbMagic) return false; // xfs_dsb.sb_magicnum
 
     XfsSuperblock sb;
@@ -452,11 +473,16 @@ bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
     // Cross-check the secondary superblock: AG 1 starts at agblocks*blocksize and
     // must carry the same magic (xfs_sb_to_disk writes a full sb per AG).
     uint8_t sec[4] = {};
-    if (!reader.readBytes(partitionOffsetBytes + static_cast<uint64_t>(sb.agblocks) * sb.blocksize,
-                          sizeof(sec), sec).success) {
-        return false;
+    if (sb.agcount >= 2) {
+        auto secRes = reader.readBytes(
+            partitionOffsetBytes + static_cast<uint64_t>(sb.agblocks) * sb.blocksize,
+            sizeof(sec), sec);
+        if (!readComplete(secRes, sizeof(sec))) {
+            secondaryUnread_ = true;
+        } else if (Be32(sec) != kSbMagic) {
+            return false;
+        }
     }
-    if (Be32(sec) != kSbMagic) return false;
 
     sb_ = sb;
     partOffset_ = partitionOffsetBytes;
@@ -487,8 +513,28 @@ bool XfsParser::walkTree(const FileCallback& cb) {
 
     std::set<uint64_t> visited;
     std::vector<uint8_t> raw;
-    if (!ReadInodeAt(*reader_, partOffset_, sb_, sb_.rootino, &raw)) return false;
+    bool rootUnread = false;
+    if (!ReadInodeAt(*reader_, partOffset_, sb_, sb_.rootino, &raw, &rootUnread)) {
+        if (rootUnread) {
+            cb(kXfsInodeUnreadPath, 0, 0, false, {});
+            if (secondaryUnread_) cb(kXfsSbUnreadPath, 0, 0, false, {});
+            return true;
+        }
+        return false;
+    }
     WalkInode(ctx, sb_.rootino, std::string(), cb, &visited, 0);
+    if (ctx.dirUnread) {
+        cb(kXfsDirUnreadPath, 0, 0, false, {});
+    }
+    if (ctx.inodeUnread) {
+        cb(kXfsInodeUnreadPath, 0, 0, false, {});
+    }
+    if (ctx.bmapUnread) {
+        cb(kXfsBmapUnreadPath, 0, 0, false, {});
+    }
+    if (secondaryUnread_) {
+        cb(kXfsSbUnreadPath, 0, 0, false, {});
+    }
     return true;
 }
 

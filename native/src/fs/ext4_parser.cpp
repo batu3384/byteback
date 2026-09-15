@@ -189,7 +189,7 @@ struct InodeMeta {
 static void collectLegacyBlockRuns(DiskReader& reader, const uint32_t* i_block,
                                    uint32_t blockSize, uint32_t sectorSize,
                                    uint64_t volumeOffsetBytes, uint64_t fileSize,
-                                   std::vector<FileRecord::DataRun>& runs) {
+                                   std::vector<FileRecord::DataRun>& runs, bool& unread) {
     if (!i_block || blockSize == 0) return;
     const uint32_t ptrsPerBlock = blockSize / 4;
     const uint64_t sectorsPerBlock = blockSize / sectorSize;
@@ -210,7 +210,11 @@ static void collectLegacyBlockRuns(DiskReader& reader, const uint32_t* i_block,
         if (blockNum == 0 || ptrsPerBlock == 0) return;
         std::vector<uint8_t> buf(blockSize);
         const uint64_t off = volumeOffsetBytes + static_cast<uint64_t>(blockNum) * blockSize;
-        if (!reader.readSectors(off, blockSize, buf.data()).success) return;
+        auto ptrRes = reader.readSectors(off, blockSize, buf.data());
+        if (!readComplete(ptrRes, blockSize)) {
+            unread = true;
+            return;
+        }
         for (uint32_t i = 0; i < ptrsPerBlock; ++i) {
             const uint32_t ptr = buf[i * 4] | (buf[i * 4 + 1] << 8) | (buf[i * 4 + 2] << 16) |
                                  (buf[i * 4 + 3] << 24);
@@ -261,7 +265,7 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes, size
                               uint32_t blockSize, uint32_t sectorSize,
                               uint64_t volumeOffsetBytes,
                               std::vector<FileRecord::DataRun>& runs,
-                              int depthBudget) {
+                              int depthBudget, bool& unread) {
     if (nodeLen < sizeof(Ext4_ExtentHeader) + sizeof(Ext4_Extent)) return;
     const Ext4_ExtentHeader* hdr = reinterpret_cast<const Ext4_ExtentHeader*>(nodeBytes);
     if (hdr->eh_magic != EXT4_EXT_MAGIC) return;
@@ -291,8 +295,12 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes, size
         std::vector<uint8_t> child(blockSize);
         // Read via the aligned helper pattern: block offsets are sector-
         // aligned in practice (blockSize >= 1024, multiple of 512).
-        if (!reader.readSectors(volumeOffsetBytes + childBlock * blockSize, blockSize, child.data()).success) continue;
-        collectExtentRuns(reader, child.data(), child.size(), blockSize, sectorSize, volumeOffsetBytes, runs, depthBudget - 1);
+        auto childRes = reader.readSectors(volumeOffsetBytes + childBlock * blockSize, blockSize, child.data());
+        if (!readComplete(childRes, blockSize)) {
+            unread = true;
+            continue;
+        }
+        collectExtentRuns(reader, child.data(), child.size(), blockSize, sectorSize, volumeOffsetBytes, runs, depthBudget - 1, unread);
     }
 }
 
@@ -309,21 +317,26 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
     uint32_t sb_read_len = ((2048 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> sb_buffer(sb_read_len);
-    if (!reader.readSectors(volumeOffsetBytes, sb_read_len, sb_buffer.data()).success) return false;
+    if (!readComplete(reader.readSectors(volumeOffsetBytes, sb_read_len, sb_buffer.data()),
+                      sb_read_len)) {
+        return false;
+    }
 
     Ext4_SuperBlock* sb = reinterpret_cast<Ext4_SuperBlock*>(sb_buffer.data() + 1024);
     if (sb->s_magic != 0xEF53) {
         bool found = false;
         uint32_t search_len = 4 * 1024 * 1024;
         std::vector<uint8_t> search_buf(search_len);
-        if (reader.readSectors(volumeOffsetBytes, search_len, search_buf.data()).success) {
-            for (uint32_t i = 1024; i < search_len - 1024; i += 512) {
-                Ext4_SuperBlock* cand = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
-                if (cand->s_magic == 0xEF53 && cand->s_log_block_size <= 6) {
-                    sb = cand;
-                    found = true;
-                    break;
-                }
+        auto searchRes = reader.readSectors(volumeOffsetBytes, search_len, search_buf.data());
+        const uint64_t walk = readComplete(searchRes, search_len)
+            ? search_len
+            : (searchRes.success ? std::min<uint64_t>(searchRes.bytesRead, search_len) : 0);
+        for (uint32_t i = 1024; i + 1024 < walk; i += 512) {
+            Ext4_SuperBlock* cand = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
+            if (cand->s_magic == 0xEF53 && cand->s_log_block_size <= 6) {
+                sb = cand;
+                found = true;
+                break;
             }
         }
         if (!found) return false;
@@ -364,9 +377,7 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
     uint64_t gdt_bytes = static_cast<uint64_t>(num_groups) * desc_size;
     uint32_t gdt_read_len = ((gdt_bytes + sectorSize - 1) / sectorSize) * sectorSize;
-    std::vector<uint8_t> gdt_buffer(gdt_read_len);
-
-    if (!reader.readSectors(gdt_offset, gdt_read_len, gdt_buffer.data()).success) return false;
+    std::vector<uint8_t> gdt_buffer(gdt_read_len, 0);
 
     // ---- Pass 1: inode tables -> metadata map (extent runs, sizes, times) ----
     // ponytail: the map holds every regular/directory inode in memory; for a
@@ -374,6 +385,18 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     // store and stream pass 2 from it.
     std::unordered_map<uint32_t, InodeMeta> inodeMap;
     std::vector<uint32_t> dirInodes;
+    bool dirUnread = false;
+
+    std::vector<uint8_t> gdtSector(sectorSize);
+    for (uint32_t off = 0; off < gdt_read_len; off += sectorSize) {
+        uint32_t take = std::min(sectorSize, gdt_read_len - off);
+        auto gdtRes = reader.readSectors(gdt_offset + off, take, gdtSector.data());
+        if (!readComplete(gdtRes, take)) {
+            dirUnread = true;
+            continue;
+        }
+        std::memcpy(gdt_buffer.data() + off, gdtSector.data(), take);
+    }
 
     for (uint32_t g = 0; g < num_groups; ++g) {
         if (isRunning && !(*isRunning)) break;
@@ -401,7 +424,11 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             if (isRunning && !(*isRunning)) break;
 
             uint32_t to_read = std::min(chunk_size, inode_read_len - offset);
-            if (!reader.readSectors(inode_table_offset + offset, to_read, inode_buffer.data()).success) continue;
+            auto inodeRes = reader.readSectors(inode_table_offset + offset, to_read, inode_buffer.data());
+            if (!readComplete(inodeRes, to_read)) {
+                dirUnread = true;
+                continue;
+            }
 
             uint32_t inodes_in_chunk = std::min((uint32_t)(to_read / inode_size), inodes_per_group - (offset / inode_size));
 
@@ -434,10 +461,10 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 if (inode->i_flags & EXT4_EXTENTS_FLAG) {
                     collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
                                       sizeof(inode->i_block),
-                                      block_size, sectorSize, volumeOffsetBytes, meta.runs, 5);
+                                      block_size, sectorSize, volumeOffsetBytes, meta.runs, 5, dirUnread);
                 } else if (inode->i_block[0] != 0) {
                     collectLegacyBlockRuns(reader, inode->i_block, block_size, sectorSize,
-                                           volumeOffsetBytes, file_size, meta.runs);
+                                           volumeOffsetBytes, file_size, meta.runs, dirUnread);
                 }
 
                 if (is_directory && !meta.runs.empty()) {
@@ -491,8 +518,10 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         for (const auto& run : dm.runs) {
             uint64_t runBytes = run.sectorCount * sectorSize;
             dirBuf.resize(static_cast<size_t>(runBytes));
-            if (!reader.readSectors(run.startSector * sectorSize,
-                                    static_cast<uint32_t>(runBytes), dirBuf.data()).success) {
+            auto dirRes = reader.readSectors(run.startSector * sectorSize,
+                                            static_cast<uint32_t>(runBytes), dirBuf.data());
+            if (!readComplete(dirRes, runBytes)) {
+                dirUnread = true;
                 continue;
             }
 
@@ -533,6 +562,18 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 pos += de->rec_len;
             }
         }
+    }
+
+    if (dirUnread) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Ext4_DirectoryUnread";
+        fr.path = "/ext4-dir-unread/";
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = "ext4_dir_unread";
+        callback(fr);
     }
 
     return true;

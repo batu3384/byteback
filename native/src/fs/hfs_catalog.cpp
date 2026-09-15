@@ -44,7 +44,7 @@ struct HfsFork {
 bool readAt(DiskReader& reader, uint64_t offset, uint32_t size, std::vector<uint8_t>& out) {
     out.resize(size);
     auto res = reader.readSectors(offset, size, out.data());
-    return res.success && res.bytesRead >= size;
+    return readComplete(res, size);
 }
 
 bool parseFork(const uint8_t* data, HfsFork& fork) {
@@ -106,6 +106,7 @@ struct CatalogCtx {
     int fileCount = 0;
     int maxFiles = 0;
     bool emittedLimit = false;
+    bool catalogUnread = false;
     // ponytail: hard node-visit budget instead of a visited set; a crafted
     // B-tree can otherwise fan out exponentially within the depth cap.
     size_t nodesVisited = 0;
@@ -162,7 +163,10 @@ bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
 
     std::vector<uint8_t> node;
     uint64_t off = ctx.partitionOffset + static_cast<uint64_t>(block) * ctx.blockSize;
-    if (!readAt(*ctx.reader, off, ctx.blockSize, node)) return true;
+    if (!readAt(*ctx.reader, off, ctx.blockSize, node)) {
+        ctx.catalogUnread = true;
+        return true;
+    }
 
     uint8_t kind = node[8];  // BTNodeDescriptor: forwardLink(4) backLink(4) kind(1) height(1) numRecords(2)
     uint16_t numRecords = be16(node.data() + 10);
@@ -314,7 +318,10 @@ bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
 
     std::vector<uint8_t> node;
     uint64_t off = ctx.partitionOffset + static_cast<uint64_t>(block) * ctx.blockSize;
-    if (!readAt(*ctx.reader, off, ctx.blockSize, node)) return true;
+    if (!readAt(*ctx.reader, off, ctx.blockSize, node)) {
+        ctx.catalogUnread = true;
+        return true;
+    }
 
     uint8_t kind = node[8];  // BTNodeDescriptor: kind at 8, numRecords at 10
     uint16_t numRecords = be16(node.data() + 10);
@@ -389,7 +396,24 @@ bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
     }
 
     uint32_t rootBlock = catalogFork.extents.front().startBlock;
-    return walkCatalogNode(ctx, rootBlock, 0);
+    const bool ok = walkCatalogNode(ctx, rootBlock, 0);
+    if (ctx.catalogUnread && ctx.callback) {
+        FileRecord sentinel{};
+        sentinel.id = -1;
+        sentinel.parentId = -1;
+        sentinel.name = "Hfs_CatalogUnread";
+        sentinel.path = kHfsCatalogUnreadPath;
+        sentinel.source = kHfsCatalogUnreadSource;
+        sentinel.category = "System";
+        sentinel.status = 0;
+        sentinel.confidence = 20;
+        const uint64_t byteOff = ctx.partitionOffset + static_cast<uint64_t>(rootBlock) * ctx.blockSize;
+        sentinel.startSector = byteOff / ctx.sectorSize;
+        const uint64_t nsec = (static_cast<uint64_t>(ctx.blockSize) + ctx.sectorSize - 1) / ctx.sectorSize;
+        sentinel.endSector = sentinel.startSector + (nsec == 0 ? 1 : nsec);
+        (*ctx.callback)(sentinel);
+    }
+    return ok;
 }
 
 } // namespace byteback

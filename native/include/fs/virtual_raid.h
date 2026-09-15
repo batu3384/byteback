@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <memory>
+#include <string>
 #include "byteback_io.h"
 
 namespace byteback {
@@ -17,12 +18,21 @@ enum class RaidLevel {
     RAID10
 };
 
+// Reconstruct IPC trust boundary: power-of-two stripe, 512 B .. 1 MiB.
+// VirtualRaid itself accepts any non-zero stripe so unit tests can use 4 KiB.
+inline bool isRaidStripeSize(size_t n) {
+    constexpr size_t kMin = 512;
+    constexpr size_t kMax = 1024u * 1024u;
+    return n >= kMin && n <= kMax && (n & (n - 1)) == 0;
+}
+
 // Software reconstruction of a degraded or broken RAID array over physical
 // disks. All reads go through the member DiskReaders; nothing is written
 // back to the physical media (forensic read-only by design).
 //
 // Layouts:
-//   RAID0  — left-synchronous stripe, block i lives on disk (i % N)
+//   RAID0  — left-synchronous stripe, block i lives on disk (i % N).
+//            No redundancy: an unreadable member throws (not silent zeros).
 //   RAID1  — mirror; reads from the first healthy member
 //   RAID5  — left-asymmetric, rotating parity; single-disk failure
 //            reconstructed via XOR of the surviving members
@@ -32,14 +42,16 @@ enum class RaidLevel {
 //            failure per mirrored pair
 class VirtualRaid {
 public:
-    VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size);
+    VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size,
+                uint64_t data_offset_bytes = 0);
 
     // Assembly from already-opened member readers (unit tests, pre-loaded images).
-    VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size);
+    VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size,
+                uint64_t data_offset_bytes = 0);
 
     // Convenience: one in-memory image per member disk.
     static VirtualRaid fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images,
-                                  size_t block_size);
+                                  size_t block_size, uint64_t data_offset_bytes = 0);
 
     // Reads are read-only; write() always throws (forensic mode).
     void write(size_t offset, const std::vector<uint8_t>& data);
@@ -54,6 +66,12 @@ public:
 
     size_t num_disks() const { return num_disks_; }
     RaidLevel level() const { return level_; }
+    size_t blockSize() const { return block_size_; }
+    uint64_t dataOffsetBytes() const { return data_offset_bytes_; }
+    // Imaging resume identity: level, stripe, offset, capacity, failed-disk
+    // mask, member drive index + first 16 bytes. Same-size arrays no longer
+    // collide on "raid:<capacity>" alone.
+    std::string resumeKey() const;
 
 private:
     void initFromMembers(std::vector<std::shared_ptr<DiskReader>> members);
@@ -62,6 +80,7 @@ private:
     size_t num_disks_;
     uint64_t disk_size_;
     size_t block_size_;
+    uint64_t data_offset_bytes_ = 0;
     std::vector<std::shared_ptr<byteback::DiskReader>> disk_readers_;
     mutable std::vector<bool> disk_active_;
 
@@ -69,9 +88,13 @@ private:
     // DiskReader::readSectors rejects unaligned offsets/sizes, and RAID
     // arithmetic produces byte-granular block offsets — so this helper rounds
     // down/up to sector boundaries and slices the requested range out of the
-    // aligned result. Fills the output with zeros on read failure (bad
-    // sectors must not abort a forensic reconstruction).
+    // aligned result. Zeros `out` on read failure so XOR reconstruction is
+    // not poisoned by stale bytes. Callers without redundancy (RAID0) must
+    // treat false as unread and throw — zeros are not file content.
+    // `offset` is payload-relative; data_offset_bytes_ is added here so every
+    // RAID level inherits the per-member reservation.
     bool readMemberAligned(size_t disk_idx, uint64_t offset, size_t length, uint8_t* out) const;
+    uint64_t memberPayloadBytes() const;
 
     std::vector<uint8_t> read_raid0(size_t offset, size_t length) const;
     std::vector<uint8_t> read_raid1(size_t offset, size_t length) const;

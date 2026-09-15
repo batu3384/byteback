@@ -32,9 +32,10 @@ bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
 
 bool isDiscoveryOnlySource(const std::string& source);
 
-// Open PhysicalDrive, RAID, or the VSS volume named on the record. False = err set.
+// Open VSS, RAID, the scan's Windows volume device, or PhysicalDrive. False = err set.
 bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
-                         std::shared_ptr<VirtualRaid> raid, std::string& err);
+                         std::shared_ptr<VirtualRaid> raid, std::string& err,
+                         const std::string& volumePath = {});
 
 // Copy AES-XTS FVEK onto a recover reader. Skip VSS — Windows already presents plaintext.
 void applyBoundFvek(DiskReader& dest, const DiskReader& src, const FileRecord& rec);

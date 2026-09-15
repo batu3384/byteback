@@ -217,6 +217,16 @@ TEST_F(MetadataStoreTest, ScanCheckpointAndPartitionPersist) {
     EXPECT_EQ(st.carveResumeSector, 512u);
 }
 
+TEST_F(MetadataStoreTest, ScanVolumeBindingPersists) {
+    int64_t scanId = store_.createScan(1, "deep", 1000);
+    ASSERT_TRUE(store_.setScanVolumeBinding(scanId, "\\\\.\\E:", {5, 6, 5, -1}));
+    ScanState st = store_.getScanState(scanId);
+    EXPECT_EQ(st.volumePath, "\\\\.\\E:");
+    ASSERT_EQ(st.evidenceDisks.size(), 2u);
+    EXPECT_EQ(st.evidenceDisks[0], 5);
+    EXPECT_EQ(st.evidenceDisks[1], 6);
+}
+
 TEST_F(MetadataStoreTest, IntegrityChecksumRoundTrip) {
     int64_t scanId = store_.createScan(0, "quick", 10);
     FileRecord r;
@@ -520,7 +530,7 @@ TEST_F(MetadataStoreTest, OpenUpgradesV2AndIsIdempotent) {
         sqlite3_stmt* ver = nullptr;
         ASSERT_EQ(sqlite3_prepare_v2(chk, "PRAGMA user_version;", -1, &ver, nullptr), SQLITE_OK);
         ASSERT_EQ(sqlite3_step(ver), SQLITE_ROW);
-        EXPECT_EQ(sqlite3_column_int(ver, 0), 3);
+        EXPECT_EQ(sqlite3_column_int(ver, 0), 4);
         sqlite3_finalize(ver);
         sqlite3_close(chk);
         store_.close();

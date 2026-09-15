@@ -79,6 +79,11 @@ bool DiskReader::hasRaidBackend() const {
     return static_cast<bool>(raidBackend_);
 }
 
+std::shared_ptr<VirtualRaid> DiskReader::raidBackend() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return raidBackend_;
+}
+
 void DiskReader::attachMemoryVolume(std::vector<uint8_t> image, uint32_t sectorSize) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();

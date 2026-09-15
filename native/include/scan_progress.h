@@ -57,6 +57,9 @@ inline uint64_t mapWorkToBudget(uint64_t done, uint64_t estimatedTotal, uint64_t
 // Process-wide: carve workers must not read a thread_local leftover "metadata".
 extern std::atomic<const char*> g_scanPhase;
 
+// Set when carve cannot load signatures; scanWorker maps it to status 3.
+extern std::atomic<bool> g_carveInitFailed;
+
 // Progress-v2: phase-local counters so the renderer can show "metadata %x"
 // and "carve %y" separately while the main bar stays monotonic over the whole
 // scan. Reset by the coordinator at each phase switch.

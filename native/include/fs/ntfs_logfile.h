@@ -28,7 +28,11 @@ private:
 };
 
 // Scan $LogFile. When collector is set, hints go there; standalone ntfs_logfile file
-// records are not emitted (restart page still uses callback).
+// records are not emitted (restart page still uses callback). Unreadable I/O
+// always emits ntfs_logfile_unread — zero-fill is not a clean/empty journal.
+inline constexpr const char* kNtfsLogfileUnreadPath = "/ntfs-logfile-unread/";
+inline constexpr const char* kNtfsLogfileUnreadSource = "ntfs_logfile_unread";
+
 void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
                           FileSystemParser::FileRecordCallback callback,
                           std::atomic<bool>* isRunning,

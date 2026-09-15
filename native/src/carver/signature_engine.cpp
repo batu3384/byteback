@@ -516,8 +516,17 @@ void CarvingEngine::setResourceSignatureDir(const std::string& dir) {
     g_resourceSignatureDir = dir;
 }
 
-void CarvingEngine::setSignatureOverlay(const std::string& path) {
+bool CarvingEngine::setSignatureOverlay(const std::string& path) {
+    if (path.empty()) {
+        g_signatureOverlayPath.clear();
+        return true;
+    }
+    CarvingEngine hexer;
+    std::vector<FileSignature> probe;
+    auto hexFn = [&hexer](const std::string& hex) { return hexer.hexToBytes(hex); };
+    if (!appendSignaturesFromJson(probe, path, hexFn)) return false;
     g_signatureOverlayPath = path;
+    return true;
 }
 
 size_t CarvingEngine::globalSignatureCount() {
@@ -715,6 +724,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
     
     uint64_t rangeEndSector = std::min(lastSector, diskSize / sectorSize);
     int foundCount = 0;
+    bool unreadEmitted = false;
     
     int currentState = 0;
     // CA-034: active carves live in a startOffset-ordered map with a
@@ -762,7 +772,24 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
             subReads.push_back({sub.sector, half});
             continue;
         }
-        if (!res.success) continue;
+        if (!res.success) {
+            if (!unreadEmitted) {
+                unreadEmitted = true;
+                FileRecord fr;
+                fr.id = -1;
+                fr.parentId = -1;
+                fr.name = "Carver_Unread";
+                fr.path = kCarverUnreadPath;
+                fr.source = kCarverUnreadSource;
+                fr.category = "System";
+                fr.status = 0;
+                fr.confidence = 20;
+                fr.startSector = sub.sector;
+                fr.endSector = sub.sector + 1;
+                emit(fr);
+            }
+            continue;
+        }
 
         uint64_t baseOffset = sub.sector * sectorSize;
 

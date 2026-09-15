@@ -82,6 +82,9 @@ struct ScanState {
     uint64_t partitionSizeSectors = 0;
     bool metadataComplete = false;
     uint64_t carveResumeSector = 0;
+    // Windows "\\.\X:" when the scan bound a volume device (spanned extents).
+    std::string volumePath;
+    std::vector<int> evidenceDisks;
 };
 
 // Singleton forensic case metadata (E01 header + audit context).
@@ -150,6 +153,8 @@ public:
     bool setScanTotalSectors(int64_t scanId, uint64_t totalSectors);
     bool updateScanProgress(int64_t scanId, uint64_t scannedSectors);
     bool setScanPartition(int64_t scanId, int64_t partitionStartSector, uint64_t partitionSizeSectors);
+    bool setScanVolumeBinding(int64_t scanId, const std::string& volumePath,
+                              const std::vector<int>& evidenceDisks);
     bool updateScanCheckpoint(int64_t scanId, bool metadataComplete, uint64_t carveResumeSector);
     bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);

@@ -58,6 +58,7 @@ const char* volumeFsKindLabel(VolumeFsKind kind) {
         case VolumeFsKind::Apfs: return "apfs";
         case VolumeFsKind::Hfs: return "hfs";
         case VolumeFsKind::Refs: return "refs";
+        case VolumeFsKind::Unread: return "unread";
         default: return "unknown";
     }
 }
@@ -89,22 +90,41 @@ std::optional<ResolvedVolume> resolveDriveLetter(const std::wstring& letter) {
                               nullptr, OPEN_EXISTING, 0, nullptr);
     if (hVol == INVALID_HANDLE_VALUE) return std::nullopt;
 
-    std::vector<uint8_t> buf(sizeof(VOLUME_DISK_EXTENTS) + 8 * sizeof(DISK_EXTENT));
+    std::vector<uint8_t> buf(sizeof(VOLUME_DISK_EXTENTS) + 16 * sizeof(DISK_EXTENT));
     DWORD br = 0;
     auto* ext = reinterpret_cast<VOLUME_DISK_EXTENTS*>(buf.data());
-    if (!DeviceIoControl(hVol, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-                         nullptr, 0, ext, static_cast<DWORD>(buf.size()), &br, nullptr) ||
-        ext->NumberOfDiskExtents == 0) {
-        CloseHandle(hVol);
-        return std::nullopt;
+    for (;;) {
+        if (DeviceIoControl(hVol, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                            nullptr, 0, ext, static_cast<DWORD>(buf.size()), &br, nullptr)
+            && ext->NumberOfDiskExtents > 0) {
+            break;
+        }
+        if (GetLastError() != ERROR_MORE_DATA) {
+            CloseHandle(hVol);
+            return std::nullopt;
+        }
+        if (buf.size() > sizeof(VOLUME_DISK_EXTENTS) + 256 * sizeof(DISK_EXTENT)) {
+            CloseHandle(hVol);
+            return std::nullopt;
+        }
+        buf.resize(buf.size() + 16 * sizeof(DISK_EXTENT));
+        ext = reinterpret_cast<VOLUME_DISK_EXTENTS*>(buf.data());
     }
 
-    // ponytail: multi-disk spanned volumes use first extent only.
+    const uint32_t extentCount = ext->NumberOfDiskExtents;
     const DISK_EXTENT& e0 = ext->Extents[0];
     CloseHandle(hVol);
 
     ResolvedVolume rv;
     rv.driveIndex = static_cast<int>(e0.DiskNumber);
+    rv.diskExtentCount = extentCount;
+    rv.volumePath = std::string("\\\\.\\") + static_cast<char>((*norm)[0]) + ":";
+    for (DWORD i = 0; i < extentCount; ++i) {
+        const int n = static_cast<int>(ext->Extents[i].DiskNumber);
+        if (n < 0) continue;
+        if (std::find(rv.diskNumbers.begin(), rv.diskNumbers.end(), n) == rv.diskNumbers.end())
+            rv.diskNumbers.push_back(n);
+    }
     if (rv.driveIndex < 0) return std::nullopt;
 
     uint32_t sectorSize = 512;

@@ -16,4 +16,11 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                        FileSystemParser::FileRecordCallback callback,
                        std::atomic<bool>* isRunning);
 
+inline constexpr const char* kApfsNxsbUnreadPath = "/apfs-nxsb-unread/";
+inline constexpr const char* kApfsNxsbUnreadSource = "apfs_nxsb_unread";
+inline constexpr const char* kApfsBlockUnreadPath = "/apfs-block-unread/";
+inline constexpr const char* kApfsBlockUnreadSource = "apfs_block_unread";
+inline constexpr const char* kApfsLinearUnreadPath = "/apfs-linear-unread/";
+inline constexpr const char* kApfsLinearUnreadSource = "apfs_linear_unread";
+
 } // namespace byteback

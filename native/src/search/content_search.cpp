@@ -3,9 +3,13 @@
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "byteback_recovery.h"
+#include "io/volume_mapper_win.h"
+#include "io/hex_bind.h"
 #include <algorithm>
+#include <string>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <regex>
@@ -18,10 +22,7 @@ namespace {
 // ReDoS guard, mirroring the renderer's isSafeHighlightRegex policy
 // (src/renderer/components/SearchView/highlight.ts): reject patterns where a
 // quantifier is applied to a group whose body contains a quantifier or an
-// alternation — the classic exponential-backtracking shape ("(a+)+$"). Such
-// patterns fall back to literal search, same as oversized patterns. This is a
-// conservative shape match: some safe patterns degrade to literal, an
-// acceptable trade for never hanging the main process on hostile input.
+// alternation — the classic exponential-backtracking shape ("(a+)+$").
 bool regexLikelyBacktracking(const std::string& pattern) {
     // Locate each quantifier applied to a ')'; inspect the matching group body.
     for (size_t i = 1; i < pattern.size(); ++i) {
@@ -51,6 +52,18 @@ bool regexLikelyBacktracking(const std::string& pattern) {
     return false;
 }
 
+bool regexQueryOk(const std::string& pattern) {
+    if (pattern.size() > kMaxContentRegexChars) return false;
+    if (regexLikelyBacktracking(pattern)) return false;
+    try {
+        std::regex re(pattern, std::regex::icase | std::regex::optimize);
+        (void)re;
+        return true;
+    } catch (const std::regex_error&) {
+        return false;
+    }
+}
+
 // CA-031: single compiled matcher per search run — the chunk scan calls
 // find() on every chunk, so a regex must compile once, not per chunk.
 class QueryMatcher {
@@ -62,22 +75,12 @@ public:
     }
     static QueryMatcher regex(const std::string& pattern) {
         QueryMatcher m;
-        if (pattern.size() > kMaxRegexQueryChars) {
-            // Mirrors the IPC regex cap (ipc-handlers.ts): oversized patterns
-            // fall back to literal search to bound backtracking exposure.
-            m.literal_ = pattern;
-            return m;
-        }
-        if (regexLikelyBacktracking(pattern)) {
-            // Exponential-backtracking shape: literal fallback, never compile.
-            m.literal_ = pattern;
-            return m;
-        }
+        if (!regexQueryOk(pattern)) return m;
         try {
             m.re_ = std::regex(pattern, std::regex::icase | std::regex::optimize);
             m.regex_ = true;
         } catch (const std::regex_error&) {
-            // Invalid pattern matches nothing; find() never throws.
+            // contentRegexQueryOk already compiled once; this catch is belt.
         }
         return m;
     }
@@ -111,7 +114,6 @@ public:
     }
 
 private:
-    static constexpr size_t kMaxRegexQueryChars = 128;
     std::string literal_;
     std::regex re_;
     bool regex_ = false;
@@ -180,23 +182,28 @@ void attachFtsSnippet(MetadataStore& store, FileRecord& f, const std::string& qu
 }
 
 bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, uint64_t maxBytes,
-                    std::vector<uint8_t>& buf) {
+                    std::vector<uint8_t>& buf, uint64_t* logicalConsumed, bool* ioUnread) {
     buf.clear();
     if (maxBytes == 0) return false;
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
+    auto noteConsumed = [&](uint64_t n) {
+        if (logicalConsumed) *logicalConsumed = n;
+    };
 
     if (!rec.residentData.empty()) {
         if (byteOff >= rec.residentData.size()) return false;
         uint64_t take = std::min(maxBytes, rec.residentData.size() - byteOff);
         buf.assign(rec.residentData.begin() + static_cast<std::ptrdiff_t>(byteOff),
                    rec.residentData.begin() + static_cast<std::ptrdiff_t>(byteOff + take));
+        noteConsumed(take);
         return true;
     }
 
     auto copyFromRuns = [&](uint64_t wantOff, uint64_t wantLen) -> bool {
         uint64_t logical = 0;
         uint64_t filled = 0;
+        uint64_t skippedLeading = 0;
         buf.assign(static_cast<size_t>(wantLen), 0);
         for (const auto& run : rec.runs) {
             if (filled >= wantLen) break;
@@ -208,17 +215,39 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
             uint64_t skipInRun = wantOff > logical ? wantOff - logical : 0;
             uint64_t avail = runBytes - skipInRun;
             uint64_t take = std::min(avail, wantLen - filled);
+            if (run.startSector == UINT64_MAX) {
+                // Sparse holes are file zeros, not unread I/O.
+                filled += take;
+                logical += runBytes;
+                continue;
+            }
             uint64_t readOff = run.startSector * sectorSize + skipInRun;
             uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
             std::vector<uint8_t> tmp(readBytes, 0);
             auto res = reader.readSectors(readOff, readBytes, tmp.data());
-            if (res.success) {
-                std::memcpy(buf.data() + filled, tmp.data(), static_cast<size_t>(take));
+            if (!res.success) {
+                if (ioUnread) *ioUnread = true;
+                if (filled > 0) break;
+                skippedLeading += take;
+                logical += runBytes;
+                continue;
             }
-            filled += take;
+            uint64_t usable = take;
+            if (res.bytesRead < take) usable = res.bytesRead;
+            if (res.paddedZeros) usable = std::min(usable, res.bytesRead);
+            if (usable == 0) {
+                if (filled > 0) break;
+                skippedLeading += take;
+                logical += runBytes;
+                continue;
+            }
+            std::memcpy(buf.data() + filled, tmp.data(), static_cast<size_t>(usable));
+            filled += usable;
+            if (res.paddedZeros || usable < take) break;
             logical += runBytes;
         }
         buf.resize(static_cast<size_t>(filled));
+        noteConsumed(skippedLeading + filled);
         return filled > 0;
     };
 
@@ -240,8 +269,16 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
         uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
         buf.assign(readBytes, 0);
         auto res = reader.readSectors(readOff, readBytes, buf.data());
-        if (res.success) buf.resize(static_cast<size_t>(take));
-        return res.success;
+        if (!res.success) {
+            if (ioUnread) *ioUnread = true;
+            return false;
+        }
+        uint64_t usable = take;
+        if (res.paddedZeros || res.bytesRead < take) usable = std::min(take, res.bytesRead);
+        if (usable == 0) return false;
+        buf.resize(static_cast<size_t>(usable));
+        noteConsumed(usable);
+        return true;
     }
     return false;
 }
@@ -251,15 +288,26 @@ void tagContentMatch(FileRecord& f) {
 }
 
 // Overlap between consecutive indexed chunks: a query (or FTS token) whose
-// bytes straddle a chunk boundary must still match. ponytail: fixed 4 KiB
-// overlap — phrases longer than this that straddle a boundary are still
-// missed; upgrade path = query-length overlap at search time.
+// bytes straddle a chunk boundary must still match. FTS index is built with
+// this floor; live walks use max(floor, query length). Queries longer than
+// kMaxContentQueryBytes are refused at startSearch — truncated overlap would
+// silently miss a straddle.
 constexpr uint64_t kChunkOverlap = 4096;
+
+uint64_t overlapForQuery(const std::string& query) {
+    uint64_t o = query.size();
+    if (o < kChunkOverlap) o = kChunkOverlap;
+    return o;
+}
 // Max chunks held in memory before flushing to the store (bounds RAM on huge
 // files: 32 x 256 KiB default chunks = ~8 MiB per file).
 constexpr size_t kChunkFlushBatch = 32;
 
 } // namespace
+
+bool contentRegexQueryOk(const std::string& pattern) {
+    return regexQueryOk(pattern);
+}
 
 std::string sanitizeSnippetContext(const std::string& raw) {
     size_t printable = 0;
@@ -303,23 +351,25 @@ std::string sanitizeContentSample(const std::vector<uint8_t>& raw, uint64_t maxL
     return out;
 }
 
-void runContentSearch(MetadataStore& store, DiskReader& reader,
+int runContentSearch(MetadataStore& store, DiskReader& reader,
                       int64_t scanId, const std::string& query,
                       const ContentSearchOptions& opts,
                       ContentMatchCallback onMatch,
                       ContentProgressCallback onProgress,
                       std::atomic<bool>* isRunning) {
-    if (query.empty() || scanId <= 0) return;
+    if (query.empty() || scanId <= 0) return kContentSearchComplete;
+    if (int refuse = contentSearchWalkStatus(query, opts); refuse != 0) return refuse;
 
     int64_t total = store.getFileCount(scanId);
     if (total <= 0) {
         if (onProgress) onProgress(0, 0);
-        return;
+        return kContentSearchComplete;
     }
 
     // CA-031: the FTS shortcut cannot evaluate regexes — regex queries always
     // walk the disk (which also re-anchors snippets on live chunk text).
-    if (!opts.useRegex && store.isContentIndexComplete(scanId)) {
+    if (!opts.useRegex && store.isContentIndexComplete(scanId)
+        && query.size() <= kChunkOverlap) {
         auto ids = store.searchContentFts(scanId, query, 0, 100000);
         int64_t processed = 0;
         for (int64_t id : ids) {
@@ -334,10 +384,11 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
             if (onProgress) onProgress(processed, static_cast<uint64_t>(ids.size()));
         }
         if (onProgress) onProgress(static_cast<uint64_t>(ids.size()), static_cast<uint64_t>(ids.size()));
-        return;
+        return kContentSearchComplete;
     }
 
     int64_t processed = 0;
+    bool unread = false;
     const int page = 200;
     for (int64_t off = 0; off < total; off += page) {
         if (isRunning && !(*isRunning)) break;
@@ -361,6 +412,7 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                 active = &vssReader;
             }
             const uint64_t chunk = opts.chunkBytes > 0 ? opts.chunkBytes : (256ull * 1024ull);
+            const uint64_t overlap = overlapForQuery(query);
             uint64_t fileBytes = f.sizeBytes;
             if (fileBytes == 0 && !f.residentData.empty()) fileBytes = f.residentData.size();
             if (fileBytes == 0) {
@@ -389,11 +441,15 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                 return ok;
             };
             if (fileBytes > 0) {
-                for (uint64_t o = 0; o < fileBytes; o += chunk) {
+                for (uint64_t o = 0; o < fileBytes; ) {
                     if (isRunning && !(*isRunning)) break;
                     std::vector<uint8_t> sample;
-                    if (!readFileRange(*active, f, o, chunk + kChunkOverlap, sample)) break;
-                    std::string t = sanitizeContentSample(sample, chunk + kChunkOverlap);
+                    uint64_t consumed = 0;
+                    if (!readFileRange(*active, f, o, chunk + overlap, sample, &consumed, &unread)) {
+                        o += chunk;
+                        continue;
+                    }
+                    std::string t = sanitizeContentSample(sample, chunk + overlap);
                     if (!t.empty()) {
                         if (!hit) {
                             size_t mlen = 0;
@@ -406,6 +462,9 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
                         chunks.push_back(std::move(t));
                     }
                     flush(false);
+                    if (consumed == 0) consumed = sample.size();
+                    if (consumed >= chunk) o += chunk;
+                    else o += std::max<uint64_t>(consumed, 1);
                 }
             }
             flush(true);
@@ -418,12 +477,15 @@ void runContentSearch(MetadataStore& store, DiskReader& reader,
             if (onProgress) onProgress(static_cast<uint64_t>(processed), static_cast<uint64_t>(total));
         }
     }
+    if (isRunning && !(*isRunning)) return kContentSearchStopped;
+    return unread ? kContentSearchReadIncomplete : kContentSearchComplete;
 }
 
 int64_t searchFileContentCount(MetadataStore& store, DiskReader& reader,
                                int64_t scanId, const std::string& query,
                                const ContentSearchOptions& opts) {
     if (query.empty() || scanId <= 0) return 0;
+    if (contentSearchWalkStatus(query, opts) != 0) return 0;
     int64_t matches = 0;
     std::atomic<bool> running{true};
     runContentSearch(store, reader, scanId, query, opts,
@@ -438,6 +500,7 @@ std::vector<FileRecord> searchFileContent(MetadataStore& store, DiskReader& read
                                           const ContentSearchOptions& opts) {
     std::vector<FileRecord> out;
     if (query.empty() || scanId <= 0 || limit <= 0) return out;
+    if (contentSearchWalkStatus(query, opts) != 0) return out;
 
     int skipped = 0;
     std::atomic<bool> running{true};
@@ -475,22 +538,40 @@ void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,
                                            ContentProgressCallback onProgress,
                                            ContentFinishedCallback onFinished,
                                            const DiskReader* fvekSource) {
+    if (int s = contentSearchWalkStatus(query, opts); s != 0) {
+        if (onFinished) onFinished(s);
+        return;
+    }
     stopSearch();
     running_ = true;
     worker_ = std::thread([this, &store, driveIndex, raid = std::move(raid), scanId, query, opts,
                           onMatch = std::move(onMatch), onProgress = std::move(onProgress),
                           onFinished = std::move(onFinished), fvekSource]() mutable {
         DiskReader reader;
-        if (raid) {
+        bool opened = false;
+        if (usesRaidBackend(static_cast<bool>(raid), driveIndex)) {
             reader.setRaidBackend(std::move(raid));
-        } else if (driveIndex < 0 || !reader.openDrive(driveIndex)) {
-            if (onFinished) onFinished(3);
+            opened = true;
+        } else {
+            std::string vp;
+            if (scanId > 0) vp = store.getScanState(scanId).volumePath;
+            if (!vp.empty()) {
+                opened = isWin32VolumeDevicePath(vp) && reader.openVolumePath(vp);
+            } else {
+                opened = driveIndex >= 0 && reader.openDrive(driveIndex);
+            }
+        }
+        if (!opened) {
+            if (onFinished) onFinished(kContentSearchOpenFailed);
             running_ = false;
             return;
         }
         if (fvekSource) reader.copyXtsFvekFrom(*fvekSource);
-        runContentSearch(store, reader, scanId, query, opts, onMatch, onProgress, &running_);
-        if (onFinished) onFinished(running_.load() ? 1 : 2);
+        const int st = runContentSearch(store, reader, scanId, query, opts, onMatch, onProgress, &running_);
+        if (onFinished) {
+            if (!running_.load()) onFinished(kContentSearchStopped);
+            else onFinished(st);
+        }
         running_ = false;
     });
 }

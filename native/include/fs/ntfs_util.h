@@ -483,17 +483,12 @@ inline void harvestIndexEntry(const uint8_t* entry, size_t avail, bool slack,
     out.push_back(std::move(h));
 }
 
-// ponytail: resident INDEX_ROOT only. Full INDX ($INDEX_ALLOCATION) recarve later.
-inline std::vector<IndexNameHint> parseIndexRoot(const uint8_t* data, size_t n) {
-    std::vector<IndexNameHint> out;
-    if (!data || n < 32) return out;
-    if (u32le(data) != ATTR_FILE_NAME) return out;
-    const uint8_t* hdr = data + 16;
+inline void parseIndexHeader(const uint8_t* hdr, size_t hdrSpan, std::vector<IndexNameHint>& out) {
+    if (!hdr || hdrSpan < 16) return;
     const uint32_t first = u32le(hdr + 0);
     const uint32_t used = u32le(hdr + 4);
     uint32_t alloc = u32le(hdr + 8);
-    const size_t hdrSpan = n - 16;
-    if (first < 16 || used < first || used > hdrSpan) return out;
+    if (first < 16 || used < first || used > hdrSpan) return;
     uint32_t off = first;
     while (off + 16 <= used) {
         const uint8_t* e = hdr + off;
@@ -516,8 +511,43 @@ inline std::vector<IndexNameHint> parseIndexRoot(const uint8_t* data, size_t n) 
         harvestIndexEntry(e, alloc - off, true, out);
         off += elen;
     }
+}
+
+inline std::vector<IndexNameHint> parseIndexRoot(const uint8_t* data, size_t n) {
+    std::vector<IndexNameHint> out;
+    if (!data || n < 32) return out;
+    if (u32le(data) != ATTR_FILE_NAME) return out;
+    parseIndexHeader(data + 16, n - 16, out);
+    return out;
+}
+
+inline uint32_t indexRootBlockSize(const uint8_t* data, size_t n) {
+    if (!data || n < 12) return 0;
+    if (u32le(data) != ATTR_FILE_NAME) return 0;
+    const uint32_t sz = u32le(data + 8);
+    if (sz < 512 || sz > 65536) return 0;
+    return sz;
+}
+
+// $INDEX_ALLOCATION INDX record. USA is applied in place (same as FILE).
+inline std::vector<IndexNameHint> parseIndxRecord(uint8_t* rec, size_t n, size_t sectorSize) {
+    std::vector<IndexNameHint> out;
+    if (!rec || n < 0x40 || sectorSize == 0) return out;
+    if (std::memcmp(rec, "INDX", 4) != 0) return out;
+    applyUsaFixup(rec, n, sectorSize, u16le(rec + 4), u16le(rec + 6));
+    parseIndexHeader(rec + 0x18, n - 0x18, out);
     return out;
 }
 
 } // namespace ntfs
+
+// $UsnJrnl:$J I/O failed or zero-padded. Not a clean/empty journal.
+inline constexpr const char* kUsnUnreadPath = "/usn-unread/";
+inline constexpr const char* kUsnUnreadSource = "usn_unread";
+
+// MFT chunk/boot I/O failed. One bad sector must not drop a 4 MiB window
+// as “those files do not exist”.
+inline constexpr const char* kNtfsMftUnreadPath = "/ntfs-mft-unread/";
+inline constexpr const char* kNtfsMftUnreadSource = "ntfs_mft_unread";
+
 } // namespace byteback

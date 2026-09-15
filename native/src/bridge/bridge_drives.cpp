@@ -3,6 +3,7 @@
 #include "bridge_common.h"
 #include "byteback_carver.h"
 #include "io/volume_mapper_win.h"
+#include "io/hex_bind.h"
 
 namespace {
 
@@ -34,6 +35,7 @@ public:
                              Napi::Number::New(env, static_cast<double>(total))});
                 });
             });
+            unread_ = scanner.scanUnread();
             diskSectors_ = reader.getDiskSize() / (reader.getSectorSize() ? reader.getSectorSize() : 512);
         } catch (const std::exception& e) {
             error_ = e.what();
@@ -63,7 +65,10 @@ public:
             p.Set("fs", Napi::String::New(env, sorted[i].type.empty() ? "unknown" : sorted[i].type));
             arr[i] = p;
         }
-        deferred_.Resolve(arr);
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("partitions", arr);
+        out.Set("unread", Napi::Boolean::New(env, unread_));
+        deferred_.Resolve(out);
     }
 
     void OnError(const Napi::Error& e) override {
@@ -81,6 +86,7 @@ private:
     Napi::ThreadSafeFunction tsfn_;
     std::vector<byteback::PartitionInfo> found_;
     uint64_t diskSectors_ = 0;
+    bool unread_ = false;
     std::string error_;
 };
 
@@ -165,20 +171,35 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
-        return Napi::Array::New(env, 0);
+        Napi::TypeError::New(env, "Expected driveIndex").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
-    if (sharedReaderBusy(bdata)) return Napi::Array::New(env, 0);
+    if (sharedReaderBusy(bdata)) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     byteback::DiskReader& reader = bdata->engine.getDiskReader();
     if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
-        if (!reader.openDrive(driveIndex)) return Napi::Array::New(env, 0);
+        if (!reader.openDrive(driveIndex)) {
+            Napi::Error::New(env, "Cannot open drive for partition table").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
     }
 
     byteback::PartitionScanner scanner(&reader);
     std::vector<byteback::PartitionInfo> parts = scanner.parseMBR();
     std::vector<byteback::PartitionInfo> gpt = scanner.parseGPT();
     if (!gpt.empty()) parts = std::move(gpt);
+    if (scanner.tableUnread()) {
+        byteback::PartitionInfo unread;
+        unread.type = "table_unread";
+        unread.startSector = 0;
+        unread.sizeInSectors = 0;
+        unread.isActive = false;
+        parts.push_back(std::move(unread));
+    }
 
     Napi::Array result = Napi::Array::New(env, parts.size());
     for (size_t i = 0; i < parts.size(); ++i) {
@@ -212,6 +233,11 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     int driveIndex = info[0].As<Napi::Number>().Int32Value();
     double offset = info[1].As<Napi::Number>().DoubleValue();
     uint32_t size = info[2].As<Napi::Number>().Uint32Value();
+    std::string volumePath;
+    if (info.Length() >= 4 && info[3].IsString()) {
+        const std::string vp = info[3].As<Napi::String>().Utf8Value();
+        if (byteback::isWin32VolumeDevicePath(vp)) volumePath = vp;
+    }
 
     constexpr uint32_t kMaxRead = 1024 * 1024;
     if (size == 0 || size > kMaxRead) {
@@ -220,9 +246,26 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     }
 
     byteback::DiskReader diskReader;
-    if (bdata->raid) {
+    if (byteback::hexUsesRaidBackend(static_cast<bool>(bdata->raid), driveIndex)) {
         diskReader.setRaidBackend(bdata->raid);
         diskReader.copyXtsFvekFrom(engine->getDiskReader());
+    } else if (!volumePath.empty()) {
+        if (!diskReader.openVolumePath(volumePath)) {
+            Napi::Object fail = Napi::Object::New(env);
+            fail.Set("success", Napi::Boolean::New(env, false));
+            fail.Set("bytesRead", Napi::Number::New(env, 0));
+            fail.Set("paddedZeros", Napi::Boolean::New(env, false));
+            fail.Set("error", Napi::String::New(env, "Could not open volume device"));
+            return fail;
+        }
+        diskReader.copyXtsFvekFrom(engine->getDiskReader());
+    } else if (driveIndex < 0) {
+        Napi::Object fail = Napi::Object::New(env);
+        fail.Set("success", Napi::Boolean::New(env, false));
+        fail.Set("bytesRead", Napi::Number::New(env, 0));
+        fail.Set("paddedZeros", Napi::Boolean::New(env, false));
+        fail.Set("error", Napi::String::New(env, "RAID array not assembled"));
+        return fail;
     } else if (!diskReader.openDrive(driveIndex)) {
         Napi::Object fail = Napi::Object::New(env);
         fail.Set("success", Napi::Boolean::New(env, false));
@@ -269,6 +312,10 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
 
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("isValid", Napi::Boolean::New(env, status.isValid));
+    // Seek-penalty / SSD bits are independent of health-log validity.
+    // Unread SMART must not look like "confirmed HDD" on the JS side.
+    obj.Set("isSsd", Napi::Boolean::New(env, status.isSsd));
+    obj.Set("seekPenaltyKnown", Napi::Boolean::New(env, status.seekPenaltyKnown));
     if (status.isValid) {
         obj.Set("driveModel", jsUtf8(env, status.driveModel));
         obj.Set("healthScore", jsUtf8(env, status.healthScore));
@@ -285,9 +332,6 @@ Napi::Value GetSmartStatus(const Napi::CallbackInfo& info) {
         obj.Set("unsafeShutdowns", Napi::Number::New(env, static_cast<double>(status.unsafeShutdowns)));
         obj.Set("mediaErrors", Napi::Number::New(env, static_cast<double>(status.mediaErrors)));
         obj.Set("totalBytesWritten", Napi::Number::New(env, static_cast<double>(status.totalBytesWritten)));
-        // SSD/TRIM awareness (seek-penalty query).
-        obj.Set("isSsd", Napi::Boolean::New(env, status.isSsd));
-        obj.Set("seekPenaltyKnown", Napi::Boolean::New(env, status.seekPenaltyKnown));
     }
     return obj;
     NAPI_CATCH
@@ -313,6 +357,13 @@ Napi::Value ResolveVolume(const Napi::CallbackInfo& info) {
     obj.Set("startSector", Napi::Number::New(env, static_cast<double>(resolved->partitionStartSector)));
     obj.Set("sizeSectors", Napi::Number::New(env, static_cast<double>(resolved->partitionSizeSectors)));
     obj.Set("fsType", Napi::String::New(env, byteback::volumeFsKindLabel(resolved->fsKind)));
+    obj.Set("diskExtentCount", Napi::Number::New(env, resolved->diskExtentCount));
+    if (!resolved->volumePath.empty())
+        obj.Set("volumePath", Napi::String::New(env, resolved->volumePath));
+    Napi::Array disks = Napi::Array::New(env, resolved->diskNumbers.size());
+    for (size_t i = 0; i < resolved->diskNumbers.size(); ++i)
+        disks[i] = Napi::Number::New(env, resolved->diskNumbers[i]);
+    obj.Set("diskNumbers", disks);
     return obj;
 #endif
     NAPI_CATCH

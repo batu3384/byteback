@@ -4,7 +4,11 @@
 #include "scan_progress.h"
 #include "search/content_search.h"
 #include "fs/partition_scanner.h"
+#include "io/volume_mapper_win.h"
+#include "io/hex_bind.h"
 #include <atomic>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -322,6 +326,14 @@ Napi::Value GetScanState(const Napi::CallbackInfo& info) {
     obj.Set("carveResumeSector", Napi::Number::New(env, static_cast<double>(state.carveResumeSector)));
     obj.Set("startedAt", Napi::Number::New(env, static_cast<double>(state.startedAt)));
     obj.Set("updatedAt", Napi::Number::New(env, static_cast<double>(state.updatedAt)));
+    if (!state.volumePath.empty())
+        obj.Set("volumePath", Napi::String::New(env, state.volumePath));
+    if (!state.evidenceDisks.empty()) {
+        Napi::Array disks = Napi::Array::New(env, state.evidenceDisks.size());
+        for (size_t i = 0; i < state.evidenceDisks.size(); ++i)
+            disks[i] = Napi::Number::New(env, state.evidenceDisks[i]);
+        obj.Set("evidenceDiskIndices", disks);
+    }
     return obj;
     NAPI_CATCH
 }
@@ -503,6 +515,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     }
     int64_t resumeScanId = -1;
     bool allowSsdDeepScan = false;
+    std::vector<int> evidenceDisks;
 
     if (info.Length() >= 4 && info[2].IsObject() && info[3].IsFunction()) {
         Napi::Object opts = info[2].As<Napi::Object>();
@@ -518,26 +531,60 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             target.partitionSizeSectors =
                 static_cast<uint64_t>(opts.Get("partitionSizeInSectors").As<Napi::Number>().Int64Value());
         }
+        if (opts.Has("volumePath") && opts.Get("volumePath").IsString()) {
+            const std::string vp = opts.Get("volumePath").As<Napi::String>().Utf8Value();
+            if (byteback::isWin32VolumeDevicePath(vp)) target.volumePath = vp;
+        }
+        if (opts.Has("evidenceDiskIndices") && opts.Get("evidenceDiskIndices").IsArray()) {
+            Napi::Array a = opts.Get("evidenceDiskIndices").As<Napi::Array>();
+            if (a.Length() <= 64) {
+                for (uint32_t i = 0; i < a.Length(); ++i) {
+                    Napi::Value el = a.Get(i);
+                    if (!el.IsNumber()) continue;
+                    const int n = el.As<Napi::Number>().Int32Value();
+                    const double d = el.As<Napi::Number>().DoubleValue();
+                    if (n < 0 || d != static_cast<double>(n)) continue;
+                    if (std::find(evidenceDisks.begin(), evidenceDisks.end(), n) == evidenceDisks.end())
+                        evidenceDisks.push_back(n);
+                }
+            }
+        }
         if (opts.Has("partitionIndex") && opts.Get("partitionIndex").IsNumber()) {
-            int pidx = opts.Get("partitionIndex").As<Napi::Number>().Int32Value();
-            int driveIndex = 0;
-            if (drivePath != "raid") {
-                try { driveIndex = std::stoi(drivePath); } catch (...) { driveIndex = -1; }
+            const double pd = opts.Get("partitionIndex").As<Napi::Number>().DoubleValue();
+            const int pidx = static_cast<int>(pd);
+            auto failPart = [&](const char* msg) {
+                bdata->endHeavyOp();
+                Napi::Error::New(env, msg).ThrowAsJavaScriptException();
+            };
+            if (!std::isfinite(pd) || pd != static_cast<double>(pidx) || pidx < 0) {
+                failPart("Invalid partitionIndex");
+                return env.Undefined();
             }
-            if (pidx >= 0 && driveIndex >= 0) {
-                byteback::DiskReader& reader = bdata->engine.getDiskReader();
-                if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
-                    reader.openDrive(driveIndex);
-                }
-                byteback::PartitionScanner scanner(&reader);
-                std::vector<byteback::PartitionInfo> parts = scanner.parseMBR();
-                std::vector<byteback::PartitionInfo> gpt = scanner.parseGPT();
-                if (!gpt.empty()) parts = std::move(gpt);
-                if (static_cast<size_t>(pidx) < parts.size()) {
-                    target.partitionStartSector = static_cast<int64_t>(parts[pidx].startSector);
-                    target.partitionSizeSectors = parts[pidx].sizeInSectors;
-                }
+            if (drivePath == "raid") {
+                failPart("partitionIndex not valid for RAID");
+                return env.Undefined();
             }
+            const auto idx = byteback::parseDriveIndex(drivePath);
+            if (!idx) {
+                failPart("Invalid drive path");
+                return env.Undefined();
+            }
+            byteback::DiskReader& reader = bdata->engine.getDiskReader();
+            const bool bound = (reader.isOpen() && reader.getDriveIndex() == *idx)
+                || reader.openDrive(*idx);
+            if (!bound) {
+                failPart("Cannot bind partition table");
+                return env.Undefined();
+            }
+            byteback::PartitionScanner scanner(&reader);
+            const byteback::PartitionInfo* part =
+                byteback::selectedPartition(scanner.parseMBR(), scanner.parseGPT(), pidx);
+            if (!part) {
+                failPart("partitionIndex out of range");
+                return env.Undefined();
+            }
+            target.partitionStartSector = static_cast<int64_t>(part->startSector);
+            target.partitionSizeSectors = part->sizeInSectors;
         }
         if (opts.Has("resumeScanId") && opts.Get("resumeScanId").IsNumber()) {
             resumeScanId = opts.Get("resumeScanId").As<Napi::Number>().Int64Value();
@@ -559,6 +606,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 target.partitionStartSector = st.partitionStartSector;
                 target.partitionSizeSectors = st.partitionSizeSectors;
             }
+            if (target.volumePath.empty() && !st.volumePath.empty())
+                target.volumePath = st.volumePath;
+            if (evidenceDisks.empty() && !st.evidenceDisks.empty())
+                evidenceDisks = st.evidenceDisks;
         }
         if (scanType == "carve_only") {
             target.metadataComplete = true;
@@ -584,16 +635,22 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         }
         driveIndex = -1;
     } else {
-        try { driveIndex = std::stoi(drivePath); } catch(...) {}
+        const auto idx = byteback::parseDriveIndex(drivePath);
+        if (!idx) {
+            bdata->endHeavyOp();
+            Napi::Error::New(env, "Invalid drive path").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        driveIndex = *idx;
     }
 
     if ((scanType == "deep" || scanType == "full_carve" || scanType == "carve_only") && !allowSsdDeepScan && driveIndex >= 0 && drivePath != "raid") {
         byteback::SmartMonitor smart;
         byteback::SmartStatus st = smart.getSmartStatus(driveIndex);
-        if (st.isValid && st.isSsd) {
+        if (byteback::smartNeedsTrimAck(st)) {
             bdata->endHeavyOp();
             Napi::Error::New(env,
-                             "SSD deep carve is unlikely after TRIM; set allowSsdDeepScan to proceed")
+                             "SSD or unknown media (SMART unread / no seek-penalty): TRIM may destroy deleted data; set allowSsdDeepScan to proceed")
                 .ThrowAsJavaScriptException();
             return env.Undefined();
         }
@@ -612,6 +669,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     if (target.partitionStartSector >= 0 && target.partitionSizeSectors > 0) {
         bdata->engine.getMetadataStore().setScanPartition(
             context->scanId, target.partitionStartSector, target.partitionSizeSectors);
+    }
+    if (!target.volumePath.empty() || !evidenceDisks.empty()) {
+        bdata->engine.getMetadataStore().setScanVolumeBinding(
+            context->scanId, target.volumePath, evidenceDisks);
     }
     context->dedupIndex.clear();
     if (resumeScanId > 0) {
@@ -756,7 +817,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         };
 
     context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
-                                   &context->badSectors, bdata->raid, onFinished,
+                                   &context->badSectors,
+                                   drivePath == "raid" ? bdata->raid : nullptr, onFinished,
                                    &bdata->engine.getDiskReader(), target, onCheckpoint);
 
     return Napi::Number::New(env, static_cast<double>(context->scanId));
@@ -801,8 +863,13 @@ namespace {
 
 bool openScanReader(byteback::DiskReader& reader, BridgeData* bdata, const byteback::ScanState& state,
                     byteback::Engine* engine) {
-    if (bdata->raid) {
+    if (byteback::usesRaidBackend(static_cast<bool>(bdata->raid), state.driveIndex)) {
         reader.setRaidBackend(bdata->raid);
+    } else if (!state.volumePath.empty()) {
+        if (!byteback::isWin32VolumeDevicePath(state.volumePath) ||
+            !reader.openVolumePath(state.volumePath)) {
+            return false;
+        }
     } else {
         if (state.driveIndex < 0) return false;
         if (!reader.openDrive(state.driveIndex)) return false;
@@ -818,22 +885,41 @@ Napi::Value SearchFileContent(const Napi::CallbackInfo& info) {
     NAPI_TRY
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
-    if (!engine || info.Length() < 4) return env.Undefined();
+    if (!engine || info.Length() < 4 || !info[0].IsNumber() || !info[1].IsString() ||
+        !info[2].IsNumber() || !info[3].IsNumber()) {
+        Napi::TypeError::New(env, "Expected scanId, query, offset, limit, [useRegex]").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     int64_t scanId = info[0].As<Napi::Number>().Int64Value();
     std::string query = info[1].As<Napi::String>().Utf8Value();
     int offset = info[2].As<Napi::Number>().Int32Value();
     int limit = info[3].As<Napi::Number>().Int32Value();
+    if (query.size() > byteback::kMaxContentQueryBytes) {
+        Napi::Error::New(env, "content query too long").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    bool useRegex = info.Length() >= 5 && info[4].IsBoolean() && info[4].As<Napi::Boolean>().Value();
+    if (useRegex && !byteback::contentRegexQueryOk(query)) {
+        Napi::Error::New(env, "regex rejected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     auto state = engine->getMetadataStore().getScanState(scanId);
-    if (state.id <= 0) return Napi::Array::New(env, 0);
+    if (state.id <= 0) {
+        Napi::Error::New(env, "scan not found").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     byteback::DiskReader reader;
     if (!openScanReader(reader, bdata, state, engine)) {
-        return Napi::Array::New(env, 0);
+        Napi::Error::New(env, "volume device not available").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
-    auto files = byteback::searchFileContent(engine->getMetadataStore(), reader, scanId, query, offset, limit);
+    byteback::ContentSearchOptions opts;
+    opts.useRegex = useRegex;
+    auto files = byteback::searchFileContent(engine->getMetadataStore(), reader, scanId, query, offset, limit, opts);
     Napi::Array result = Napi::Array::New(env, files.size());
     for (size_t i = 0; i < files.size(); ++i) {
         result[i] = FileRecordToJs(env, files[i]);
@@ -853,6 +939,13 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
     BridgeData* bdata = env.GetInstanceData<BridgeData>();
     if (!bdata) return Napi::Boolean::New(env, false);
 
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    std::string query = info[1].As<Napi::String>().Utf8Value();
+    if (query.size() > byteback::kMaxContentQueryBytes) {
+        Napi::Error::New(env, "content query too long").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
     if (bdata->contentSearchContext) {
         bdata->contentSearchContext->coordinator.stopSearch();
         if (bdata->contentSearchContext->holdsHeavyOp) {
@@ -867,20 +960,39 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
 
-    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
-    std::string query = info[1].As<Napi::String>().Utf8Value();
     Napi::Function cb = info[2].As<Napi::Function>();
 
     auto state = bdata->engine.getMetadataStore().getScanState(scanId);
     if (state.id <= 0) {
         bdata->endHeavyOp();
-        return Napi::Boolean::New(env, false);
+        Napi::Error::New(env, "scan not found").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
     int driveIndex = state.driveIndex;
     if (driveIndex < 0 && !bdata->raid) {
         bdata->endHeavyOp();
-        return Napi::Boolean::New(env, false);
+        Napi::Error::New(env, "scan has no drive binding").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    bool useRegex = false;
+    if (info.Length() >= 4 && info[3].IsBoolean()) {
+        useRegex = info[3].As<Napi::Boolean>().Value();
+    }
+    if (useRegex && !byteback::contentRegexQueryOk(query)) {
+        bdata->endHeavyOp();
+        Napi::Error::New(env, "regex rejected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    {
+        byteback::DiskReader probe;
+        if (!openScanReader(probe, bdata, state, &bdata->engine)) {
+            bdata->endHeavyOp();
+            Napi::Error::New(env, "volume device not available").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
     }
 
     auto context = std::make_shared<ContentSearchContext>();
@@ -935,8 +1047,13 @@ Napi::Value StartContentSearch(const Napi::CallbackInfo& info) {
         tsfnPost(context->tsfn, callback);
     };
 
-    context->coordinator.startSearch(bdata->engine.getMetadataStore(), driveIndex, bdata->raid,
-                                     scanId, query, {}, onMatch, onProgress, onFinished,
+    byteback::ContentSearchOptions opts;
+    opts.useRegex = useRegex;
+    context->coordinator.startSearch(bdata->engine.getMetadataStore(), driveIndex,
+                                     byteback::usesRaidBackend(static_cast<bool>(bdata->raid), driveIndex)
+                                         ? bdata->raid
+                                         : nullptr,
+                                     scanId, query, opts, onMatch, onProgress, onFinished,
                                      &bdata->engine.getDiskReader());
     return Napi::Boolean::New(env, true);
     NAPI_CATCH
