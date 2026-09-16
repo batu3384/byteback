@@ -28,9 +28,24 @@ bool isReservedWindowsName(const std::string& name) {
 
 } // namespace
 
+std::filesystem::path utf8Path(const std::string& utf8) {
+#ifdef _WIN32
+    return std::filesystem::u8path(utf8);
+#else
+    return std::filesystem::path(utf8);
+#endif
+}
+
+std::string pathToUtf8(const std::filesystem::path& p) {
+#ifdef _WIN32
+    return p.u8string();
+#else
+    return p.generic_string();
+#endif
+}
+
 std::string safeBasename(const std::string& name) {
-    std::filesystem::path p(name);
-    std::string base = p.filename().string();
+    std::string base = pathToUtf8(utf8Path(name).filename());
     for (char& c : base) {
         if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
             c == '"' || c == '<' || c == '>' || c == '|') {
@@ -86,20 +101,20 @@ std::string safeRelativeDir(const std::string& fsPath) {
 
 std::string joinDestDir(const std::string& destDir, const std::string& relDir) {
     if (relDir.empty()) return destDir;
-    return (std::filesystem::path(destDir) / std::filesystem::path(relDir)).lexically_normal().string();
+    return pathToUtf8((utf8Path(destDir) / utf8Path(relDir)).lexically_normal());
 }
 
 std::string uniqueDestPath(const std::string& destDir, const std::string& name) {
     const std::string base = safeBasename(name);
-    std::filesystem::path first = std::filesystem::path(destDir) / base;
-    if (!std::filesystem::exists(first)) return first.string();
+    std::filesystem::path first = utf8Path(destDir) / utf8Path(base);
+    if (!std::filesystem::exists(first)) return pathToUtf8(first);
 
     std::filesystem::path stem = first.stem();
     std::filesystem::path ext = first.extension();
     for (int n = 1; n < 10000; ++n) {
-        std::filesystem::path candidate = std::filesystem::path(destDir) /
-            (stem.string() + "_" + std::to_string(n) + ext.string());
-        if (!std::filesystem::exists(candidate)) return candidate.string();
+        std::filesystem::path candidate = utf8Path(destDir) /
+            utf8Path(pathToUtf8(stem) + "_" + std::to_string(n) + pathToUtf8(ext));
+        if (!std::filesystem::exists(candidate)) return pathToUtf8(candidate);
     }
     return {};
 }
@@ -107,12 +122,12 @@ std::string uniqueDestPath(const std::string& destDir, const std::string& name) 
 bool destDirIsSafe(const std::string& destDir) {
     if (destDir.empty()) return false;
     try {
-        std::filesystem::path p(destDir);
+        std::filesystem::path p = utf8Path(destDir);
         if (!p.is_absolute()) return false;
         for (const auto& part : p) {
             if (part == "..") return false;
         }
-        std::string norm = p.lexically_normal().string();
+        std::string norm = pathToUtf8(p.lexically_normal());
         std::string lower;
         lower.reserve(norm.size());
         for (unsigned char c : norm) lower += static_cast<char>(std::tolower(c));

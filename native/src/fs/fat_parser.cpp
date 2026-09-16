@@ -1,4 +1,4 @@
-#include "byteback_fs.h"
+﻿#include "byteback_fs.h"
 #include "fs/ntfs_util.h"
 #include "fs/fat_chain.h"
 #include <iostream>
@@ -148,12 +148,54 @@ uint64_t fatRunBytes(const std::vector<FileRecord::DataRun>& runs, uint32_t byte
     return n;
 }
 
+uint32_t readFatEntry(DiskReader& reader, uint64_t fatStartSector, uint32_t bytesPerSector,
+                      int fatBits, uint32_t cluster) {
+    if (cluster < 2 || bytesPerSector == 0) return 0;
+    uint64_t byteOffset = (fatBits == 12) ? (uint64_t)cluster * 3 / 2
+                      : (fatBits == 16) ? (uint64_t)cluster * 2
+                      : (uint64_t)cluster * 4;
+    uint64_t sector = fatStartSector + byteOffset / bytesPerSector;
+    uint32_t off = (uint32_t)(byteOffset % bytesPerSector);
+    if (off + 4 > bytesPerSector && fatBits == 32) return fat::kFatUnread;
+    std::vector<uint8_t> sec(bytesPerSector);
+    auto res = reader.readSectors(sector * bytesPerSector, bytesPerSector, sec.data());
+    if (!readComplete(res, bytesPerSector)) return fat::kFatUnread;
+    if (fatBits == 32) return (uint32_t)sec[off] | ((uint32_t)sec[off+1] << 8) |
+                               ((uint32_t)sec[off+2] << 16) | ((uint32_t)sec[off+3] << 24);
+    if (fatBits == 16) return (uint32_t)((uint16_t)sec[off] | ((uint16_t)sec[off+1] << 8));
+    uint32_t v = (uint32_t)sec[off] | ((uint32_t)sec[off+1] << 8);
+    return (cluster & 1) ? (v >> 4) : (v & 0xFFF);
+}
+
+bool fatFirstClusterFreed(uint32_t fatVal, int fatBits) {
+    if (fatVal == fat::kFatUnread) return false;
+    if (fatBits == 32) return (fatVal & 0x0FFFFFFFu) == 0;
+    if (fatBits == 16) return (fatVal & 0xFFFFu) == 0;
+    return (fatVal & 0xFFFu) == 0;
+}
+
 void applyFatDeletedChainHint(FileRecord& fr, uint64_t fileSize, uint32_t bytesPerSector, bool deleted) {
     if (!deleted || fileSize == 0) return;
     const uint64_t covered = fatRunBytes(fr.runs, bytesPerSector);
     if (covered + bytesPerSector < fileSize) {
         fr.confidence = std::min(fr.confidence, 35);
     }
+}
+
+// Deleted dirent still names firstCluster + size; FAT often already 0. chainRuns
+// then stops after one cluster. Contiguous undelete from the first cluster.
+void fillDeletedFatRuns(FileRecord& fr, uint32_t firstCluster, uint64_t fileSize,
+                        uint32_t sectorsPerCluster, uint64_t dataStartSector,
+                        uint32_t bytesPerSector) {
+    if (firstCluster < 2 || fileSize == 0 || sectorsPerCluster == 0 || bytesPerSector == 0) return;
+    const uint64_t clusterBytes = static_cast<uint64_t>(sectorsPerCluster) * bytesPerSector;
+    uint64_t nClus = (fileSize + clusterBytes - 1) / clusterBytes;
+    if (nClus == 0) nClus = 1;
+    if (nClus > (1u << 20)) nClus = 1u << 20;
+    const uint64_t startSec = dataStartSector + static_cast<uint64_t>(firstCluster - 2) * sectorsPerCluster;
+    fr.runs = {{startSec, nClus * sectorsPerCluster}};
+    fr.startSector = startSec;
+    fr.endSector = startSec + nClus * sectorsPerCluster;
 }
 } // namespace
 
@@ -371,6 +413,11 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                 fr.path = "/";
                 fr.status = status;
                 fr.confidence = confidence;
+                if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
+                    fatFirstClusterFreed(readFatEntry(reader, fatStartSector, bps, fatBits, firstCluster), fatBits)) {
+                    fillDeletedFatRuns(fr, firstCluster, entry->fileSize, bpb->sectorsPerCluster,
+                                       dataStartSector, bps);
+                }
                 applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                 if (thisUnread) {
                     chainUnread = true;
@@ -459,6 +506,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                     if (deleted) {
                         status = 0;
                         confidence = 60;
+                        entry->name[0] = '_';
                     }
 
                     std::string name = formatFATName(entry->name);
@@ -495,6 +543,11 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                         fr.path = "/";
                         fr.status = status;
                         fr.confidence = confidence;
+                        if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
+                            fatFirstClusterFreed(readFatEntry(reader, fatStartSector, bps, 32, firstCluster), 32)) {
+                            fillDeletedFatRuns(fr, firstCluster, entry->fileSize, bpb->sectorsPerCluster,
+                                               dataStartSector, bps);
+                        }
                         applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                         if (thisUnread) {
                             chainUnread = true;
@@ -556,7 +609,11 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
         return *reinterpret_cast<uint32_t*>(secBuf.data() + entOffset);
     };
     
-    std::vector<uint32_t> dirClusters = { bpb->rootDirectoryCluster };
+    struct DirJob {
+        uint32_t cluster = 0;
+        std::string path;
+    };
+    std::vector<DirJob> dirJobs = {{ bpb->rootDirectoryCluster, "/" }};
     std::vector<uint8_t> clusterBuf(bytesPerCluster);
 
     // exFAT entry-set state: match members by SetChecksum (offset 2) so unrelated
@@ -596,12 +653,18 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
         }
 
         if (pending.isDir) {
-            if (pending.firstCluster >= 2) dirClusters.push_back(pending.firstCluster);
+            if (pending.firstCluster >= 2) {
+                std::string child = currentPath;
+                if (child.empty() || child.back() != '/') child += '/';
+                child += name;
+                if (child.back() != '/') child += '/';
+                dirJobs.push_back({pending.firstCluster, std::move(child)});
+            }
         } else {
             bool thisUnread = false;
+            const uint32_t spc = (1u << bpb->sectorsPerClusterShift);
             auto runsex = buildRunsFromChain(reader, fatStartSector, bytesPerSector, 32,
-                                             pending.firstCluster,
-                                             (1u << bpb->sectorsPerClusterShift),
+                                             pending.firstCluster, spc,
                                              dataStartSector, 1 << 20, &thisUnread);
             FileRecord fr;
             fr.id = -1;
@@ -609,13 +672,20 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
             fr.name = name;
             fr.sizeBytes = pending.dataLength;
             fr.startSector = runsex.empty()
-                ? dataStartSector + (uint64_t)(std::max<uint32_t>(pending.firstCluster, 2) - 2) * (1u << bpb->sectorsPerClusterShift)
+                ? dataStartSector + (uint64_t)(std::max<uint32_t>(pending.firstCluster, 2) - 2) * spc
                 : runsex.front().startSector;
-            fr.endSector = fr.startSector + (uint32_t)((pending.dataLength + bytesPerCluster - 1) / bytesPerCluster) * (1u << bpb->sectorsPerClusterShift);
+            fr.endSector = fr.startSector + (uint32_t)((pending.dataLength + bytesPerCluster - 1) / bytesPerCluster) * spc;
             fr.runs = std::move(runsex);
             fr.path = currentPath;
             fr.status = pending.inUse ? 1 : 0;
             fr.confidence = pending.inUse ? 100 : 70;
+            if (!pending.inUse && fatRunBytes(fr.runs, bytesPerSector) < pending.dataLength) {
+                const uint32_t fatVal = getNextCluster(pending.firstCluster);
+                if (fatVal == 0) {
+                    fillDeletedFatRuns(fr, pending.firstCluster, pending.dataLength, spc,
+                                       dataStartSector, bytesPerSector);
+                }
+            }
             applyFatDeletedChainHint(fr, pending.dataLength, bytesPerSector, !pending.inUse);
             if (thisUnread) {
                 chainUnread = true;
@@ -630,19 +700,25 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
         pending = ExfatPending{};
     };
 
-    std::string currentPath = "/";
+    auto maybeEmitCompleteSet = [&](const std::string& currentPath) {
+        if (pending.active && pending.haveStream && pending.nameLength > 0 &&
+            pending.name.size() >= pending.nameLength) {
+            emitPending(currentPath);
+        }
+    };
 
     // Same cyclic-chain guards as the FAT32 walk: a corrupt FAT that loops a
     // directory chain (or two directories pointing at each other) must not
     // spin this loop forever.
     std::unordered_set<uint32_t> visitedDirs;
-    while (!dirClusters.empty()) {
-        uint32_t currentCluster = dirClusters.back();
-        dirClusters.pop_back();
-        if (!visitedDirs.insert(currentCluster).second) continue;
+    while (!dirJobs.empty()) {
+        DirJob job = dirJobs.back();
+        dirJobs.pop_back();
+        if (!visitedDirs.insert(job.cluster).second) continue;
+        const std::string currentPath = job.path;
 
         std::vector<uint32_t> chainSeen;
-        uint32_t clus = currentCluster;
+        uint32_t clus = job.cluster;
         while (clus >= 2 && clus <= 0xFFFFFFF6) {
             if (std::find(chainSeen.begin(), chainSeen.end(), clus) != chainSeen.end()) break;
             chainSeen.push_back(clus);
@@ -659,8 +735,8 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                 uint8_t type = e[0];
 
                 if (type == 0x00) {
-                    // End-of-directory marker — everything after is slack.
-                    offset = bytesPerCluster; // stop scanning this cluster
+                    emitPending(currentPath);
+                    offset = bytesPerCluster;
                     break;
                 }
 
@@ -707,6 +783,7 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                     for (int i = 7; i >= 0; --i) len = (len << 8) | e[24 + i];
                     pending.dataLength = len;
                     pending.haveStream = true;
+                    maybeEmitCompleteSet(currentPath);
                 } else if (typeCode == 0x41 && pending.active) {
                     // File Name dentry (0xC1/0x41): 15 UTF-16LE chars at byte 2.
                     for (int i = 0; i < 15; ++i) {
@@ -716,13 +793,13 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                         if (ch == 0) break;
                         pending.name.push_back(ch);
                     }
+                    maybeEmitCompleteSet(currentPath);
                 }
             }
             clus = getNextCluster(clus);
         }
+        emitPending(currentPath);
     }
-    // Flush a set that ended exactly at the end of the directory.
-    emitPending(currentPath);
     if (dirUnread) emitFatDirUnread(callback, dataStartSector);
     if (chainUnread) emitFatChainUnread(callback, fatStartSector);
 }

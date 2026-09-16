@@ -758,6 +758,24 @@ TEST(NtfsParser, OrphanIndxMagicDoesNotEmitI30) {
     EXPECT_FALSE(i30);
 }
 
+TEST(NtfsParser, UnallocIndxEmitsNameFromFreeCluster) {
+    auto img = byteback::testfix::buildNtfsUnallocIndxVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool hit = false;
+    bool fromMftI30 = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "unalloc_only.txt") {
+            hit = fr.source == "ntfs_i30_unalloc" && fr.status == 0;
+        }
+        if (fr.name == "indx_only.txt" && fr.source == "ntfs_i30") fromMftI30 = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(hit);
+    EXPECT_TRUE(fromMftI30);
+}
+
 TEST(NtfsParser, AdsSurvivesParentDedup) {
     auto img = byteback::testfix::buildNtfsDeletedResidentVolume();
     const size_t rec1 = 8 * 512 + 1024;

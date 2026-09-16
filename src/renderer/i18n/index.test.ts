@@ -168,6 +168,7 @@ describe('lane-C sweep keys', () => {
     'source.xfs_inode_unread',
     'source.xfs_bmap_unread',
     'source.ntfs_i30_unread',
+    'source.ntfs_i30_unalloc',
     'source.unalloc_map_unread',
     'source.ntfs_logfile_unread',
     'source.usn_unread',

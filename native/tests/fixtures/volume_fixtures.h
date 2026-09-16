@@ -799,4 +799,174 @@ inline std::vector<uint8_t> buildNtfsIndexAllocationVolume() {
     return img;
 }
 
+// SOI + DQT + SOS + payload + EOI. payloadLen must push size past one 512-byte
+// FAT cluster so a first-cluster-only undelete fails MD5.
+inline std::vector<uint8_t> minimalValidJpeg(uint8_t tag, size_t payloadLen = 580) {
+    std::vector<uint8_t> jpeg = {0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x03, 0x00,
+                                 0xFF, 0xDA, 0x00, 0x02};
+    jpeg.insert(jpeg.end(), payloadLen, tag);
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD9);
+    return jpeg;
+}
+
+inline std::vector<uint8_t> buildIndxNamed(const char* n, uint8_t childMftLo) {
+    std::vector<uint8_t> indx(0x40, 0);
+    std::memcpy(indx.data(), "INDX", 4);
+    writeLe16(indx, 4, 0x28);
+    writeLe32(indx, 0x18, 0x28);
+    const size_t nlen = std::strlen(n);
+    const uint16_t keyLen = static_cast<uint16_t>(66 + nlen * 2);
+    const uint16_t entryLen = static_cast<uint16_t>(16 + keyLen);
+    const size_t start = indx.size();
+    indx.resize(start + entryLen, 0);
+    indx[start] = childMftLo;
+    indx[start + 8] = static_cast<uint8_t>(entryLen & 0xFF);
+    indx[start + 9] = static_cast<uint8_t>((entryLen >> 8) & 0xFF);
+    indx[start + 10] = static_cast<uint8_t>(keyLen & 0xFF);
+    indx[start + 11] = static_cast<uint8_t>((keyLen >> 8) & 0xFF);
+    indx[start + 16] = 5;
+    indx[start + 16 + 64] = static_cast<uint8_t>(nlen);
+    indx[start + 16 + 65] = 1;
+    for (size_t i = 0; i < nlen; ++i)
+        indx[start + 16 + 66 + i * 2] = static_cast<uint8_t>(n[i]);
+    const size_t lastAt = indx.size();
+    indx.resize(lastAt + 16, 0);
+    indx[lastAt + 8] = 16;
+    indx[lastAt + 12] = 0x02;
+    const uint32_t usedRel = static_cast<uint32_t>(indx.size() - 0x18);
+    writeLe32(indx, 0x1C, usedRel);
+    writeLe32(indx, 0x20, usedRel);
+    indx.resize(4096, 0);
+    return indx;
+}
+
+// FAT32 superfloppy: 5 deleted JPEGs, FAT clusters freed, payload still on disk.
+// countOfClusters >= 65525 so parseFAT takes the FAT32 directory walk.
+inline std::vector<uint8_t> buildFat32DeletedJpegVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t reserved = 32;
+    constexpr uint32_t fatSectors = 512;
+    constexpr uint32_t dataClusters = 65525;
+    const uint32_t totalSectors = reserved + 2 * fatSectors + dataClusters;
+    std::vector<uint8_t> img(static_cast<size_t>(totalSectors) * ss, 0);
+
+    img[0] = 0xEB;
+    img[1] = 0x58;
+    img[2] = 0x90;
+    std::memcpy(img.data() + 3, "MSWIN4.1", 8);
+    writeLe16(img, 11, static_cast<uint16_t>(ss));
+    img[13] = 1;
+    writeLe16(img, 14, static_cast<uint16_t>(reserved));
+    img[16] = 2;
+    img[21] = 0xF8;
+    writeLe32(img, 32, totalSectors);
+    writeLe32(img, 36, fatSectors);
+    writeLe32(img, 44, 2);
+    writeLe16(img, 48, 1);
+    writeLe16(img, 50, 6);
+    img[64] = 0x80;
+    img[66] = 0x29;
+    std::memcpy(img.data() + 82, "FAT32   ", 8);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const uint32_t fatStart = reserved;
+    auto writeFat32 = [&](uint32_t fatBase, uint32_t clus, uint32_t val) {
+        writeLe32(img, static_cast<size_t>(fatBase) * ss + static_cast<size_t>(clus) * 4, val);
+    };
+    writeFat32(fatStart, 0, 0x0FFFFFF8);
+    writeFat32(fatStart, 1, 0x0FFFFFFF);
+    writeFat32(fatStart, 2, 0x0FFFFFF8);
+    writeFat32(fatStart + fatSectors, 0, 0x0FFFFFF8);
+    writeFat32(fatStart + fatSectors, 1, 0x0FFFFFFF);
+    writeFat32(fatStart + fatSectors, 2, 0x0FFFFFF8);
+
+    const uint32_t dataStart = reserved + 2 * fatSectors;
+    const size_t rootOff = static_cast<size_t>(dataStart) * ss;
+    const uint8_t tags[5] = {0x11, 0x22, 0x33, 0x44, 0x55};
+    for (int i = 0; i < 5; ++i) {
+        auto jpeg = minimalValidJpeg(tags[i]);
+        const uint32_t firstClus = static_cast<uint32_t>(3 + i * 2);
+        size_t de = rootOff + static_cast<size_t>(i) * 32;
+        std::memcpy(img.data() + de, "PHOTO1  JPG", 11);
+        img[de + 5] = static_cast<uint8_t>('1' + i);
+        img[de] = 0xE5;
+        img[de + 11] = 0x20;
+        writeLe16(img, de + 26, static_cast<uint16_t>(firstClus));
+        writeLe32(img, de + 28, static_cast<uint32_t>(jpeg.size()));
+        const size_t dataOff = static_cast<size_t>(dataStart + (firstClus - 2)) * ss;
+        std::memcpy(img.data() + dataOff, jpeg.data(), jpeg.size());
+    }
+    return img;
+}
+
+// exFAT: in-use dir "pics" / deleted "shot.jpg". FAT cluster for the file freed.
+inline std::vector<uint8_t> buildExFatDeletedPreservePathsVolume() {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t fatOff = 24;
+    constexpr uint32_t heapOff = 25;
+    constexpr uint32_t totalSectors = 64;
+    std::vector<uint8_t> img(totalSectors * ss, 0);
+
+    std::memcpy(img.data() + 3, "EXFAT   ", 8);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+    img[108] = 9;
+    img[109] = 0;
+    img[110] = 1;
+    writeLe32(img, 80, fatOff);
+    writeLe32(img, 84, 1);
+    writeLe32(img, 88, heapOff);
+    writeLe32(img, 92, 8);
+    writeLe32(img, 96, 2);
+
+    writeLe32(img, fatOff * ss + 8, 0xFFFFFFFF);  // cluster 2 root EOC
+    writeLe32(img, fatOff * ss + 12, 0xFFFFFFFF); // cluster 3 pics EOC
+    writeLe32(img, fatOff * ss + 16, 0);          // cluster 4 file freed
+
+    const uint16_t dirChk = 0xBEEF;
+    size_t de = heapOff * ss;
+    img[de] = 0x85;
+    img[de + 1] = 2;
+    writeLe16(img, de + 2, dirChk);
+    writeLe16(img, de + 4, 0x10);
+    de += 32;
+    img[de] = 0xC0;
+    img[de + 3] = 4;
+    writeLe32(img, de + 20, 3);
+    de += 32;
+    img[de] = 0xC1;
+    static const uint8_t picsName[] = {'p', 0, 'i', 0, 'c', 0, 's', 0};
+    std::memcpy(img.data() + de + 2, picsName, sizeof(picsName));
+
+    auto jpeg = minimalValidJpeg(0xAB, 20);
+    const uint16_t fileChk = 0xAABB;
+    de = (heapOff + 1) * ss;
+    img[de] = 0x05;
+    img[de + 1] = 2;
+    writeLe16(img, de + 2, fileChk);
+    de += 32;
+    img[de] = 0x40;
+    img[de + 3] = 8;
+    writeLe32(img, de + 20, 4);
+    writeLe64(img, de + 24, jpeg.size());
+    de += 32;
+    img[de] = 0x41;
+    static const uint8_t shotName[] = {'s', 0, 'h', 0, 'o', 0, 't', 0, '.', 0, 'j', 0, 'p', 0, 'g', 0};
+    std::memcpy(img.data() + de + 2, shotName, sizeof(shotName));
+    std::memcpy(img.data() + (heapOff + 2) * ss, jpeg.data(), jpeg.size());
+    return img;
+}
+
+// Index-allocation volume plus a valid INDX in free cluster 10 (not in $I30 runs).
+inline std::vector<uint8_t> buildNtfsUnallocIndxVolume() {
+    auto img = buildNtfsIndexAllocationVolume();
+    constexpr uint32_t ss = 512;
+    img.resize(ss * 128, 0);
+    auto indx = buildIndxNamed("unalloc_only.txt", 88);
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    return img;
+}
+
 } // namespace byteback::testfix

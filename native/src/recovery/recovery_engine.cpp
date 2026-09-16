@@ -161,9 +161,9 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
     }
 
     if (!record.residentData.empty()) {
-        std::filesystem::create_directories(destDir);
+        std::filesystem::create_directories(utf8Path(destDir));
         if (!applyUniquePath(result, destDir, record.name)) return result;
-        std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+        std::ofstream outFile(utf8Path(result.destPath), std::ios::binary | std::ios::out | std::ios::trunc);
         if (!outFile.is_open()) {
             result.error = "Could not open destination file: " + result.destPath;
             return result;
@@ -196,11 +196,11 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         return result;
     }
 
-    std::filesystem::create_directories(destDir);
+    std::filesystem::create_directories(utf8Path(destDir));
 
     if (!applyUniquePath(result, destDir, record.name)) return result;
 
-    std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::ofstream outFile(utf8Path(result.destPath), std::ios::binary | std::ios::out | std::ios::trunc);
     if (!outFile.is_open()) {
         result.error = "Could not open destination file: " + result.destPath;
         return result;
@@ -391,11 +391,11 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
         return result;
     }
 
-    std::filesystem::create_directories(destDir);
+    std::filesystem::create_directories(utf8Path(destDir));
 
     if (!applyUniquePath(result, destDir, record.name)) return result;
 
-    std::ofstream outFile(result.destPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::ofstream outFile(utf8Path(result.destPath), std::ios::binary | std::ios::out | std::ios::trunc);
     if (!outFile.is_open()) {
         result.error = "Could not open destination file: " + result.destPath;
         return result;

@@ -4,14 +4,14 @@
 
 **Hedef:** Kalan tüm işleri (motor ölçeği, silinmiş-durup derinliği, format genişletme, inceleyici araçları, üretim sertleştirme, saha doğrulaması) bağımlılık-değer-risk sırasına göre fazlara bölerek profesyonel ürün seviyesine taşımak.
 
-**Mimari zemin:** Electron 44 + React 18 + C++17 N-API; 523 native / 213 vitest / 15 e2e yeşil; NSIS installer doğrulanmış; paralel carve + imaging resume + E01 zlib + audit zinciri tamamlanmış. Motor katmanı olgın; eksik olan **ölçek**, **silinmiş-durup derinliği**, **inceleyici ergonomisi** ve **saha kanıtı**.
+**Mimari zemin:** Electron 44 + React 18 + C++17 N-API; 641 native / 390 vitest / 38 e2e (2026-09-15 kapı: `ctest -C Release` 4 skip, `npx vitest run`, `npx playwright test`); NSIS installer doğrulanmış; paralel carve + imaging resume + E01 zlib + audit zinciri tamamlanmış. Motor katmanı olgın; eksik olan **ölçek**, **silinmiş-durup derinliği**, **inceleyici ergonomisi** ve **saha kanıtı**.
 
 **Spec kaynakları:** `docs/competitive-analysis-2026-09-05.md` (12 maddelik yol haritası), `memory/byteback-project.md` (ertelenen tavanlar envanteri), motor değerlendirme raporu (ölçek bulguları).
 
 ## Global Constraints
 
 - Tek branch `main`, conventional commit (`type(scope): özet`), her madde kendi test döngüsüyle.
-- Kapı her commit'te: `ctest` (523+) + `npx vitest run` (213+) + `npx playwright test` (15+) + `tsc` ×3.
+- Kapı her commit'te: `ctest` (641+) + `npx vitest run` (390+) + `npx playwright test` (38+) + `tsc` ×3.
 - Yeni dependency yok (zlib gibi istisnalar vendored ve gerekçeli); framework yok.
 - Adli dürüstlük: her yeni yetenek ya kanıtla doğrulanır ya dürüstçe "desteklenmiyor" der — asla tahmin üretmez.
 - parser offset'leri gerçek spec'ten cite'lenir (kernel header / MS doc / libbde tarzı); self-consistent fixture tek başına yeterli sayılmaz, en az bir golden hex-literal assert şart.
@@ -61,6 +61,7 @@ Adli araç standardı: yazılım `GENERIC_READ` ile açıyor (yazma yok) ama pro
 Rol ayrımı net: **icracı (ajan)** protokolü hazırlar, imaj-dosyası tabanlı satırları (d, f, g — bozuk-MFT imajı, E01 roundtrip, yazılım RAID imajları) kendi koşturur ve kaydeder; **fiziksel adımlar** (USB/SD takma, gerçek disk seçimi, BitLocker anahtarı girme — a, b, c, e, h) kullanıcı eliyle yapılır, icracı uygulama tarafını sözlü yönlendirir ve sonuç kayıtlarını toplar. Çıkan her bulgu: `docs/field-test-2026-XX/` altına kayıt + mevcut fazlara yeniden önceliklendirme girdisi.
 **Doğrulama:** her matris satırı için doldurulmuş kayıt (geçti/geçmedi + kanıt; kullanıcı adımlı satırlarda gözlem notu yeterli).
 **Boyut:** M (süre donanıma bağlı).
+**2026-09 durum:** D/F/G **lab gtest** ile belgelendi (`docs/field-test-2026-09/README.md`); bu Faz 0.4 kapısını kapatmaz. A/B/C/E/H fiziksel; F UI imager oturumu hâlâ açık.
 
 **Faz kapısı:** en az (a),(b),(f) satırları geçmiş; kritik geçmezse ilgili faz maddesi öne alınır.
 
