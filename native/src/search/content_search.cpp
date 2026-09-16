@@ -182,7 +182,7 @@ void attachFtsSnippet(MetadataStore& store, FileRecord& f, const std::string& qu
 }
 
 bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, uint64_t maxBytes,
-                    std::vector<uint8_t>& buf, uint64_t* logicalConsumed, bool* ioUnread) {
+                    std::vector<uint8_t>& buf, uint64_t* logicalConsumed, bool* unreadOut) {
     buf.clear();
     if (maxBytes == 0) return false;
     uint32_t sectorSize = reader.getSectorSize();
@@ -225,8 +225,8 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
             uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
             std::vector<uint8_t> tmp(readBytes, 0);
             auto res = reader.readSectors(readOff, readBytes, tmp.data());
-            if (!res.success) {
-                if (ioUnread) *ioUnread = true;
+            if (ioUnread(res, readBytes)) {
+                if (unreadOut) *unreadOut = true;
                 if (filled > 0) break;
                 skippedLeading += take;
                 logical += runBytes;
@@ -269,8 +269,8 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
         uint32_t readBytes = static_cast<uint32_t>(((take + sectorSize - 1) / sectorSize) * sectorSize);
         buf.assign(readBytes, 0);
         auto res = reader.readSectors(readOff, readBytes, buf.data());
-        if (!res.success) {
-            if (ioUnread) *ioUnread = true;
+        if (ioUnread(res, readBytes)) {
+            if (unreadOut) *unreadOut = true;
             return false;
         }
         uint64_t usable = take;
@@ -384,7 +384,8 @@ int runContentSearch(MetadataStore& store, DiskReader& reader,
             if (onProgress) onProgress(processed, static_cast<uint64_t>(ids.size()));
         }
         if (onProgress) onProgress(static_cast<uint64_t>(ids.size()), static_cast<uint64_t>(ids.size()));
-        return kContentSearchComplete;
+        return store.getScanState(scanId).contentUnread
+            ? kContentSearchReadIncomplete : kContentSearchComplete;
     }
 
     int64_t processed = 0;
@@ -477,8 +478,10 @@ int runContentSearch(MetadataStore& store, DiskReader& reader,
             if (onProgress) onProgress(static_cast<uint64_t>(processed), static_cast<uint64_t>(total));
         }
     }
+    if (unread) store.setScanContentUnread(scanId);
     if (isRunning && !(*isRunning)) return kContentSearchStopped;
-    return unread ? kContentSearchReadIncomplete : kContentSearchComplete;
+    if (unread || store.getScanState(scanId).contentUnread) return kContentSearchReadIncomplete;
+    return kContentSearchComplete;
 }
 
 int64_t searchFileContentCount(MetadataStore& store, DiskReader& reader,

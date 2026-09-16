@@ -785,8 +785,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('set-bitlocker-fvek', (_event, hex: string) => {
     try {
       return getEngine().setBitLockerFvek(typeof hex === 'string' ? hex : '')
-    } catch (err) {
-      console.error('[IPC] set-bitlocker-fvek error:', err)
+    } catch {
+      console.error('[IPC] set-bitlocker-fvek error')
       return false
     }
   })
@@ -797,8 +797,8 @@ export function registerIpcHandlers(): void {
         return 'invalid arguments'
       }
       return getEngine().setBitLockerRecoveryPassword(driveIndex, password)
-    } catch (err) {
-      console.error('[IPC] set-bitlocker-recovery-password error:', err)
+    } catch {
+      console.error('[IPC] set-bitlocker-recovery-password error')
       return 'native error'
     }
   })
@@ -809,8 +809,8 @@ export function registerIpcHandlers(): void {
         return 'invalid arguments'
       }
       return getEngine().setBitLockerPassword(driveIndex, password)
-    } catch (err) {
-      console.error('[IPC] set-bitlocker-password error:', err)
+    } catch {
+      console.error('[IPC] set-bitlocker-password error')
       return 'native error'
     }
   })

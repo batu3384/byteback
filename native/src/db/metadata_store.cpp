@@ -30,12 +30,12 @@ void appendListFilter(std::string& sql, const FileListFilter& f, const char* pre
     if (!f.sourceLike.empty()) {
         sql += " AND ";
         sql += prefix;
-        sql += "source LIKE ?";
+        sql += "source LIKE ? ESCAPE '\\'";
     }
     if (!f.sourceNotLike.empty()) {
         sql += " AND ";
         sql += prefix;
-        sql += "source NOT LIKE ?";
+        sql += "source NOT LIKE ? ESCAPE '\\'";
     }
     if (f.sizeMin > 0) {
         sql += " AND ";
@@ -82,10 +82,25 @@ void appendListFilter(std::string& sql, const FileListFilter& f, const char* pre
 }
 
 void bindListFilter(sqlite3_stmt* stmt, int& bind, const FileListFilter& f) {
+    auto likeKeepPercent = [](const std::string& p) {
+        std::string o;
+        o.reserve(p.size() * 2);
+        for (unsigned char c : p) {
+            if (c == '\\' || c == '_') o.push_back('\\');
+            o.push_back(static_cast<char>(c));
+        }
+        return o;
+    };
     if (f.status >= 0) sqlite3_bind_int(stmt, bind++, f.status);
     if (!f.category.empty()) sqlite3_bind_text(stmt, bind++, f.category.c_str(), -1, SQLITE_TRANSIENT);
-    if (!f.sourceLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceLike.c_str(), -1, SQLITE_TRANSIENT);
-    if (!f.sourceNotLike.empty()) sqlite3_bind_text(stmt, bind++, f.sourceNotLike.c_str(), -1, SQLITE_TRANSIENT);
+    if (!f.sourceLike.empty()) {
+        const std::string esc = likeKeepPercent(f.sourceLike);
+        sqlite3_bind_text(stmt, bind++, esc.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!f.sourceNotLike.empty()) {
+        const std::string esc = likeKeepPercent(f.sourceNotLike);
+        sqlite3_bind_text(stmt, bind++, esc.c_str(), -1, SQLITE_TRANSIENT);
+    }
     if (f.sizeMin > 0) sqlite3_bind_int64(stmt, bind++, static_cast<int64_t>(f.sizeMin));
     if (f.sizeMax > 0) sqlite3_bind_int64(stmt, bind++, static_cast<int64_t>(f.sizeMax));
     if (f.dateFrom > 0) sqlite3_bind_int64(stmt, bind++, f.dateFrom);
@@ -348,6 +363,8 @@ bool MetadataStore::open(const std::string& dbPath) {
         sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN volume_path TEXT DEFAULT '';", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN evidence_disks TEXT DEFAULT '';", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN content_unread INTEGER DEFAULT 0;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
         ensureFtsIndex(db_);
         ensureContentFtsIndex(db_);
@@ -654,6 +671,19 @@ bool MetadataStore::setScanVolumeBinding(int64_t scanId, const std::string& volu
     sqlite3_bind_text(stmt, 2, csv.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, now);
     sqlite3_bind_int64(stmt, 4, scanId);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+bool MetadataStore::setScanContentUnread(int64_t scanId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    const char* sql = "UPDATE scans SET content_unread = 1, updated_at = ? WHERE id = ?";
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(stmt, 1, now);
+    sqlite3_bind_int64(stmt, 2, scanId);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return rc == SQLITE_DONE;
@@ -1018,7 +1048,7 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
         SELECT id, drive_index, scan_type, total_sectors, scanned_sectors, status,
                recovered_files, started_at, updated_at,
                partition_start_sector, partition_size_sectors, metadata_complete, carve_resume_sector,
-               volume_path, evidence_disks
+               volume_path, evidence_disks, content_unread
         FROM scans WHERE id = ?
     )";
     ScanState state = {};
@@ -1050,6 +1080,9 @@ ScanState MetadataStore::getScanState(int64_t scanId) {
             const unsigned char* disks = sqlite3_column_text(stmt, 14);
             state.evidenceDisks = parseEvidenceDiskCsv(
                 disks ? reinterpret_cast<const char*>(disks) : nullptr);
+        }
+        if (sqlite3_column_count(stmt) > 15) {
+            state.contentUnread = sqlite3_column_int(stmt, 15) != 0;
         }
     }
     sqlite3_finalize(stmt);

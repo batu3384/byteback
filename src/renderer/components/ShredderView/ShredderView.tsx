@@ -112,6 +112,7 @@ const ShredderView: React.FC = () => {
               <button
                 type="button"
                 className="btn-danger btn-danger-block"
+                data-testid="shred-free-space"
                 onClick={() => void handleFreeSpaceWipe()}
               >
                 <ShieldAlert size={20} /> {t('shred.freeSpaceBtn')}
@@ -119,6 +120,7 @@ const ShredderView: React.FC = () => {
               <button
                 type="button"
                 className="btn-secondary shred-file-btn"
+                data-testid="shred-file"
                 onClick={() => void handleFileWipe()}
               >
                 <FileWarning size={18} /> {t('shred.fileBtn')}
@@ -129,6 +131,7 @@ const ShredderView: React.FC = () => {
                 value={wipeIndex}
                 onChange={(e) => setWipeIndex(Number(e.target.value))}
                 className="drive-select"
+                data-testid="shred-drive-select"
               >
                 {drives.map((d) => (
                   <option key={d.index} value={d.index}>
@@ -142,6 +145,7 @@ const ShredderView: React.FC = () => {
                 value={typedSerial}
                 onChange={(e) => setTypedSerial(e.target.value)}
                 className="shred-input"
+                data-testid="shred-serial"
               />
               <input
                 aria-label={t('shred.imhaAria')}
@@ -149,6 +153,7 @@ const ShredderView: React.FC = () => {
                 value={confirmPhrase}
                 onChange={(e) => setConfirmPhrase(e.target.value.toUpperCase())}
                 className="shred-input"
+                data-testid="shred-imha"
               />
               {selectedDrive && (
                 <p className="shred-label">
@@ -158,25 +163,26 @@ const ShredderView: React.FC = () => {
               <button
                 type="button"
                 className="btn-danger btn-danger-block"
+                data-testid="shred-physical"
                 disabled={!typedSerial.trim() || confirmPhrase !== 'IMHA' || drives.length === 0}
                 onClick={() => void handlePhysicalWipe()}
               >
                 {t('shred.physicalBtn')}
               </button>
               {wipeError && (
-                <InlineAlert variant="error">{wipeError}</InlineAlert>
+                <InlineAlert variant="error" testId="shred-error">{wipeError}</InlineAlert>
               )}
             </>
           )}
 
           {status === 'shredding' && (
-            <div className="shred-progress glass-panel" role="status" aria-busy="true">
+            <div className="shred-progress glass-panel" role="status" aria-busy="true" data-testid="shred-progress">
               <p>{t('shred.progressNote')}</p>
             </div>
           )}
 
           {status === 'done' && (
-            <div className="examiner-empty" role="status">
+            <div className="examiner-empty" role="status" data-testid="shred-done">
               <div className="examiner-icon ok" aria-hidden="true">
                 <CheckCircle size={28} color="var(--success-green)" />
               </div>
@@ -187,7 +193,7 @@ const ShredderView: React.FC = () => {
           )}
 
           {status === 'failed' && (
-            <div className="examiner-empty is-error">
+            <div className="examiner-empty is-error" data-testid="shred-failed">
               <InlineAlert variant="error" title={t('shred.failedTitle')}>
                 {wipeError ?? t('shred.failedBody')}
               </InlineAlert>

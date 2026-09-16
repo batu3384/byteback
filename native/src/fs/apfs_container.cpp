@@ -348,7 +348,9 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
         if (isRunning && !(*isRunning)) break;
         uint64_t off = partitionOffsetBytes + i * blockSize;
         if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) {
-            blockUnread = true;
+            // Spray of unknown clusters: only flag unread when no volume was
+            // found — a later data-block I/O fail must not look like “no APSB”.
+            if (seenVol.empty()) blockUnread = true;
             continue;
         }
         if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {

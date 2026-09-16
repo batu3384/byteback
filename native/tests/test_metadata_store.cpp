@@ -351,6 +351,39 @@ TEST_F(MetadataStoreTest, CarvedFilterAndDuplicateToggle) {
     EXPECT_EQ(summary.totalFiles, 3);   // mft + carve + dup; discovery hidden
 }
 
+TEST_F(MetadataStoreTest, SourceLikeEscapesUnderscoreWildcard) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord exact;
+    exact.name = "mft-unread.bin";
+    exact.status = 0;
+    exact.source = "ntfs_mft_unread";
+    FileRecord spoof;
+    spoof.name = "spoof.bin";
+    spoof.status = 0;
+    spoof.source = "ntfsXmftXunread";
+    FileRecord hfs;
+    hfs.name = "hfs.bin";
+    hfs.status = 0;
+    hfs.source = "hfs_catalog_unread";
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {exact, spoof, hfs}));
+
+    FileListFilter exactLike;
+    exactLike.sourceLike = "ntfs_mft_unread";
+    exactLike.includeDiscovery = true;
+    EXPECT_EQ(store_.getFileCount(scanId, exactLike), 1);
+    auto page = store_.getFiles(scanId, 0, 10, exactLike);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].source, "ntfs_mft_unread");
+
+    FileListFilter hfsLike;
+    hfsLike.sourceLike = "hfs_%_unread";
+    hfsLike.includeDiscovery = true;
+    EXPECT_EQ(store_.getFileCount(scanId, hfsLike), 1);
+    auto hfsPage = store_.getFiles(scanId, 0, 10, hfsLike);
+    ASSERT_EQ(hfsPage.size(), 1u);
+    EXPECT_EQ(hfsPage[0].source, "hfs_catalog_unread");
+}
+
 TEST_F(MetadataStoreTest, ReclaimOrphanRunningMarksPaused) {
     int64_t running = store_.createScan(0, "deep", 1000);
     int64_t done = store_.createScan(1, "quick", 100);

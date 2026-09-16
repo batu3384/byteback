@@ -36,6 +36,13 @@ inline bool readComplete(const ReadResult& res, uint64_t need) {
     return res.success && !res.paddedZeros && res.bytesRead >= need;
 }
 
+// True I/O fail or physical short. Past-EOF zero-pad (success+paddedZeros) is not unread.
+inline bool ioUnread(const ReadResult& res, uint64_t need) {
+    if (!res.success) return true;
+    if (res.paddedZeros) return false;
+    return res.bytesRead < need;
+}
+
 // A2: state of the memory-volume backend. Clones SHARE one instance, so the
 // image buffer is copied once and a fault injected via the original's
 // setMemoryFaultRange hook is visible to every clone (the buffer truly is the
@@ -58,16 +65,29 @@ struct MemoryVolumeState {
         faultSectorCount = sectorCount;
     }
 
+    void setShortRange(uint64_t startSector, uint64_t sectorCount) {
+        std::lock_guard<std::mutex> lock(faultMu);
+        shortStartSector = startSector;
+        shortSectorCount = sectorCount;
+    }
+
     // Consistent (start, count) snapshot.
     std::pair<uint64_t, uint64_t> faultRange() const {
         std::lock_guard<std::mutex> lock(faultMu);
         return {faultStartSector, faultSectorCount};
     }
 
+    std::pair<uint64_t, uint64_t> shortRange() const {
+        std::lock_guard<std::mutex> lock(faultMu);
+        return {shortStartSector, shortSectorCount};
+    }
+
 private:
     mutable std::mutex faultMu;
     uint64_t faultStartSector = 0;
     uint64_t faultSectorCount = 0;
+    uint64_t shortStartSector = 0;
+    uint64_t shortSectorCount = 0;
 };
 
 class DiskReader {
@@ -233,6 +253,8 @@ public:
     // sector range fail outright, simulating a mid-image bad-sector region.
     // Pass count=0 to clear.
     void setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount);
+    // Test hook: overlapping read succeeds with bytesRead=0, no pad (physical short).
+    void setMemoryShortRange(uint64_t startSector, uint64_t sectorCount);
 
     // EWF (.E01) or raw image over http(s) Range (ponytail: multi-segment EWF local only).
     bool attachEwfImage(const std::string& pathOrUrl, std::string* errOut = nullptr);

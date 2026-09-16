@@ -14,7 +14,8 @@ import {
 import type { ScanPhase } from '../../../shared/scan-required'
 import { useI18n, tFormat, formatInt, localeTag } from '../../i18n'
 import InlineAlert from '../InlineAlert'
-import { loadScanHonestyFlags } from '../../../shared/scan-honesty'
+import HonestyBanners from '../HonestyBanners'
+import { emptyScanHonestyFlags, loadScanHonestyFlags } from '../../../shared/scan-honesty'
 
 interface ScanViewProps {
   driveIndex: number | null
@@ -58,21 +59,7 @@ function ScanView({
   const [filesFound, setFilesFound] = useState<any[]>([])
   const [listLoading, setListLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<any>(null)
-  const [hfsTruncated, setHfsTruncated] = useState(false)
-  const [hfsCatalogUnread, setHfsCatalogUnread] = useState(false)
-  const [apfsNxsbUnread, setApfsNxsbUnread] = useState(false)
-  const [refsProbeCapped, setRefsProbeCapped] = useState(false)
-  const [refsSupbUnread, setRefsSupbUnread] = useState(false)
-  const [fatDirUnread, setFatDirUnread] = useState(false)
-  const [ext4DirUnread, setExt4DirUnread] = useState(false)
-  const [xfsDirUnread, setXfsDirUnread] = useState(false)
-  const [ntfsI30Unread, setNtfsI30Unread] = useState(false)
-  const [unallocMapUnread, setUnallocMapUnread] = useState(false)
-  const [ntfsLogfileUnread, setNtfsLogfileUnread] = useState(false)
-  const [usnUnread, setUsnUnread] = useState(false)
-  const [ntfsMftUnread, setNtfsMftUnread] = useState(false)
-  const [probeUnread, setProbeUnread] = useState(false)
-  const [carverUnread, setCarverUnread] = useState(false)
+  const [honesty, setHonesty] = useState(emptyScanHonestyFlags)
   const [honestyLoadFailed, setHonestyLoadFailed] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const limit = 50
@@ -191,21 +178,7 @@ function ScanView({
       .then((flags) => {
         if (cancelled) return
         setHonestyLoadFailed(false)
-        setHfsTruncated(flags.hfsLimit)
-        setHfsCatalogUnread(flags.hfsCatalogUnread)
-        setApfsNxsbUnread(flags.apfsNxsbUnread)
-        setRefsProbeCapped(flags.refsProbeCapped)
-        setRefsSupbUnread(flags.refsSupbUnread)
-        setFatDirUnread(flags.fatDirUnread)
-        setExt4DirUnread(flags.ext4DirUnread)
-        setXfsDirUnread(flags.xfsDirUnread)
-        setNtfsI30Unread(flags.ntfsI30Unread)
-        setUnallocMapUnread(flags.unallocMapUnread)
-        setNtfsLogfileUnread(flags.ntfsLogfileUnread)
-        setUsnUnread(flags.usnUnread)
-        setNtfsMftUnread(flags.ntfsMftUnread)
-        setProbeUnread(flags.probeUnread)
-        setCarverUnread(flags.carverUnread)
+        setHonesty(flags)
       })
       .catch(() => {
         if (cancelled) return
@@ -302,54 +275,12 @@ function ScanView({
         </div>
       </div>
 
-      {hfsTruncated && (
-        <InlineAlert variant="warning" testId="hfs-limit-banner">{t('scan.hfsLimit')}</InlineAlert>
-      )}
-      {hfsCatalogUnread && (
-        <InlineAlert variant="warning" testId="hfs-catalog-unread">{t('scan.hfsCatalogUnread')}</InlineAlert>
-      )}
-      {apfsNxsbUnread && (
-        <InlineAlert variant="warning" testId="apfs-nxsb-unread">{t('scan.apfsNxsbUnread')}</InlineAlert>
-      )}
-      {refsProbeCapped && (
-        <InlineAlert variant="warning" testId="refs-probe-capped">{t('scan.refsProbeCapped')}</InlineAlert>
-      )}
-      {refsSupbUnread && (
-        <InlineAlert variant="warning" testId="refs-supb-unread">{t('scan.refsSupbUnread')}</InlineAlert>
-      )}
-      {fatDirUnread && (
-        <InlineAlert variant="warning" testId="fat-dir-unread">{t('scan.fatDirUnread')}</InlineAlert>
-      )}
-      {ext4DirUnread && (
-        <InlineAlert variant="warning" testId="ext4-dir-unread">{t('scan.ext4DirUnread')}</InlineAlert>
-      )}
-      {xfsDirUnread && (
-        <InlineAlert variant="warning" testId="xfs-dir-unread">{t('scan.xfsDirUnread')}</InlineAlert>
-      )}
-      {ntfsI30Unread && (
-        <InlineAlert variant="warning" testId="ntfs-i30-unread">{t('scan.ntfsI30Unread')}</InlineAlert>
-      )}
-      {unallocMapUnread && (
-        <InlineAlert variant="warning" testId="unalloc-map-unread">{t('scan.unallocMapUnread')}</InlineAlert>
-      )}
-      {ntfsLogfileUnread && (
-        <InlineAlert variant="warning" testId="ntfs-logfile-unread">{t('scan.ntfsLogfileUnread')}</InlineAlert>
-      )}
-      {usnUnread && (
-        <InlineAlert variant="warning" testId="usn-unread">{t('scan.usnUnread')}</InlineAlert>
-      )}
-      {ntfsMftUnread && (
-        <InlineAlert variant="warning" testId="ntfs-mft-unread">{t('scan.ntfsMftUnread')}</InlineAlert>
-      )}
-      {probeUnread && (
-        <InlineAlert variant="warning" testId="probe-unread">{t('scan.probeUnread')}</InlineAlert>
-      )}
-      {carverUnread && (
-        <InlineAlert variant="warning" testId="carver-unread">{t('scan.carverUnread')}</InlineAlert>
-      )}
-      {honestyLoadFailed && (
-        <InlineAlert variant="warning" testId="scan-honesty-load-error">{t('scan.honestyLoadFailed')}</InlineAlert>
-      )}
+      <HonestyBanners
+        flags={honesty}
+        loadFailed={honestyLoadFailed}
+        ns="scan"
+        loadFailedTestId="scan-honesty-load-error"
+      />
       {listError && (
         <InlineAlert variant="error" testId="scan-list-error">{listError}</InlineAlert>
       )}

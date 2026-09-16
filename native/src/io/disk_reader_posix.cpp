@@ -116,6 +116,12 @@ void DiskReader::setMemoryFaultRange(uint64_t startSector, uint64_t sectorCount)
     memoryVolume_->setFaultRange(startSector, sectorCount);
 }
 
+void DiskReader::setMemoryShortRange(uint64_t startSector, uint64_t sectorCount) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    if (!memoryVolume_) return;
+    memoryVolume_->setShortRange(startSector, sectorCount);
+}
+
 bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOut) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
@@ -234,6 +240,17 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
             const uint64_t last = first + sizeBytes / sectorSize_ - 1;
             if (first <= fStart + fCount - 1 && fStart <= last) {
                 result.error = "injected memory fault range";
+                noteBadRead(offsetBytes, sizeBytes);
+                return result;
+            }
+        }
+        const auto [sStart, sCount] = mv.shortRange();
+        if (sCount > 0 && sectorSize_ > 0) {
+            const uint64_t first = offsetBytes / sectorSize_;
+            const uint64_t last = first + sizeBytes / sectorSize_ - 1;
+            if (first <= sStart + sCount - 1 && sStart <= last) {
+                result.success = true;
+                result.bytesRead = 0;
                 noteBadRead(offsetBytes, sizeBytes);
                 return result;
             }

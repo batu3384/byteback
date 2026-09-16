@@ -93,7 +93,7 @@ bool HFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::ato
                 subReads.push_back({sub.sector, half});
                 continue;
             }
-            if (!res.success) {
+            if (ioUnread(res, wantBytes)) {
                 emitLinearUnread();
                 continue;
             }

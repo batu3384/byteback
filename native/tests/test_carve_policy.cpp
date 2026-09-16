@@ -661,3 +661,29 @@ TEST(CarvePolicy, UnreadLeafIsSentinelNotSilentSkip) {
     EXPECT_TRUE(sawPng) << "unread sector 0 must not hide a PNG in the same 4 MiB window";
     EXPECT_TRUE(sawUnread) << "completed carve after unread I/O is not a clean signature pass";
 }
+
+TEST(CarvePolicy, UnreadShortLeafIsSentinelNotSilentSkip) {
+    std::vector<uint8_t> img(16 * 512, 0);
+    static const uint8_t sig[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    static const uint8_t iend[] = {0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+                                   0xAE, 0x42, 0x60, 0x82};
+    const size_t off = 8 * 512;
+    std::memcpy(img.data() + off, sig, sizeof(sig));
+    std::memcpy(img.data() + off + 64, iend, sizeof(iend));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryShortRange(0, 1);
+
+    CarvingEngine carver;
+    ASSERT_TRUE(carver.loadSignatures(""));
+    std::atomic<bool> running{true};
+    bool sawPng = false;
+    bool sawUnread = false;
+    ASSERT_TRUE(carver.scan(reader, [&](const FileRecord& fr) {
+        if (fr.extension.find("png") != std::string::npos) sawPng = true;
+        if (fr.source == "carver_unread") sawUnread = true;
+    }, &running));
+    EXPECT_TRUE(sawPng) << "physical short on sector 0 must not hide a PNG in the same 4 MiB window";
+    EXPECT_TRUE(sawUnread) << "success+short without pad is not a clean signature pass";
+}
