@@ -85,6 +85,7 @@ struct ScanState {
     // Windows "\\.\X:" when the scan bound a volume device (spanned extents).
     std::string volumePath;
     std::vector<int> evidenceDisks;
+    bool contentUnread = false;
 };
 
 // Singleton forensic case metadata (E01 header + audit context).
@@ -155,6 +156,8 @@ public:
     bool setScanPartition(int64_t scanId, int64_t partitionStartSector, uint64_t partitionSizeSectors);
     bool setScanVolumeBinding(int64_t scanId, const std::string& volumePath,
                               const std::vector<int>& evidenceDisks);
+    /** Sticky: an unread content-search walk. FTS shortcut still hits; status stays 6. */
+    bool setScanContentUnread(int64_t scanId);
     bool updateScanCheckpoint(int64_t scanId, bool metadataComplete, uint64_t carveResumeSector);
     bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);

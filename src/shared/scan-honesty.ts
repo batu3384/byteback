@@ -157,6 +157,40 @@ export function isCarverUnreadRecord(f: { source?: string }): boolean {
   return f.source === 'carver_unread'
 }
 
+export type ScanHonestyLane = {
+  flag: keyof ScanHonestyFlags
+  filter: FileListFilter
+  pageLimit: number
+  match: (f: { source?: string; path?: string }) => boolean
+  testId: string
+  messageKey: string
+}
+
+/** Single source for honesty fetch + banner testId/i18n. ScanView and ResultsView both consume this. */
+export const SCAN_HONESTY_LANES: readonly ScanHonestyLane[] = [
+  { flag: 'hfsLimit', filter: SCAN_HONESTY_HFS_FILTER, pageLimit: 1, match: isHfsLimitRecord, testId: 'hfs-limit-banner', messageKey: 'hfsLimit' },
+  { flag: 'hfsCatalogUnread', filter: SCAN_HONESTY_HFS_CATALOG_FILTER, pageLimit: 1, match: isHfsCatalogUnreadRecord, testId: 'hfs-catalog-unread', messageKey: 'hfsCatalogUnread' },
+  { flag: 'apfsNxsbUnread', filter: SCAN_HONESTY_APFS_FILTER, pageLimit: 1, match: isApfsNxsbUnreadRecord, testId: 'apfs-nxsb-unread', messageKey: 'apfsNxsbUnread' },
+  { flag: 'refsProbeCapped', filter: SCAN_HONESTY_REFS_FILTER, pageLimit: 8, match: isRefsProbeCappedRecord, testId: 'refs-probe-capped', messageKey: 'refsProbeCapped' },
+  { flag: 'refsSupbUnread', filter: SCAN_HONESTY_REFS_SUPB_FILTER, pageLimit: 1, match: isRefsSupbUnreadRecord, testId: 'refs-supb-unread', messageKey: 'refsSupbUnread' },
+  { flag: 'fatDirUnread', filter: SCAN_HONESTY_FAT_FILTER, pageLimit: 1, match: isFatDirUnreadRecord, testId: 'fat-dir-unread', messageKey: 'fatDirUnread' },
+  { flag: 'ext4DirUnread', filter: SCAN_HONESTY_EXT4_FILTER, pageLimit: 1, match: isExt4DirUnreadRecord, testId: 'ext4-dir-unread', messageKey: 'ext4DirUnread' },
+  { flag: 'xfsDirUnread', filter: SCAN_HONESTY_XFS_FILTER, pageLimit: 1, match: isXfsDirUnreadRecord, testId: 'xfs-dir-unread', messageKey: 'xfsDirUnread' },
+  { flag: 'ntfsI30Unread', filter: SCAN_HONESTY_I30_FILTER, pageLimit: 1, match: isNtfsI30UnreadRecord, testId: 'ntfs-i30-unread', messageKey: 'ntfsI30Unread' },
+  { flag: 'unallocMapUnread', filter: SCAN_HONESTY_UNALLOC_FILTER, pageLimit: 1, match: isUnallocMapUnreadRecord, testId: 'unalloc-map-unread', messageKey: 'unallocMapUnread' },
+  { flag: 'ntfsLogfileUnread', filter: SCAN_HONESTY_LOGFILE_FILTER, pageLimit: 1, match: isNtfsLogfileUnreadRecord, testId: 'ntfs-logfile-unread', messageKey: 'ntfsLogfileUnread' },
+  { flag: 'usnUnread', filter: SCAN_HONESTY_USN_FILTER, pageLimit: 1, match: isUsnUnreadRecord, testId: 'usn-unread', messageKey: 'usnUnread' },
+  { flag: 'ntfsMftUnread', filter: SCAN_HONESTY_MFT_FILTER, pageLimit: 1, match: isNtfsMftUnreadRecord, testId: 'ntfs-mft-unread', messageKey: 'ntfsMftUnread' },
+  { flag: 'probeUnread', filter: SCAN_HONESTY_PROBE_FILTER, pageLimit: 1, match: isProbeUnreadRecord, testId: 'probe-unread', messageKey: 'probeUnread' },
+  { flag: 'carverUnread', filter: SCAN_HONESTY_CARVE_FILTER, pageLimit: 1, match: isCarverUnreadRecord, testId: 'carver-unread', messageKey: 'carverUnread' },
+]
+
+export function emptyScanHonestyFlags(): ScanHonestyFlags {
+  const flags = {} as ScanHonestyFlags
+  for (const lane of SCAN_HONESTY_LANES) flags[lane.flag] = false
+  return flags
+}
+
 type PageFn = (
   scanId: number,
   offset: number,
@@ -165,11 +199,7 @@ type PageFn = (
 ) => Promise<FileRecord[]>
 
 function allHonestySet(flags: ScanHonestyFlags): boolean {
-  return flags.hfsLimit && flags.hfsCatalogUnread && flags.apfsNxsbUnread && flags.refsProbeCapped &&
-    flags.refsSupbUnread && flags.fatDirUnread &&
-    flags.ext4DirUnread && flags.xfsDirUnread && flags.ntfsI30Unread &&
-    flags.unallocMapUnread && flags.ntfsLogfileUnread && flags.usnUnread &&
-    flags.ntfsMftUnread && flags.probeUnread && flags.carverUnread
+  return SCAN_HONESTY_LANES.every((lane) => flags[lane.flag])
 }
 
 /** Keyword search drops discovery rows; honesty banners must page them in. */
@@ -178,57 +208,20 @@ export async function loadScanHonestyFlags(
   getFilesPage: PageFn | undefined,
   localRows: Array<{ source?: string; path?: string }>,
 ): Promise<ScanHonestyFlags> {
-  const flags: ScanHonestyFlags = {
-    hfsLimit: localRows.some(isHfsLimitRecord),
-    hfsCatalogUnread: localRows.some(isHfsCatalogUnreadRecord),
-    apfsNxsbUnread: localRows.some(isApfsNxsbUnreadRecord),
-    refsProbeCapped: localRows.some(isRefsProbeCappedRecord),
-    refsSupbUnread: localRows.some(isRefsSupbUnreadRecord),
-    fatDirUnread: localRows.some(isFatDirUnreadRecord),
-    ext4DirUnread: localRows.some(isExt4DirUnreadRecord),
-    xfsDirUnread: localRows.some(isXfsDirUnreadRecord),
-    ntfsI30Unread: localRows.some(isNtfsI30UnreadRecord),
-    unallocMapUnread: localRows.some(isUnallocMapUnreadRecord),
-    ntfsLogfileUnread: localRows.some(isNtfsLogfileUnreadRecord),
-    usnUnread: localRows.some(isUsnUnreadRecord),
-    ntfsMftUnread: localRows.some(isNtfsMftUnreadRecord),
-    probeUnread: localRows.some(isProbeUnreadRecord),
-    carverUnread: localRows.some(isCarverUnreadRecord),
+  const flags = emptyScanHonestyFlags()
+  for (const lane of SCAN_HONESTY_LANES) {
+    flags[lane.flag] = localRows.some(lane.match)
   }
   if (scanId <= 0 || !getFilesPage || allHonestySet(flags)) return flags
-  const empty = Promise.resolve([] as FileRecord[])
-  const [hfs, hfsCat, apfs, refs, refsSupb, fat, ext4, xfs, i30, unalloc, logfile, usn, mft, probe, carve] = await Promise.all([
-    flags.hfsLimit ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_HFS_FILTER),
-    flags.hfsCatalogUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_HFS_CATALOG_FILTER),
-    flags.apfsNxsbUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_APFS_FILTER),
-    flags.refsProbeCapped ? empty : getFilesPage(scanId, 0, 8, SCAN_HONESTY_REFS_FILTER),
-    flags.refsSupbUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_REFS_SUPB_FILTER),
-    flags.fatDirUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_FAT_FILTER),
-    flags.ext4DirUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_EXT4_FILTER),
-    flags.xfsDirUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_XFS_FILTER),
-    flags.ntfsI30Unread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_I30_FILTER),
-    flags.unallocMapUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_UNALLOC_FILTER),
-    flags.ntfsLogfileUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_LOGFILE_FILTER),
-    flags.usnUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_USN_FILTER),
-    flags.ntfsMftUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_MFT_FILTER),
-    flags.probeUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_PROBE_FILTER),
-    flags.carverUnread ? empty : getFilesPage(scanId, 0, 1, SCAN_HONESTY_CARVE_FILTER),
-  ])
-  return {
-    hfsLimit: flags.hfsLimit || hfs.some(isHfsLimitRecord),
-    hfsCatalogUnread: flags.hfsCatalogUnread || hfsCat.some(isHfsCatalogUnreadRecord),
-    apfsNxsbUnread: flags.apfsNxsbUnread || apfs.some(isApfsNxsbUnreadRecord),
-    refsProbeCapped: flags.refsProbeCapped || refs.some(isRefsProbeCappedRecord),
-    refsSupbUnread: flags.refsSupbUnread || refsSupb.some(isRefsSupbUnreadRecord),
-    fatDirUnread: flags.fatDirUnread || fat.some(isFatDirUnreadRecord),
-    ext4DirUnread: flags.ext4DirUnread || ext4.some(isExt4DirUnreadRecord),
-    xfsDirUnread: flags.xfsDirUnread || xfs.some(isXfsDirUnreadRecord),
-    ntfsI30Unread: flags.ntfsI30Unread || i30.some(isNtfsI30UnreadRecord),
-    unallocMapUnread: flags.unallocMapUnread || unalloc.some(isUnallocMapUnreadRecord),
-    ntfsLogfileUnread: flags.ntfsLogfileUnread || logfile.some(isNtfsLogfileUnreadRecord),
-    usnUnread: flags.usnUnread || usn.some(isUsnUnreadRecord),
-    ntfsMftUnread: flags.ntfsMftUnread || mft.some(isNtfsMftUnreadRecord),
-    probeUnread: flags.probeUnread || probe.some(isProbeUnreadRecord),
-    carverUnread: flags.carverUnread || carve.some(isCarverUnreadRecord),
-  }
+  const pages = await Promise.all(
+    SCAN_HONESTY_LANES.map((lane) =>
+      flags[lane.flag]
+        ? Promise.resolve([] as FileRecord[])
+        : getFilesPage(scanId, 0, lane.pageLimit, lane.filter),
+    ),
+  )
+  SCAN_HONESTY_LANES.forEach((lane, i) => {
+    flags[lane.flag] = flags[lane.flag] || pages[i]!.some(lane.match)
+  })
+  return flags
 }

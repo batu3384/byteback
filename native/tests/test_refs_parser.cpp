@@ -291,3 +291,37 @@ TEST(RefsParser, UnreadMetadataPageIsSentinelNotEmptyListing) {
     EXPECT_FALSE(sawFile) << "unread ministore page must not parse zeros as a missing report.docx";
     EXPECT_TRUE(sawUnread);
 }
+
+TEST(RefsParser, UnreadProbeDataClusterIsNotSentinelWhenPageParsed) {
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 3, 0);
+    writeRefsBoot(img);
+
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    uint8_t* page = img.data() + cluster;
+    page[0] = 0x30;
+    page[1] = 0x00;
+    page[2] = 0x01;
+    page[3] = 0x00;
+    embedUtf16Name(page, 4, "report.docx");
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    // Cluster 2 = sector 16. Cluster 1 (report.docx) stays readable.
+    reader.setMemoryFaultRange(16, 8);
+
+    bool sawFile = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "report.docx") sawFile = true;
+        if (fr.source == kRefsPageUnreadSource) sawUnread = true;
+    }, &running));
+    EXPECT_TRUE(sawFile);
+    EXPECT_FALSE(sawUnread) << "unread non-metadata cluster after a parsed page is not an empty listing";
+}

@@ -213,14 +213,18 @@ bool RefsParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         // checkpoint-walk I/O or pages that look like MSB+/entry records.
         if (seenNames.empty()) {
             usedProbe = true;
+            bool probeFail = false;
             const uint64_t probeCap = refsLinearProbeLimit();
             const uint64_t probe = std::min(blockCount, probeCap);
             for (uint64_t b = 0; b < probe; ++b) {
                 if (isRunning && !(*isRunning)) break;
                 if (b == kRefsSuperblockCluster) continue;
                 walkMinistoreNode(reader, partitionOffsetBytes, clusterSize, blockCount, b,
-                                  sectorSize, fileIndex, callback, visitedBlocks, seenNames, pageUnread);
+                                  sectorSize, fileIndex, callback, visitedBlocks, seenNames, probeFail);
             }
+            // Linear spray unread is empty-listing honesty, not a hit on a
+            // non-metadata cluster after a page already parsed.
+            if (probeFail && seenNames.empty()) pageUnread = true;
         }
     }
 

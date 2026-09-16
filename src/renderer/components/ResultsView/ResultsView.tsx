@@ -3,7 +3,8 @@ import './ResultsView.css'
 import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
-import { loadScanHonestyFlags } from '../../../shared/scan-honesty'
+import { emptyScanHonestyFlags, loadScanHonestyFlags } from '../../../shared/scan-honesty'
+import HonestyBanners from '../HonestyBanners'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import { previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
@@ -124,21 +125,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState(false)
   const [recordById, setRecordById] = useState<Map<number, FileRecord>>(new Map())
-  const [hfsTruncated, setHfsTruncated] = useState(false)
-  const [hfsCatalogUnread, setHfsCatalogUnread] = useState(false)
-  const [apfsNxsbUnread, setApfsNxsbUnread] = useState(false)
-  const [refsProbeCapped, setRefsProbeCapped] = useState(false)
-  const [refsSupbUnread, setRefsSupbUnread] = useState(false)
-  const [fatDirUnread, setFatDirUnread] = useState(false)
-  const [ext4DirUnread, setExt4DirUnread] = useState(false)
-  const [xfsDirUnread, setXfsDirUnread] = useState(false)
-  const [ntfsI30Unread, setNtfsI30Unread] = useState(false)
-  const [unallocMapUnread, setUnallocMapUnread] = useState(false)
-  const [ntfsLogfileUnread, setNtfsLogfileUnread] = useState(false)
-  const [usnUnread, setUsnUnread] = useState(false)
-  const [ntfsMftUnread, setNtfsMftUnread] = useState(false)
-  const [probeUnread, setProbeUnread] = useState(false)
-  const [carverUnread, setCarverUnread] = useState(false)
+  const [honesty, setHonesty] = useState(emptyScanHonestyFlags)
   const [honestyLoadFailed, setHonestyLoadFailed] = useState(false)
   const [recoverReport, setRecoverReport] = useState<string | null>(null)
   const [recoverStats, setRecoverStats] = useState<{ failed: number; zero: number; bad: number } | null>(null)
@@ -334,21 +321,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       .then((flags) => {
         if (cancelled) return
         setHonestyLoadFailed(false)
-        setHfsTruncated(flags.hfsLimit)
-        setHfsCatalogUnread(flags.hfsCatalogUnread)
-        setApfsNxsbUnread(flags.apfsNxsbUnread)
-        setRefsProbeCapped(flags.refsProbeCapped)
-        setRefsSupbUnread(flags.refsSupbUnread)
-        setFatDirUnread(flags.fatDirUnread)
-        setExt4DirUnread(flags.ext4DirUnread)
-        setXfsDirUnread(flags.xfsDirUnread)
-        setNtfsI30Unread(flags.ntfsI30Unread)
-        setUnallocMapUnread(flags.unallocMapUnread)
-        setNtfsLogfileUnread(flags.ntfsLogfileUnread)
-        setUsnUnread(flags.usnUnread)
-        setNtfsMftUnread(flags.ntfsMftUnread)
-        setProbeUnread(flags.probeUnread)
-        setCarverUnread(flags.carverUnread)
+        setHonesty(flags)
       })
       .catch(() => {
         if (cancelled) return
@@ -913,54 +886,12 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           }}
         />
       )}
-      {hfsTruncated && (
-        <InlineAlert variant="warning" testId="hfs-limit-banner">{t('results.hfsLimit')}</InlineAlert>
-      )}
-      {hfsCatalogUnread && (
-        <InlineAlert variant="warning" testId="hfs-catalog-unread">{t('results.hfsCatalogUnread')}</InlineAlert>
-      )}
-      {apfsNxsbUnread && (
-        <InlineAlert variant="warning" testId="apfs-nxsb-unread">{t('results.apfsNxsbUnread')}</InlineAlert>
-      )}
-      {refsProbeCapped && (
-        <InlineAlert variant="warning" testId="refs-probe-capped">{t('results.refsProbeCapped')}</InlineAlert>
-      )}
-      {refsSupbUnread && (
-        <InlineAlert variant="warning" testId="refs-supb-unread">{t('results.refsSupbUnread')}</InlineAlert>
-      )}
-      {fatDirUnread && (
-        <InlineAlert variant="warning" testId="fat-dir-unread">{t('results.fatDirUnread')}</InlineAlert>
-      )}
-      {ext4DirUnread && (
-        <InlineAlert variant="warning" testId="ext4-dir-unread">{t('results.ext4DirUnread')}</InlineAlert>
-      )}
-      {xfsDirUnread && (
-        <InlineAlert variant="warning" testId="xfs-dir-unread">{t('results.xfsDirUnread')}</InlineAlert>
-      )}
-      {ntfsI30Unread && (
-        <InlineAlert variant="warning" testId="ntfs-i30-unread">{t('results.ntfsI30Unread')}</InlineAlert>
-      )}
-      {unallocMapUnread && (
-        <InlineAlert variant="warning" testId="unalloc-map-unread">{t('results.unallocMapUnread')}</InlineAlert>
-      )}
-      {ntfsLogfileUnread && (
-        <InlineAlert variant="warning" testId="ntfs-logfile-unread">{t('results.ntfsLogfileUnread')}</InlineAlert>
-      )}
-      {usnUnread && (
-        <InlineAlert variant="warning" testId="usn-unread">{t('results.usnUnread')}</InlineAlert>
-      )}
-      {ntfsMftUnread && (
-        <InlineAlert variant="warning" testId="ntfs-mft-unread">{t('results.ntfsMftUnread')}</InlineAlert>
-      )}
-      {probeUnread && (
-        <InlineAlert variant="warning" testId="probe-unread">{t('results.probeUnread')}</InlineAlert>
-      )}
-      {carverUnread && (
-        <InlineAlert variant="warning" testId="carver-unread">{t('results.carverUnread')}</InlineAlert>
-      )}
-      {honestyLoadFailed && (
-        <InlineAlert variant="warning" testId="results-honesty-load-error">{t('results.honestyLoadFailed')}</InlineAlert>
-      )}
+      <HonestyBanners
+        flags={honesty}
+        loadFailed={honestyLoadFailed}
+        ns="results"
+        loadFailedTestId="results-honesty-load-error"
+      />
       {listError && (
         <InlineAlert variant="error" testId="results-list-error" title={t('results.loadErrorTitle')}>
           {t('results.loadErrorBody')}

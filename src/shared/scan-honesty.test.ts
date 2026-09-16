@@ -31,6 +31,7 @@ import {
   SCAN_HONESTY_MFT_FILTER,
   SCAN_HONESTY_PROBE_FILTER,
   SCAN_HONESTY_CARVE_FILTER,
+  SCAN_HONESTY_LANES,
 } from './scan-honesty'
 import type { FileRecord } from './ipc-contract'
 
@@ -169,6 +170,33 @@ describe('scan honesty sentinels', () => {
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_MFT_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_PROBE_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_CARVE_FILTER)
+  })
+
+  it('keeps one lane table as fetch and banner source', async () => {
+    expect(SCAN_HONESTY_LANES).toHaveLength(15)
+    expect(SCAN_HONESTY_LANES.map((l) => l.filter)).toEqual([
+      SCAN_HONESTY_HFS_FILTER,
+      SCAN_HONESTY_HFS_CATALOG_FILTER,
+      SCAN_HONESTY_APFS_FILTER,
+      SCAN_HONESTY_REFS_FILTER,
+      SCAN_HONESTY_REFS_SUPB_FILTER,
+      SCAN_HONESTY_FAT_FILTER,
+      SCAN_HONESTY_EXT4_FILTER,
+      SCAN_HONESTY_XFS_FILTER,
+      SCAN_HONESTY_I30_FILTER,
+      SCAN_HONESTY_UNALLOC_FILTER,
+      SCAN_HONESTY_LOGFILE_FILTER,
+      SCAN_HONESTY_USN_FILTER,
+      SCAN_HONESTY_MFT_FILTER,
+      SCAN_HONESTY_PROBE_FILTER,
+      SCAN_HONESTY_CARVE_FILTER,
+    ])
+    const getFilesPage = vi.fn(async () => [] as FileRecord[])
+    await loadScanHonestyFlags(4, getFilesPage, [])
+    expect(getFilesPage).toHaveBeenCalledTimes(SCAN_HONESTY_LANES.length)
+    SCAN_HONESTY_LANES.forEach((lane) => {
+      expect(getFilesPage).toHaveBeenCalledWith(4, 0, lane.pageLimit, lane.filter)
+    })
   })
 
   it('does not query when local rows already carry all sentinels', async () => {

@@ -104,7 +104,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
             </p>
           </div>
         </div>
-        <button className="btn-secondary" onClick={() => fetchTimeline(page, filter)} disabled={loading}>
+        <button className="btn-secondary" data-testid="timeline-refresh" onClick={() => fetchTimeline(page, filter)} disabled={loading}>
           <RefreshCw size={16} className={loading ? 'spinner' : ''} /> {t('dash.refresh')}
         </button>
       </div>
@@ -114,6 +114,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
           type="button"
           className={`btn-secondary ${filter === '' ? 'active' : ''}`}
           aria-pressed={filter === ''}
+          data-testid="timeline-filter-all"
           onClick={() => setFilter('')}
         >
           {t('scan.all')}
@@ -125,6 +126,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
             className={`btn-secondary ${filter === key ? 'active' : ''}`}
             style={{ '--event-color': meta.color } as React.CSSProperties}
             aria-pressed={filter === key}
+            data-testid={`timeline-filter-${key}`}
             onClick={() => setFilter(key)}
           >
             {meta.icon} {t(meta.labelKey)}
@@ -134,14 +136,14 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
 
       <div className="timeline-content glass-panel">
         {loading ? (
-          <div className="examiner-empty timeline-load" role="status">
+          <div className="examiner-empty timeline-load" role="status" data-testid="timeline-load">
             <RefreshCw size={32} className="spinner" />
             <p>{t('tl.loading')}</p>
           </div>
         ) : loadError ? (
-          <InlineAlert variant="error">{loadError}</InlineAlert>
+          <InlineAlert variant="error" testId="timeline-error">{loadError}</InlineAlert>
         ) : events.length === 0 ? (
-          <div className="examiner-empty" role="status">
+          <div className="examiner-empty" role="status" data-testid="timeline-empty">
             <Clock size={48} className="timeline-empty-ico" aria-hidden="true" />
             <h3>{t('tl.emptyTitle')}</h3>
             <p>
@@ -159,6 +161,7 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
                 <div
                   key={ev.id}
                   className="timeline-row"
+                  data-testid="timeline-row"
                   style={{ '--event-color': meta.color } as React.CSSProperties}
                 >
                   <div className="timeline-marker" />
@@ -179,13 +182,13 @@ function TimelineView({ scanId }: TimelineViewProps): React.ReactElement {
       </div>
 
       <div className="timeline-pagination">
-        <button type="button" className="btn-secondary" onClick={() => goPage(page - 1)} disabled={page === 0 || loading}>
+        <button type="button" className="btn-secondary" data-testid="timeline-prev" onClick={() => goPage(page - 1)} disabled={page === 0 || loading}>
           <ChevronLeft size={16} aria-hidden="true" /> {t('scan.prev')}
         </button>
         <span className="timeline-page">
           {tFormat('tl.pageOf', { cur: String(page + 1), total: String(pageCount) })}
         </span>
-        <button type="button" className="btn-secondary" onClick={() => goPage(page + 1)} disabled={page + 1 >= pageCount || loading}>
+        <button type="button" className="btn-secondary" data-testid="timeline-next" onClick={() => goPage(page + 1)} disabled={page + 1 >= pageCount || loading}>
           {t('scan.next')} <ChevronRight size={16} aria-hidden="true" />
         </button>
       </div>

@@ -851,6 +851,38 @@ TEST_F(ContentSearchTest, UnreadRunIsNotCleanComplete) {
         << "unread run is not a clean complete; empty would not mean no match";
 }
 
+TEST_F(ContentSearchTest, FtsSecondSearchKeepsUnreadStatus) {
+    std::vector<uint8_t> img(512 * 4, 0);
+    const char payload[] = "SECRET_AFTER_FAULT";
+    std::memcpy(img.data() + 512 * 2, payload, sizeof(payload) - 1);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(0, 1);
+
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "split.bin";
+    r.sizeBytes = 512 * 2;
+    r.status = 0;
+    r.runs = {{0, 1}, {2, 1}};
+    store_.insertFile(scanId, r);
+
+    std::atomic<bool> running{true};
+    ASSERT_EQ(runContentSearch(store_, reader, scanId, "SECRET_AFTER_FAULT", {},
+        [](const FileRecord&) {}, nullptr, &running), kContentSearchReadIncomplete);
+    ASSERT_TRUE(store_.isContentIndexComplete(scanId))
+        << "partial unread still indexes the readable sibling; FTS shortcut would fire";
+
+    running = true;
+    std::vector<FileRecord> hits;
+    const int second = runContentSearch(store_, reader, scanId, "SECRET_AFTER_FAULT", {},
+        [&](const FileRecord& f) { hits.push_back(f); }, nullptr, &running);
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(second, kContentSearchReadIncomplete)
+        << "FTS shortcut must not report a clean complete after an unread walk";
+}
+
 TEST_F(ContentSearchTest, PaddedPastEndIsNotASpaceHit) {
     std::vector<uint8_t> img(512, 0);
     const char hello[] = "HELLO";

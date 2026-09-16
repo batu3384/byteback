@@ -71,6 +71,12 @@ test('scan profile legend and mode buttons', async () => {
     await expect(win.getByTestId('nav-report')).toBeDisabled()
     await win.getByTestId('nav-shredder').click()
     await expect(win.locator('#main-content').getByRole('heading', { name: 'Veri Yok Edici' })).toBeVisible()
+    await expect(win.getByTestId('shred-free-space')).toBeVisible()
+    await expect(win.getByTestId('shred-file')).toBeVisible()
+    await expect(win.getByTestId('shred-physical')).toBeVisible()
+    await expect(win.getByTestId('shred-drive-select')).toBeVisible()
+    await expect(win.getByTestId('shred-serial')).toBeVisible()
+    await expect(win.getByTestId('shred-imha')).toBeVisible()
   } finally {
     await closeApp(launched)
   }

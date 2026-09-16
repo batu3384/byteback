@@ -85,7 +85,7 @@ bool APFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 subReads.push_back({sub.sector, half});
                 continue;
             }
-            if (!res.success) {
+            if (ioUnread(res, wantBytes)) {
                 emitLinearUnread();
                 continue;
             }

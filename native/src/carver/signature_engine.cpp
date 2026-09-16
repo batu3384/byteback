@@ -772,7 +772,7 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
             subReads.push_back({sub.sector, half});
             continue;
         }
-        if (!res.success) {
+        if (ioUnread(res, wantBytes)) {
             if (!unreadEmitted) {
                 unreadEmitted = true;
                 FileRecord fr;

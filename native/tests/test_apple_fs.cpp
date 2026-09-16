@@ -222,6 +222,29 @@ TEST(ApfsContainer, UnreadApsbBlockIsSentinelNotEmptyContainer) {
     EXPECT_TRUE(sawUnread);
 }
 
+TEST(ApfsContainer, UnreadSprayDataBlockIsNotSentinelWhenVolumeFound) {
+    std::vector<uint8_t> img(32 * 4096, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeBe64(img.data() + 40, 4096);
+    writeBe64(img.data() + 48, 32);
+    std::memcpy(img.data() + 4096 + 32, "APSB", 4);
+    std::memcpy(img.data() + 4096 + 72, "Macintosh HD", 12);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(10 * 8, 8);
+
+    bool sawVolume = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    ASSERT_TRUE(walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_volume" && fr.name == "Macintosh HD") sawVolume = true;
+        if (fr.source == kApfsBlockUnreadSource) sawUnread = true;
+    }, &running));
+    EXPECT_TRUE(sawVolume);
+    EXPECT_FALSE(sawUnread) << "unread non-APSB spray cluster is not a missing volume";
+}
+
 TEST(HfsCatalog, OverflowExtentsMergedIntoRuns) {
     const uint32_t bs = 4096;
     std::vector<uint8_t> img(64 * bs, 0);
