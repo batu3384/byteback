@@ -832,6 +832,7 @@ const STRINGS: Record<string, Entry> = {
   'source.ntfs_recycle': { tr: 'Geri Dönüşüm Kutusu ($R)', en: 'Recycle Bin ($R)' },
   'source.ntfs_recycle_meta': { tr: 'Geri Dönüşüm Kutusu ($I, yalnızca ad)', en: 'Recycle Bin ($I, name only)' },
   'source.ntfs_i30': { tr: 'NTFS $I30 dizin (yalnızca ad, kurtarılamaz)', en: 'NTFS $I30 index (name only, unrecoverable)' },
+  'source.ntfs_i30_unalloc': { tr: 'NTFS $I30 serbest küme (yalnızca ad, kurtarılamaz)', en: 'NTFS $I30 unallocated (name only, unrecoverable)' },
   'source.ntfs_thumbcache': { tr: 'NTFS thumbcache (gömülü JPEG)', en: 'NTFS thumbcache (embedded JPEG)' },
   'source.usn_journal': { tr: 'USN zaman çizelgesi', en: 'USN timeline' },
   'source.ntfs_logfile': { tr: 'LogFile ipucu (kurtarılamaz)', en: 'LogFile hint (unrecoverable)' },

@@ -1,4 +1,5 @@
 #include "recovery/validation.h"
+#include "recovery/path_util.h"
 #include "scan/discovery_sources.h"
 #include "fs/refs_integrity.h"
 #include "carver/file_validators.h"
@@ -78,7 +79,7 @@ void checkSizeConsistency(RecoveryResult& result, const FileRecord& record) {
 }
 
 void validateRecoveredStructure(RecoveryResult& result, const FileRecord& record) {
-    std::ifstream in(result.destPath, std::ios::binary);
+    std::ifstream in(utf8Path(result.destPath), std::ios::binary);
     if (!in) {
         result.validationScore = 0;
         result.validationError = "could not reopen recovered file";

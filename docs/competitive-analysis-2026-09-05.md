@@ -4,7 +4,7 @@
 - Karşılaştırılan: R-Studio, UFS Explorer RAID Recovery, DMDE, Disk Drill, EaseUS
 - Yöntem: üretici özellik sayfaları + incelemeler; her iddia byteback kodunda doğrulandı (dosya:line kanıtlı)
 
-## Zaten rakip seviyesinde olanlar
+## Zaten kodda olanlar (lab; saha paritesi değil)
 
 | Yetenek | byteback karşılığı |
 |---|---|
@@ -52,4 +52,4 @@
 
 ## Sonuç
 
-Temel kurtarma yetenekleri (NTFS MFT, carve, RAID6, BitLocker, E01, VSS, USN, denetim zinciri) rakip seviyede ve çoğu yerde daha doğrulanmış (363 native test, RFC/standart vektörleri). Açık kalan 12 kalem öncelik sırasına göre yol haritasına işlendi; 1-4. kalemler "profesyonel sürüm" iddiası için kritik.
+Lab’de NTFS MFT, carve, RAID6, BitLocker (anahtarlı), E01, VSS, USN ve denetim zinciri RFC/standart vektörleriyle doğrulanır. Bu, Disk Drill USB-foto sahası veya R-Studio Extra Found (unalloc INDX) ile **aynı iş** demek değil — o kapı Program 1 golden + saha B 5/5 MD5. Mac native / Disk Drill Mac paritesi yok. Yukarıdaki 12 kalem (XFS/Btrfs, RAID oto-tespit, VHD, …) sonraki programlar; 1–4 hâlâ uzman sürüm için açık.

@@ -73,6 +73,8 @@ describe('isDiscoveryOnlySource', () => {
     expect(isDiscoveryOnlySource('ntfs_recycle_meta')).toBe(true)
     expect(canRecoverSource('ntfs_i30', false)).toBe(false)
     expect(canRecoverSource('ntfs_i30', true)).toBe(false)
+    expect(isDiscoveryOnlySource('ntfs_i30_unalloc')).toBe(true)
+    expect(canRecoverSource('ntfs_i30_unalloc', true)).toBe(false)
     expect(isDiscoveryOnlySource('ntfs_i30')).toBe(true)
     expect(canRecoverSource('ntfs_thumbcache', false)).toBe(true)
     expect(sourceLabelKey('ntfs_thumbcache')).toBe('source.ntfs_thumbcache')
@@ -92,7 +94,7 @@ describe('isDiscoveryOnlySource', () => {
       'vss_unbound', 'vss_bind', 'vss_snapshot',
       'hfs_limit', 'hfs_vh', 'hfs_catalog_unread', 'hfs_linear_unread', 'apfs_nxsb_unread', 'apfs_block_unread', 'apfs_linear_unread',
       'usn_journal', 'usn_unread', 'ntfs_logfile', 'ntfs_logfile_restart', 'ntfs_logfile_unread', 'ntfs_recycle_meta',
-      'ntfs_i30', 'ntfs_i30_unread', 'ntfs_mft_unread', 'Folder', 'refs_volume', 'refs_supb_unread', 'refs_page_unread',
+      'ntfs_i30', 'ntfs_i30_unalloc', 'ntfs_i30_unread', 'ntfs_mft_unread', 'Folder', 'refs_volume', 'refs_supb_unread', 'refs_page_unread',
       'fat_dir_unread', 'fat_chain_unread', 'ext4_dir_unread', 'xfs_dir_unread', 'xfs_sb_unread', 'xfs_inode_unread', 'xfs_bmap_unread',
       'unalloc_map_unread', 'probe_unread', 'carver_unread',
     ]

@@ -10,6 +10,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
+#include <system_error>
 #include <vector>
 
 using namespace byteback;
@@ -539,4 +542,32 @@ TEST_F(RecoveryEngineTest, ZipFooterPastFirstMegabyteStillValidates) {
     applyPostRecoveryValidation(result, rec);
     EXPECT_TRUE(result.success);
     EXPECT_GE(result.validationScore, 70);
+}
+
+TEST_F(RecoveryEngineTest, RecoversIntoUtf8DestinationDir) {
+    const auto dest = std::filesystem::temp_directory_path() / std::filesystem::u8path(u8"byteback_\u6587");
+    std::error_code ec;
+    std::filesystem::remove_all(dest, ec);
+    std::filesystem::create_directories(dest);
+    const std::string destUtf8 = dest.u8string();
+
+    FileRecord rec;
+    rec.name = "doc.txt";
+    rec.residentData = {'h', 'i'};
+    rec.sizeBytes = 2;
+    rec.source = "ntfs_mft";
+
+    DiskReader reader;
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, destUtf8);
+    EXPECT_TRUE(result.success) << result.error;
+    const auto out = dest / "doc.txt";
+    ASSERT_TRUE(std::filesystem::exists(out));
+    std::string content;
+    {
+        std::ifstream in(out, std::ios::binary);
+        content.assign((std::istreambuf_iterator<char>(in)), {});
+    }
+    EXPECT_EQ(content, "hi");
+    std::filesystem::remove_all(dest, ec);
 }

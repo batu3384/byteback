@@ -4,6 +4,8 @@
 #include "byteback_db.h"
 #include "byteback_io.h"
 #include "byteback_recovery.h"
+#include "crypto/byteback_md5.h"
+#include "recovery/path_util.h"
 #include "fixtures/volume_fixtures.h"
 
 #include <gtest/gtest.h>
@@ -12,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -181,4 +184,63 @@ TEST_F(GoldenRecoveryTest, NtfsDeletedNonResidentFindAndRecover) {
     ASSERT_TRUE(in.good());
     std::string content((std::istreambuf_iterator<char>(in)), {});
     EXPECT_EQ(content, "hello nonres");
+}
+
+std::string md5Bytes(const std::vector<uint8_t>& b) {
+    crypto::Md5 m;
+    m.update(b.data(), b.size());
+    return m.finalHex();
+}
+
+std::string md5File(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(in)), {});
+    return md5Bytes(buf);
+}
+
+TEST_F(GoldenRecoveryTest, Fat32FiveDeletedJpegMd5) {
+    const uint8_t tags[5] = {0x11, 0x22, 0x33, 0x44, 0x55};
+    const auto jpeg0 = testfix::minimalValidJpeg(tags[0]);
+    auto vol = testfix::buildFat32DeletedJpegVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(vol));
+
+    auto stats = runGoldenPipeline(reader, store_, dest_, "quick", [&](const FileRecord& fr) {
+        return fr.source == "fat" && fr.status == 0 && fr.sizeBytes == jpeg0.size();
+    });
+    EXPECT_EQ(stats.found, 5u);
+    EXPECT_EQ(stats.recovered, 5u);
+
+    std::set<std::string> want;
+    for (uint8_t t : tags) want.insert(md5Bytes(testfix::minimalValidJpeg(t)));
+    std::set<std::string> got;
+    for (const auto& ent : std::filesystem::directory_iterator(dest_)) {
+        if (ent.is_regular_file()) got.insert(md5File(ent.path()));
+    }
+    EXPECT_EQ(got, want);
+}
+
+TEST_F(GoldenRecoveryTest, ExFatDeletedPreservePathsMd5) {
+    auto vol = testfix::buildExFatDeletedPreservePathsVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(vol));
+
+    std::vector<FileRecord> hits;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "shot.jpg" && fr.status == 0) hits.push_back(fr);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(safeRelativeDir(hits[0].path), "pics");
+
+    const std::string dest = joinDestDir(dest_, safeRelativeDir(hits[0].path));
+    RecoveryEngine engine;
+    auto res = engine.recoverFile(reader, hits[0], dest);
+    EXPECT_TRUE(res.success) << res.error;
+
+    const auto wantJpeg = testfix::minimalValidJpeg(0xAB, 20);
+    const auto outPath = std::filesystem::path(dest) / "shot.jpg";
+    ASSERT_TRUE(std::filesystem::exists(outPath));
+    EXPECT_EQ(md5File(outPath), md5Bytes(wantJpeg));
 }

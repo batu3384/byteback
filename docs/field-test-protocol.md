@@ -4,6 +4,8 @@
 
 **Rol ayrımı:** İcraacı (ajan) imaj-dosyası tabanlı satırları (D, F, G) kendi koşturur; fiziksel medya adımları (A, B, C, E, H) **kullanıcı eliyle** yapılır — icraacı uygulama tarafını yönlendirir ve sonuç kaydını toplar.
 
+**Program 1 (Windows saha paritesi):** sıra **B → C → A**. Kapı: B 5/5 MD5. Geçmezse motor triyaj; Disk Drill / R-Studio parite cümlesi yok. Mac native yok. Kit: `docs/field-test-2026-09/row-b/` (sonra `row-c/`, `row-a/`). Lab golden saha PASS sayılmaz.
+
 **Ön koşul — bilinen tavanlar (0.1 tablosu):** Faz 1.1 kapanana dek deep/full-carve yalnız ≤500GB veya ≤500K dosya beklentili hacimlerde koşturulur. 1M+ dosyalı disklerde deep scan atlanır, not düşülür: "beklenen sınır: RAM birikimi (Faz 1.1)". Faz 1 kapısı kapanınca bu tablo revize edilir ve tur tekrar koşulur.
 
 **Genel kurallar:**
@@ -20,10 +22,10 @@
 | A | NTFS HDD (kullanıcı) | quick + deep + full-carve; ≤500GB | tarama tamamlanır, faz % akar, sonuç sayısı makul, yanlış-pozitif görsel incelemede düşük | | | bekliyor |
 | B | FAT32 USB 8-32GB | 5 foto sil → kurtar → kaynak MD5 ile karşılaştır | kurtarılan 5/5, MD5 birebir, byte-exact | | | bekliyor |
 | C | exFAT SD kart | quick scan + kurtarma | dizin yapısı korundu (preservePaths) | | | bekliyor |
-| D | **imaj dosyası (icraacı)** | kasıtlı bozuk MFT'li imaj: sentetik NTFS imajında MFT başlık baytları bozulur → tarama | çökme yok; bozuk kayıtlar atlanır/low-conf; orphan path'ten kurtarılanlar listelenir | | | bekliyor |
+| D | **imaj dosyası (icraacı)** | kasıtlı bozuk MFT'li imaj: sentetik NTFS imajında MFT başlık baytları bozulur → tarama | çökme yok; bozuk kayıtlar atlanır/low-conf; orphan path'ten kurtarılanlar listelenir | lab: `NtfsParser.OrphanSweepEmitsEntriesLostToMidScanReadFailure` (mid-scan MFT okuma fail → nameless orphan, conf ≤45). UI saha oturumu yok. | native/tests/test_ntfs_parser.cpp | lab-kanıt |
 | E | kötü bölgeli USB (kullanıcı; HDDScan ile işaretlenmişse) | deep scan | askı yok; badSectors UI'da görünür; iptal <10sn | | | bekliyor |
-| F | **imaj dosyası (icraacı)** | E01 imaj al (kaynak: sentetik imaj dosyasından) → yeniden aç → verifyDigest + byte karşılaştırma | digest zorunlu geçer; byte-exact; resume iptal→devam çalışır | | | bekliyor |
-| G | **imaj dosyaları x3 (icraacı)** | yazılım RAID5 imajları (sentetik üretim) → Otomatik Tespit → düzey+şerit doğru → tarama | RAID5 tespit edilir (FS-imza skoruyla şerit), tarama birebir | | | bekliyor |
+| F | **imaj dosyası (icraacı)** | E01 imaj al (kaynak: sentetik imaj dosyasından) → yeniden aç → verifyDigest + byte karşılaştırma | digest zorunlu geçer; byte-exact; resume iptal→devam çalışır | lab: `DiskImagerTest.EwfImageCarriesDigestAndRereadsIdentical` (E01 roundtrip) + `DiskImagerResume.CancelThenResumeProducesByteExactImage`. UI imager oturumu yok. | native/tests/test_disk_imager.cpp | lab-kanıt |
+| G | **imaj dosyaları x3 (icraacı)** | yazılım RAID5 imajları (sentetik üretim) → Otomatik Tespit → düzey+şerit doğru → tarama | RAID5 tespit edilir (FS-imza skoruyla şerit), tarama birebir | lab: `RaidDetect.DetectsRaid5BlockSizeAndConfidence` (level=RAID5, conf≥0.90). Virtual RAID UI oturumu yok. | native/tests/test_raid_detect.cpp | lab-kanıt |
 | H | BitLocker'lı ikincil bölüm (kullanıcı; kurtarma anahtarı hazır) | anahtar kilidi açma → tarama | içerik listelenir; anahtar loglara sızmaz | | | bekliyor |
 
 ## Satır prosedürü şablonu

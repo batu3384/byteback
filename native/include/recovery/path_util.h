@@ -1,8 +1,12 @@
 #pragma once
 
 #include <string>
+#include <filesystem>
 
 namespace byteback {
+
+std::filesystem::path utf8Path(const std::string& utf8);
+std::string pathToUtf8(const std::filesystem::path& p);
 
 std::string safeBasename(const std::string& name);
 

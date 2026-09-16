@@ -6,6 +6,7 @@ using namespace byteback;
 
 TEST(DiscoverySources, BlocksKnownDiscoveryAndDuplicate) {
     EXPECT_TRUE(isDiscoverySourceName("ntfs_i30"));
+    EXPECT_TRUE(isDiscoverySourceName("ntfs_i30_unalloc"));
     EXPECT_TRUE(isDiscoverySourceName("ntfs_recycle_meta"));
     EXPECT_TRUE(isDiscoverySourceName("carver_duplicate"));
     EXPECT_TRUE(isDiscoverySourceName("refs_volume"));
@@ -38,6 +39,7 @@ TEST(DiscoverySources, BlocksKnownDiscoveryAndDuplicate) {
 TEST(DiscoverySources, SqlListCoversCoreSources) {
     const std::string sql = discoverySourcesSqlInList();
     EXPECT_NE(sql.find("ntfs_i30"), std::string::npos);
+    EXPECT_NE(sql.find("ntfs_i30_unalloc"), std::string::npos);
     EXPECT_NE(sql.find("ntfs_recycle_meta"), std::string::npos);
     EXPECT_NE(sql.find("refs_volume"), std::string::npos);
     EXPECT_NE(sql.find("fat_dir_unread"), std::string::npos);

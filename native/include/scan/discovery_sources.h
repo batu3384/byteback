@@ -19,7 +19,7 @@ inline bool isDiscoverySourceName(const std::string& source) {
            source == "ntfs_logfile" ||
            source == "ntfs_logfile_restart" || source == "ntfs_logfile_unread" ||
            source == "ntfs_recycle_meta" ||
-           source == "ntfs_i30" || source == "ntfs_i30_unread" ||
+           source == "ntfs_i30" || source == "ntfs_i30_unalloc" || source == "ntfs_i30_unread" ||
            source == "ntfs_mft_unread" ||
            source == "Folder" || source == "refs_volume" || source == "refs_supb_unread" ||
            source == "refs_page_unread" ||
@@ -41,7 +41,7 @@ inline const char* discoverySourcesSqlInList() {
            "'hfs_linear_unread','apfs_nxsb_unread','apfs_block_unread','apfs_linear_unread',"
            "'usn_journal','usn_unread','ntfs_logfile','ntfs_logfile_restart','ntfs_logfile_unread',"
            "'ntfs_recycle_meta',"
-           "'ntfs_i30','ntfs_i30_unread','ntfs_mft_unread','Folder','refs_volume','refs_supb_unread','refs_page_unread',"
+           "'ntfs_i30','ntfs_i30_unalloc','ntfs_i30_unread','ntfs_mft_unread','Folder','refs_volume','refs_supb_unread','refs_page_unread',"
            "'fat_dir_unread','fat_chain_unread','ext4_dir_unread','xfs_dir_unread','xfs_sb_unread','xfs_inode_unread','xfs_bmap_unread',"
            "'unalloc_map_unread','probe_unread','carver_unread'";
 }

@@ -6,6 +6,7 @@
 #include "fs/ntfs_path_rebuild.h"
 #include "fs/ntfs_recycle.h"
 #include "fs/ntfs_thumbcache.h"
+#include "fs/unallocated_map.h"
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -1083,6 +1084,59 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         }
     }
 
+    std::vector<ntfs::IndexNameHint> unallocI30Hints;
+    {
+        std::unordered_set<uint64_t> ownedI30;
+        for (const auto& stream : i30Allocs) {
+            for (const auto& run : stream.runs) {
+                if (run.startSector == UINT64_MAX) continue;
+                for (uint64_t i = 0; i < run.sectorCount; ++i)
+                    ownedI30.insert(run.startSector + i);
+            }
+        }
+        uint32_t recBytes = static_cast<uint32_t>(sectorsPerCluster) * sectorSize;
+        if (recBytes < 512 || recBytes > 65536) recBytes = 4096;
+        if (sectorSize != 0 && recBytes % sectorSize == 0) {
+            const uint32_t recSectors = recBytes / sectorSize;
+            auto tryUnallocIndx = [&](uint64_t startSec) {
+                if (ownedI30.count(startSec)) return;
+                if (isRunning && !(*isRunning)) return;
+                std::vector<uint8_t> rec(recBytes);
+                if (!readComplete(reader.readSectors(startSec * sectorSize, recBytes, rec.data()), recBytes))
+                    return;
+                if (std::memcmp(rec.data(), "INDX", 4) != 0) return;
+                auto hints = ntfs::parseIndxRecord(rec.data(), recBytes, sectorSize);
+                if (hints.empty()) return;
+                unallocI30Hints.insert(unallocI30Hints.end(), hints.begin(), hints.end());
+            };
+            auto walkRange = [&](uint64_t start, uint64_t count) {
+                if (recSectors == 0 || count < recSectors) return;
+                uint64_t s = start;
+                if (s % recSectors) s += recSectors - (s % recSectors);
+                const uint64_t end = start + count;
+                for (; s + recSectors <= end; s += recSectors) {
+                    if (isRunning && !(*isRunning)) break;
+                    tryUnallocIndx(s);
+                }
+            };
+            uint64_t volBytes = partitionSizeBytes;
+            if (volBytes == 0 && scanEndSector > volumeStartSector)
+                volBytes = (scanEndSector - volumeStartSector) * sectorSize;
+            auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ntfs,
+                                                 partitionOffsetBytes, volBytes);
+            if (!ranges.empty()) {
+                for (const auto& r : ranges) walkRange(r.start, r.count);
+            } else {
+                // ponytail: $Bitmap yok — 65536 küme tavan; tam HDD linear değil.
+                uint64_t volSectors = scanEndSector > volumeStartSector
+                    ? scanEndSector - volumeStartSector : 0;
+                const uint64_t cap = std::min(volSectors,
+                    65536ull * static_cast<uint64_t>(std::max<uint32_t>(sectorsPerCluster, 1)));
+                walkRange(volumeStartSector, cap);
+            }
+        }
+    }
+
     std::unordered_set<std::string> i30Seen;
     int64_t i30Id = 800000;
     for (const auto& h : i30Hints) {
@@ -1099,6 +1153,22 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
         fr.status = 0;
         fr.source = "ntfs_i30";
+        fr.confidence = 35;
+        fr.category = categoryForName(h.name);
+        callback(fr);
+    }
+
+    for (const auto& h : unallocI30Hints) {
+        if (h.name.empty() || h.childMft == 0) continue;
+        const std::string key = std::to_string(h.childMft) + "\n" + h.name;
+        if (!i30Seen.insert(key).second) continue;
+        FileRecord fr{};
+        fr.id = i30Id++;
+        fr.parentId = static_cast<int64_t>(h.parentMft);
+        fr.name = h.name;
+        fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
+        fr.status = 0;
+        fr.source = "ntfs_i30_unalloc";
         fr.confidence = 35;
         fr.category = categoryForName(h.name);
         callback(fr);

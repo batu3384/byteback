@@ -5,12 +5,14 @@
 **Professional Windows forensic imaging and data recovery.** Byteback combines a
 native C++17 engine with an Electron/React examiner surface. The engine opens
 source media with `GENERIC_READ` only; recovered bytes and image output are
-written only to user-selected destination paths.
+written only to user-selected destination paths. APFS is image/.E01 only —
+there is no Mac app and no Disk Drill Mac parity claim.
 
 Positioning: **digital forensics** (E01 imaging, hash-chained audit log, USN
 timeline, report integrity summary) and **data recovery** (NTFS/FAT/ext4
 metadata recovery, signature carving, virtual RAID 0/1/5/6/10, SSD/TRIM
-awareness).
+awareness). Windows field photo parity is gated on FAT32 USB row B (5/5 MD5),
+not on lab fixture counts alone.
 
 ## Features
 
@@ -104,7 +106,8 @@ npm run dist           # NSIS x64 installer (release/)
 > `build:native` resets the test generator cache. Before `test:native`, configure
 > with `cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON`. Test count
 > follows `ctest -C Release` output; `Ewf.OptionalEwfinfoCrossCheck` skips when
-> `BYTEBACK_EWFINFO` is unset.
+> `BYTEBACK_EWFINFO` is unset. Local gate 2026-09-15: ctest 641 (4 skipped),
+> vitest 390, playwright 38.
 
 ## Benchmarks (developers)
 

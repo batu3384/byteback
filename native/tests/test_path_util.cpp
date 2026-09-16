@@ -70,3 +70,20 @@ TEST(PathUtil, SafeRelativeDirStripsTraversalAndDrivePrefixes) {
     EXPECT_EQ(joinDestDir("D:\\out", "a/b"), (std::filesystem::path("D:\\out") / "a" / "b").lexically_normal().string());
     EXPECT_EQ(joinDestDir("D:\\out", ""), "D:\\out");
 }
+
+TEST(PathUtil, UniqueDestPathUtf8Dir) {
+    const auto dir = std::filesystem::temp_directory_path() / std::filesystem::u8path(u8"byteback_\u6587_uniq");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string dirUtf8 = dir.u8string();
+    const std::string p1 = uniqueDestPath(dirUtf8, "a.bin");
+    EXPECT_FALSE(p1.empty());
+    {
+        std::ofstream out(utf8Path(p1), std::ios::binary);
+        out.put('x');
+    }
+    EXPECT_TRUE(std::filesystem::exists(dir / "a.bin"));
+    const std::string p2 = uniqueDestPath(dirUtf8, "a.bin");
+    EXPECT_NE(p1, p2);
+    std::filesystem::remove_all(dir);
+}
