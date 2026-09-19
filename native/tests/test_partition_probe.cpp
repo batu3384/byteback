@@ -110,6 +110,18 @@ TEST(PartitionProbe, UnknownOnEmpty) {
     EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Unknown);
 }
 
+TEST(PartitionProbe, Lvm2LabelAtPvStart) {
+    auto img = makeImage(16);
+    uint8_t* lab = img.data() + 512;
+    std::memcpy(lab, "LABELONE", 8);
+    uint64_t labSec = 1;
+    std::memcpy(lab + 8, &labSec, 8);
+    std::memcpy(lab + 24, "LVM2 001", 8);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    EXPECT_EQ(probeVolumeAt(reader, 0, 512), VolumeFsKind::Lvm);
+}
+
 TEST(PartitionProbe, FaultedBootIsUnreadNotUnknown) {
     auto img = makeImage(8);
     writeNtfsBoot(img, 0);
@@ -222,6 +234,99 @@ TEST(PartitionScan, GptEntryFaultKeepsCompletePrefixAndFlagsUnread) {
     EXPECT_TRUE(scanner.tableUnread());
 }
 
+static void writeGptHeaderAt(std::vector<uint8_t>& img, uint64_t headerLba, uint64_t entryLba,
+                             uint32_t num, uint32_t esize, uint32_t ss = 512) {
+    uint8_t* h = img.data() + headerLba * ss;
+    std::memcpy(h, "EFI PART", 8);
+    std::memcpy(h + 24, &headerLba, 8); // MyLBA
+    std::memcpy(h + 72, &entryLba, 8);
+    std::memcpy(h + 80, &num, 4);
+    std::memcpy(h + 84, &esize, 4);
+}
+
+TEST(PartitionScan, BackupGptUsedWhenPrimaryWiped) {
+    // UEFI: backup header at last LBA; array immediately before it.
+    // Primary LBA 1 stays zeros — TestDisk/R-Studio still list the volume.
+    constexpr uint32_t ss = 512;
+    auto img = makeImage(96);
+    writeGptHeaderAt(img, 95, 94, 1, 128, ss);
+    uint8_t* e = img.data() + 94 * ss;
+    uint32_t guid1 = 0xEBD0A0A2;
+    std::memcpy(e, &guid1, 4);
+    e[4] = 1;
+    uint64_t start = 40, end = 50;
+    std::memcpy(e + 32, &start, 8);
+    std::memcpy(e + 40, &end, 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    PartitionScanner scanner(&reader);
+    auto gpt = scanner.parseGPT();
+    ASSERT_EQ(gpt.size(), 1u);
+    EXPECT_EQ(gpt[0].startSector, 40u);
+    EXPECT_EQ(gpt[0].sizeInSectors, 11u);
+    EXPECT_FALSE(scanner.tableUnread());
+}
+
+TEST(PartitionScan, BackupGptUsedWhenPrimaryUnread) {
+    constexpr uint32_t ss = 512;
+    auto img = makeImage(96);
+    writeGptHeaderAt(img, 95, 94, 1, 128, ss);
+    uint8_t* e = img.data() + 94 * ss;
+    uint32_t guid1 = 0xEBD0A0A2;
+    std::memcpy(e, &guid1, 4);
+    e[4] = 1;
+    uint64_t start = 40, end = 50;
+    std::memcpy(e + 32, &start, 8);
+    std::memcpy(e + 40, &end, 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(1, 1); // primary LBA 1
+    PartitionScanner scanner(&reader);
+    auto gpt = scanner.parseGPT();
+    ASSERT_EQ(gpt.size(), 1u);
+    EXPECT_EQ(gpt[0].startSector, 40u);
+    EXPECT_TRUE(scanner.tableUnread());
+}
+
+TEST(PartitionScan, FindsLvm2LabelOne) {
+    auto img = makeImage(32);
+    uint8_t* lab = img.data() + 9 * 512;
+    std::memcpy(lab, "LABELONE", 8);
+    uint64_t labSec = 1;
+    std::memcpy(lab + 8, &labSec, 8);
+    std::memcpy(lab + 24, "LVM2 001", 8);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    PartitionScanner scanner(&reader);
+    auto lost = scanner.scanForPartitions(1);
+    bool hit = false;
+    for (const auto& p : lost) {
+        if (p.type == "LVM2 PV" && p.startSector == 8) hit = true;
+    }
+    EXPECT_TRUE(hit);
+}
+
+TEST(PartitionScan, GptLinuxLvmGuid) {
+    auto img = makeImage(64);
+    writeGptHeader(img);
+    uint8_t* e = img.data() + 2 * 512;
+    uint32_t guid1 = 0xE6D6D379; // Linux LVM GPT type (LE first dword)
+    std::memcpy(e, &guid1, 4);
+    e[4] = 1;
+    uint64_t start = 2048, end = 4095;
+    std::memcpy(e + 32, &start, 8);
+    std::memcpy(e + 40, &end, 8);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    PartitionScanner scanner(&reader);
+    auto gpt = scanner.parseGPT();
+    ASSERT_EQ(gpt.size(), 1u);
+    EXPECT_EQ(gpt[0].type, "Linux LVM");
+    EXPECT_EQ(gpt[0].startSector, 2048u);
+}
+
 TEST(VolumeIdentity, SerialSizeMismatchRejected) {
     VolumeIdentity ev;
     ev.serial = 0xAABBCCDD;
@@ -330,4 +435,32 @@ TEST(SelectedPartition, PrefersGptAndRejectsOob) {
     ASSERT_NE(mbrHit, nullptr);
     EXPECT_EQ(mbrHit->startSector, 63u);
     EXPECT_EQ(selectedPartition({}, {}, 0), nullptr);
+}
+
+TEST(PartitionProbe, ParseApmReadsHfsStart) {
+    auto fatVol = testfix::buildFat16Volume();
+    auto disk = testfix::buildApmDiskWithFatPartition(fatVol, 64);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    PartitionScanner scanner(&reader);
+    EXPECT_TRUE(scanner.parseMBR().empty());
+    EXPECT_TRUE(scanner.parseGPT().empty());
+    auto apm = scanner.parseAPM();
+    ASSERT_EQ(apm.size(), 1u);
+    EXPECT_EQ(apm[0].startSector, 64u);
+    EXPECT_EQ(apm[0].type, "Apple_HFS");
+    EXPECT_EQ(probeVolumeAt(reader, 64ull * 512, 512), VolumeFsKind::Fat);
+}
+
+TEST(PartitionProbe, ParseApm2048ReadsHfsStart) {
+    auto fatVol = testfix::buildFat16Volume();
+    auto disk = testfix::buildApmDiskWithFatPartition(fatVol, 64, 2048);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+    PartitionScanner scanner(&reader);
+    auto apm = scanner.parseAPM();
+    ASSERT_EQ(apm.size(), 1u);
+    EXPECT_EQ(apm[0].startSector, 64u);
+    EXPECT_EQ(apm[0].type, "Apple_HFS");
+    EXPECT_EQ(probeVolumeAt(reader, 64ull * 512, 512), VolumeFsKind::Fat);
 }

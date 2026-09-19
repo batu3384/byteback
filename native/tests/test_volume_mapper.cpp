@@ -35,6 +35,17 @@ TEST(VolumeMapper, VolumeDevicePathShape) {
     EXPECT_FALSE(isWin32VolumeDevicePath(""));
 }
 
+TEST(VolumeMapper, EvidenceImagePathShape) {
+    EXPECT_TRUE(isEvidenceImagePath("C:\\cases\\disk.img"));
+    EXPECT_TRUE(isEvidenceImagePath("/tmp/disk.E01"));
+    EXPECT_FALSE(isEvidenceImagePath("\\\\.\\PhysicalDrive0"));
+    EXPECT_FALSE(isEvidenceImagePath("\\\\.\\C:"));
+    EXPECT_FALSE(isEvidenceImagePath("http://host/disk.img"));
+    EXPECT_FALSE(isEvidenceImagePath("HTTPS://host/disk.E01"));
+    EXPECT_FALSE(isEvidenceImagePath("/dev/sda"));
+    EXPECT_FALSE(isEvidenceImagePath(""));
+}
+
 TEST(VolumeMapper, FsKindLabels) {
     EXPECT_STREQ(volumeFsKindLabel(VolumeFsKind::Ntfs), "ntfs");
     EXPECT_STREQ(volumeFsKindLabel(VolumeFsKind::Unknown), "unknown");

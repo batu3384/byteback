@@ -1,8 +1,14 @@
 #include "fs/virtual_raid.h"
 #include "fs/raid_layout.h"
+#include "byteback_fs.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -39,6 +45,40 @@ TEST(VirtualRaidIo, Raid0StripesAcrossMembers) {
     auto chunkB = raid.read(kBlock, kBlock);
     ASSERT_EQ(chunkB.size(), kBlock);
     EXPECT_EQ(chunkB[0], static_cast<uint8_t>('B'));
+}
+
+TEST(VirtualRaidIo, AssemblesRaid0FromEvidenceFiles) {
+    auto [d0, d1] = byteback::testfix::buildRaid0MemberDisks();
+    const auto p0 = bytebackTestTemp("bb_raid_m0", ".img");
+    const auto p1 = bytebackTestTemp("bb_raid_m1", ".img");
+    std::filesystem::remove(p0);
+    std::filesystem::remove(p1);
+    {
+        std::ofstream a(p0, std::ios::binary | std::ios::trunc);
+        a.write(reinterpret_cast<const char*>(d0.data()), static_cast<std::streamsize>(d0.size()));
+        std::ofstream b(p1, std::ios::binary | std::ios::trunc);
+        b.write(reinterpret_cast<const char*>(d1.data()), static_cast<std::streamsize>(d1.size()));
+    }
+    constexpr size_t kBlock = 64 * 1024;
+    {
+        auto raid = VirtualRaid::fromEvidencePaths(
+            RaidLevel::RAID0, {p0.u8string(), p1.u8string()}, kBlock);
+        auto chunkA = raid.read(0, kBlock);
+        ASSERT_EQ(chunkA.size(), kBlock);
+        EXPECT_EQ(chunkA[0], static_cast<uint8_t>('A'));
+        auto chunkB = raid.read(kBlock, kBlock);
+        ASSERT_EQ(chunkB.size(), kBlock);
+        EXPECT_EQ(chunkB[0], static_cast<uint8_t>('B'));
+    }
+    std::filesystem::remove(p0);
+    std::filesystem::remove(p1);
+}
+
+TEST(VirtualRaidIo, EvidencePathsRejectDevice) {
+    EXPECT_THROW(
+        VirtualRaid::fromEvidencePaths(
+            RaidLevel::RAID0, {"\\\\.\\PhysicalDrive0", "C:\\cases\\disk.img"}, 65536),
+        std::invalid_argument);
 }
 
 TEST(VirtualRaidIo, CapacityIsSumForRaid0) {
@@ -285,6 +325,26 @@ TEST(VirtualRaidIo, Raid0HonorsMemberDataOffset) {
     EXPECT_EQ(chunkB[0], static_cast<uint8_t>('B'));
 }
 
+TEST(VirtualRaidIo, Raid0HonorsPerMemberDataOffsets) {
+    constexpr size_t kBlock = 4096;
+    std::vector<uint8_t> d0(kBlock * 3, 0xCC);
+    std::vector<uint8_t> d1(kBlock * 3, 0xCC);
+    for (size_t i = 0; i < kBlock; ++i) d0[kBlock * 2 + i] = static_cast<uint8_t>('A');
+    for (size_t i = 0; i < kBlock; ++i) d1[kBlock + i] = static_cast<uint8_t>('B');
+    auto m0 = std::make_shared<DiskReader>();
+    auto m1 = std::make_shared<DiskReader>();
+    m0->attachMemoryVolume(std::move(d0));
+    m1->attachMemoryVolume(std::move(d1));
+    VirtualRaid raid(RaidLevel::RAID0, {m0, m1}, kBlock, 0,
+                     raid_layout::Raid5Algorithm::LeftAsymmetric, {kBlock * 2, kBlock});
+    auto chunkA = raid.read(0, 8);
+    ASSERT_EQ(chunkA.size(), 8u);
+    EXPECT_EQ(chunkA[0], static_cast<uint8_t>('A'));
+    auto chunkB = raid.read(kBlock, 8);
+    ASSERT_EQ(chunkB.size(), 8u);
+    EXPECT_EQ(chunkB[0], static_cast<uint8_t>('B'));
+}
+
 TEST(VirtualRaidIo, Raid1HonorsMemberDataOffset) {
     constexpr size_t kOff = 4096;
     std::vector<uint8_t> d0(kOff + 8192, 0xCC);
@@ -317,4 +377,85 @@ TEST(VirtualRaidIo, ReadPastCapacityThrows) {
     std::vector<std::vector<uint8_t>> imgs(N, std::vector<uint8_t>(STRIPES * BS, 0));
     auto r6 = VirtualRaid::fromImages(RaidLevel::RAID6, imgs, BS);
     EXPECT_ANY_THROW(r6.read(r6.capacity(), 1));
+}
+
+TEST(VirtualRaidIo, JbodConcatenatesFat16ListsTestTxt) {
+    auto fat = testfix::buildFat16Volume();
+    ASSERT_GT(fat.size(), 1024u);
+    const size_t half = fat.size() / 2;
+    std::vector<uint8_t> a(fat.begin(), fat.begin() + static_cast<std::ptrdiff_t>(half));
+    std::vector<uint8_t> b(fat.begin() + static_cast<std::ptrdiff_t>(half), fat.end());
+    auto raid = std::make_shared<VirtualRaid>(VirtualRaid::fromImages(RaidLevel::JBOD, {a, b}, 0));
+    EXPECT_EQ(raid->capacity(), fat.size());
+    DiskReader reader;
+    reader.setRaidBackend(raid);
+    bool found = false;
+    std::atomic<bool> running{true};
+    FATParser fatp;
+    ASSERT_TRUE(fatp.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name.find("TEST") != std::string::npos) found = true;
+    }, &running));
+    EXPECT_TRUE(found) << "mdadm LINEAR/JBOD concat must expose FAT16 TEST.TXT";
+}
+
+namespace {
+
+std::vector<std::vector<uint8_t>> plantRaid1e(const std::vector<uint8_t>& payload, size_t stripe, uint32_t n) {
+    const uint64_t nBlocks = (payload.size() + stripe - 1) / stripe;
+    uint64_t maxRow = 0;
+    for (uint64_t d = 0; d < nBlocks; ++d) {
+        for (uint32_t c = 0; c < 2; ++c) {
+            maxRow = std::max(maxRow, raid_layout::raid1eCopy(d, c, n).row);
+        }
+    }
+    std::vector<std::vector<uint8_t>> disks(n, std::vector<uint8_t>((maxRow + 1) * stripe, 0));
+    for (size_t off = 0; off < payload.size();) {
+        const uint64_t di = off / stripe;
+        const size_t in = off % stripe;
+        const size_t ncopy = std::min(stripe - in, payload.size() - off);
+        for (uint32_t c = 0; c < 2; ++c) {
+            const auto loc = raid_layout::raid1eCopy(di, c, n);
+            std::memcpy(disks[loc.disk].data() + loc.row * stripe + in, payload.data() + off, ncopy);
+        }
+        off += ncopy;
+    }
+    return disks;
+}
+
+} // namespace
+
+TEST(VirtualRaidIo, Raid1eListsFat16TestTxt) {
+    auto fat = testfix::buildFat16Volume();
+    constexpr size_t kStripe = 4096;
+    constexpr uint32_t n = 3;
+    auto disks = plantRaid1e(fat, kStripe, n);
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID1E, {disks[0], disks[1], disks[2]}, kStripe));
+    DiskReader reader;
+    reader.setRaidBackend(raid);
+    bool found = false;
+    std::atomic<bool> running{true};
+    FATParser fatp;
+    fatp.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name.find("TEST") != std::string::npos) found = true;
+    }, &running);
+    EXPECT_TRUE(found) << "RAID1E near N=3 must expose FAT16 TEST.TXT";
+}
+
+TEST(VirtualRaidIo, Raid1eSurvivesOneFailedMember) {
+    auto fat = testfix::buildFat16Volume();
+    constexpr size_t kStripe = 4096;
+    auto disks = plantRaid1e(fat, kStripe, 3);
+    auto raid = std::make_shared<VirtualRaid>(
+        VirtualRaid::fromImages(RaidLevel::RAID1E, {disks[0], disks[1], disks[2]}, kStripe));
+    raid->fail_disk(0);
+    DiskReader reader;
+    reader.setRaidBackend(raid);
+    bool found = false;
+    std::atomic<bool> running{true};
+    FATParser fatp;
+    fatp.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name.find("TEST") != std::string::npos) found = true;
+    }, &running);
+    EXPECT_TRUE(found) << "RAID1E must read remaining copy after one member fail";
 }

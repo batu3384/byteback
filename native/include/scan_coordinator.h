@@ -21,7 +21,7 @@ using ScanProgressCallback = std::function<void(uint64_t currentSector, uint64_t
 
 /** Whole-string PhysicalDrive index. Partial `stoi("12abc")` must not become 12. */
 inline std::optional<int> parseDriveIndex(const std::string& drivePath) {
-    if (drivePath.empty() || drivePath == "raid") return std::nullopt;
+    if (drivePath.empty() || drivePath == "raid" || drivePath == "image") return std::nullopt;
     std::size_t consumed = 0;
     int v = 0;
     try {
@@ -32,6 +32,9 @@ inline std::optional<int> parseDriveIndex(const std::string& drivePath) {
     if (consumed != drivePath.size() || v < 0) return std::nullopt;
     return v;
 }
+
+/** Sentinel driveIndex for a local evidence image (drivePath "image"). */
+inline constexpr int kScanImageDriveIndex = -2;
 
 // When startSector != UINT64_MAX, scan is limited to that partition range.
 struct ScanBounds {
@@ -55,6 +58,8 @@ struct ScanTarget {
     // When set to "\\.\X:", scanWorker opens the Windows volume device
     // (concatenated extents) instead of PhysicalDrive+LBA.
     std::string volumePath;
+    // Local evidence image (RAW/E01/VHD family). Takes precedence over drivePath.
+    std::string imagePath;
     ScanBounds bounds() const {
         ScanBounds b;
         if (partitionStartSector >= 0 && partitionSizeSectors > 0) {

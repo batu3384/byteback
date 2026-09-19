@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace byteback {
@@ -29,6 +30,12 @@ uint64_t be64(const uint8_t* p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
     return v;
+}
+
+int64_t hfsDateToUnix(uint32_t hfs) {
+    constexpr uint32_t kHfsUnixDelta = 2082844800u;
+    if (hfs < kHfsUnixDelta) return 0;
+    return static_cast<int64_t>(hfs - kHfsUnixDelta);
 }
 
 struct HfsExtent {
@@ -101,12 +108,14 @@ struct CatalogCtx {
     FileSystemParser::FileRecordCallback* callback = nullptr;
     std::atomic<bool>* isRunning = nullptr;
     std::unordered_map<uint32_t, std::string> paths;
+    std::unordered_set<uint32_t> seenFileIds;
     HfsFork extentsFileFork;
     bool hasExtentsFile = false;
     int fileCount = 0;
     int maxFiles = 0;
     bool emittedLimit = false;
     bool catalogUnread = false;
+    bool emittedVolName = false;
     // ponytail: hard node-visit budget instead of a visited set; a crafted
     // B-tree can otherwise fan out exponentially within the depth cap.
     size_t nodesVisited = 0;
@@ -206,7 +215,8 @@ bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
 
 bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth);
 
-bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
+bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen, bool unused = false,
+                        bool fromJournal = false) {
     if (recLen < 8) return true;
     uint16_t keyLen = be16(rec);
     if (keyLen < 6 || keyLen + 2 > recLen) return true;
@@ -219,6 +229,7 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
     if (valLen < 2) return true;
     uint16_t recType = be16(val);
     if (recType != 1 && recType != 2 && recType != 4) return true;
+    if (unused && recType != 2) return true;
     if (ctx.maxFiles > 0 && recType == 2 && ctx.fileCount >= ctx.maxFiles) {
         if (!ctx.emittedLimit && ctx.callback) {
             FileRecord sentinel{};
@@ -267,47 +278,110 @@ bool parseCatalogRecord(CatalogCtx& ctx, const uint8_t* rec, uint16_t recLen) {
     if (valLen < 16) return true;
 
     if (recType == 4) {
-        // Folder record: register its path so descendants rebuild full paths.
         ctx.paths[be32(val + 12)] = fullPath;
+        if (parentId == 1 && !name.empty() && !ctx.emittedVolName && ctx.callback) {
+            FileRecord fr;
+            fr.id = -1;
+            fr.parentId = 1;
+            fr.name = name;
+            fr.path = "/";
+            fr.status = 1;
+            fr.confidence = 5;
+            fr.category = "System";
+            fr.source = kHfsVolNameSource;
+            (*ctx.callback)(fr);
+            ctx.emittedVolName = true;
+        }
         return true;
     }
 
-    // File record — data fork at offset 92 (0x5C) from value start
-    // (HFSPlusCatalogFile: 92-byte header, then HFSPlusForkData 80 bytes).
+    // File record — data fork at offset 92 (0x5C), resource fork at 172.
     if (valLen < 92 + 80) return true;
+    if (name.empty()) return true;
     uint32_t fileId = be32(val + 12);
+    if (fileId == 0 || ctx.seenFileIds.count(fileId)) return true;
     HfsFork dataFork;
-    if (!parseFork(val + 92, dataFork)) return true;
-    appendOverflowExtents(ctx, fileId, kHfsDataForkType, dataFork);
+    const bool haveData = parseFork(val + 92, dataFork);
+    HfsFork rsrcFork;
+    const bool haveRsrc = valLen >= 92 + 80 + 80 && parseFork(val + 172, rsrcFork);
+    if (!haveData && !haveRsrc) return true;
+    const int64_t createdAt = (valLen >= 20) ? hfsDateToUnix(be32(val + 16)) : 0;
+    const int64_t modifiedAt = (valLen >= 24) ? hfsDateToUnix(be32(val + 20)) : 0;
 
-    FileRecord fr;
-    fr.id = -1;
-    fr.parentId = parentId;
-    fr.name = name;
-    auto dot = name.find_last_of('.');
-    fr.extension = (dot != std::string::npos) ? name.substr(dot + 1) : "";
-    fr.path = fullPath;
-    fr.sizeBytes = dataFork.logicalSize;
-    forkToRuns(dataFork, ctx.blockSize, ctx.partitionOffset, ctx.sectorSize, fr.runs);
-    if (!fr.runs.empty()) {
-        fr.startSector = fr.runs.front().startSector;
-        uint64_t end = fr.startSector;
-        for (const auto& r : fr.runs) end = std::max(end, r.startSector + r.sectorCount);
-        fr.endSector = end;
+    auto emitFork = [&](HfsFork& fork, uint16_t forkType, const std::string& recName,
+                        const std::string& recPath) {
+        if (ctx.maxFiles > 0 && ctx.fileCount >= ctx.maxFiles) return;
+        appendOverflowExtents(ctx, fileId, forkType, fork);
+        FileRecord fr;
+        fr.id = -1;
+        fr.parentId = parentId;
+        fr.name = recName;
+        auto dot = recName.find_last_of('.');
+        fr.extension = (dot != std::string::npos && dot + 1 < recName.size())
+            ? recName.substr(dot + 1) : "";
+        fr.path = recPath;
+        fr.sizeBytes = fork.logicalSize;
+        forkToRuns(fork, ctx.blockSize, ctx.partitionOffset, ctx.sectorSize, fr.runs);
+        if (!fr.runs.empty()) {
+            fr.startSector = fr.runs.front().startSector;
+            uint64_t end = fr.startSector;
+            for (const auto& r : fr.runs) end = std::max(end, r.startSector + r.sectorCount);
+            fr.endSector = end;
+        }
+        if (fromJournal) {
+            fr.status = 0;
+            fr.confidence = 50;
+            fr.source = kHfsJournalSource;
+        } else if (unused) {
+            fr.status = 0;
+            fr.confidence = 48;
+            fr.source = kHfsCatalogUnusedSource;
+        } else if (fr.runs.empty() && fork.logicalSize > 0) {
+            fr.status = 0;
+            fr.confidence = 30;
+            fr.source = "hfs_catalog";
+        } else {
+            fr.status = 1;
+            fr.confidence = 85;
+            fr.source = "hfs_catalog";
+        }
+        fr.category = "File";
+        fr.createdAt = createdAt;
+        fr.modifiedAt = modifiedAt;
+        (*ctx.callback)(fr);
+        ++ctx.fileCount;
+    };
+
+    if (haveData) emitFork(dataFork, kHfsDataForkType, name, fullPath);
+    if (haveRsrc) emitFork(rsrcFork, kHfsResourceForkType, name + ".rsrc", fullPath + ".rsrc");
+    ctx.seenFileIds.insert(fileId);
+    return true;
+}
+
+bool scanUnusedLeafSlack(CatalogCtx& ctx, const uint8_t* node, uint32_t blockSize,
+                         uint16_t numRecords, const std::vector<uint16_t>& offsets) {
+    const size_t offTable = blockSize - static_cast<size_t>(numRecords + 1) * 2;
+    size_t usedEnd = 14;
+    for (uint16_t off : offsets) {
+        if (off > usedEnd && off <= offTable) usedEnd = off;
     }
-    if (fr.runs.empty() && dataFork.logicalSize > 0) {
-        fr.status = 0;
-        fr.confidence = 30;
-    } else {
-        fr.status = 1;
-        fr.confidence = 85;
+    size_t p = usedEnd;
+    while (p + 10 < offTable) {
+        const uint8_t* rec = node + p;
+        uint16_t keyLen = be16(rec);
+        const size_t recLen = static_cast<size_t>(2) + keyLen + 92 + 80;
+        if (keyLen < 6 || p + recLen > offTable) {
+            p += 2;
+            continue;
+        }
+        if (be16(rec + 2 + keyLen) != 2) {
+            p += 2;
+            continue;
+        }
+        if (!parseCatalogRecord(ctx, rec, static_cast<uint16_t>(recLen), true)) return false;
+        p += recLen;
+        if (p & 1) ++p;
     }
-    fr.category = "File";
-    fr.source = "hfs_catalog";
-    fr.createdAt = 0;
-    fr.modifiedAt = 0;
-    (*ctx.callback)(fr);
-    ++ctx.fileCount;
     return true;
 }
 
@@ -325,7 +399,6 @@ bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
 
     uint8_t kind = node[8];  // BTNodeDescriptor: kind at 8, numRecords at 10
     uint16_t numRecords = be16(node.data() + 10);
-    if (numRecords == 0) return true;
     if (!hfsOffsetTableFits(ctx.blockSize, numRecords)) return true;
 
     std::vector<uint16_t> offsets(numRecords + 1);
@@ -341,7 +414,7 @@ bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
             if (end <= start || end > ctx.blockSize) continue;
             if (!parseCatalogRecord(ctx, node.data() + start, static_cast<uint16_t>(end - start))) return false;
         }
-        return true;
+        return scanUnusedLeafSlack(ctx, node.data(), ctx.blockSize, numRecords, offsets);
     }
 
     if (kind == 0) {
@@ -356,6 +429,148 @@ bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
     return true;
 }
 
+uint16_t jnl16(const uint8_t* p, bool be) {
+    return be ? be16(p) : static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
+}
+
+uint32_t jnl32(const uint8_t* p, bool be) {
+    return be ? be32(p)
+              : static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                    (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+uint64_t jnl64(const uint8_t* p, bool be) {
+    if (be) return be64(p);
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
+    return v;
+}
+
+uint32_t appleJournalCksum(const uint8_t* p, uint32_t n, uint32_t ckOff) {
+    uint32_t cksum = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint8_t b = (i >= ckOff && i < ckOff + 4) ? 0 : p[i];
+        cksum = (cksum << 8) ^ (cksum + b);
+    }
+    return ~cksum;
+}
+
+bool readJournalSlice(DiskReader& reader, uint64_t journalAbs, uint64_t jSize, uint32_t jhdrSize,
+                      uint64_t pos, uint32_t n, std::vector<uint8_t>& out) {
+    if (n == 0 || jSize <= jhdrSize) return false;
+    out.assign(n, 0);
+    uint32_t got = 0;
+    while (got < n) {
+        if (pos >= jSize) {
+            if (pos < jhdrSize) return false;
+            pos = jhdrSize + (pos - jSize);
+        }
+        if (pos < jhdrSize || pos >= jSize) return false;
+        const uint64_t room = jSize - pos;
+        const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(room, n - got));
+        std::vector<uint8_t> part;
+        if (!readAt(reader, journalAbs + pos, chunk, part)) return false;
+        std::memcpy(out.data() + got, part.data(), chunk);
+        got += chunk;
+        pos += chunk;
+    }
+    return true;
+}
+
+void parseJournalCatalogNode(CatalogCtx& ctx, const uint8_t* node, uint32_t nodeSize) {
+    if (nodeSize < 14 || node[8] != 0xFF) return;
+    const uint16_t numRecords = be16(node + 10);
+    if (!hfsOffsetTableFits(nodeSize, numRecords)) return;
+    std::vector<uint16_t> offsets(numRecords + 1);
+    const size_t offTable = nodeSize - static_cast<size_t>(numRecords + 1) * 2;
+    for (uint16_t i = 0; i <= numRecords; ++i) {
+        offsets[i] = be16(node + offTable + i * 2);
+    }
+    for (uint16_t i = 0; i < numRecords; ++i) {
+        const uint16_t start = offsets[i];
+        const uint16_t end = offsets[i + 1];
+        if (end <= start || end > nodeSize) continue;
+        parseCatalogRecord(ctx, node + start, static_cast<uint16_t>(end - start), false, true);
+    }
+}
+
+void replayHfsJournal(CatalogCtx& ctx, const uint8_t* hdrSector) {
+    constexpr uint32_t kJournaledMask = 0x00002000;
+    constexpr uint32_t kJiInFs = 0x00000001;
+    constexpr uint32_t kJiOtherDev = 0x00000002;
+    constexpr uint32_t kJiNeedInit = 0x00000004;
+    constexpr uint32_t kJnlMagic = 0x4A4E4C78;
+    constexpr uint32_t kJnlEndian = 0x12345678;
+    constexpr uint64_t kMaxJournal = 16ull * 1024 * 1024;
+    constexpr int kMaxTxn = 64;
+
+    if ((be32(hdrSector + 4) & kJournaledMask) == 0) return;
+    const uint32_t jibBlock = be32(hdrSector + 12);
+    if (jibBlock == 0) return;
+
+    std::vector<uint8_t> jib;
+    const uint64_t jibOff = ctx.partitionOffset + static_cast<uint64_t>(jibBlock) * ctx.blockSize;
+    if (!readAt(*ctx.reader, jibOff, 512, jib)) return;
+    const uint32_t flags = be32(jib.data());
+    if ((flags & kJiInFs) == 0 || (flags & kJiOtherDev) != 0 || (flags & kJiNeedInit) != 0) return;
+    const uint64_t jRel = be64(jib.data() + 36);
+    const uint64_t jSize = be64(jib.data() + 44);
+    if (jSize < 512 || jSize > kMaxJournal) return;
+
+    std::vector<uint8_t> hdr;
+    const uint64_t journalAbs = ctx.partitionOffset + jRel;
+    if (!readAt(*ctx.reader, journalAbs, 512, hdr)) return;
+
+    bool be = true;
+    if (be32(hdr.data()) == kJnlMagic && be32(hdr.data() + 4) == kJnlEndian) be = true;
+    else if (jnl32(hdr.data(), false) == kJnlMagic && jnl32(hdr.data() + 4, false) == kJnlEndian) be = false;
+    else return;
+
+    const uint64_t start = jnl64(hdr.data() + 8, be);
+    const uint64_t end = jnl64(hdr.data() + 16, be);
+    const uint64_t size = jnl64(hdr.data() + 24, be);
+    const uint32_t blhdrSize = jnl32(hdr.data() + 32, be);
+    const uint32_t jhdrSize = jnl32(hdr.data() + 40, be);
+    if (size != jSize || jhdrSize < 44 || jhdrSize > 4096 || jhdrSize > size) return;
+    if (blhdrSize < 48 || blhdrSize > 4096 || blhdrSize > size - jhdrSize) return;
+    if (jnl32(hdr.data() + 36, be) != appleJournalCksum(hdr.data(), jhdrSize, 36)) return;
+    if (start == end) return;
+    if (start < jhdrSize || start >= size || end < jhdrSize || end > size) return;
+
+    uint64_t pos = start;
+    for (int txn = 0; txn < kMaxTxn && pos != end; ++txn) {
+        if (ctx.isRunning && !(*ctx.isRunning)) return;
+        std::vector<uint8_t> bl;
+        if (!readJournalSlice(*ctx.reader, journalAbs, size, jhdrSize, pos, blhdrSize, bl)) return;
+        if (jnl32(bl.data() + 8, be) != appleJournalCksum(bl.data(), blhdrSize, 8)) return;
+        const uint16_t maxBlocks = jnl16(bl.data(), be);
+        const uint16_t numBlocks = jnl16(bl.data() + 2, be);
+        const uint32_t bytesUsed = jnl32(bl.data() + 4, be);
+        if (maxBlocks < 2 || numBlocks < 2 || numBlocks > maxBlocks) return;
+        if (static_cast<uint32_t>(16 + numBlocks * 16) > blhdrSize) return;
+        if (bytesUsed < blhdrSize) return;
+
+        uint64_t dataPos = pos + blhdrSize;
+        for (uint16_t i = 1; i < numBlocks; ++i) {
+            const uint8_t* info = bl.data() + 16 + i * 16;
+            const uint32_t bsize = jnl32(info + 8, be);
+            if (bsize == 0 || bsize > 65536) return;
+            std::vector<uint8_t> block;
+            if (!readJournalSlice(*ctx.reader, journalAbs, size, jhdrSize, dataPos, bsize, block)) return;
+            parseJournalCatalogNode(ctx, block.data(), bsize);
+            dataPos += bsize;
+        }
+
+        const uint64_t nextBl = jnl64(bl.data() + 16, be);
+        if (nextBl != 0) {
+            pos = nextBl;
+        } else {
+            pos += bytesUsed;
+            if (pos >= size) pos = jhdrSize + (pos - size);
+        }
+    }
+}
+
 } // namespace
 
 bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
@@ -368,9 +583,19 @@ bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
     if (sectorSize == 0) sectorSize = 512;
 
     std::vector<uint8_t> hdrSector;
-    if (!readAt(reader, partitionOffsetBytes + 1024, 512, hdrSector)) return false;
-    uint16_t magic = be16(hdrSector.data());
-    if (magic != 0x482B && magic != 0x5848) return false;
+    auto isHfsMagic = [](const std::vector<uint8_t>& s) {
+        if (s.size() < 2) return false;
+        const uint16_t m = be16(s.data());
+        return m == 0x482B || m == 0x5848;
+    };
+    const bool primaryOk = readAt(reader, partitionOffsetBytes + 1024, 512, hdrSector) && isHfsMagic(hdrSector);
+    if (!primaryOk) {
+        uint64_t volBytes = partitionSizeBytes;
+        if (volBytes == 0) volBytes = reader.getDiskSize();
+        if (volBytes < 1024 + 512) return false;
+        if (!readAt(reader, partitionOffsetBytes + volBytes - 1024, 512, hdrSector)) return false;
+        if (!isHfsMagic(hdrSector)) return false;
+    }
 
     uint32_t blockSize = be32(hdrSector.data() + 40);
     if (blockSize < 512 || blockSize > 65536) blockSize = 4096;
@@ -397,6 +622,7 @@ bool scanHfsPlusCatalog(DiskReader& reader, uint64_t partitionOffsetBytes,
 
     uint32_t rootBlock = catalogFork.extents.front().startBlock;
     const bool ok = walkCatalogNode(ctx, rootBlock, 0);
+    replayHfsJournal(ctx, hdrSector.data());
     if (ctx.catalogUnread && ctx.callback) {
         FileRecord sentinel{};
         sentinel.id = -1;

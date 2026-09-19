@@ -1,5 +1,6 @@
 // EWF (EWF1 / .E01) multi-segment writer — see imager/ewf_writer.h.
 #include "imager/ewf_writer.h"
+#include "recovery/path_util.h"
 
 #include "zlib.h"
 
@@ -119,7 +120,7 @@ void EwfWriter::patchSegmentFileHeader(const std::string& path, uint16_t number,
 
 bool EwfWriter::startSegment(int number, bool first) {
     const std::string path = segmentPathFor(number);
-    outFile_.open(path, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+    outFile_.open(utf8Path(path), std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
     if (!outFile_.is_open()) return false;
     segmentNumber_ = number;
     segmentPaths_.push_back(path);

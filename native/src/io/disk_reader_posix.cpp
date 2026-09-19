@@ -3,6 +3,7 @@
 #include "byteback_io.h"
 #include "imager/ewf_reader.h"
 #include "io/byte_source.h"
+#include "io/vhd_source.h"
 #include "crypto/byteback_aes.h"
 #include "fs/virtual_raid.h" // CA-056: raidBackend_->capacity() needs the complete type
 
@@ -10,6 +11,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <algorithm>
+#include <exception>
 
 namespace byteback {
 
@@ -139,6 +141,28 @@ bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOu
     return true;
 }
 
+bool DiskReader::attachVhdMemory(std::vector<uint8_t> image, std::string* errOut) {
+    std::vector<uint8_t> payload;
+    std::string err;
+    if (!extractFixedVhdPayload(image.data(), image.size(), payload, err)) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    attachMemoryVolume(std::move(payload), 512);
+    return true;
+}
+
+bool DiskReader::attachVhdFile(const std::string& path, std::string* errOut) {
+    std::vector<uint8_t> payload;
+    std::string err;
+    if (!extractVhdFile(path, payload, err)) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    attachMemoryVolume(std::move(payload), 512);
+    return true;
+}
+
 bool DiskReader::attachRawFile(const std::string& path, std::string* errOut) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
@@ -186,10 +210,21 @@ bool DiskReader::setXtsFvek(const uint8_t* key, size_t keyBytes) {
 
 bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) { return setXtsFvek(key32, n); }
 
+void DiskReader::setXtsDecryptFrom(uint64_t byteOffset) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    xtsFromBytes_ = byteOffset;
+}
+
+uint64_t DiskReader::xtsDecryptFromBytes() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return xtsFromBytes_;
+}
+
 void DiskReader::clearXtsFvek() {
     std::lock_guard<std::mutex> lock(ioMutex_); // parity with disk_reader_win.cpp
     xtsKeyLen_ = 0;
     std::memset(xtsKey_, 0, sizeof(xtsKey_));
+    xtsFromBytes_ = 0;
 }
 
 bool DiskReader::hasXtsFvek() const {
@@ -206,16 +241,39 @@ void DiskReader::copyXtsFvekFrom(const DiskReader& src) {
     if (this == &src) return; // parity with disk_reader_win.cpp: self-copy would deadlock
     uint8_t key[64];
     uint8_t len = 0;
+    uint64_t from = 0;
     {
         std::lock_guard<std::mutex> lock(src.ioMutex_);
         len = src.xtsKeyLen_;
+        from = src.xtsFromBytes_;
         if (len == 32 || len == 64) std::memcpy(key, src.xtsKey_, len);
     }
-    if (len == 32 || len == 64) setXtsFvek(key, len);
-    else clearXtsFvek();
+    if (len == 32 || len == 64) {
+        setXtsFvek(key, len);
+        setXtsDecryptFrom(from);
+    } else {
+        clearXtsFvek();
+    }
 }
 
-void DiskReader::maybeDecryptXts(uint64_t, uint32_t, uint8_t*) {}
+void DiskReader::maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
+    if (xtsKeyLen_ != 32 && xtsKeyLen_ != 64) return;
+    if (!buffer || sizeBytes == 0) return;
+    uint32_t ss = sectorSize_ ? sectorSize_ : 512;
+    if (ss == 0 || ss % 16 != 0) return;
+    for (uint32_t o = 0; o + ss <= sizeBytes; o += ss) {
+        const uint64_t abs = offsetBytes + o;
+        if (abs < xtsFromBytes_) continue;
+        uint64_t sec = (abs - xtsFromBytes_) / ss;
+        uint8_t tweak[16] = {};
+        for (int i = 0; i < 8; ++i) tweak[i] = static_cast<uint8_t>(sec >> (8 * i));
+        if (xtsKeyLen_ == 32) {
+            crypto::xtsAes128Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+        } else {
+            crypto::xtsAes256Crypt(xtsKey_, tweak, buffer + o, buffer + o, ss, false);
+        }
+    }
+}
 
 ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
     ReadResult result;
@@ -286,6 +344,36 @@ ReadResult DiskReader::readSectors(uint64_t offsetBytes, uint32_t sizeBytes, uin
         result.success = true;
         result.bytesRead = sizeBytes;
         return result;
+    }
+    if (raidBackend_) {
+        if (offsetBytes % sectorSize_ != 0 || sizeBytes % sectorSize_ != 0) {
+            result.error = "Read offset and size must be sector-aligned";
+            return result;
+        }
+        try {
+            auto data = raidBackend_->read(static_cast<size_t>(offsetBytes),
+                                           static_cast<size_t>(sizeBytes));
+            if (data.size() < sizeBytes) {
+                std::memset(buffer, 0, sizeBytes);
+                if (!data.empty()) std::memcpy(buffer, data.data(), data.size());
+                noteBadRead(offsetBytes, sizeBytes);
+                result.success = true;
+                result.paddedZeros = true;
+                result.bytesRead = sizeBytes;
+                return result;
+            }
+            std::memcpy(buffer, data.data(), sizeBytes);
+            result.success = true;
+            result.bytesRead = sizeBytes;
+            maybeDecryptXts(offsetBytes, sizeBytes, buffer);
+            return result;
+        } catch (const std::exception& e) {
+            result.error = e.what();
+            std::memset(buffer, 0, sizeBytes);
+            noteBadRead(offsetBytes, sizeBytes);
+            result.paddedZeros = true;
+            return result;
+        }
     }
     result.error = "No drive opened";
     return result;

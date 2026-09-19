@@ -1,4 +1,5 @@
 #include "../../include/byteback_shredder.h"
+#include "recovery/path_util.h"
 
 #include <windows.h>
 #include <iostream>
@@ -49,9 +50,13 @@ bool DataShredder::shred_physical_drive(int driveIndex, const std::string& typed
 #endif
 }
 
+std::wstring wideUtf8(const std::string& utf8) {
+    return std::filesystem::u8path(utf8).wstring();
+}
+
 bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file_size, uint8_t pattern, bool is_random, uint32_t randomSeed) {
-    HANDLE hFile = CreateFileA(
-        file_path.c_str(),
+    HANDLE hFile = CreateFileW(
+        wideUtf8(file_path).c_str(),
         GENERIC_WRITE,
         0, // Exclusive access
         NULL,
@@ -111,7 +116,7 @@ bool DataShredder::overwrite_pass(const std::string& file_path, std::size_t file
 // PRNG stream) and compares against what the disk actually returned.
 bool DataShredder::verify_pass(const std::string& file_path, std::size_t file_size,
                                uint8_t pattern, bool is_random, uint32_t randomSeed) {
-    HANDLE hFile = CreateFileA(file_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+    HANDLE hFile = CreateFileW(wideUtf8(file_path).c_str(), GENERIC_READ, FILE_SHARE_READ,
                                NULL, OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return false;
 
@@ -144,7 +149,7 @@ bool DataShredder::verify_pass(const std::string& file_path, std::size_t file_si
 
 std::size_t DataShredder::get_file_size(const std::string& file_path) {
     std::error_code ec;
-    auto size = std::filesystem::file_size(file_path, ec);
+    auto size = std::filesystem::file_size(std::filesystem::u8path(file_path), ec);
     if (ec) {
         return 0;
     }
@@ -155,13 +160,13 @@ bool DataShredder::shred_file(const std::string& file_path) {
     // A directory must never be "shredded" — for an empty one the fallthrough
     // below would silently remove() it without any wipe.
     std::error_code dec;
-    if (std::filesystem::is_directory(file_path, dec)) return false;
+    if (std::filesystem::is_directory(std::filesystem::u8path(file_path), dec)) return false;
 
     std::size_t size = get_file_size(file_path);
     if (size == 0) {
         std::error_code ec;
-        if (std::filesystem::exists(file_path, ec)) {
-            return std::filesystem::remove(file_path, ec);
+        if (std::filesystem::exists(std::filesystem::u8path(file_path), ec)) {
+            return std::filesystem::remove(std::filesystem::u8path(file_path), ec);
         }
         return false;
     }
@@ -175,7 +180,7 @@ bool DataShredder::shred_file(const std::string& file_path) {
     if (!verify_pass(file_path, size, 0x00, true, seed)) return false;
 
     std::error_code ec;
-    return std::filesystem::remove(file_path, ec);
+    return std::filesystem::remove(std::filesystem::u8path(file_path), ec);
 }
 
 bool DataShredder::shred_free_space(const std::string& dirPath, uint64_t maxFillBytes) {
@@ -184,11 +189,11 @@ bool DataShredder::shred_free_space(const std::string& dirPath, uint64_t maxFill
     if (dirPath.find("PhysicalDrive") != std::string::npos) return false;
 
     std::error_code ec;
-    if (!std::filesystem::is_directory(dirPath, ec)) return false;
+    if (!std::filesystem::is_directory(std::filesystem::u8path(dirPath), ec)) return false;
 
-    const auto filler = (std::filesystem::path(dirPath) / ".byteback_freespace_wipe.tmp").string();
+    const auto fillerPath = std::filesystem::u8path(dirPath) / ".byteback_freespace_wipe.tmp";
     {
-        std::ofstream out(filler, std::ios::binary | std::ios::trunc);
+        std::ofstream out(fillerPath, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) return false;
         const size_t bufSize = 65536;
         std::vector<uint8_t> buf(bufSize, 0);
@@ -205,11 +210,11 @@ bool DataShredder::shred_free_space(const std::string& dirPath, uint64_t maxFill
         }
         out.close();
         if (written == 0) {
-            std::filesystem::remove(filler, ec);
+            std::filesystem::remove(fillerPath, ec);
             return false;
         }
     }
-    return shred_file(filler);
+    return shred_file(byteback::pathToUtf8(fillerPath));
 }
 
 } // namespace security

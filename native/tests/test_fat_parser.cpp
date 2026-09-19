@@ -28,6 +28,102 @@ TEST(FatParser, ListsRootFileOnFat16Superfloppy) {
     EXPECT_TRUE(found) << "expected TEST.TXT in FAT16 root";
 }
 
+TEST(FatParser, VolumeLabelDirentIsDiscoveryNotFile) {
+    auto img = byteback::testfix::buildFat16Volume();
+    constexpr uint32_t ss = 512;
+    const uint32_t rootStart = 1 + 2 * 16;
+    const size_t de = static_cast<size_t>(rootStart) * ss + 32;
+    std::memcpy(img.data() + de, "MY VOLUME  ", 11);
+    img[de + 11] = 0x08;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawLabel = false;
+    bool sawAsFatFile = false;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "fat_vol_label" && fr.name == "MY VOLUME") sawLabel = true;
+        if (fr.source == "fat" && fr.name == "MY VOLUME") sawAsFatFile = true;
+    }, &running));
+    EXPECT_TRUE(sawLabel) << "ATTR_VOLUME 0x08 must emit fat_vol_label";
+    EXPECT_FALSE(sawAsFatFile) << "volume label must not look like a recoverable fat file";
+}
+
+TEST(FatParser, DirentDatesSetModifiedAt) {
+    auto img = byteback::testfix::buildFat16Volume();
+    constexpr uint32_t ss = 512;
+    const uint32_t rootStart = 1 + 2 * 16;
+    const size_t de = static_cast<size_t>(rootStart) * ss;
+    testfix::writeLe16(img, de + 14, 0);
+    testfix::writeLe16(img, de + 16, 0x5022);
+    testfix::writeLe16(img, de + 22, 0);
+    testfix::writeLe16(img, de + 24, 0x5022);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    int64_t got = 0;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "fat" && fr.name.find("TEST") != std::string::npos) got = fr.modifiedAt;
+    }, &running));
+    EXPECT_EQ(got, 1577923200) << "FAT dirent wrtDate 2020-01-02 must set modifiedAt";
+}
+
+TEST(FatParser, BackupBootUsedWhenPrimaryBpbWiped) {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t reserved = 32;
+    constexpr uint32_t fatSectors = 16;
+    constexpr uint32_t totalSectors = 4200;
+    std::vector<uint8_t> img(static_cast<size_t>(totalSectors) * ss, 0);
+    img[0] = 0xEB; img[1] = 0x3C; img[2] = 0x90;
+    testfix::writeLe16(img, 0x0B, static_cast<uint16_t>(ss));
+    img[0x0D] = 1;
+    testfix::writeLe16(img, 0x0E, static_cast<uint16_t>(reserved));
+    img[0x10] = 2;
+    testfix::writeLe16(img, 0x11, 16);
+    img[0x15] = 0xF8;
+    testfix::writeLe16(img, 0x16, static_cast<uint16_t>(fatSectors));
+    testfix::writeLe32(img, 0x20, totalSectors);
+    img[0x42] = 0x29;
+    std::memcpy(img.data() + 0x36, "FAT16   ", 8);
+    testfix::writeLe16(img, 0x32, 6);
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const uint32_t fatStart = reserved;
+    const uint32_t rootStart = fatStart + 2 * fatSectors;
+    const uint32_t dataStart = rootStart + 1;
+    testfix::writeLe16(img, fatStart * ss + 4, 0xFFFF);
+    const size_t de = static_cast<size_t>(rootStart) * ss;
+    std::memcpy(img.data() + de, "TEST    TXT", 11);
+    img[de + 11] = 0x20;
+    testfix::writeLe16(img, de + 26, 2);
+    testfix::writeLe32(img, de + 28, 11);
+    const char payload[] = "Hello FAT16";
+    std::memcpy(img.data() + static_cast<size_t>(dataStart) * ss, payload, sizeof(payload) - 1);
+
+    std::memcpy(img.data() + 6 * ss, img.data(), ss);
+    img[0x0B] = 0;
+    img[0x0C] = 0;
+    img[0x0D] = 0;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, &running));
+    bool found = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "FAT backup boot at reserved sector 6 must restore root";
+}
+
 TEST(FatParser, ScanAtPartitionOffset) {
     auto fatVol = byteback::testfix::buildFat16Volume();
     auto disk = byteback::testfix::buildMbrDiskWithFatPartition(fatVol, 2048);
@@ -219,6 +315,43 @@ std::vector<uint8_t> buildExFatPartialDeletedChain() {
     return img;
 }
 
+uint8_t fatLfnChecksum(const uint8_t n[11]) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; ++i)
+        sum = static_cast<uint8_t>(((sum & 1) << 7) + (sum >> 1) + n[i]);
+    return sum;
+}
+
+void writeFatLfnEntry(std::vector<uint8_t>& img, size_t off, uint8_t ord, uint8_t chk,
+                      const uint16_t chars[13], bool deleted) {
+    img[off] = deleted ? 0xE5 : ord;
+    for (int i = 0; i < 5; ++i) writeLe16(img, off + 1 + static_cast<size_t>(i) * 2, chars[i]);
+    img[off + 11] = 0x0F;
+    img[off + 12] = 0;
+    img[off + 13] = chk;
+    for (int i = 0; i < 6; ++i) writeLe16(img, off + 14 + static_cast<size_t>(i) * 2, chars[5 + i]);
+    img[off + 26] = 0;
+    img[off + 27] = 0;
+    for (int i = 0; i < 2; ++i) writeLe16(img, off + 28 + static_cast<size_t>(i) * 2, chars[11 + i]);
+}
+
+std::vector<uint8_t> buildFat16Utf8LfnVolume(bool deleted) {
+    auto img = byteback::testfix::buildFat16Volume();
+    const uint8_t shortName[11] = {'G', 'U', 'N', 'E', 'S', ' ', ' ', ' ', 'J', 'P', 'G'};
+    const uint8_t chk = fatLfnChecksum(shortName);
+    const uint16_t lfn[13] = {
+        'G', 0x00FC, 'n', 'e', 0x015F, '.', 'j', 'p', 'g', 0, 0xFFFF, 0xFFFF, 0xFFFF
+    };
+    const size_t root = 33 * 512;
+    writeFatLfnEntry(img, root, 0x41, chk, lfn, deleted);
+    std::memcpy(img.data() + root + 32, shortName, 11);
+    img[root + 32 + 11] = 0x20;
+    if (deleted) img[root + 32] = 0xE5;
+    writeLe16(img, root + 32 + 26, 2);
+    writeLe32(img, root + 32 + 28, 11);
+    return img;
+}
+
 } // namespace
 
 TEST(FatParser, ExFatToleratesGappedEntrySet) {
@@ -233,6 +366,52 @@ TEST(FatParser, ExFatToleratesGappedEntrySet) {
         if (fr.name == "LOST.DAT") found = true;
     }, &running));
     EXPECT_TRUE(found);
+}
+
+TEST(FatParser, ExFatVolumeLabelIsDiscoveryNotFile) {
+    auto img = buildExFatWithGappedDeletedSet();
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t heapOff = 25;
+    uint8_t* heap = img.data() + heapOff * ss;
+    std::memmove(heap + 32, heap, 128);
+    std::memset(heap, 0, 32);
+    heap[0] = 0x83;
+    heap[1] = 8;
+    const char* lab = "BYTEBACK";
+    for (int i = 0; i < 8; ++i) {
+        heap[2 + i * 2] = static_cast<uint8_t>(lab[i]);
+        heap[3 + i * 2] = 0;
+    }
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawLabel = false;
+    bool sawAsFatFile = false;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "exfat_vol_label" && fr.name == "BYTEBACK") sawLabel = true;
+        if (fr.source == "fat" && fr.name == "BYTEBACK") sawAsFatFile = true;
+    }, &running));
+    EXPECT_TRUE(sawLabel) << "exFAT Volume Label 0x83 must emit exfat_vol_label";
+    EXPECT_FALSE(sawAsFatFile);
+}
+
+TEST(FatParser, ExFatBackupBootUsedWhenPrimaryOemWiped) {
+    auto img = buildExFatWithGappedDeletedSet();
+    constexpr uint32_t ss = 512;
+    std::memcpy(img.data() + 12 * ss, img.data(), ss);
+    std::memset(img.data() + 3, 0, 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "LOST.DAT") found = true;
+    }, &running));
+    EXPECT_TRUE(found) << "exFAT backup boot at sector 12 must restore directory";
 }
 
 TEST(FatParser, ExFatPartialDeletedChainCapsConfidence) {
@@ -267,6 +446,41 @@ TEST(FatParser, ExFatSpecStreamEntryYieldsRealSize) {
     ASSERT_FALSE(hit.runs.empty());
     EXPECT_EQ(hit.sizeBytes, 17u);
     EXPECT_EQ(hit.runs[0].startSector, 25u + 1u); // cluster 3 in heap starting at sector 25
+}
+
+TEST(FatParser, Utf8LfnSurvivesTurkish) {
+    auto img = buildFat16Utf8LfnVolume(false);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::string name;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name.find(".jpg") != std::string::npos || fr.name.find(".JPG") != std::string::npos)
+            name = fr.name;
+    }, &running));
+    const unsigned char expected[] = {'G', 0xC3, 0xBC, 'n', 'e', 0xC5, 0x9F, '.', 'j', 'p', 'g'};
+    ASSERT_EQ(name.size(), sizeof(expected));
+    for (size_t i = 0; i < sizeof(expected); ++i) {
+        EXPECT_EQ(static_cast<unsigned char>(name[i]), expected[i]) << "i=" << i;
+    }
+}
+
+TEST(FatParser, DeletedLfnRestoresLongName) {
+    auto img = buildFat16Utf8LfnVolume(true);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::string name;
+    std::atomic<bool> running{true};
+    FATParser fat;
+    ASSERT_TRUE(fat.scan(reader, [&](const FileRecord& fr) {
+        if (fr.status == 0 && fr.source == "fat") name = fr.name;
+    }, &running));
+    const unsigned char expected[] = {'G', 0xC3, 0xBC, 'n', 'e', 0xC5, 0x9F, '.', 'j', 'p', 'g'};
+    ASSERT_EQ(name.size(), sizeof(expected)) << "name=" << name;
+    for (size_t i = 0; i < sizeof(expected); ++i) {
+        EXPECT_EQ(static_cast<unsigned char>(name[i]), expected[i]) << "i=" << i;
+    }
 }
 
 TEST(FatParser, ZeroSectorsPerClusterReturnsCleanly) {

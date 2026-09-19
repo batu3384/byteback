@@ -70,6 +70,8 @@ bool applyBoundedTargetedParse(const std::string& ext, DiskReader& reader, uint6
         pr = carver::parseOggBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
     } else if (ext == "mp3") {
         pr = carver::parseMp3Bounded(probe, probeSize, carveStartOffset, maxSize, readAt);
+    } else if (ext == "x3f") {
+        pr = carver::parseX3fBounded(probe, probeSize, carveStartOffset, maxSize, readAt);
     } else {
         return false;
     }
@@ -95,6 +97,7 @@ void applyStructuralRefinement(const std::string& ext, const uint8_t* data, size
     else if (ext == "7z") pr = carver::parseSevenZip(data, size);
     else if (ext == "cab") pr = carver::parseCab(data, size);
     else if (ext == "mp3") pr = carver::parseMp3Bounded(data, size, 0, size, nullptr);
+    else if (ext == "x3f") pr = carver::parseX3fBounded(data, size, 0, size, nullptr);
     else return;
 
     if (!pr.valid) return;
@@ -392,16 +395,14 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("PCap Network", ".pcap", "Network", {0xD4, 0xC3, 0xB2, 0xA1}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("PCap-ng Network", ".pcapng", "Network", {0x0A, 0x0D, 0x0D, 0x0A}, {}, 1ULL * 1024 * 1024 * 1024);
     addSig("Fuji RAF RAW", ".raf", "Image", {0x46, 0x55, 0x4A, 0x49, 0x46, 0x49, 0x4C, 0x4D, 0x43, 0x43, 0x44, 0x44, 0x2D, 0x52, 0x41, 0x57}, {}, 100 * 1024 * 1024);
-    // CA-038: RAW-camera formats with a FIXED-offset magic (no conditional
-    // EXIF parsing). ORF/RW2 are TIFF-IFD structures with a variant magic, so
-    // applyStructuralRefinement bounds them via parseTiff; X3F ("FOVb") has
-    // no verified fixed-offset size field, so its carve window stays bounded
-    // by maxSize and the CA-001 expire policy drops unboundable candidates.
-    // NEF/ARW/DNG/GPR are deliberately absent: they carry generic TIFF magic
-    // and are only distinguishable via EXIF-Make logic (documented ceiling).
+    // CA-038: ORF/RW2 are TIFF-IFD with a variant magic (parseTiff). X3F
+    // bounds via SECd at EOF-4 (parseX3fBounded). NEF/ARW/DNG: generic TIFF
+    // magic; parseTiff Make/DNGVersion retags .nef/.arw/.dng.
     addSig("Olympus ORF RAW (IIRO)", ".orf", "Image", {0x49, 0x49, 0x52, 0x4F}, {}, 128 * 1024 * 1024);
     addSig("Olympus ORF RAW (IIRS)", ".orf", "Image", {0x49, 0x49, 0x52, 0x53}, {}, 128 * 1024 * 1024);
     addSig("Panasonic RW2 RAW", ".rw2", "Image", {0x49, 0x49, 0x55, 0x00}, {}, 128 * 1024 * 1024);
+    // X3F: FOVb + SECd directory at EOF-4 (parseX3fBounded). Unboundable
+    // candidates still drop under CA-001.
     addSig("Sigma X3F RAW", ".x3f", "Image", {0x46, 0x4F, 0x56, 0x62}, {}, 128 * 1024 * 1024);
     addSig("JPEG2000 JP2", ".jp2", "Image", {0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 50 * 1024 * 1024);
     addSig("Apple Sparse Image", ".sparseimage", "DiskImage", {0xE8, 0x5D, 0x9B, 0x53, 0x2D, 0x29, 0x2D, 0x21}, {}, 100 * 1024 * 1024);

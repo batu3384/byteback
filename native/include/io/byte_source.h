@@ -33,4 +33,10 @@ bool httpRangeReadStatusOk(unsigned status, uint64_t offset, uint64_t len, uint6
  *  describes the real object (not an error/redirect page body). */
 bool httpProbeStatusOk(unsigned status);
 
+/** True if HEAD failed with 405/501 and size must be probed via Range GET 0-0. */
+bool httpProbeNeedsRangeGetFallback(unsigned status);
+
+/** Parse the total size from Content-Range (e.g. "bytes 0-0/12345"). */
+bool httpParseContentRangeTotal(const std::string& header, uint64_t& total);
+
 } // namespace byteback

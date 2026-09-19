@@ -21,6 +21,7 @@ struct RecoveryResult {
     bool zeroFilled = false; // at least one read was padded/failed
     int validationScore = -1; // -1 = not checked; 0..100 when carve validation ran
     std::string validationError;
+    std::string repairedPath; // sidecar; destPath stays the recovered bytes
 };
 
 inline bool countsAsRecovered(const RecoveryResult& r) {
@@ -32,7 +33,7 @@ bool loadRecoverRecord(MetadataStore& store, int64_t scanId, int64_t fileId,
 
 bool isDiscoveryOnlySource(const std::string& source);
 
-// Open VSS, RAID, the scan's Windows volume device, or PhysicalDrive. False = err set.
+// Open VSS, RAID, volume device, evidence image, or PhysicalDrive. False = err set.
 bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveIndex,
                          std::shared_ptr<VirtualRaid> raid, std::string& err,
                          const std::string& volumePath = {});

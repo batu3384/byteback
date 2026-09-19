@@ -38,10 +38,17 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
     std::string volumePath;
     if (info.Length() >= 5 && info[4].IsString()) {
         const std::string vp = info[4].As<Napi::String>().Utf8Value();
-        if (byteback::isWin32VolumeDevicePath(vp)) volumePath = vp;
+        if (byteback::isWin32VolumeDevicePath(vp) || byteback::isEvidenceImagePath(vp))
+            volumePath = vp;
     }
 
-    if (driveIndex < 0 && driveIndex != -1) {
+    const bool imageSource = driveIndex == byteback::kScanImageDriveIndex;
+    if (imageSource) {
+        if (volumePath.empty() || byteback::isWin32VolumeDevicePath(volumePath)) {
+            bdata->endHeavyOp();
+            return Napi::Boolean::New(env, false);
+        }
+    } else if (driveIndex < 0 && driveIndex != -1) {
         bdata->endHeavyOp();
         return Napi::Boolean::New(env, false);
     }

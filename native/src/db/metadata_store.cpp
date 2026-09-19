@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace byteback {
 
@@ -217,12 +218,13 @@ void bindFileRecord(sqlite3_stmt* stmt, int64_t scanId, const FileRecord& r) {
     sqlite3_bind_int64(stmt, 18, static_cast<sqlite3_int64>(r.integrityChecksum));
     sqlite3_bind_int64(stmt, 19, static_cast<sqlite3_int64>(r.startByteOffset));
     sqlite3_bind_text(stmt, 20, r.contentHash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 21, r.mftRef);
 }
 
 constexpr const char* kFileSelect =
     "id, parent_id, name, extension, path, size_bytes, "
     "start_sector, end_sector, status, compressed, confidence, category, source, "
-    "created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash";
+    "created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref";
 
 std::string buildFtsMatch(const std::string& query) {
     std::string out;
@@ -266,14 +268,20 @@ bool ensureFtsIndex(sqlite3* db) {
           INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension)
           VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension);
         END;
-        CREATE TRIGGER IF NOT EXISTS files_fts_au AFTER UPDATE ON files BEGIN
-          INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension)
-          VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension);
+    )";
+    sqlite3_exec(db, triggers, nullptr, nullptr, nullptr);
+
+    // content_hash / runs_json updates are not FTS-relevant. A blanket AFTER
+    // UPDATE rebuilt files_fts and FTS5 returned "SQL logic error".
+    sqlite3_exec(db, "DROP TRIGGER IF EXISTS files_fts_au;", nullptr, nullptr, nullptr);
+    const char* au = R"(
+        CREATE TRIGGER files_fts_au AFTER UPDATE OF name, path, extension ON files BEGIN
+          INSERT INTO files_fts(files_fts, rowid) VALUES('delete', old.id);
           INSERT INTO files_fts(rowid, scan_id, name, path, extension)
           VALUES (new.id, new.scan_id, new.name, COALESCE(new.path,''), COALESCE(new.extension,''));
         END;
     )";
-    sqlite3_exec(db, triggers, nullptr, nullptr, nullptr);
+    sqlite3_exec(db, au, nullptr, nullptr, nullptr);
 
     const char* backfill = R"(
         INSERT INTO files_fts(rowid, scan_id, name, path, extension)
@@ -351,6 +359,8 @@ bool MetadataStore::open(const std::string& dbPath) {
         sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN start_byte_offset INTEGER DEFAULT 0;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN content_hash TEXT DEFAULT '';", nullptr, nullptr, &err);
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db_, "ALTER TABLE files ADD COLUMN mft_ref INTEGER DEFAULT -1;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ALTER TABLE scans ADD COLUMN partition_start_sector INTEGER DEFAULT -1;", nullptr, nullptr, &err);
         if (err) sqlite3_free(err);
@@ -440,6 +450,7 @@ bool MetadataStore::createTables() {
             resident_blob BLOB,
             start_byte_offset INTEGER DEFAULT 0,
             content_hash TEXT DEFAULT '',
+            mft_ref INTEGER DEFAULT -1,
             FOREIGN KEY (scan_id) REFERENCES scans(id)
         );
 
@@ -485,8 +496,8 @@ int64_t MetadataStore::insertFile(int64_t scanId, const FileRecord& r) {
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -515,8 +526,8 @@ bool MetadataStore::insertFilesBatch(int64_t scanId, const std::vector<FileRecor
     const char* sql = R"(
         INSERT INTO files (scan_id, parent_id, name, extension, path, size_bytes,
             start_sector, end_sector, status, compressed, confidence, category, source,
-            created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -779,7 +790,7 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
     std::string sql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash
+               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref
         FROM files WHERE scan_id = ?
     )";
     appendListFilter(sql, filter, "");
@@ -847,12 +858,39 @@ std::vector<FileRecord> MetadataStore::getFiles(int64_t scanId, int offset, int 
         r.runs = deserializeRuns(safe_column_text(stmt, 15));
         if (sqlite3_column_count(stmt) > 18) {
             r.startByteOffset = static_cast<uint64_t>(sqlite3_column_int64(stmt, 18));
+        }
+        if (sqlite3_column_count(stmt) > 19) {
             r.contentHash = safe_column_text(stmt, 19);
+        }
+        if (sqlite3_column_count(stmt) > 20) {
+            r.mftRef = sqlite3_column_int64(stmt, 20);
         }
         records.push_back(r);
     }
 
     sqlite3_finalize(stmt);
+    if (!records.empty()) {
+        const char* grp =
+            "SELECT content_hash, size_bytes, COUNT(*) FROM files "
+            "WHERE scan_id = ? AND content_hash IS NOT NULL AND content_hash != '' "
+            "GROUP BY content_hash, size_bytes";
+        sqlite3_stmt* gstmt = nullptr;
+        if (sqlite3_prepare_v2(db_, grp, -1, &gstmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(gstmt, 1, scanId);
+            std::unordered_map<std::string, int> counts;
+            while (sqlite3_step(gstmt) == SQLITE_ROW) {
+                const std::string h = safe_column_text(gstmt, 0);
+                const uint64_t sz = static_cast<uint64_t>(sqlite3_column_int64(gstmt, 1));
+                counts[h + "\n" + std::to_string(sz)] = sqlite3_column_int(gstmt, 2);
+            }
+            sqlite3_finalize(gstmt);
+            for (auto& r : records) {
+                if (r.contentHash.empty()) continue;
+                auto it = counts.find(r.contentHash + "\n" + std::to_string(r.sizeBytes));
+                if (it != counts.end()) r.contentGroupSize = it->second;
+            }
+        }
+    }
     return records;
 }
 
@@ -1388,6 +1426,9 @@ FileRecord rowToFileRecord(sqlite3_stmt* stmt) {
         if (sqlite3_column_count(stmt) > 19) {
             r.contentHash = safe_column_text(stmt, 19);
         }
+        if (sqlite3_column_count(stmt) > 20) {
+            r.mftRef = sqlite3_column_int64(stmt, 20);
+        }
         return r;
 }
 } // namespace
@@ -1413,7 +1454,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
     const char* baseSql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash
+               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref
         FROM files WHERE scan_id = ?
     )";
 
@@ -1422,7 +1463,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
         std::string sql = R"(
             SELECT f.id, f.parent_id, f.name, f.extension, f.path, f.size_bytes,
                    f.start_sector, f.end_sector, f.status, f.compressed, f.confidence, f.category, f.source,
-                   f.created_at, f.modified_at, f.runs_json, f.resident_blob, f.integrity_checksum, f.start_byte_offset, f.content_hash
+                   f.created_at, f.modified_at, f.runs_json, f.resident_blob, f.integrity_checksum, f.start_byte_offset, f.content_hash, f.mft_ref
             FROM files f
             INNER JOIN files_fts fts ON f.id = fts.rowid
             WHERE f.scan_id = ? AND fts.scan_id = ? AND fts MATCH ?
@@ -1566,12 +1607,12 @@ FileRecord MetadataStore::getFileById(int64_t fileId, int64_t scanId) {
     const char* sql = scanId > 0 ? R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash
+               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref
         FROM files WHERE id = ? AND scan_id = ?
     )" : R"(
         SELECT id, parent_id, name, extension, path, size_bytes,
                start_sector, end_sector, status, compressed, confidence, category, source,
-               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash
+               created_at, modified_at, runs_json, resident_blob, integrity_checksum, start_byte_offset, content_hash, mft_ref
         FROM files WHERE id = ?
     )";
     sqlite3_stmt* stmt = nullptr;

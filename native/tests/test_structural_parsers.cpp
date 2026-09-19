@@ -144,3 +144,94 @@ TEST(StructuralParsers, TiffInlineShortStripArraysBoundSize) {
     ASSERT_TRUE(r.valid);
     EXPECT_EQ(r.size, 140u); // max(100+40, 50+30)
 }
+
+std::vector<uint8_t> buildTiffWithAsciiMake(const char* make, bool dngVersion) {
+    const uint32_t makeLen = static_cast<uint32_t>(std::strlen(make) + 1);
+    std::vector<uint8_t> b;
+    b.insert(b.end(), {'I', 'I', 0x2A, 0x00});
+    appendLe32(b, 8);
+    const uint16_t nent = dngVersion ? 4 : 3;
+    appendLe16(b, nent);
+    auto longish = [&](uint16_t tag, uint16_t type, uint32_t count, uint32_t v) {
+        appendLe16(b, tag);
+        appendLe16(b, type);
+        appendLe32(b, count);
+        appendLe32(b, v);
+    };
+    longish(273, 4, 1, 200); // StripOffsets LONG inline
+    longish(279, 3, 1, 20);  // StripByteCounts SHORT + pad
+    const uint32_t makeOff = 8 + 2 + 12u * nent + 4;
+    longish(271, 2, makeLen, makeOff);
+    if (dngVersion) longish(0xC612, 1, 4, 0x00000401); // DNGVersion 1.4.0.0 inline LE
+    appendLe32(b, 0);
+    while (b.size() < makeOff) b.push_back(0);
+    b.insert(b.end(), make, make + makeLen);
+    if (b.size() < 220) b.resize(220, 0xAB);
+    return b;
+}
+
+TEST(StructuralParsers, TiffNikonMakeTagsNef) {
+    auto b = buildTiffWithAsciiMake("NIKON", false);
+    auto r = parseTiff(b.data(), b.size());
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.extension, "nef");
+}
+
+TEST(StructuralParsers, TiffSonyMakeTagsArw) {
+    auto b = buildTiffWithAsciiMake("SONY", false);
+    auto r = parseTiff(b.data(), b.size());
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.extension, "arw");
+}
+
+TEST(StructuralParsers, TiffDngVersionTagsDngOverMake) {
+    auto b = buildTiffWithAsciiMake("NIKON", true);
+    auto r = parseTiff(b.data(), b.size());
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.extension, "dng");
+}
+
+std::vector<uint8_t> buildMinimalX3f() {
+    // FOVb header + 16-byte IMA2 payload + SECd (1 entry) + tail dir pointer.
+    // kalpanika/x3f: fseek(-4, SEEK_END) then SECd {ver, count, {off,size,type}*}.
+    std::vector<uint8_t> b;
+    b.insert(b.end(), {'F', 'O', 'V', 'b'});
+    b.insert(b.end(), 28, 0); // version + unique id + pad to 32
+    const uint32_t payloadOff = static_cast<uint32_t>(b.size());
+    b.insert(b.end(), 16, 0xAB);
+    const uint32_t dirOff = static_cast<uint32_t>(b.size());
+    b.insert(b.end(), {'S', 'E', 'C', 'd'});
+    appendLe32(b, 0); // section version
+    appendLe32(b, 1); // one entry
+    appendLe32(b, payloadOff);
+    appendLe32(b, 16);
+    b.insert(b.end(), {'I', 'M', 'A', '2'});
+    appendLe32(b, dirOff); // last 4 bytes: directory offset
+    return b;
+}
+
+TEST(X3fParse, BoundsFromSecdAndTailPointer) {
+    auto b = buildMinimalX3f();
+    auto r = parseX3fBounded(b.data(), b.size(), 0, b.size(), nullptr);
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.size, b.size());
+    EXPECT_EQ(r.extension, "x3f");
+}
+
+TEST(X3fParse, RejectsFovbWithoutDirectory) {
+    uint8_t hdr[32] = {'F', 'O', 'V', 'b'};
+    auto r = parseX3fBounded(hdr, sizeof(hdr), 0, sizeof(hdr), nullptr);
+    EXPECT_FALSE(r.valid);
+}
+
+TEST(X3fParse, TargetedReadFindsTailPointerBeyondProbe) {
+    auto b = buildMinimalX3f();
+    auto readAt = [&](uint64_t off, uint32_t len, uint8_t* out) {
+        if (off + len > b.size()) return false;
+        std::memcpy(out, b.data() + off, len);
+        return true;
+    };
+    auto r = parseX3fBounded(b.data(), 32, 0, b.size(), readAt);
+    ASSERT_TRUE(r.valid);
+    EXPECT_EQ(r.size, b.size());
+}

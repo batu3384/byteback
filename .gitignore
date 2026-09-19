@@ -41,3 +41,8 @@ debug_electron.log
 .mimosa/
 compile_commands.json
 release/
+
+# Local EWF leftovers from native tests (never commit)
+/*.E01
+/*.E02
+/*.E03

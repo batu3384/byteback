@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 #include "byteback_db.h"
+#include "byteback_io.h"
 
 namespace byteback {
 namespace ntfs {
@@ -437,12 +438,49 @@ inline bool parseNtfsBoot(const uint8_t* boot, size_t n, uint32_t& bytesPerSecto
     return true;
 }
 
+// Primary boot at partition start; Microsoft backup copy is the last sector.
+inline bool loadNtfsBoot(DiskReader& reader, uint64_t partitionOffsetBytes,
+                         uint64_t partitionSizeBytes, uint32_t sectorSize,
+                         std::vector<uint8_t>& boot, uint32_t& bytesPerSector,
+                         uint32_t& sectorsPerCluster, uint64_t& mftLcn, uint32_t& recBytes,
+                         bool* primaryUnread = nullptr) {
+    if (sectorSize == 0) sectorSize = 512;
+    boot.assign(sectorSize, 0);
+    bytesPerSector = sectorSize;
+    sectorsPerCluster = 8;
+    mftLcn = 0;
+    recBytes = 1024;
+    const bool primaryRead = readComplete(
+        reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()), sectorSize);
+    if (primaryUnread) *primaryUnread = !primaryRead;
+    if (primaryRead && parseNtfsBoot(boot.data(), boot.size(), bytesPerSector, sectorsPerCluster,
+                                     mftLcn, recBytes)) {
+        return true;
+    }
+    uint64_t volBytes = partitionSizeBytes != 0 ? partitionSizeBytes : reader.getDiskSize();
+    if (volBytes < static_cast<uint64_t>(sectorSize) * 2) return false;
+    const uint64_t backupOff = partitionOffsetBytes + volBytes - sectorSize;
+    if (backupOff <= partitionOffsetBytes) return false;
+    std::vector<uint8_t> backup(sectorSize, 0);
+    if (!readComplete(reader.readSectors(backupOff, sectorSize, backup.data()), sectorSize)) {
+        return false;
+    }
+    if (!parseNtfsBoot(backup.data(), backup.size(), bytesPerSector, sectorsPerCluster, mftLcn,
+                       recBytes)) {
+        return false;
+    }
+    boot.swap(backup);
+    return true;
+}
+
 // Resident $INDEX_ROOT ($I30) FILE_NAME entry. Live window vs slack after used.
 struct IndexNameHint {
     uint64_t childMft = 0;
     uint64_t parentMft = 0;
     std::string name;
     bool fromSlack = false;
+    uint64_t realSize = 0;
+    uint64_t indxStartSector = 0;
 };
 
 inline uint32_t u32le(const uint8_t* p) {
@@ -479,6 +517,7 @@ inline void harvestIndexEntry(const uint8_t* entry, size_t avail, bool slack,
     h.parentMft = u64le(fn) & 0x0000FFFFFFFFFFFFULL;
     h.name = std::move(name);
     h.fromSlack = slack;
+    h.realSize = u64le(fn + 48);
     if (h.childMft == 0) return;
     out.push_back(std::move(h));
 }
@@ -540,6 +579,10 @@ inline std::vector<IndexNameHint> parseIndxRecord(uint8_t* rec, size_t n, size_t
 }
 
 } // namespace ntfs
+
+std::vector<FileRecord::DataRun> unnamedDataRunsFromRecord(
+    const uint8_t* rec, uint32_t recordSize,
+    uint64_t volumeStartSector, uint32_t sectorsPerCluster);
 
 // $UsnJrnl:$J I/O failed or zero-padded. Not a clean/empty journal.
 inline constexpr const char* kUsnUnreadPath = "/usn-unread/";

@@ -39,6 +39,27 @@ uint32_t refsCrc32c(const uint8_t* data, size_t len) {
     return crc ^ 0xFFFFFFFFu;
 }
 
+uint32_t refsCrc32cSkip4(const uint8_t* data, size_t len, size_t skipOff) {
+    initCrc32cTable();
+    uint32_t crc = 0xFFFFFFFFu;
+    if (data) {
+        for (size_t i = 0; i < len; ++i) {
+            if (i >= skipOff && i < skipOff + 4) continue;
+            crc = crc32cTable[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+bool refsCrc32cSkip4MatchesLe(const uint8_t* data, size_t len, size_t skipOff) {
+    if (!data || skipOff + 4 > len) return false;
+    const uint32_t stored = static_cast<uint32_t>(data[skipOff]) |
+                            (static_cast<uint32_t>(data[skipOff + 1]) << 8) |
+                            (static_cast<uint32_t>(data[skipOff + 2]) << 16) |
+                            (static_cast<uint32_t>(data[skipOff + 3]) << 24);
+    return refsCrc32cSkip4(data, len, skipOff) == stored;
+}
+
 uint64_t refsCrc64Ecma(const uint8_t* data, size_t len) {
     constexpr uint64_t kPoly = 0x42F0E1EBA9EA3693ULL;
     uint64_t crc = 0;

@@ -6,6 +6,8 @@
 #include "fs/partition_scanner.h"
 #include "io/volume_mapper_win.h"
 #include "io/hex_bind.h"
+#include "io/byte_source.h"
+#include "scan/seed_file_record.h"
 #include <atomic>
 #include <algorithm>
 #include <cmath>
@@ -20,6 +22,9 @@ Napi::Array RunsToJs(Napi::Env env, const std::vector<byteback::FileRecord::Data
         Napi::Object runObj = Napi::Object::New(env);
         runObj.Set("startSector", Napi::Number::New(env, static_cast<double>(runs[i].startSector)));
         runObj.Set("sectorCount", Napi::Number::New(env, static_cast<double>(runs[i].sectorCount)));
+        if (runs[i].byteCount > 0) {
+            runObj.Set("byteCount", Napi::Number::New(env, static_cast<double>(runs[i].byteCount)));
+        }
         arr[i] = runObj;
     }
     return arr;
@@ -107,6 +112,8 @@ Napi::Object FileRecordToJs(Napi::Env env, const byteback::FileRecord& fr) {
     fileObj.Set("modifiedAt", Napi::Number::New(env, static_cast<double>(fr.modifiedAt)));
     fileObj.Set("runs", RunsToJs(env, fr.runs));
     fileObj.Set("contentHash", jsUtf8(env, fr.contentHash));
+    fileObj.Set("contentGroupSize", Napi::Number::New(env, fr.contentGroupSize));
+    fileObj.Set("mftRef", Napi::Number::New(env, static_cast<double>(fr.mftRef)));
     // CA-031 transient content-search snippet: only present on content-match
     // payloads; empty snippet ships no fields at all (never an empty string).
     // Offsets are byte offsets into `snippet` (post-sanitization); the
@@ -298,6 +305,79 @@ Napi::Value GetFilesPage(const Napi::CallbackInfo& info) {
         result[i] = FileRecordToJs(env, files[i]);
     }
     return result;
+    NAPI_CATCH
+}
+
+class HashEmptyContentWorker : public Napi::AsyncWorker {
+public:
+    HashEmptyContentWorker(Napi::Env& env, byteback::Engine* engine, int64_t scanId,
+                           std::shared_ptr<byteback::VirtualRaid> raid,
+                           Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), engine_(engine), scanId_(scanId), raid_(std::move(raid)),
+          deferred_(deferred) {}
+
+    void Execute() override {
+        try {
+            auto state = engine_->getMetadataStore().getScanState(scanId_);
+            if (state.id <= 0) {
+                error_ = "scan not found";
+                return;
+            }
+            byteback::DiskReader reader;
+            byteback::FileRecord dummy;
+            std::string bindErr;
+            byteback::DiskReader* rp = nullptr;
+            if (byteback::bindReaderForRecord(reader, dummy, state.driveIndex, raid_, bindErr,
+                                             state.volumePath)) {
+                byteback::applyBoundFvek(reader, engine_->getDiskReader(), dummy);
+                rp = &reader;
+            }
+            hashed_ = engine_->getMetadataStore().hashEmptyContent(scanId_, rp);
+            forensic::AuditLogger::GetInstance().LogEvent(
+                "CONTENT_HASH | scan=" + std::to_string(scanId_) +
+                " hashed=" + std::to_string(hashed_));
+        } catch (const std::exception& e) {
+            error_ = e.what();
+        } catch (...) {
+            error_ = "Unknown content-hash error";
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("hashed", Napi::Number::New(env, hashed_));
+        if (!error_.empty()) obj.Set("error", Napi::String::New(env, error_));
+        deferred_.Resolve(obj);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        deferred_.Reject(Napi::String::New(Env(), e.what()));
+    }
+
+private:
+    byteback::Engine* engine_;
+    int64_t scanId_ = -1;
+    std::shared_ptr<byteback::VirtualRaid> raid_;
+    Napi::Promise::Deferred deferred_;
+    int hashed_ = 0;
+    std::string error_;
+};
+
+Napi::Value HashEmptyContent(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (scanId)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
+    int64_t scanId = info[0].As<Napi::Number>().Int64Value();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    auto* worker = new HashEmptyContentWorker(env, &bdata->engine, scanId, bdata->raid, deferred);
+    worker->Queue();
+    return deferred.Promise();
     NAPI_CATCH
 }
 
@@ -535,6 +615,17 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             const std::string vp = opts.Get("volumePath").As<Napi::String>().Utf8Value();
             if (byteback::isWin32VolumeDevicePath(vp)) target.volumePath = vp;
         }
+        if (opts.Has("imagePath") && opts.Get("imagePath").IsString()) {
+            const std::string ip = opts.Get("imagePath").As<Napi::String>().Utf8Value();
+            if (!ip.empty() && !byteback::isHttpUrl(ip)
+                && !(ip.size() >= 4 && ip.compare(0, 4, "\\\\.\\") == 0)
+#ifndef _WIN32
+                && !(ip.size() >= 5 && ip.compare(0, 5, "/dev/") == 0)
+#endif
+            ) {
+                target.imagePath = ip;
+            }
+        }
         if (opts.Has("evidenceDiskIndices") && opts.Get("evidenceDiskIndices").IsArray()) {
             Napi::Array a = opts.Get("evidenceDiskIndices").As<Napi::Array>();
             if (a.Length() <= 64) {
@@ -564,6 +655,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
                 failPart("partitionIndex not valid for RAID");
                 return env.Undefined();
             }
+            if (drivePath == "image") {
+                failPart("partitionIndex not valid for image");
+                return env.Undefined();
+            }
             const auto idx = byteback::parseDriveIndex(drivePath);
             if (!idx) {
                 failPart("Invalid drive path");
@@ -578,7 +673,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             }
             byteback::PartitionScanner scanner(&reader);
             const byteback::PartitionInfo* part =
-                byteback::selectedPartition(scanner.parseMBR(), scanner.parseGPT(), pidx);
+                byteback::selectedPartition(scanner.parseTables(), {}, pidx);
             if (!part) {
                 failPart("partitionIndex out of range");
                 return env.Undefined();
@@ -634,6 +729,13 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             return env.Undefined();
         }
         driveIndex = -1;
+    } else if (drivePath == "image") {
+        if (target.imagePath.empty()) {
+            bdata->endHeavyOp();
+            Napi::Error::New(env, "Invalid image path").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        driveIndex = byteback::kScanImageDriveIndex;
     } else {
         const auto idx = byteback::parseDriveIndex(drivePath);
         if (!idx) {
@@ -670,9 +772,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         bdata->engine.getMetadataStore().setScanPartition(
             context->scanId, target.partitionStartSector, target.partitionSizeSectors);
     }
-    if (!target.volumePath.empty() || !evidenceDisks.empty()) {
+    const std::string bindPath = !target.imagePath.empty() ? target.imagePath : target.volumePath;
+    if (!bindPath.empty() || !evidenceDisks.empty()) {
         bdata->engine.getMetadataStore().setScanVolumeBinding(
-            context->scanId, target.volumePath, evidenceDisks);
+            context->scanId, bindPath, evidenceDisks);
     }
     context->dedupIndex.clear();
     if (resumeScanId > 0) {
@@ -863,16 +966,11 @@ namespace {
 
 bool openScanReader(byteback::DiskReader& reader, BridgeData* bdata, const byteback::ScanState& state,
                     byteback::Engine* engine) {
-    if (byteback::usesRaidBackend(static_cast<bool>(bdata->raid), state.driveIndex)) {
-        reader.setRaidBackend(bdata->raid);
-    } else if (!state.volumePath.empty()) {
-        if (!byteback::isWin32VolumeDevicePath(state.volumePath) ||
-            !reader.openVolumePath(state.volumePath)) {
-            return false;
-        }
-    } else {
-        if (state.driveIndex < 0) return false;
-        if (!reader.openDrive(state.driveIndex)) return false;
+    std::string err;
+    byteback::FileRecord rec;
+    if (!byteback::bindReaderForRecord(reader, rec, state.driveIndex, bdata->raid, err,
+                                       state.volumePath)) {
+        return false;
     }
     if (engine) reader.copyXtsFvekFrom(engine->getDiskReader());
     return true;
@@ -1129,14 +1227,42 @@ Napi::Value SeedScanFixture(const Napi::CallbackInfo& info) {    Napi::Env env =
             r.startSector = static_cast<uint64_t>(o.Get("startSector").As<Napi::Number>().DoubleValue());
         if (o.Has("endSector") && o.Get("endSector").IsNumber())
             r.endSector = static_cast<uint64_t>(o.Get("endSector").As<Napi::Number>().DoubleValue());
+        const bool hasMftRef = o.Has("mftRef") && o.Get("mftRef").IsNumber();
+        r.mftRef = byteback::parseSeedMftRef(
+            hasMftRef,
+            hasMftRef ? o.Get("mftRef").As<Napi::Number>().DoubleValue() : -1.0);
+        if (o.Has("runs") && o.Get("runs").IsArray()) {
+            Napi::Array runs = o.Get("runs").As<Napi::Array>();
+            constexpr uint32_t kMaxRuns = 16;
+            for (uint32_t j = 0; j < runs.Length() && j < kMaxRuns; ++j) {
+                if (!runs.Get(j).IsObject()) continue;
+                Napi::Object run = runs.Get(j).As<Napi::Object>();
+                const double start = run.Has("startSector") && run.Get("startSector").IsNumber()
+                    ? run.Get("startSector").As<Napi::Number>().DoubleValue()
+                    : -1.0;
+                const double count = run.Has("sectorCount") && run.Get("sectorCount").IsNumber()
+                    ? run.Get("sectorCount").As<Napi::Number>().DoubleValue()
+                    : -1.0;
+                byteback::appendSeedRun(r, start, count);
+            }
+        }
         r.modifiedAt = 0;
         r.createdAt = 0;
         records.push_back(std::move(r));
     }
     if (records.empty()) return Napi::Number::New(env, -1);
 
-    const int64_t scanId = store.createScan(0, "deep", 1000);
+    std::string imagePath;
+    if (info.Length() >= 2 && info[1].IsString()) {
+        imagePath = info[1].As<Napi::String>().Utf8Value();
+        if (imagePath.size() > 4096) imagePath.resize(4096);
+        if (!byteback::isSeedEvidenceImagePath(imagePath)) imagePath.clear();
+    }
+
+    const int driveIndex = imagePath.empty() ? 0 : byteback::kScanImageDriveIndex;
+    const int64_t scanId = store.createScan(driveIndex, "deep", 1000);
     if (scanId <= 0) return Napi::Number::New(env, -1);
+    if (!imagePath.empty()) store.setScanVolumeBinding(scanId, imagePath, {});
     if (!store.insertFilesBatch(scanId, records)) return Napi::Number::New(env, -1);
     store.updateScanProgress(scanId, 1000);
     store.completeScan(scanId, 1);

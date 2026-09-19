@@ -78,6 +78,14 @@ std::string sniffMime(const uint8_t* data, size_t size) {
         data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') {
         return "image/webp";
     }
+    if (size >= 12 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+        data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E') {
+        return "audio/wav";
+    }
+    if (size >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') return "audio/mpeg";
+    if (size >= 4 && data[0] == 'O' && data[1] == 'g' && data[2] == 'g' && data[3] == 'S') {
+        return "audio/ogg";
+    }
     if (looksLikeBmp(data, size)) return "image/bmp";
     if (size >= 4 && data[0] == '%' && data[1] == 'P' && data[2] == 'D' && data[3] == 'F') {
         return "application/pdf";
@@ -106,6 +114,7 @@ bool looksLikeBinaryContainer(const uint8_t* data, size_t size) {
 
 std::string kindFromMime(const std::string& mime) {
     if (mime.rfind("image/", 0) == 0) return "image";
+    if (mime.rfind("audio/", 0) == 0) return "audio";
     if (mime == "application/pdf") return "pdf";
     return "binary";
 }

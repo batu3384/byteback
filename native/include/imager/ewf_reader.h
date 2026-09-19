@@ -15,6 +15,8 @@ namespace byteback {
 // in reserved byte 32; table entries are byte counts of the chunk extents
 // inside the sectors section. Uncompressed images keep the legacy linear
 // read path — older files (and aborted acquisitions) read exactly as before.
+std::string ewfSegmentPath(const std::string& firstPath, int number);
+
 class EwfReader {
 public:
     EwfReader();

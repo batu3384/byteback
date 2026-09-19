@@ -7,6 +7,7 @@
 #include "carver/structural_parsers.h"
 #include <algorithm>
 #include <cstring>
+#include <cctype>
 #include <vector>
 
 namespace byteback {
@@ -70,19 +71,37 @@ StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
     uint32_t ifd = rd32(data + 4, le);
     int chain = 0;
     bool sawStrips = false;
+    bool dngVersion = false;
+    std::string makeAscii;
+    auto startsI = [](const std::string& s, const char* pfx) {
+        const size_t n = std::strlen(pfx);
+        if (s.size() < n) return false;
+        for (size_t i = 0; i < n; ++i) {
+            if (std::toupper(static_cast<unsigned char>(s[i])) !=
+                std::toupper(static_cast<unsigned char>(pfx[i])))
+                return false;
+        }
+        return true;
+    };
     while (ifd != 0 && ifd + 2 <= size && chain < 8) {
         const uint16_t count = rd16(data + ifd, le);
         if (count == 0 || count > 4096 || ifd + 2 + 12ull * count + 4 > size) return r;
-        // CA-056: keep every operand uint64_t — on Linux uint64_t is
-        // `unsigned long`, so mixing in `12ull` (unsigned long long) broke
-        // std::max's template deduction (MSVC has a single 64-bit type).
         end = std::max(end, static_cast<uint64_t>(ifd) + 2 + 12 * static_cast<uint64_t>(count) + 4);
         const uint8_t* ent = data + ifd + 2;
         for (uint16_t i = 0; i < count; ++i, ent += 12) {
             const uint16_t tag = rd16(ent, le);
             const uint16_t type = rd16(ent + 2, le);
             const uint32_t cnt = rd32(ent + 4, le);
-            if (type != 3 && type != 4) continue; // SHORT / LONG only
+            if (tag == 271 && type == 2 && cnt > 0 && cnt < 256) { // Make ASCII
+                const uint8_t* val = (cnt <= 4) ? ent + 8 : data + rd32(ent + 8, le);
+                if (val + cnt <= data + size) {
+                    size_t n = 0;
+                    while (n < cnt && val[n] != 0) ++n;
+                    makeAscii.assign(reinterpret_cast<const char*>(val), n);
+                }
+            }
+            if (tag == 0xC612 && type == 1 && cnt >= 4) dngVersion = true;
+            if (type != 3 && type != 4) continue; // SHORT / LONG only for strips
             const size_t vsz = (type == 3) ? 2u : 4u;
             // TIFF 6.0: the value is stored inline in bytes 8..11 when it fits
             // in 4 bytes — for SHORT that means count <= 2, not count <= 1.
@@ -132,6 +151,9 @@ StructuralParseResult parseTiff(const uint8_t* data, size_t size) {
     r.valid = true;
     r.size = end;
     r.confidence = 85;
+    if (dngVersion || startsI(makeAscii, "Adobe")) r.extension = "dng";
+    else if (startsI(makeAscii, "Nikon")) r.extension = "nef";
+    else if (startsI(makeAscii, "Sony")) r.extension = "arw";
     return r;
 }
 
@@ -193,20 +215,68 @@ StructuralParseResult parseCab(const uint8_t* data, size_t size) {
     return r;
 }
 
-// X3F ("FOVb", Sigma/Foveon RAW) — deliberately NOT implemented as a size
-// bound. Verified layout (kalpanika/x3f, src/x3f_io.c, x3f_new_from_file):
-// magic "FOVb"@0, version u32@4, unique identifier 16B@8, then
-// version-dependent geometry fields — and the DIRECTORY POINTER is read from
-// the LAST FOUR BYTES of the file:
-//     fseek(infile, -4, SEEK_END); fseek(infile, x3f_get4(infile), SEEK_SET);
-// followed by the "SECd" directory (u32 version, u32 count, entries of
-// {u32 offset, u32 size, u32 type id}). The size bound therefore exists only
-// at the file END: deriving it from a start-anchored probe would require
-// reading up to the signature's full 128 MiB maxSize to locate the directory,
-// which CA-001 forbids (unbounded candidate work). The X3F signature stays
-// maxSize-bounded and the expire path drops unboundable candidates — the
-// documented behavior since CA-038. Ceiling: X3F carves remain coarse until a
-// start-side bound is proven in the wild.
+// X3F ("FOVb"): last 4 bytes are a little-endian pointer to SECd
+// (kalpanika/x3f x3f_new_from_file). Bound = directory + entries + pointer.
+// Targeted readAt fetches the tail when the probe is only the header.
+StructuralParseResult parseX3fBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt) {
+    StructuralParseResult r;
+    if (!probe || probeSize < 4 || maxBytes < 8) return r;
+    if (std::memcmp(probe, "FOVb", 4) != 0) return r;
+
+    uint64_t budget = kFetchBudget;
+
+    auto loadRel = [&](uint64_t rel, uint32_t len, uint8_t* out) -> bool {
+        if (rel + len > maxBytes) return false;
+        return fetchAt(probe, probeSize, probeAbsOffset, readAt, budget,
+                       probeAbsOffset + rel, len, out);
+    };
+
+    auto tryDir = [&](uint32_t dirOff) -> bool {
+        if (dirOff < 32 || static_cast<uint64_t>(dirOff) + 12 > maxBytes) return false;
+        uint8_t sh[12];
+        if (!loadRel(dirOff, 12, sh)) return false;
+        if (std::memcmp(sh, "SECd", 4) != 0) return false;
+        const uint32_t count = rd32(sh + 8, true);
+        if (count == 0 || count > 256) return false;
+        const uint64_t entriesOff = static_cast<uint64_t>(dirOff) + 12;
+        const uint64_t entriesBytes = static_cast<uint64_t>(count) * 12;
+        if (entriesOff + entriesBytes + 4 > maxBytes) return false;
+        std::vector<uint8_t> ents(static_cast<size_t>(entriesBytes));
+        if (!loadRel(entriesOff, static_cast<uint32_t>(entriesBytes), ents.data())) return false;
+        const uint64_t bound = entriesOff + entriesBytes + 4;
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t off = rd32(ents.data() + i * 12, true);
+            const uint32_t sz = rd32(ents.data() + i * 12 + 4, true);
+            if (sz > bound || static_cast<uint64_t>(off) + sz > bound) return false;
+        }
+        uint8_t tail[4];
+        if (!loadRel(bound - 4, 4, tail)) return false;
+        if (rd32(tail, true) != dirOff) return false;
+        r.valid = true;
+        r.size = bound;
+        r.extension = "x3f";
+        r.confidence = 70;
+        return true;
+    };
+
+    auto tryPtrAt = [&](uint64_t rel) -> bool {
+        if (rel + 4 > maxBytes) return false;
+        uint8_t p[4];
+        if (!loadRel(rel, 4, p)) return false;
+        return tryDir(rd32(p, true));
+    };
+
+    if (tryPtrAt(maxBytes - 4)) return r;
+    if (probeSize >= 4 && probeSize != maxBytes && tryPtrAt(probeSize - 4)) return r;
+    // Small X3F fully inside a larger probe: find SECd then verify tail pointer.
+    const uint8_t secd[4] = {'S', 'E', 'C', 'd'};
+    for (size_t i = 32; i + 12 <= probeSize; ++i) {
+        if (std::memcmp(probe + i, secd, 4) == 0 && tryDir(static_cast<uint32_t>(i))) return r;
+    }
+    return r;
+}
 
 namespace {
 

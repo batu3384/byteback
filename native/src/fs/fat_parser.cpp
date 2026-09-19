@@ -1,4 +1,4 @@
-﻿#include "byteback_fs.h"
+#include "byteback_fs.h"
 #include "fs/ntfs_util.h"
 #include "fs/fat_chain.h"
 #include <iostream>
@@ -182,20 +182,69 @@ void applyFatDeletedChainHint(FileRecord& fr, uint64_t fileSize, uint32_t bytesP
     }
 }
 
+void setRunsFromChain(FileRecord& fr, std::vector<FileRecord::DataRun> runs) {
+    fr.runs = std::move(runs);
+    if (fr.runs.empty()) return;
+    fr.startSector = fr.runs.front().startSector;
+    uint64_t end = fr.startSector;
+    for (const auto& r : fr.runs) {
+        const uint64_t runEnd = r.startSector + r.sectorCount;
+        if (runEnd > end) end = runEnd;
+    }
+    fr.endSector = end;
+}
+
+bool clusterStartsNewFile(DiskReader& reader, uint64_t startSector, uint32_t bytesPerSector) {
+    if (bytesPerSector < 8) return false;
+    std::vector<uint8_t> sec(bytesPerSector);
+    auto res = reader.readSectors(startSector * bytesPerSector, bytesPerSector, sec.data());
+    if (ioUnread(res, 8)) return true;
+    if (sec[0] == 0xFF && sec[1] == 0xD8) return true;
+    if (sec[0] == 0x89 && sec[1] == 'P' && sec[2] == 'N' && sec[3] == 'G') return true;
+    if (sec[0] == 'P' && sec[1] == 'K') return true;
+    if (sec[0] == '%' && sec[1] == 'P' && sec[2] == 'D' && sec[3] == 'F') return true;
+    return false;
+}
+
+bool applyBackupFatChain(FileRecord& fr, DiskReader& reader, uint64_t fatStartSector,
+                         uint32_t fatSizeSectors, uint8_t numFats, uint32_t bytesPerSector,
+                         int fatBits, uint32_t firstCluster, uint32_t sectorsPerCluster,
+                         uint64_t dataStartSector, uint64_t fileSize, bool* unread) {
+    if (numFats < 2 || fatSizeSectors == 0 || fileSize == 0) return false;
+    for (uint8_t i = 1; i < numFats; ++i) {
+        bool u = false;
+        auto runs = buildRunsFromChain(reader,
+                                       fatStartSector + static_cast<uint64_t>(i) * fatSizeSectors,
+                                       bytesPerSector, fatBits, firstCluster, sectorsPerCluster,
+                                       dataStartSector, 1u << 20, &u);
+        if (fatRunBytes(runs, bytesPerSector) < fileSize) continue;
+        setRunsFromChain(fr, std::move(runs));
+        if (u && unread) *unread = true;
+        return true;
+    }
+    return false;
+}
+
 // Deleted dirent still names firstCluster + size; FAT often already 0. chainRuns
-// then stops after one cluster. Contiguous undelete from the first cluster.
-void fillDeletedFatRuns(FileRecord& fr, uint32_t firstCluster, uint64_t fileSize,
-                        uint32_t sectorsPerCluster, uint64_t dataStartSector,
-                        uint32_t bytesPerSector) {
+// then stops after one cluster. Contiguous undelete from the first cluster,
+// but stop before a cluster that looks like a different file (JPEG SOI, etc).
+void fillDeletedFatRuns(FileRecord& fr, DiskReader& reader, uint32_t firstCluster,
+                        uint64_t fileSize, uint32_t sectorsPerCluster,
+                        uint64_t dataStartSector, uint32_t bytesPerSector) {
     if (firstCluster < 2 || fileSize == 0 || sectorsPerCluster == 0 || bytesPerSector == 0) return;
     const uint64_t clusterBytes = static_cast<uint64_t>(sectorsPerCluster) * bytesPerSector;
     uint64_t nClus = (fileSize + clusterBytes - 1) / clusterBytes;
     if (nClus == 0) nClus = 1;
     if (nClus > (1u << 20)) nClus = 1u << 20;
+    uint64_t keep = 1;
+    for (uint64_t i = 1; i < nClus; ++i) {
+        const uint32_t cl = firstCluster + static_cast<uint32_t>(i);
+        const uint64_t sec = dataStartSector + static_cast<uint64_t>(cl - 2) * sectorsPerCluster;
+        if (clusterStartsNewFile(reader, sec, bytesPerSector)) break;
+        keep = i + 1;
+    }
     const uint64_t startSec = dataStartSector + static_cast<uint64_t>(firstCluster - 2) * sectorsPerCluster;
-    fr.runs = {{startSec, nClus * sectorsPerCluster}};
-    fr.startSector = startSec;
-    fr.endSector = startSec + nClus * sectorsPerCluster;
+    setRunsFromChain(fr, {{startSec, keep * sectorsPerCluster}});
 }
 } // namespace
 
@@ -217,6 +266,13 @@ static std::string formatFATName(const uint8_t name[11]) {
     return s;
 }
 
+static std::string formatFatVolumeLabel(const uint8_t name[11]) {
+    int n = 11;
+    while (n > 0 && (name[n - 1] == ' ' || name[n - 1] == 0)) --n;
+    if (n <= 0) return {};
+    return std::string(reinterpret_cast<const char*>(name), static_cast<size_t>(n));
+}
+
 // VFAT short-name checksum (used to validate that a chain of LFN entries
 // belongs to the following 8.3 entry). Algorithm per Microsoft FAT spec.
 static uint8_t lfnChecksum(const uint8_t shortName[11]) {
@@ -233,15 +289,69 @@ static uint8_t lfnChecksum(const uint8_t shortName[11]) {
 // the existing ASCII-only pipeline. A full UTF-8 transcoder is on the roadmap
 // (Faz 1, NTFS UTF-16 names).
 static std::string lfnToString(const std::vector<uint16_t>& utf16) {
-    std::string out;
-    out.reserve(utf16.size());
-    for (uint16_t c : utf16) {
-        if (c == 0 || c == 0xFFFF) break; // terminator / padding
-        if (c < 0x80) out += static_cast<char>(c);
-        else if (c < 0x100) out += static_cast<char>(c); // Latin-1
-        else out += '?';
+    size_t n = utf16.size();
+    while (n > 0 && (utf16[n - 1] == 0 || utf16[n - 1] == 0xFFFF)) --n;
+    if (n == 0) return {};
+    return ntfs::utf16leToUtf8(utf16.data(), n);
+}
+
+struct LfnAcc {
+    std::map<uint8_t, std::array<uint16_t, 13>> fragments;
+    uint8_t checksumSeen = 0;
+    std::vector<std::array<uint16_t, 13>> deletedSeq;
+
+    void clear() {
+        fragments.clear();
+        deletedSeq.clear();
+        checksumSeen = 0;
     }
-    return out;
+
+    void add(const FAT_LFNEntry* lfn, bool deleted) {
+        std::array<uint16_t, 13> chars{};
+        for (int i = 0; i < 5; ++i) chars[i] = lfn->name1[i];
+        for (int i = 0; i < 6; ++i) chars[5 + i] = lfn->name2[i];
+        for (int i = 0; i < 2; ++i) chars[11 + i] = lfn->name3[i];
+        if (deleted) {
+            deletedSeq.push_back(chars);
+            return;
+        }
+        fragments[lfn->ord & 0x3F] = chars;
+        checksumSeen = lfn->chksum;
+    }
+
+    std::string resolve(const uint8_t shortName[11], bool deleted) const {
+        if (!fragments.empty() && lfnChecksum(shortName) == checksumSeen) {
+            std::vector<uint16_t> full;
+            for (const auto& kv : fragments)
+                for (uint16_t c : kv.second) full.push_back(c);
+            std::string s = lfnToString(full);
+            if (!s.empty()) return s;
+        }
+        if (deleted && !deletedSeq.empty()) {
+            std::vector<uint16_t> full;
+            for (auto it = deletedSeq.rbegin(); it != deletedSeq.rend(); ++it)
+                for (uint16_t c : *it) full.push_back(c);
+            return lfnToString(full);
+        }
+        return {};
+    }
+};
+
+void emitFatVolumeLabel(FileSystemParser::FileRecordCallback& callback,
+                        const uint8_t name[11], uint64_t startSector, int status) {
+    std::string label = formatFatVolumeLabel(name);
+    if (label.empty()) return;
+    FileRecord fr;
+    fr.id = -1;
+    fr.name = std::move(label);
+    fr.path = "/";
+    fr.status = status;
+    fr.confidence = 5;
+    fr.category = "System";
+    fr.source = "fat_vol_label";
+    fr.startSector = startSector;
+    fr.endSector = startSector + 1;
+    callback(fr);
 }
 
 void emitFatDirUnread(FileSystemParser::FileRecordCallback& callback, uint64_t startSector) {
@@ -292,10 +402,21 @@ bool FATParser::scanAt(byteback::DiskReader& reader, FileSystemParser::FileRecor
     auto res = reader.readSectors(partitionOffset * sectorSize, sectorSize, buffer.data());
     if (!readComplete(res, sectorSize)) return false;
 
-    if (memcmp(&buffer[3], "EXFAT   ", 8) == 0) {
+    auto looksExfat = [](const uint8_t* b) {
+        return std::memcmp(b + 3, "EXFAT   ", 8) == 0;
+    };
+    if (looksExfat(buffer.data())) {
         parseExFAT(reader, partitionOffset, callback, isRunning);
     } else {
-        parseFAT(reader, partitionOffset, callback, isRunning);
+        std::vector<uint8_t> backup(sectorSize);
+        const uint64_t backupSec = partitionOffset + 12;
+        if (readComplete(reader.readSectors(backupSec * sectorSize, sectorSize, backup.data()),
+                         sectorSize) &&
+            looksExfat(backup.data())) {
+            parseExFAT(reader, partitionOffset, callback, isRunning);
+        } else {
+            parseFAT(reader, partitionOffset, callback, isRunning);
+        }
     }
     return true;
 }
@@ -304,9 +425,23 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
     std::vector<uint8_t> buffer(sectorSize);
-    auto bpbRes = reader.readSectors(partitionOffset * sectorSize, sectorSize, buffer.data());
-    if (!readComplete(bpbRes, sectorSize)) return;
-    
+    auto loadBpb = [&](uint64_t absSector) {
+        return readComplete(reader.readSectors(absSector * sectorSize, sectorSize, buffer.data()),
+                            sectorSize);
+    };
+    if (!loadBpb(partitionOffset)) return;
+
+    auto bpbOk = [&]() {
+        const auto* b = reinterpret_cast<const FAT_BPB*>(buffer.data());
+        const uint16_t bps = b->bytesPerSector;
+        return bps != 0 && (bps & (bps - 1)) == 0 && b->sectorsPerCluster != 0;
+    };
+    if (!bpbOk()) {
+        uint16_t backupSec = reinterpret_cast<const FAT_BPB*>(buffer.data())->bkBootSec;
+        if (backupSec == 0 || backupSec > 256) backupSec = 6;
+        if (backupSec == 0 || !loadBpb(partitionOffset + backupSec) || !bpbOk()) return;
+    }
+
     FAT_BPB* bpb = reinterpret_cast<FAT_BPB*>(buffer.data());
     
     uint16_t bps = bpb->bytesPerSector;
@@ -343,8 +478,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
 
         // LFN accumulation state. Indexed by ordinal so fragments reassemble in
         // forward order regardless of how many 13-char segments were needed.
-        std::map<uint8_t, std::array<uint16_t, 13>> lfnFragments;
-        uint8_t lfnChecksumSeen = 0;
+        LfnAcc lfn;
 
         for (uint32_t offset = 0; offset < rootBuf.size(); offset += 32) {
             FAT_DirEntry* entry = reinterpret_cast<FAT_DirEntry*>(rootBuf.data() + offset);
@@ -353,41 +487,29 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
             bool deleted = (entry->name[0] == 0xE5);
 
             if (entry->attr == 0x0F) {
-                // VFAT long-name entry. Deleted LFN entries (0xE5 first byte)
-                // still belong to a possibly-deleted file, but the ord field
-                // has been clobbered to 0xE5 — skip those; we cannot trust the
-                // ordinal and would corrupt a following valid chain.
-                if (deleted) continue;
-                FAT_LFNEntry* lfn = reinterpret_cast<FAT_LFNEntry*>(entry);
-                uint8_t ord = lfn->ord & 0x3F; // mask the "last" bit (0x40)
-                std::array<uint16_t, 13> chars{};
-                for (int i = 0; i < 5; ++i) chars[i] = lfn->name1[i];
-                for (int i = 0; i < 6; ++i) chars[5 + i] = lfn->name2[i];
-                for (int i = 0; i < 2; ++i) chars[11 + i] = lfn->name3[i];
-                lfnFragments[ord] = chars;
-                lfnChecksumSeen = lfn->chksum;
+                lfn.add(reinterpret_cast<FAT_LFNEntry*>(entry), deleted);
+                continue;
+            }
+
+            if ((entry->attr & 0x08) != 0 && (entry->attr & 0x10) == 0) {
+                int volStatus = deleted ? 0 : 1;
+                if (deleted) entry->name[0] = '_';
+                emitFatVolumeLabel(callback, entry->name, rootDirStartSector, volStatus);
+                lfn.clear();
                 continue;
             }
 
             int status = 1;
             int confidence = 100;
+            std::string lfnName = lfn.resolve(entry->name, deleted);
             if (deleted) {
                 status = 0;
                 confidence = 60;
                 entry->name[0] = '_';
             }
 
-            // Resolve the display name: prefer the LFN if the checksum matches.
-            std::string name = formatFATName(entry->name);
-            if (!lfnFragments.empty() && lfnChecksum(entry->name) == lfnChecksumSeen) {
-                std::vector<uint16_t> full;
-                for (auto it = lfnFragments.begin(); it != lfnFragments.end(); ++it) {
-                    for (uint16_t c : it->second) full.push_back(c);
-                }
-                std::string lfnName = lfnToString(full);
-                if (!lfnName.empty()) name = lfnName;
-            }
-            lfnFragments.clear();
+            std::string name = lfnName.empty() ? formatFATName(entry->name) : lfnName;
+            lfn.clear();
 
             uint32_t firstCluster = entry->fstClusLO | (entry->fstClusHI << 16);
             if (entry->attr & 0x10) {
@@ -415,8 +537,12 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                 fr.confidence = confidence;
                 if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
                     fatFirstClusterFreed(readFatEntry(reader, fatStartSector, bps, fatBits, firstCluster), fatBits)) {
-                    fillDeletedFatRuns(fr, firstCluster, entry->fileSize, bpb->sectorsPerCluster,
-                                       dataStartSector, bps);
+                    if (!applyBackupFatChain(fr, reader, fatStartSector, fatSize, bpb->numFATs, bps,
+                                             fatBits, firstCluster, bpb->sectorsPerCluster,
+                                             dataStartSector, entry->fileSize, &thisUnread)) {
+                        fillDeletedFatRuns(fr, reader, firstCluster, entry->fileSize,
+                                           bpb->sectorsPerCluster, dataStartSector, bps);
+                    }
                 }
                 applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                 if (thisUnread) {
@@ -425,6 +551,8 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                 }
                 fr.category = "Unknown";
                 fr.source = "fat";
+                fr.createdAt = fat::dosTimestampToUnix(entry->crtDate, entry->crtTime);
+                fr.modifiedAt = fat::dosTimestampToUnix(entry->wrtDate, entry->wrtTime);
                 callback(fr);
             }
         }
@@ -457,8 +585,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
 
         // LFN fragments can span cluster boundaries within a single directory,
         // so the accumulation state lives outside the per-cluster loop.
-        std::map<uint8_t, std::array<uint16_t, 13>> lfnFragments;
-        uint8_t lfnChecksumSeen = 0;
+        LfnAcc lfn32;
 
         // A cyclic FAT chain (corrupt/deliberate) must not loop this walk
         // forever: remember the clusters of the chain we are already in, and
@@ -489,36 +616,29 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                     bool deleted = (entry->name[0] == 0xE5);
 
                     if (entry->attr == 0x0F) {
-                        if (deleted) continue; // ordinal clobbered, unsafe to use
-                        FAT_LFNEntry* lfn = reinterpret_cast<FAT_LFNEntry*>(entry);
-                        uint8_t ord = lfn->ord & 0x3F;
-                        std::array<uint16_t, 13> chars{};
-                        for (int i = 0; i < 5; ++i) chars[i] = lfn->name1[i];
-                        for (int i = 0; i < 6; ++i) chars[5 + i] = lfn->name2[i];
-                        for (int i = 0; i < 2; ++i) chars[11 + i] = lfn->name3[i];
-                        lfnFragments[ord] = chars;
-                        lfnChecksumSeen = lfn->chksum;
+                        lfn32.add(reinterpret_cast<FAT_LFNEntry*>(entry), deleted);
+                        continue;
+                    }
+
+                    if ((entry->attr & 0x08) != 0 && (entry->attr & 0x10) == 0) {
+                        int volStatus = deleted ? 0 : 1;
+                        if (deleted) entry->name[0] = '_';
+                        emitFatVolumeLabel(callback, entry->name, sec, volStatus);
+                        lfn32.clear();
                         continue;
                     }
 
                     int status = 1;
                     int confidence = 100;
+                    std::string lfnName = lfn32.resolve(entry->name, deleted);
                     if (deleted) {
                         status = 0;
                         confidence = 60;
                         entry->name[0] = '_';
                     }
 
-                    std::string name = formatFATName(entry->name);
-                    if (!lfnFragments.empty() && lfnChecksum(entry->name) == lfnChecksumSeen) {
-                        std::vector<uint16_t> full;
-                        for (auto it = lfnFragments.begin(); it != lfnFragments.end(); ++it) {
-                            for (uint16_t c : it->second) full.push_back(c);
-                        }
-                        std::string lfnName = lfnToString(full);
-                        if (!lfnName.empty()) name = lfnName;
-                    }
-                    lfnFragments.clear();
+                    std::string name = lfnName.empty() ? formatFATName(entry->name) : lfnName;
+                    lfn32.clear();
 
                     if (name == "." || name == "..") continue;
 
@@ -545,8 +665,12 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                         fr.confidence = confidence;
                         if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
                             fatFirstClusterFreed(readFatEntry(reader, fatStartSector, bps, 32, firstCluster), 32)) {
-                            fillDeletedFatRuns(fr, firstCluster, entry->fileSize, bpb->sectorsPerCluster,
-                                               dataStartSector, bps);
+                            if (!applyBackupFatChain(fr, reader, fatStartSector, fatSize, bpb->numFATs, bps,
+                                                     32, firstCluster, bpb->sectorsPerCluster,
+                                                     dataStartSector, entry->fileSize, &thisUnread)) {
+                                fillDeletedFatRuns(fr, reader, firstCluster, entry->fileSize,
+                                                   bpb->sectorsPerCluster, dataStartSector, bps);
+                            }
                         }
                         applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
                         if (thisUnread) {
@@ -555,6 +679,8 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                         }
                         fr.category = "Unknown";
                         fr.source = "fat";
+                        fr.createdAt = fat::dosTimestampToUnix(entry->crtDate, entry->crtTime);
+                        fr.modifiedAt = fat::dosTimestampToUnix(entry->wrtDate, entry->wrtTime);
                         callback(fr);
                     }
                 }
@@ -562,7 +688,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                 clus = getNextCluster(clus);
             }
             // A directory boundary invalidates any half-collected LFN chain.
-            lfnFragments.clear();
+            lfn32.clear();
         }
         if (dirUnread) emitFatDirUnread(callback, dataStartSector);
     }
@@ -573,9 +699,17 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
     uint32_t sectorSize = reader.getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
     std::vector<uint8_t> buffer(sectorSize);
-    auto bpbRes = reader.readSectors(partitionOffset * sectorSize, sectorSize, buffer.data());
-    if (!readComplete(bpbRes, sectorSize)) return;
-    
+    auto loadExfatBpb = [&](uint64_t absSector) {
+        return readComplete(reader.readSectors(absSector * sectorSize, sectorSize, buffer.data()),
+                            sectorSize);
+    };
+    if (!loadExfatBpb(partitionOffset) || std::memcmp(buffer.data() + 3, "EXFAT   ", 8) != 0) {
+        if (!loadExfatBpb(partitionOffset + 12) ||
+            std::memcmp(buffer.data() + 3, "EXFAT   ", 8) != 0) {
+            return;
+        }
+    }
+
     ExFAT_BPB* bpb = reinterpret_cast<ExFAT_BPB*>(buffer.data());
 
     // Shift fields are attacker-controlled bytes; shifts >= 32 are UB and a
@@ -682,8 +816,12 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
             if (!pending.inUse && fatRunBytes(fr.runs, bytesPerSector) < pending.dataLength) {
                 const uint32_t fatVal = getNextCluster(pending.firstCluster);
                 if (fatVal == 0) {
-                    fillDeletedFatRuns(fr, pending.firstCluster, pending.dataLength, spc,
-                                       dataStartSector, bytesPerSector);
+                    if (!applyBackupFatChain(fr, reader, fatStartSector, bpb->fatLength, bpb->numFats,
+                                             bytesPerSector, 32, pending.firstCluster, spc,
+                                             dataStartSector, pending.dataLength, &thisUnread)) {
+                        fillDeletedFatRuns(fr, reader, pending.firstCluster, pending.dataLength, spc,
+                                           dataStartSector, bytesPerSector);
+                    }
                 }
             }
             applyFatDeletedChainHint(fr, pending.dataLength, bytesPerSector, !pending.inUse);
@@ -743,9 +881,31 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                 uint8_t typeCode = type & 0x7F;
                 bool inUse = (type & 0x80) != 0;
 
-                // Volume label (0x83/0x03), allocation bitmap (0x81/0x01),
-                // up-case table (0x82/0x02) — structural entries, skip.
-                if (typeCode == 0x03 || typeCode == 0x02 || (typeCode == 0x01 && !pending.active)) {
+                // Allocation bitmap (0x81/0x01), up-case table (0x82/0x02).
+                if (typeCode == 0x03) {
+                    uint8_t nch = e[1];
+                    if (nch > 11) nch = 11;
+                    if (nch > 0) {
+                        std::vector<uint16_t> u(nch);
+                        for (uint8_t i = 0; i < nch; ++i)
+                            u[i] = static_cast<uint16_t>(e[2 + i * 2]) |
+                                   (static_cast<uint16_t>(e[3 + i * 2]) << 8);
+                        const std::string label = ntfs::utf16leToUtf8(u.data(), nch);
+                        if (!label.empty()) {
+                            FileRecord fr;
+                            fr.id = -1;
+                            fr.name = label;
+                            fr.path = "/";
+                            fr.status = inUse ? 1 : 0;
+                            fr.confidence = 5;
+                            fr.category = "System";
+                            fr.source = "exfat_vol_label";
+                            callback(fr);
+                        }
+                    }
+                    continue;
+                }
+                if (typeCode == 0x02 || (typeCode == 0x01 && !pending.active)) {
                     continue;
                 }
 

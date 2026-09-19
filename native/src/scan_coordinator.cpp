@@ -9,7 +9,12 @@
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_fve.h"
+#include "fs/luks.h"
 #include "fs/xfs_parser.h"
+#include "fs/iso9660_parser.h"
+#include "fs/udf_parser.h"
+#include "fs/lvm_parser.h"
+#include "fs/ldm_parser.h"
 #include "fs/hfs_catalog.h"
 #include "fs/apfs_container.h"
 #include "byteback_fs.h"
@@ -22,6 +27,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -124,7 +132,8 @@ void syncBadSectors(DiskReader& reader, std::vector<uint64_t>* badSectorOut) {
 void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes, bool isDirectory,
                    const std::vector<std::pair<uint64_t, uint64_t>>& runs,
                    uint64_t partitionOffsetBytes, uint32_t sectorSize,
-                   const FileSystemParser::FileRecordCallback& cb) {
+                   const FileSystemParser::FileRecordCallback& cb, int confidence,
+                   int64_t modifiedAt) {
     if (path == kXfsDirUnreadPath) {
         FileRecord fr;
         fr.id = -1;
@@ -173,6 +182,18 @@ void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes
         cb(fr);
         return;
     }
+    if (path.rfind(kXfsVolNamePathPrefix, 0) == 0) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = path.substr(std::strlen(kXfsVolNamePathPrefix));
+        fr.path = "/";
+        fr.status = 1;
+        fr.confidence = 5;
+        fr.category = "System";
+        fr.source = kXfsVolNameSource;
+        cb(fr);
+        return;
+    }
     if (isDirectory) return;
     FileRecord fr;
     fr.id = static_cast<int64_t>(inodeNo & 0x7FFFFFFFFFFFFFFFLL);
@@ -195,10 +216,12 @@ void emitXfsRecord(const std::string& path, uint64_t inodeNo, uint64_t sizeBytes
         fr.endSector = fr.runs.back().startSector + fr.runs.back().sectorCount;
         fr.startByteOffset = (partitionOffsetBytes + runs.front().first) % sectorSize;
     }
-    fr.status = 1; // live tree
-    fr.confidence = 90;
+    const bool unlinked = path.rfind(kXfsUnlinkedPathPrefix, 0) == 0;
+    fr.status = unlinked ? 0 : 1;
+    fr.confidence = confidence;
     fr.category = "File";
-    fr.source = "xfs_inode";
+    fr.source = unlinked ? kXfsUnlinkedSource : "xfs_inode";
+    fr.modifiedAt = modifiedAt;
     cb(fr);
 }
 
@@ -251,13 +274,71 @@ std::vector<SectorRange> prepareCarveRanges(DiskReader& reader, ScanBounds bound
     return carveRanges;
 }
 
+bool ldmMapLogicalSector(const LdmPrivhead& ph, const std::vector<LdmPrt3>& parts,
+                         uint64_t logical, uint64_t& physical) {
+    for (const auto& p : parts) {
+        if (logical >= p.volumeOffset && logical < p.volumeOffset + p.size) {
+            physical = ph.logicalDiskStart + p.start + (logical - p.volumeOffset);
+            return true;
+        }
+    }
+    return false;
+}
+
+void remapLdmSpannedRecord(FileRecord& fr, const LdmPrivhead& ph, const std::vector<LdmPrt3>& parts) {
+    auto takeInPart = [&](uint64_t logical) -> uint64_t {
+        for (const auto& p : parts) {
+            if (logical >= p.volumeOffset && logical < p.volumeOffset + p.size)
+                return p.volumeOffset + p.size - logical;
+        }
+        return 0;
+    };
+    if (!fr.runs.empty()) {
+        std::vector<FileRecord::DataRun> mapped;
+        for (const auto& r : fr.runs) {
+            uint64_t log = r.startSector;
+            uint64_t left = r.sectorCount;
+            uint64_t byteLeft = r.byteCount;
+            while (left > 0) {
+                uint64_t phys = 0;
+                if (!ldmMapLogicalSector(ph, parts, log, phys)) break;
+                const uint64_t take = std::min(left, takeInPart(log));
+                if (take == 0) break;
+                FileRecord::DataRun out{phys, take, 0};
+                if (byteLeft > 0) {
+                    out.byteCount = std::min(byteLeft, take * 512ull);
+                    byteLeft -= out.byteCount;
+                }
+                if (!mapped.empty() && mapped.back().byteCount == 0 && out.byteCount == 0 &&
+                    mapped.back().startSector + mapped.back().sectorCount == phys) {
+                    mapped.back().sectorCount += take;
+                } else {
+                    mapped.push_back(out);
+                }
+                log += take;
+                left -= take;
+            }
+        }
+        fr.runs = std::move(mapped);
+    }
+    uint64_t phys = 0;
+    if (ldmMapLogicalSector(ph, parts, fr.startSector, phys)) fr.startSector = phys;
+    if (!fr.runs.empty()) {
+        const auto& last = fr.runs.back();
+        fr.endSector = last.startSector + last.sectorCount;
+    } else if (ldmMapLogicalSector(ph, parts, fr.endSector, phys)) {
+        fr.endSector = phys;
+    }
+}
+
 } // namespace
 
 void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
     if (!reader.hasRaidBackend()) return;
     if (fr.source.empty()) return;
     if (fr.source == "vss_snapshot" || fr.source == "vss_unbound" || fr.source == "vss_bind" ||
-        fr.source == "bitlocker_detect" || fr.source == "bitlocker_fve") return;
+        fr.source == "bitlocker_detect" || fr.source == "bitlocker_fve" ||
+        fr.source == "luks_detect") return;
     // Honesty sentinels must keep their source so LIKE filters still match.
     if (fr.source.size() >= 7 && fr.source.compare(fr.source.size() - 7, 7, "_unread") == 0) return;
     if (fr.source.rfind("raid_", 0) == 0) return;
@@ -342,9 +423,7 @@ void runQuickScan(DiskReader& reader,
     }
 
     PartitionScanner partScanner(&reader);
-    std::vector<PartitionInfo> partitions = partScanner.parseMBR();
-    std::vector<PartitionInfo> gptParts = partScanner.parseGPT();
-    if (!gptParts.empty()) partitions = std::move(gptParts);
+    std::vector<PartitionInfo> partitions = partScanner.parseTables();
 
     bool anyFsScanned = false;
     bool emittedProbeUnread = false;
@@ -355,7 +434,98 @@ void runQuickScan(DiskReader& reader,
     };
     if (partScanner.tableUnread()) emitProbeUnreadOnce();
 
-    auto scanPartition = [&](const PartitionInfo& part) {
+    std::function<void(const PartitionInfo&)> scanPartition;
+    auto emitLuksDetect = [&](uint64_t offsetBytes) {
+        FileRecord fr;
+        fr.name = "[LUKS] Birim sifreli - parola gerekli";
+        fr.path = "/";
+        fr.startSector = offsetBytes / (sectorSize ? sectorSize : 512);
+        fr.status = 2;
+        fr.confidence = 90;
+        fr.source = "luks_detect";
+        fr.category = "Unknown";
+        callbackWrapper(fr);
+        anyFsScanned = true;
+    };
+    auto emitSpacesDetect = [&](uint64_t offsetBytes) {
+        FileRecord fr;
+        fr.name = "[Storage Spaces] havuz metadata";
+        fr.path = "/";
+        fr.startSector = offsetBytes / (sectorSize ? sectorSize : 512);
+        fr.status = 2;
+        fr.confidence = 80;
+        fr.source = "spaces_detect";
+        fr.category = "Unknown";
+        callbackWrapper(fr);
+        anyFsScanned = true;
+    };
+    auto scanLuksPayloadIfUnlocked = [&](uint64_t volumeOffsetBytes, uint64_t partSizeBytes) {
+        if (!reader.hasXtsFvek()) return;
+        const uint64_t pay = reader.xtsDecryptFromBytes();
+        if (pay <= volumeOffsetBytes || (sectorSize != 0 && pay % sectorSize != 0)) return;
+        PartitionInfo inner;
+        inner.startSector = pay / sectorSize;
+        uint64_t payloadBytes = 0;
+        if (partSizeBytes > 0 && volumeOffsetBytes + partSizeBytes > pay)
+            payloadBytes = volumeOffsetBytes + partSizeBytes - pay;
+        else if (reader.getDiskSize() > pay)
+            payloadBytes = reader.getDiskSize() - pay;
+        inner.sizeInSectors = payloadBytes / sectorSize;
+        if (inner.sizeInSectors == 0) return;
+        scanPartition(inner);
+    };
+    std::vector<uint64_t> lvmPvOffs;
+    auto scanLvmPv = [&](uint64_t pvOff) {
+        lvmPvOffs.push_back(pvOff);
+        std::vector<Lvm2LinearLv> lvs;
+        if (!listLvm2LinearLvs(reader, pvOff, lvs)) {
+            anyFsScanned = true;
+            return;
+        }
+        for (const auto& lv : lvs) {
+            if (lv.raid5 || lv.raid6 || lv.raid10 || lv.mirror || lv.stripeCount > 1) continue;
+            if (lv.dataStartBytes < 512 || lv.sizeBytes < 512) continue;
+            PartitionInfo syn;
+            syn.startSector = (pvOff + lv.dataStartBytes) / sectorSize;
+            syn.sizeInSectors = lv.sizeBytes / sectorSize;
+            if (syn.sizeInSectors == 0) continue;
+            scanPartition(syn);
+        }
+        anyFsScanned = true;
+    };
+    auto scanStripedLvm = [&]() {
+        if (lvmPvOffs.size() < 2) return;
+        std::vector<Lvm2LinearLv> lvs;
+        bool got = false;
+        for (uint64_t off : lvmPvOffs) {
+            if (listLvm2LinearLvs(reader, off, lvs)) {
+                got = true;
+                break;
+            }
+        }
+        if (!got) return;
+        for (const auto& lv : lvs) {
+            if (!lv.raid5 && !lv.raid6 && !lv.raid10 && !lv.mirror && lv.stripeCount < 2) continue;
+            auto raid = assembleLvmStripedLv(reader, lvmPvOffs, lv);
+            if (!raid) continue;
+            DiskReader lvR;
+            lvR.setRaidBackend(raid);
+            const VolumeFsKind kind = probeVolumeAt(lvR, 0, sectorSize);
+            if (kind == VolumeFsKind::Fat || kind == VolumeFsKind::ExFat) {
+                FATParser fat;
+                if (fat.scan(lvR, callbackWrapper, isRunning)) anyFsScanned = true;
+            } else if (kind == VolumeFsKind::Ntfs) {
+                NTFSParser ntfs;
+                if (ntfs.scanAt(lvR, callbackWrapper, isRunning, 0, raid->capacity(), ntfsCarveOrphans))
+                    anyFsScanned = true;
+            } else if (kind == VolumeFsKind::Ext4) {
+                Ext4Parser ext4;
+                if (ext4.scanAt(lvR, callbackWrapper, isRunning, 0)) anyFsScanned = true;
+            }
+        }
+    };
+
+    scanPartition = [&](const PartitionInfo& part) {
         if (isRunning && !(*isRunning)) return;
         if (part.sizeInSectors == 0) return;
 
@@ -423,15 +593,36 @@ void runQuickScan(DiskReader& reader,
                 if (xfs.open(reader, offsetBytes)) {
                     anyFsScanned = xfs.walkTree([&](const std::string& path, uint64_t inodeNo,
                                                     uint64_t sizeBytes, bool isDirectory,
-                                                    const std::vector<std::pair<uint64_t, uint64_t>>& runs) {
+                                                    const std::vector<std::pair<uint64_t, uint64_t>>& runs,
+                                                    int confidence, int64_t modifiedAt) {
                         emitXfsRecord(path, inodeNo, sizeBytes, isDirectory, runs, offsetBytes,
-                                      sectorSize, callbackWrapper);
+                                      sectorSize, callbackWrapper, confidence, modifiedAt);
                     });
                 }
                 break;
             }
+            case VolumeFsKind::Iso9660: {
+                Iso9660Parser iso;
+                if (iso.scanAt(reader, callbackWrapper, isRunning, offsetBytes)) anyFsScanned = true;
+                break;
+            }
+            case VolumeFsKind::Udf: {
+                UdfParser udf;
+                if (udf.scanAt(reader, callbackWrapper, isRunning, offsetBytes)) anyFsScanned = true;
+                break;
+            }
             case VolumeFsKind::Unread:
                 emitProbeUnreadOnce();
+                break;
+            case VolumeFsKind::Lvm:
+                scanLvmPv(offsetBytes);
+                break;
+            case VolumeFsKind::Luks:
+                emitLuksDetect(offsetBytes);
+                scanLuksPayloadIfUnlocked(offsetBytes, partSizeBytes);
+                break;
+            case VolumeFsKind::Spaces:
+                emitSpacesDetect(offsetBytes);
                 break;
             default:
                 break;
@@ -461,6 +652,92 @@ void runQuickScan(DiskReader& reader,
             scanPartition(part);
         }
     }
+    {
+        LdmPrivhead ph;
+        if (readLdmPrivhead(reader, ph) && ph.logicalDiskSize > 0) {
+            auto scanLdm = [&](uint64_t start, uint64_t sz) {
+                if (sz == 0) return;
+                const bool overlap = !bounds.active() ||
+                    (start >= bounds.startSector && start < bounds.startSector + bounds.sizeInSectors);
+                if (!overlap) return;
+                PartitionInfo syn;
+                syn.type = "LDM";
+                syn.startSector = start;
+                syn.sizeInSectors = sz;
+                scanPartition(syn);
+            };
+            std::vector<LdmPrt3> prts;
+            if (readLdmPrt3(reader, ph, prts)) {
+                auto prtContiguous = [](const std::vector<LdmPrt3>& v) {
+                    if (v.size() < 2) return false;
+                    for (size_t i = 1; i < v.size(); ++i) {
+                        if (v[i].volumeOffset != v[i - 1].volumeOffset + v[i - 1].size) return false;
+                    }
+                    return true;
+                };
+                auto scanSpanned = [&](const std::vector<LdmPrt3>& parts) {
+                    std::vector<std::shared_ptr<DiskReader>> members;
+                    std::vector<uint64_t> offs, lens;
+                    members.reserve(parts.size());
+                    for (const auto& p : parts) {
+                        auto c = reader.clone();
+                        if (!c) return false;
+                        members.push_back(std::shared_ptr<DiskReader>(std::move(c)));
+                        offs.push_back((ph.logicalDiskStart + p.start) * sectorSize);
+                        lens.push_back(p.size * sectorSize);
+                    }
+                    std::shared_ptr<VirtualRaid> raid;
+                    try {
+                        raid = std::make_shared<VirtualRaid>(
+                            RaidLevel::JBOD, std::move(members), 0, 0,
+                            raid_layout::Raid5Algorithm::LeftAsymmetric, std::move(offs),
+                            std::move(lens));
+                    } catch (...) {
+                        return false;
+                    }
+                    DiskReader lvR;
+                    lvR.setRaidBackend(raid);
+                    auto onSpanned = [&](const FileRecord& fr) {
+                        FileRecord out = fr;
+                        remapLdmSpannedRecord(out, ph, parts);
+                        callbackWrapper(out);
+                    };
+                    const VolumeFsKind kind = probeVolumeAt(lvR, 0, sectorSize);
+                    if (kind == VolumeFsKind::Fat || kind == VolumeFsKind::ExFat) {
+                        FATParser fat;
+                        if (fat.scan(lvR, onSpanned, isRunning)) anyFsScanned = true;
+                    } else if (kind == VolumeFsKind::Ntfs) {
+                        NTFSParser ntfs;
+                        if (ntfs.scanAt(lvR, onSpanned, isRunning, 0, raid->capacity(), ntfsCarveOrphans))
+                            anyFsScanned = true;
+                    } else if (kind == VolumeFsKind::Ext4) {
+                        Ext4Parser ext4;
+                        if (ext4.scanAt(lvR, onSpanned, isRunning, 0)) anyFsScanned = true;
+                    } else {
+                        return false;
+                    }
+                    return true;
+                };
+                std::map<uint64_t, std::vector<LdmPrt3>> groups;
+                for (const auto& p : prts) {
+                    const uint64_t key = p.parentId != 0 ? p.parentId : (0x100000000ull + p.start);
+                    groups[key].push_back(p);
+                }
+                for (auto& g : groups) {
+                    auto& v = g.second;
+                    std::sort(v.begin(), v.end(), [](const LdmPrt3& a, const LdmPrt3& b) {
+                        return a.volumeOffset < b.volumeOffset;
+                    });
+                    if (prtContiguous(v) && scanSpanned(v)) continue;
+                    for (const auto& p : v) scanLdm(ph.logicalDiskStart + p.start, p.size);
+                }
+            } else {
+                scanLdm(ph.logicalDiskStart, ph.logicalDiskSize);
+            }
+        }
+    }
+
+    scanStripedLvm();
 
 #ifdef _WIN32
     if (!bounds.active()) {
@@ -511,15 +788,36 @@ void runQuickScan(DiskReader& reader,
                 if (xfs.open(reader, 0)) {
                     xfs.walkTree([&](const std::string& path, uint64_t inodeNo,
                                      uint64_t sizeBytes, bool isDirectory,
-                                     const std::vector<std::pair<uint64_t, uint64_t>>& runs) {
+                                     const std::vector<std::pair<uint64_t, uint64_t>>& runs,
+                                     int confidence, int64_t modifiedAt) {
                         emitXfsRecord(path, inodeNo, sizeBytes, isDirectory, runs, 0, sectorSize,
-                                      callbackWrapper);
+                                      callbackWrapper, confidence, modifiedAt);
                     });
                 }
                 break;
             }
+            case VolumeFsKind::Iso9660: {
+                Iso9660Parser iso;
+                iso.scanAt(reader, callbackWrapper, isRunning, 0);
+                break;
+            }
+            case VolumeFsKind::Udf: {
+                UdfParser udf;
+                udf.scanAt(reader, callbackWrapper, isRunning, 0);
+                break;
+            }
             case VolumeFsKind::Unread:
                 emitProbeUnreadOnce();
+                break;
+            case VolumeFsKind::Lvm:
+                scanLvmPv(0);
+                break;
+            case VolumeFsKind::Luks:
+                emitLuksDetect(0);
+                scanLuksPayloadIfUnlocked(0, reader.getDiskSize());
+                break;
+            case VolumeFsKind::Spaces:
+                emitSpacesDetect(0);
                 break;
             default: {
                 NTFSParser ntfs;
@@ -1136,6 +1434,8 @@ void ScanCoordinator::scanWorker(std::string drivePath, std::string scanType,
                 reader.setRaidBackend(std::move(raid));
                 opened = true;
             }
+        } else if (!target.imagePath.empty()) {
+            opened = reader.attachEvidenceImage(target.imagePath);
         } else if (!target.volumePath.empty()) {
             if (isWin32VolumeDevicePath(target.volumePath)) {
                 opened = reader.openVolumePath(target.volumePath);

@@ -82,8 +82,24 @@ void emitBlockUnread(FileSystemParser::FileRecordCallback& callback,
     callback(fr);
 }
 
+void emitCatalogUnread(FileSystemParser::FileRecordCallback& callback,
+                       uint64_t partitionOffsetBytes, uint32_t sectorSize) {
+    FileRecord fr;
+    fr.id = -1;
+    fr.name = "Apfs_CatalogUnread";
+    fr.path = kApfsCatalogUnreadPath;
+    fr.source = kApfsCatalogUnreadSource;
+    fr.category = "System";
+    fr.status = 0;
+    fr.confidence = 20;
+    fr.startSector = partitionOffsetBytes / sectorSize;
+    fr.endSector = fr.startSector + 1;
+    callback(fr);
+}
+
 constexpr uint64_t kApfsTypeDirRec = 9;
 constexpr uint64_t kApfsTypeFileExtent = 8;
+constexpr uint64_t kApfsTypeInode = 3;
 constexpr uint32_t kObjBtreeNode = 2;
 
 void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
@@ -105,7 +121,8 @@ void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
 void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t partitionOffsetBytes,
                              uint64_t blockOff, uint32_t sectorSize, int& fileIndex,
                              FileSystemParser::FileRecordCallback& callback,
-                             std::unordered_set<std::string>& seenNames) {
+                             std::unordered_set<std::string>& seenNames,
+                             const char* source) {
     if (blockSize < 64) return;
     uint32_t otype = readLe32(block + 24) & 0xFFFFu;
     if (otype != kObjBtreeNode) return;
@@ -120,6 +137,11 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
     };
     std::vector<DirHit> dirs;
     std::unordered_map<uint64_t, std::vector<FileRecord::DataRun>> extents;
+    struct InodeTimes {
+        int64_t created = 0;
+        int64_t modified = 0;
+    };
+    std::unordered_map<uint64_t, InodeTimes> times;
 
     for (uint32_t i = 56; i + 16 < blockSize; i += 8) {
         uint64_t hdr = readLe64(block + i);
@@ -143,6 +165,13 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
             run.sectorCount = (len + sectorSize - 1) / sectorSize;
             if (run.sectorCount == 0) run.sectorCount = 1;
             extents[oid].push_back(run);
+        } else if (typ == kApfsTypeInode && i + 40 <= blockSize) {
+            InodeTimes t;
+            const uint64_t cns = readLe64(block + i + 24);
+            const uint64_t mns = readLe64(block + i + 32);
+            if (cns >= 1000000000ull) t.created = static_cast<int64_t>(cns / 1000000000ull);
+            if (mns >= 1000000000ull) t.modified = static_cast<int64_t>(mns / 1000000000ull);
+            if (t.created != 0 || t.modified != 0) times[oid] = t;
         }
     }
 
@@ -157,7 +186,13 @@ void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t 
         fr.status = 0;
         fr.confidence = 70;
         fr.category = "Document";
-        fr.source = "apfs_file";
+        fr.source = source ? source : "apfs_file";
+        if (fr.source == kApfsOmapDeletedSource) fr.confidence = 48;
+        auto tt = times.find(d.oid);
+        if (tt != times.end()) {
+            fr.createdAt = tt->second.created;
+            fr.modifiedAt = tt->second.modified;
+        }
         auto it = extents.find(d.oid);
         if (it != extents.end() && !it->second.empty()) {
             fr.runs = it->second;
@@ -287,12 +322,21 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
     std::vector<uint8_t> nx;
     bool nxUnread = false;
     readPrefixed(reader, partitionOffsetBytes, 4096, sectorSize, nx, nxUnread);
-    if (std::strncmp(reinterpret_cast<char*>(nx.data() + 32), "NXSB", 4) != 0) {
+    auto looksNxsb = [](const std::vector<uint8_t>& b) {
+        return b.size() > 36 &&
+               std::strncmp(reinterpret_cast<const char*>(b.data() + 32), "NXSB", 4) == 0;
+    };
+    if (!looksNxsb(nx)) {
         if (nxUnread) {
             emitNxsbUnread(callback, partitionOffsetBytes, sectorSize);
             return true;
         }
-        return false;
+        const uint64_t backupOff =
+            (spanBytes >= partitionOffsetBytes + 4096) ? spanBytes - 4096 : 0;
+        if (backupOff <= partitionOffsetBytes) return false;
+        bool backupUnread = false;
+        readPrefixed(reader, backupOff, 4096, sectorSize, nx, backupUnread);
+        if (!looksNxsb(nx)) return false;
     }
 
     uint32_t blockSize32 = readLe32(nx.data() + 36);
@@ -329,6 +373,7 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
     std::unordered_set<uint64_t> seenVol;
     std::unordered_set<std::string> seenNames;
     bool blockUnread = false;
+    bool catalogUnread = false;
 
     if (nx.size() >= 184 + 100 * 8) {
         for (int i = 0; i < 100; ++i) {
@@ -348,9 +393,11 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
         if (isRunning && !(*isRunning)) break;
         uint64_t off = partitionOffsetBytes + i * blockSize;
         if (!readBlock(reader, off, static_cast<uint32_t>(blockSize), block)) {
-            // Spray of unknown clusters: only flag unread when no volume was
-            // found — a later data-block I/O fail must not look like “no APSB”.
+            // Spray of unknown clusters: missing APSB uses blockUnread only when
+            // no volume was found. After a volume exists, unread is catalog/FN
+            // honesty — not “no APSB”.
             if (seenVol.empty()) blockUnread = true;
+            else catalogUnread = true;
             continue;
         }
         if (std::strncmp(reinterpret_cast<char*>(block.data() + 32), "APSB", 4) == 0) {
@@ -358,7 +405,7 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                       callback, blockUnread);
         }
         scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
-                                off, sectorSize, fileIndex, callback, seenNames);
+                                off, sectorSize, fileIndex, callback, seenNames, "apfs_file");
     }
 
     // nx_omap_oid is at NXSB+64; 0xA0 was the pre-spec probe offset — keep it
@@ -368,7 +415,7 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
         omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
     }
     uint64_t oidTreeOid = (nx.size() >= 0xB0) ? readLe64(nx.data() + 0xA8) : 0;
-    auto walkBtreeRoot = [&](uint64_t rootOid) {
+    auto walkBtreeRoot = [&](uint64_t rootOid, const char* catSource) {
         if (rootOid == 0 || rootOid >= blockCount) return;
         std::vector<uint8_t> rootBlk;
         if (!readBlock(reader, partitionOffsetBytes + rootOid * blockSize, static_cast<uint32_t>(blockSize), rootBlk)) {
@@ -397,14 +444,38 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                           callback, blockUnread);
             }
             scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
-                                    off, sectorSize, fileIndex, callback, seenNames);
+                                    off, sectorSize, fileIndex, callback, seenNames, catSource);
         }
     };
-    walkBtreeRoot(omapOid);
-    if (oidTreeOid != 0 && oidTreeOid != omapOid) walkBtreeRoot(oidTreeOid);
+    walkBtreeRoot(omapOid, "apfs_file");
+    if (oidTreeOid != 0 && oidTreeOid != omapOid) walkBtreeRoot(oidTreeOid, "apfs_file");
+
+    // nx_xp_desc_blocks u32 @0x68, nx_xp_desc_base u64 @0x70 (apfs.h nx_superblock).
+    const uint32_t descBlocks = (nx.size() >= 0x6C) ? readLe32(nx.data() + 0x68) : 0;
+    const uint64_t descBase = (nx.size() >= 0x78) ? readLe64(nx.data() + 0x70) : 0;
+    if (descBlocks > 0 && descBlocks <= 64 && descBase > 0 && descBase < blockCount) {
+        for (uint32_t i = 0; i < descBlocks; ++i) {
+            if (isRunning && !(*isRunning)) break;
+            const uint64_t bno = descBase + i;
+            if (bno >= blockCount) break;
+            std::vector<uint8_t> desc;
+            if (!readBlock(reader, partitionOffsetBytes + bno * blockSize,
+                           static_cast<uint32_t>(blockSize), desc)) {
+                blockUnread = true;
+                continue;
+            }
+            if (desc.size() < 0xA8) continue;
+            if (std::strncmp(reinterpret_cast<char*>(desc.data() + 32), "NXSB", 4) != 0) continue;
+            uint64_t stale = readLe64(desc.data() + 0x40);
+            if (stale == 0 || stale >= blockCount) stale = readLe64(desc.data() + 0xA0);
+            if (stale == 0 || stale >= blockCount || stale == omapOid) continue;
+            walkBtreeRoot(stale, kApfsOmapDeletedSource);
+        }
+    }
 
     if (nxUnread) emitNxsbUnread(callback, partitionOffsetBytes, sectorSize);
     if (blockUnread) emitBlockUnread(callback, partitionOffsetBytes, sectorSize);
+    if (catalogUnread) emitCatalogUnread(callback, partitionOffsetBytes, sectorSize);
 
     FileRecord tick;
     tick.id = -1;

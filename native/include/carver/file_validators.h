@@ -16,7 +16,9 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace byteback {
 namespace carver {
@@ -94,6 +96,18 @@ inline int validateJpeg(const uint8_t* data, size_t size) {
     }
     // No EOI found but structure is sound -> partial (common for carving).
     return sawSos ? 75 : (sawSegment ? 50 : 20);
+}
+
+// Append EOI only when SOS exists and the buffer is not already closed.
+// Leaves intact JPEGs and non-JPEGs unchanged. Score 75 → 95 typical.
+inline bool appendMissingJpegEoi(std::vector<uint8_t>& buf) {
+    if (buf.size() < 4) return false;
+    if (buf[0] != 0xFF || buf[1] != 0xD8) return false;
+    if (buf[buf.size() - 2] == 0xFF && buf.back() == 0xD9) return false;
+    if (validateJpeg(buf.data(), buf.size()) < 75) return false;
+    buf.push_back(0xFF);
+    buf.push_back(0xD9);
+    return true;
 }
 
 // ---- PNG ----
@@ -193,6 +207,101 @@ inline int validateZip(const uint8_t* data, size_t size) {
     return 30; // local header only — weak
 }
 
+// Rebuild central directory + EOCD from consecutive stored local headers.
+// Intact archives that already have EOCD are left alone (no MD5 churn).
+// ponytail: no data-descriptor (flag bit 3); cap 4096 locals.
+inline bool rebuildMissingZipDirectory(std::vector<uint8_t>& buf) {
+    if (buf.size() < 30 || buf[0] != 'P' || buf[1] != 'K' || buf[2] != 0x03 || buf[3] != 0x04) {
+        return false;
+    }
+    auto hasEocd = [&]() {
+        const size_t start = buf.size() > 65557 ? buf.size() - 65557 : 0;
+        for (size_t i = start; i + 4 <= buf.size(); ++i) {
+            if (buf[i] == 'P' && buf[i + 1] == 'K' && buf[i + 2] == 0x05 && buf[i + 3] == 0x06) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (hasEocd()) return false;
+
+    struct Local {
+        uint16_t flags, method, time, date, nameLen;
+        uint32_t crc, comp, uncomp;
+        size_t headerOff, nameOff;
+    };
+    std::vector<Local> locals;
+    size_t i = 0;
+    while (i + 30 <= buf.size() && locals.size() < 4096) {
+        if (buf[i] != 'P' || buf[i + 1] != 'K' || buf[i + 2] != 0x03 || buf[i + 3] != 0x04) break;
+        const uint16_t flags = static_cast<uint16_t>(readLe(buf.data() + i + 6, 2));
+        if (flags & 0x8) return false;
+        const uint16_t nameLen = static_cast<uint16_t>(readLe(buf.data() + i + 26, 2));
+        const uint16_t extraLen = static_cast<uint16_t>(readLe(buf.data() + i + 28, 2));
+        const uint32_t comp = readLe(buf.data() + i + 18, 4);
+        const size_t after = i + 30ull + nameLen + extraLen + comp;
+        if (after > buf.size()) return false;
+        Local loc{};
+        loc.flags = flags;
+        loc.method = static_cast<uint16_t>(readLe(buf.data() + i + 8, 2));
+        loc.time = static_cast<uint16_t>(readLe(buf.data() + i + 10, 2));
+        loc.date = static_cast<uint16_t>(readLe(buf.data() + i + 12, 2));
+        loc.nameLen = nameLen;
+        loc.crc = readLe(buf.data() + i + 14, 4);
+        loc.comp = comp;
+        loc.uncomp = readLe(buf.data() + i + 22, 4);
+        loc.headerOff = i;
+        loc.nameOff = i + 30;
+        locals.push_back(loc);
+        i = after;
+    }
+    if (locals.empty()) return false;
+
+    const size_t cdOff = buf.size();
+    auto appendU16 = [&](uint16_t x) {
+        buf.push_back(static_cast<uint8_t>(x));
+        buf.push_back(static_cast<uint8_t>(x >> 8));
+    };
+    auto appendU32 = [&](uint32_t x) {
+        buf.push_back(static_cast<uint8_t>(x));
+        buf.push_back(static_cast<uint8_t>(x >> 8));
+        buf.push_back(static_cast<uint8_t>(x >> 16));
+        buf.push_back(static_cast<uint8_t>(x >> 24));
+    };
+    for (const auto& loc : locals) {
+        std::vector<uint8_t> name(buf.begin() + static_cast<std::ptrdiff_t>(loc.nameOff),
+                                  buf.begin() + static_cast<std::ptrdiff_t>(loc.nameOff + loc.nameLen));
+        buf.insert(buf.end(), {'P', 'K', 0x01, 0x02});
+        appendU16(20);
+        appendU16(20);
+        appendU16(loc.flags);
+        appendU16(loc.method);
+        appendU16(loc.time);
+        appendU16(loc.date);
+        appendU32(loc.crc);
+        appendU32(loc.comp);
+        appendU32(loc.uncomp);
+        appendU16(loc.nameLen);
+        appendU16(0);
+        appendU16(0);
+        appendU16(0);
+        appendU16(0);
+        appendU32(0);
+        appendU32(static_cast<uint32_t>(loc.headerOff));
+        buf.insert(buf.end(), name.begin(), name.end());
+    }
+    const uint32_t cdSize = static_cast<uint32_t>(buf.size() - cdOff);
+    buf.insert(buf.end(), {'P', 'K', 0x05, 0x06});
+    appendU16(0);
+    appendU16(0);
+    appendU16(static_cast<uint16_t>(locals.size()));
+    appendU16(static_cast<uint16_t>(locals.size()));
+    appendU32(cdSize);
+    appendU32(static_cast<uint32_t>(cdOff));
+    appendU16(0);
+    return true;
+}
+
 // ---- PDF ----
 // Header %PDF-1.x, then objects; trailer must contain %%EOF. We accept if the
 // header is well-formed and at least one xref/trailer/obj marker is present.
@@ -217,6 +326,77 @@ inline int validatePdf(const uint8_t* data, size_t size) {
     if (sawObj) return 55; // no EOF -> truncated
     if (sawEof) return 50; // EOF without any obj -> suspicious
     return 25;
+}
+
+// Rebuild xref+trailer+%%EOF when objects exist and the file never closed.
+// Intact PDFs that already have %%EOF are left alone (no MD5 churn).
+// ponytail: first `n 0 obj` is /Root; generation always 0; cap 4096 objects.
+inline bool rebuildMissingPdfXref(std::vector<uint8_t>& buf) {
+    if (buf.size() < 8 || std::memcmp(buf.data(), "%PDF-", 5) != 0) return false;
+    auto hasNeedle = [&](const char* s) {
+        const size_t sl = std::strlen(s);
+        const size_t start = buf.size() > 1024 ? buf.size() - 1024 : 0;
+        for (size_t i = start; i + sl <= buf.size(); ++i) {
+            if (std::memcmp(buf.data() + i, s, sl) == 0) return true;
+        }
+        return false;
+    };
+    if (hasNeedle("%%EOF")) return false;
+
+    constexpr size_t kNone = static_cast<size_t>(-1);
+    std::vector<size_t> offs(1, kNone);
+    uint32_t maxNum = 0;
+    uint32_t root = 0;
+    for (size_t i = 0; i + 6 < buf.size(); ++i) {
+        if (buf[i] < '0' || buf[i] > '9') continue;
+        if (i > 0 && buf[i - 1] >= '0' && buf[i - 1] <= '9') continue;
+        if (i > 0 && buf[i - 1] > 32 && buf[i - 1] != '\n' && buf[i - 1] != '\r') continue;
+        size_t j = i;
+        uint32_t num = 0;
+        while (j < buf.size() && buf[j] >= '0' && buf[j] <= '9' && num < 100000u) {
+            num = num * 10u + static_cast<uint32_t>(buf[j] - '0');
+            ++j;
+        }
+        if (j + 5 >= buf.size() || buf[j] != ' ') continue;
+        ++j;
+        if (buf[j] < '0' || buf[j] > '9') continue;
+        while (j < buf.size() && buf[j] >= '0' && buf[j] <= '9') ++j;
+        if (j + 4 > buf.size() || buf[j] != ' ') continue;
+        ++j;
+        if (buf[j] != 'o' || buf[j + 1] != 'b' || buf[j + 2] != 'j') continue;
+        if (num == 0 || num > 4096) continue;
+        if (offs.size() <= num) offs.resize(num + 1, kNone);
+        if (offs[num] == kNone) {
+            offs[num] = i;
+            if (root == 0) root = num;
+        }
+        if (num > maxNum) maxNum = num;
+    }
+    if (root == 0 || maxNum == 0) return false;
+
+    const size_t xrefOff = buf.size();
+    auto appendStr = [&](const char* s) {
+        buf.insert(buf.end(), s, s + std::strlen(s));
+    };
+    char line[80];
+    appendStr("xref\n");
+    std::snprintf(line, sizeof(line), "0 %u\n", maxNum + 1);
+    appendStr(line);
+    appendStr("0000000000 65535 f \n");
+    for (uint32_t n = 1; n <= maxNum; ++n) {
+        if (n < offs.size() && offs[n] != kNone) {
+            std::snprintf(line, sizeof(line), "%010zu 00000 n \n", offs[n]);
+        } else {
+            std::snprintf(line, sizeof(line), "0000000000 00000 f \n");
+        }
+        appendStr(line);
+    }
+    std::snprintf(line, sizeof(line),
+                  "trailer\n<< /Size %u /Root %u 0 R >>\nstartxref\n%zu\n",
+                  maxNum + 1, root, xrefOff);
+    appendStr(line);
+    appendStr("%%EOF\n");
+    return true;
 }
 
 // ---- RIFF container (WebP / AVI / WAV) ----

@@ -16,7 +16,7 @@ constexpr size_t kFfmpegProbeMaxBytes = 4 * 1024 * 1024;
 struct FilePreviewResult {
     bool success = false;
     std::string error;
-    std::string kind; // image, text, pdf, binary
+    std::string kind; // image, text, pdf, audio, binary
     std::string mime; // e.g. image/jpeg; empty when unknown
     /** Honest structural hint when no renderable frame (e.g. H.264 IDR sniff). */
     std::string note;

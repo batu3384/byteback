@@ -124,6 +124,8 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info);
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info);
 Napi::Value ResolveVolume(const Napi::CallbackInfo& info);
 Napi::Value ListVolumeLetters(const Napi::CallbackInfo& info);
+Napi::Value SearchHex(const Napi::CallbackInfo& info);
+Napi::Value GetMftRecord(const Napi::CallbackInfo& info);
 
 // bridge_scan.cpp — scans / results / timeline / audit log / DB
 Napi::Value InitDatabase(const Napi::CallbackInfo& info);
@@ -132,6 +134,7 @@ Napi::Value StopScan(const Napi::CallbackInfo& info);
 Napi::Value IsScanActive(const Napi::CallbackInfo& info);
 Napi::Value GetFileCount(const Napi::CallbackInfo& info);
 Napi::Value GetFilesPage(const Napi::CallbackInfo& info);
+Napi::Value HashEmptyContent(const Napi::CallbackInfo& info);
 Napi::Value GetScanState(const Napi::CallbackInfo& info);
 Napi::Value GetLatestScanId(const Napi::CallbackInfo& info);
 Napi::Value GetLatestUsableScanId(const Napi::CallbackInfo& info);
@@ -155,6 +158,7 @@ Napi::Value StartWipe(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerFvek(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerRecoveryPassword(const Napi::CallbackInfo& info);
 Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info);
+Napi::Value SetLuksPassword(const Napi::CallbackInfo& info);
 Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info);
 template<typename Callback>
 bool tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
@@ -162,7 +166,13 @@ bool tsfnPost(Napi::ThreadSafeFunction& tsfn, Callback&& cb) {
 }
 
 Napi::Value DetectRaid(const Napi::CallbackInfo& info);
+Napi::Value DetectRaidImages(const Napi::CallbackInfo& info);
 Napi::Value ReconstructRaid(const Napi::CallbackInfo& info);
+Napi::Value ReconstructRaidImages(const Napi::CallbackInfo& info);
+Napi::Value AssembleLvm(const Napi::CallbackInfo& info);
+Napi::Value AssembleLvmImages(const Napi::CallbackInfo& info);
+Napi::Value AssembleLdm(const Napi::CallbackInfo& info);
+Napi::Value AssembleLdmImages(const Napi::CallbackInfo& info);
 Napi::Value FailRaidDisk(const Napi::CallbackInfo& info);
 Napi::Value GetRaidState(const Napi::CallbackInfo& info);
 Napi::Value RecoverFile(const Napi::CallbackInfo& info);

@@ -62,6 +62,8 @@ std::vector<VolumeIdentity> collectVolumeIdentities(DiskReader& reader) {
     auto all = parts.parseMBR();
     auto gpt = parts.parseGPT();
     all.insert(all.end(), gpt.begin(), gpt.end());
+    auto apm = parts.parseAPM();
+    all.insert(all.end(), apm.begin(), apm.end());
     for (const auto& p : all) {
         uint64_t off = p.startSector * static_cast<uint64_t>(ss);
         uint64_t sz = p.sizeInSectors * static_cast<uint64_t>(ss);

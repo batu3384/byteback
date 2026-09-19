@@ -1,9 +1,11 @@
 #pragma once
 
+#include "io/byte_source.h"
 #include <string>
 #include <vector>
 #include <cstdint>
 #include <cstring>
+#include <cctype>
 #include <algorithm>
 #include <mutex>
 #include <functional>
@@ -256,10 +258,38 @@ public:
     // Test hook: overlapping read succeeds with bytesRead=0, no pad (physical short).
     void setMemoryShortRange(uint64_t startSector, uint64_t sectorCount);
 
-    // EWF (.E01) or raw image over http(s) Range (ponytail: multi-segment EWF local only).
+    // EWF (.E01) or raw image over http(s) Range (HTTP sibling .E02 via same host).
     bool attachEwfImage(const std::string& pathOrUrl, std::string* errOut = nullptr);
     bool attachRawFile(const std::string& path, std::string* errOut = nullptr);
     bool attachHttpRawImage(const std::string& url, std::string* errOut = nullptr);
+    bool attachVhdMemory(std::vector<uint8_t> image, std::string* errOut = nullptr);
+    bool attachVhdFile(const std::string& path, std::string* errOut = nullptr);
+    // Local evidence file: RAW/dd/img, E01, VHD/VHDX/VMDK/VDI/QCOW2/DMG (64 MiB expand cap).
+    // Rejects http(s), \\.\ devices, and POSIX /dev/.
+    bool attachEvidenceImage(const std::string& path, std::string* errOut = nullptr) {
+        auto fail = [&](const char* m) {
+            if (errOut) *errOut = m;
+            return false;
+        };
+        if (path.empty() || isHttpUrl(path)) return fail("invalid image path");
+        if (path.size() >= 4 && path.compare(0, 4, "\\\\.\\") == 0) return fail("invalid image path");
+#ifndef _WIN32
+        if (path.size() >= 5 && path.compare(0, 5, "/dev/") == 0) return fail("invalid image path");
+#endif
+        std::string ext;
+        const auto slash = path.find_last_of("/\\");
+        const auto base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        const auto dot = base.find_last_of('.');
+        if (dot != std::string::npos && dot + 1 < base.size()) {
+            ext = base.substr(dot);
+            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (ext == ".e01" || ext == ".ex01" || ext == ".s01") return attachEwfImage(path, errOut);
+        if (ext == ".vhd" || ext == ".vhdx" || ext == ".vmdk" || ext == ".vdi" || ext == ".qcow2" ||
+            ext == ".qcow" || ext == ".dmg")
+            return attachVhdFile(path, errOut);
+        return attachRawFile(path, errOut);
+    }
     void detachImageBackend();
     bool hasImageBackend() const;
 
@@ -277,6 +307,8 @@ public:
     // Decrypts each sector after read. Not a password cracker — caller supplies FVEK.
     bool setXtsFvek(const uint8_t* key, size_t keyBytes);
     bool setXtsFvek128(const uint8_t* key32, size_t n);
+    void setXtsDecryptFrom(uint64_t byteOffset);
+    uint64_t xtsDecryptFromBytes() const;
     void clearXtsFvek();
     bool hasXtsFvek() const;
     size_t xtsFvekBytes() const;
@@ -309,6 +341,7 @@ private:
     bool rawBackendIsHttp_ = false;
     uint8_t xtsKey_[64]{};
     uint8_t xtsKeyLen_ = 0; // 0=off, 32=AES-128-XTS, 64=AES-256-XTS
+    uint64_t xtsFromBytes_ = 0; // ciphertext starts here (LUKS payload); tweak 0
 
     void maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer);
 };

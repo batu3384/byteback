@@ -15,8 +15,17 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
 
 namespace byteback {
+
+namespace {
+int64_t persistMftRef(uint64_t ref) {
+    return ref <= static_cast<uint64_t>(INT64_MAX) ? static_cast<int64_t>(ref) : static_cast<int64_t>(-1);
+}
+}
 
 NTFSParser::NTFSParser() {}
 NTFSParser::~NTFSParser() {}
@@ -216,6 +225,23 @@ std::vector<FileRecord::DataRun> unnamedDataRunsFromRecord(
 //     extracted here from the single record that is in memory (C4).
 // Field semantics are byte-identical to the pre-refactor in-line parse.
 // ---------------------------------------------------------------------------
+void harvestAttrListEntries(const uint8_t* p, size_t n, std::vector<uint64_t>& refs) {
+    size_t pos = 0;
+    while (pos + 26 <= n && refs.size() < 16) {
+        const uint32_t eType = ntfs::u32le(p + pos);
+        const uint16_t eLen = ntfs::u16le(p + pos + 4);
+        const uint8_t eNameLen = p[pos + 6];
+        if (eLen < 26 || pos + eLen > n) break;
+        const uint64_t eRef = ntfs::u64le(p + pos + 16) & 0x0000FFFFFFFFFFFFULL;
+        if ((eType == ntfs::ATTR_DATA || eType == ntfs::ATTR_EA ||
+             eType == ntfs::ATTR_REPARSE_POINT) &&
+            eRef != 0 && eNameLen < 255)
+            refs.push_back(eRef);
+        if (eLen == 0) break;
+        pos += eLen;
+    }
+}
+
 namespace {
 
 struct ParsedMftAds {
@@ -246,7 +272,73 @@ struct ParsedMftRecord {
     std::vector<ntfs::IndexNameHint> i30Hints;
     std::vector<FileRecord::DataRun> i30AllocRuns;
     uint32_t i30RecordSize = 0;
+    uint64_t baseMft = 0;
+    std::vector<uint64_t> attrListDataRefs;
+    std::vector<FileRecord::DataRun> attrListRuns;
+    std::string reparsePrintName;
+    std::vector<FileRecord::DataRun> reparseRuns;
+    std::vector<ParsedMftAds> eaEntries;
+    std::vector<FileRecord::DataRun> eaRuns;
+    bool dataEfs = false;
+    std::string objectIdGuid;
+    std::string volumeName;
 };
+
+static std::string guidStringFromBytes(const uint8_t* p, size_t n) {
+    if (!p || n < 16) return {};
+    char buf[37];
+    std::snprintf(buf, sizeof(buf),
+        "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+        p[3], p[2], p[1], p[0], p[5], p[4], p[7], p[6],
+        p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
+    return std::string(buf, 36);
+}
+
+std::string reparsePrintNameFromValue(const uint8_t* p, size_t n) {
+    if (!p || n < 16) return {};
+    const uint32_t tag = ntfs::u32le(p);
+    uint16_t printOff = 0;
+    uint16_t printLen = 0;
+    size_t pathBase = 0;
+    if (tag == 0xA000000C && n >= 20) {
+        printOff = ntfs::u16le(p + 12);
+        printLen = ntfs::u16le(p + 14);
+        pathBase = 20;
+    } else if (tag == 0xA0000003) {
+        printOff = ntfs::u16le(p + 12);
+        printLen = ntfs::u16le(p + 14);
+        pathBase = 16;
+    } else {
+        return {};
+    }
+    if (printLen == 0 || (printLen & 1u) != 0) return {};
+    const size_t start = pathBase + printOff;
+    if (start + printLen > n) return {};
+    const auto* units = reinterpret_cast<const uint16_t*>(p + start);
+    return ntfs::utf16leToUtf8(units, printLen / 2);
+}
+
+void harvestEaEntries(const uint8_t* p, size_t n, std::vector<ParsedMftAds>& out) {
+    size_t pos = 0;
+    while (pos + 8 <= n && out.size() < 16) {
+        const uint32_t next = ntfs::u32le(p + pos);
+        const uint8_t nameLen = p[pos + 5];
+        const uint16_t valLen = ntfs::u16le(p + pos + 6);
+        const size_t nameOff = pos + 8;
+        const size_t valOff = nameOff + static_cast<size_t>(nameLen) + 1;
+        if (valOff + valLen > n) break;
+        if (nameLen > 0) {
+            ParsedMftAds ea;
+            ea.streamName.assign(reinterpret_cast<const char*>(p + nameOff), nameLen);
+            ea.size = valLen;
+            if (valLen > 0) ea.residentData.assign(p + valOff, p + valOff + valLen);
+            out.push_back(std::move(ea));
+        }
+        if (next == 0) break;
+        if (next < 8 || pos + next > n) break;
+        pos += next;
+    }
+}
 
 bool attrNameEquals(const uint8_t* rec, uint32_t recordSize, uint32_t attrOffset,
                     const NTFS_AttributeHeader* attr, const char* ascii) {
@@ -267,6 +359,7 @@ void parseMftRecord(uint8_t* rec, uint32_t recordSize, uint32_t sectorSize,
                     ParsedMftRecord& out) {
     auto* header = reinterpret_cast<MFT_RecordHeader*>(rec);
     out.flags = static_cast<uint8_t>(header->flags);
+    out.baseMft = header->baseRecordReference & 0x0000FFFFFFFFFFFFULL;
 
     // Apply the NTFS Update Sequence Array (USA) fixup before any attribute
     // parsing: NTFS overwrites the last two bytes of each sector in a
@@ -347,10 +440,203 @@ void parseMftRecord(uint8_t* rec, uint32_t recordSize, uint32_t sectorSize,
                     createdAt  = ntfs::filetimeToUnix(times[0]);
                     modifiedAt = ntfs::filetimeToUnix(times[1]);
                 }
+                if (siOff + 36 <= recordSize) {
+                    const uint32_t fileAttrs = ntfs::u32le(rec + siOff + 32);
+                    if (fileAttrs & 0x4000u) out.dataEfs = true;
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_ATTRIBUTE_LIST && attr->nonResidentFlag == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <=
+                recordSize) {
+                auto* resAttr = reinterpret_cast<NTFS_ResidentAttributeHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                const size_t valLen = resAttr->valueLength;
+                if (valLen > 0 && valOff + valLen <= recordSize)
+                    harvestAttrListEntries(rec + valOff, valLen, out.attrListDataRefs);
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_ATTRIBUTE_LIST && attr->nonResidentFlag != 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <=
+                recordSize) {
+                auto* nonRes = reinterpret_cast<NTFS_NonResidentHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                size_t currentRunPos = attrOffset + nonRes->dataRunOffset;
+                int64_t previousLcn = 0;
+                while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize &&
+                       out.attrListRuns.size() < 8) {
+                    uint8_t headerByte = rec[currentRunPos];
+                    if (headerByte == 0x00) break;
+                    uint8_t lenSize = headerByte & 0x0F;
+                    uint8_t offSize = (headerByte >> 4) & 0x0F;
+                    currentRunPos++;
+                    if (currentRunPos + lenSize + offSize > recordSize) break;
+                    uint64_t clusterCount = 0;
+                    for (int j = 0; j < lenSize; j++)
+                        clusterCount |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                    currentRunPos += lenSize;
+                    bool sparse = (offSize == 0);
+                    int64_t lcnOffset = 0;
+                    if (!sparse) {
+                        for (int j = 0; j < offSize; j++)
+                            lcnOffset |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                        if (rec[currentRunPos + offSize - 1] & 0x80) {
+                            for (int j = offSize; j < 8; j++)
+                                lcnOffset |= static_cast<int64_t>(0xFF) << (j * 8);
+                        }
+                        previousLcn += lcnOffset;
+                    }
+                    currentRunPos += offSize;
+                    if (sparse || clusterCount == 0) continue;
+                    FileRecord::DataRun run;
+                    run.startSector =
+                        volumeStartSector + static_cast<uint64_t>(previousLcn) * sectorsPerCluster;
+                    run.sectorCount = clusterCount * sectorsPerCluster;
+                    out.attrListRuns.push_back(run);
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_VOLUME_NAME && attr->nonResidentFlag == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <=
+                recordSize) {
+                const auto* resAttr = reinterpret_cast<const NTFS_ResidentAttributeHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                const size_t valLen = resAttr->valueLength;
+                if (valLen >= 2 && (valLen & 1u) == 0 && valOff + valLen <= recordSize &&
+                    valLen / 2 <= 128) {
+                    const auto* units = reinterpret_cast<const uint16_t*>(rec + valOff);
+                    out.volumeName = ntfs::utf16leToUtf8(units, valLen / 2);
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_OBJECT_ID && attr->nonResidentFlag == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <=
+                recordSize) {
+                const auto* resAttr = reinterpret_cast<const NTFS_ResidentAttributeHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                const size_t valLen = resAttr->valueLength;
+                if (valLen >= 16 && valOff + 16 <= recordSize)
+                    out.objectIdGuid = guidStringFromBytes(rec + valOff, valLen);
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_REPARSE_POINT && attr->nonResidentFlag == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <=
+                recordSize) {
+                const auto* resAttr = reinterpret_cast<const NTFS_ResidentAttributeHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                const size_t valLen = resAttr->valueLength;
+                if (valLen > 0 && valOff + valLen <= recordSize) {
+                    out.reparsePrintName = reparsePrintNameFromValue(rec + valOff, valLen);
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_REPARSE_POINT && attr->nonResidentFlag != 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <=
+                recordSize) {
+                auto* nonRes = reinterpret_cast<NTFS_NonResidentHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                size_t currentRunPos = attrOffset + nonRes->dataRunOffset;
+                int64_t previousLcn = 0;
+                while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize &&
+                       out.reparseRuns.size() < 8) {
+                    uint8_t headerByte = rec[currentRunPos];
+                    if (headerByte == 0x00) break;
+                    uint8_t lenSize = headerByte & 0x0F;
+                    uint8_t offSize = (headerByte >> 4) & 0x0F;
+                    currentRunPos++;
+                    if (currentRunPos + lenSize + offSize > recordSize) break;
+                    uint64_t clusterCount = 0;
+                    for (int j = 0; j < lenSize; j++)
+                        clusterCount |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                    currentRunPos += lenSize;
+                    bool sparse = (offSize == 0);
+                    int64_t lcnOffset = 0;
+                    if (!sparse) {
+                        for (int j = 0; j < offSize; j++)
+                            lcnOffset |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                        if (rec[currentRunPos + offSize - 1] & 0x80) {
+                            for (int j = offSize; j < 8; j++)
+                                lcnOffset |= static_cast<int64_t>(0xFF) << (j * 8);
+                        }
+                        previousLcn += lcnOffset;
+                    }
+                    currentRunPos += offSize;
+                    if (sparse || clusterCount == 0) continue;
+                    FileRecord::DataRun run;
+                    run.startSector =
+                        volumeStartSector + static_cast<uint64_t>(previousLcn) * sectorsPerCluster;
+                    run.sectorCount = clusterCount * sectorsPerCluster;
+                    out.reparseRuns.push_back(run);
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_EA && attr->nonResidentFlag == 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_ResidentAttributeHeader) <=
+                recordSize) {
+                const auto* resAttr = reinterpret_cast<const NTFS_ResidentAttributeHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                const size_t valOff = static_cast<size_t>(attrOffset) + resAttr->valueOffset;
+                const size_t valLen = resAttr->valueLength;
+                if (valLen > 0 && valOff + valLen <= recordSize) {
+                    harvestEaEntries(rec + valOff, valLen, out.eaEntries);
+                }
+            }
+        }
+
+        if (attr->type == ntfs::ATTR_EA && attr->nonResidentFlag != 0) {
+            if (attrOffset + sizeof(NTFS_AttributeHeader) + sizeof(NTFS_NonResidentHeader) <=
+                recordSize) {
+                auto* nonRes = reinterpret_cast<NTFS_NonResidentHeader*>(
+                    rec + attrOffset + sizeof(NTFS_AttributeHeader));
+                size_t currentRunPos = attrOffset + nonRes->dataRunOffset;
+                int64_t previousLcn = 0;
+                while (currentRunPos < attrOffset + attr->length && currentRunPos < recordSize &&
+                       out.eaRuns.size() < 8) {
+                    uint8_t headerByte = rec[currentRunPos];
+                    if (headerByte == 0x00) break;
+                    uint8_t lenSize = headerByte & 0x0F;
+                    uint8_t offSize = (headerByte >> 4) & 0x0F;
+                    currentRunPos++;
+                    if (currentRunPos + lenSize + offSize > recordSize) break;
+                    uint64_t clusterCount = 0;
+                    for (int j = 0; j < lenSize; j++)
+                        clusterCount |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                    currentRunPos += lenSize;
+                    bool sparse = (offSize == 0);
+                    int64_t lcnOffset = 0;
+                    if (!sparse) {
+                        for (int j = 0; j < offSize; j++)
+                            lcnOffset |= static_cast<uint64_t>(rec[currentRunPos + j]) << (j * 8);
+                        if (rec[currentRunPos + offSize - 1] & 0x80) {
+                            for (int j = offSize; j < 8; j++)
+                                lcnOffset |= static_cast<int64_t>(0xFF) << (j * 8);
+                        }
+                        previousLcn += lcnOffset;
+                    }
+                    currentRunPos += offSize;
+                    if (sparse || clusterCount == 0) continue;
+                    FileRecord::DataRun run;
+                    run.startSector =
+                        volumeStartSector + static_cast<uint64_t>(previousLcn) * sectorsPerCluster;
+                    run.sectorCount = clusterCount * sectorsPerCluster;
+                    out.eaRuns.push_back(run);
+                }
             }
         }
 
         if (attr->type == ntfs::ATTR_DATA) {
+            if ((attr->flags & 0x4000u) != 0 && attr->nameLength == 0) out.dataEfs = true;
             // Determine whether this is the unnamed main $DATA or
             // a named Alternate Data Stream. attr->nameOffset is
             // relative to the attribute start; the name is UTF-16LE.
@@ -559,23 +845,22 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     uint32_t sectorsPerCluster = 8;
     uint64_t mftStartCluster = 0;
     uint32_t mftRecordBytes = 1024;
-    std::vector<uint8_t> bootSector(sectorSize);
-    if (!readComplete(reader.readSectors(partitionOffsetBytes, sectorSize, bootSector.data()),
-                      sectorSize)) {
+    std::vector<uint8_t> bootSector;
+    uint32_t bootBps = sectorSize;
+    uint32_t bootRecBytes = 1024;
+    uint64_t lcn = 0;
+    uint32_t spc = 8;
+    bool primaryUnread = false;
+    if (ntfs::loadNtfsBoot(reader, partitionOffsetBytes, partitionSizeBytes, sectorSize, bootSector,
+                           bootBps, spc, lcn, bootRecBytes, &primaryUnread)) {
+        sectorsPerCluster = spc;
+        mftStartCluster = lcn;
+        mftRecordBytes = bootRecBytes;
+    } else if (primaryUnread) {
         mftUnread = true;
-    } else {
-        uint32_t bootBps = sectorSize;
-        uint32_t recBytes = 1024;
-        uint64_t lcn = 0;
-        uint32_t spc = 8;
-        if (ntfs::parseNtfsBoot(bootSector.data(), bootSector.size(), bootBps, spc, lcn, recBytes)) {
-            sectorsPerCluster = spc;
-            mftStartCluster = lcn;
-            mftRecordBytes = recBytes;
-        } else {
-            sectorsPerCluster = bootSector[0x0D];
-            if (sectorsPerCluster == 0) sectorsPerCluster = 8;
-        }
+    } else if (!bootSector.empty()) {
+        sectorsPerCluster = bootSector[0x0D];
+        if (sectorsPerCluster == 0) sectorsPerCluster = 8;
     }
 
     uint64_t scanEndSector = diskSize / sectorSize;
@@ -588,11 +873,15 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     std::vector<ScanRange> ranges;
     std::vector<MftByteRange> mftByteRanges;
     if (mftStartCluster > 0) {
-        std::vector<uint8_t> rec0(mftRecordBytes, 0);
-        uint64_t rec0Off = partitionOffsetBytes + mftStartCluster * static_cast<uint64_t>(sectorsPerCluster) * sectorSize;
-        if (!readComplete(reader.readSectors(rec0Off, mftRecordBytes, rec0.data()), mftRecordBytes)) {
-            mftUnread = true;
-        } else if (std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) == 0) {
+        auto loadRunsFromRec0 = [&](uint64_t startCluster, bool* unread) {
+            std::vector<uint8_t> rec0(mftRecordBytes, 0);
+            uint64_t rec0Off = partitionOffsetBytes +
+                               startCluster * static_cast<uint64_t>(sectorsPerCluster) * sectorSize;
+            if (!readComplete(reader.readSectors(rec0Off, mftRecordBytes, rec0.data()), mftRecordBytes)) {
+                if (unread) *unread = true;
+                return false;
+            }
+            if (std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) != 0) return false;
             auto runs = unnamedDataRunsFromRecord(rec0.data(), mftRecordBytes, volumeStartSector,
                                                   sectorsPerCluster);
             for (const auto& r : runs) {
@@ -600,6 +889,15 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     ranges.push_back({r.startSector, r.sectorCount});
                     mftByteRanges.push_back({r.startSector * sectorSize, r.sectorCount * sectorSize});
                 }
+            }
+            return !ranges.empty();
+        };
+        bool rec0Unread = false;
+        if (!loadRunsFromRec0(mftStartCluster, &rec0Unread)) {
+            if (rec0Unread) mftUnread = true;
+            if (bootSector.size() >= 0x40) {
+                const uint64_t mirrLcn = ntfs::u64le(bootSector.data() + 0x38);
+                if (mirrLcn > 0 && mirrLcn != mftStartCluster) loadRunsFromRec0(mirrLcn, nullptr);
             }
         }
         if (ranges.empty()) {
@@ -636,6 +934,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         uint32_t recBytes = 4096;
     };
     std::vector<I30AllocStream> i30Allocs;
+    std::unordered_set<uint64_t> ownedMftDataSectors;
 
     auto mftRecFromAbsByte = [&](uint64_t absByte) -> uint64_t {
         uint64_t acc = 0;
@@ -762,6 +1061,15 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     stream.recBytes = parsed.i30RecordSize ? parsed.i30RecordSize : 4096u;
                     i30Allocs.push_back(std::move(stream));
                 }
+                auto takeDataRuns = [&](const std::vector<FileRecord::DataRun>& runs) {
+                    for (const auto& run : runs) {
+                        if (run.startSector == UINT64_MAX) continue;
+                        for (uint64_t i = 0; i < run.sectorCount; ++i)
+                            ownedMftDataSectors.insert(run.startSector + i);
+                    }
+                };
+                takeDataRuns(parsed.dataRuns);
+                for (const auto& ads : parsed.adsEntries) takeDataRuns(ads.runs);
 
                 MftEntry entry;
                 entry.byteOffset = absByte;
@@ -923,12 +1231,116 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         parsed.filename = "UnknownFile_" + std::to_string(emitId) + ".bin";
         parseMftRecord(recBuf.data(), entry.byteLen, sectorSize,
                        volumeStartSector, sectorsPerCluster, parsed);
+        if (parsed.baseMft != 0) {
+            visited[visitIdx] = true;
+            continue;
+        }
+        if (parsed.attrListDataRefs.empty() && !parsed.attrListRuns.empty()) {
+            constexpr uint32_t kMaxList = 64 * 1024;
+            std::vector<uint8_t> blob;
+            for (const auto& run : parsed.attrListRuns) {
+                if (run.startSector == UINT64_MAX || run.sectorCount == 0) continue;
+                uint64_t want = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+                if (blob.size() >= kMaxList) break;
+                if (blob.size() + want > kMaxList) want = kMaxList - blob.size();
+                const size_t old = blob.size();
+                blob.resize(old + static_cast<size_t>(want));
+                const auto listRes = reader.readSectors(run.startSector * sectorSize,
+                                                        static_cast<uint32_t>(want), blob.data() + old);
+                if (!listRes.success || listRes.paddedZeros || listRes.bytesRead < want) {
+                    mftUnread = true;
+                    blob.resize(old);
+                    break;
+                }
+            }
+            harvestAttrListEntries(blob.data(), blob.size(), parsed.attrListDataRefs);
+        }
+        if (parsed.eaEntries.empty() && !parsed.eaRuns.empty()) {
+            constexpr uint32_t kMaxEa = 64 * 1024;
+            std::vector<uint8_t> blob;
+            for (const auto& run : parsed.eaRuns) {
+                if (run.startSector == UINT64_MAX || run.sectorCount == 0) continue;
+                uint64_t want = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+                if (blob.size() >= kMaxEa) break;
+                if (blob.size() + want > kMaxEa) want = kMaxEa - blob.size();
+                const size_t old = blob.size();
+                blob.resize(old + static_cast<size_t>(want));
+                const auto eaRes = reader.readSectors(run.startSector * sectorSize,
+                                                      static_cast<uint32_t>(want), blob.data() + old);
+                if (!eaRes.success || eaRes.paddedZeros || eaRes.bytesRead < want) {
+                    mftUnread = true;
+                    blob.resize(old);
+                    break;
+                }
+            }
+            harvestEaEntries(blob.data(), blob.size(), parsed.eaEntries);
+        }
+        if (parsed.reparsePrintName.empty() && !parsed.reparseRuns.empty()) {
+            constexpr uint32_t kMaxRp = 64 * 1024;
+            std::vector<uint8_t> blob;
+            for (const auto& run : parsed.reparseRuns) {
+                if (run.startSector == UINT64_MAX || run.sectorCount == 0) continue;
+                uint64_t want = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+                if (blob.size() >= kMaxRp) break;
+                if (blob.size() + want > kMaxRp) want = kMaxRp - blob.size();
+                const size_t old = blob.size();
+                blob.resize(old + static_cast<size_t>(want));
+                const auto rpRes = reader.readSectors(run.startSector * sectorSize,
+                                                      static_cast<uint32_t>(want), blob.data() + old);
+                if (!rpRes.success || rpRes.paddedZeros || rpRes.bytesRead < want) {
+                    mftUnread = true;
+                    blob.resize(old);
+                    break;
+                }
+            }
+            if (!blob.empty())
+                parsed.reparsePrintName = reparsePrintNameFromValue(blob.data(), blob.size());
+        }
+        if ((parsed.residentBytes.empty() && parsed.dataRuns.empty()) ||
+            parsed.adsEntries.empty() || parsed.eaEntries.empty()) {
+            for (uint64_t extRef : parsed.attrListDataRefs) {
+                auto it = mftEntries.find(extRef);
+                if (it == mftEntries.end()) continue;
+                const MftEntry& ext = it->second;
+                if (ext.byteLen < 64) continue;
+                std::vector<uint8_t> extBuf(ext.byteLen);
+                const auto extRes = reader.readBytes(ext.byteOffset, ext.byteLen, extBuf.data());
+                if (!extRes.success || extRes.bytesRead < ext.byteLen || extRes.paddedZeros) {
+                    mftUnread = true;
+                    continue;
+                }
+                ParsedMftRecord extParsed;
+                parseMftRecord(extBuf.data(), ext.byteLen, sectorSize,
+                               volumeStartSector, sectorsPerCluster, extParsed);
+                if (parsed.residentBytes.empty() && parsed.dataRuns.empty() &&
+                    (!extParsed.residentBytes.empty() || !extParsed.dataRuns.empty())) {
+                    if (parsed.fileSize == 0) parsed.fileSize = extParsed.fileSize;
+                    parsed.dataRuns = std::move(extParsed.dataRuns);
+                    parsed.finalStartSector = extParsed.finalStartSector;
+                    parsed.finalEndSector = extParsed.finalEndSector;
+                    parsed.mainStreamResident = extParsed.mainStreamResident;
+                    parsed.residentBytes = std::move(extParsed.residentBytes);
+                    parsed.dataCompressed = extParsed.dataCompressed;
+                }
+                for (auto& ads : extParsed.adsEntries) {
+                    if (parsed.adsEntries.size() >= 16) break;
+                    parsed.adsEntries.push_back(std::move(ads));
+                }
+                for (auto& ea : extParsed.eaEntries) {
+                    if (parsed.eaEntries.size() >= 16) break;
+                    parsed.eaEntries.push_back(std::move(ea));
+                }
+                if (parsed.reparsePrintName.empty() && !extParsed.reparsePrintName.empty())
+                    parsed.reparsePrintName = std::move(extParsed.reparsePrintName);
+            }
+        }
 
         // We found a valid file record — assemble the FileRecord with the
         // pre-refactor field semantics.
         FileRecord fr;
         fr.id = emitId++;
         fr.parentId = static_cast<int64_t>(parsed.parentMft);
+        fr.mftRef = persistMftRef(entry.mftRef);
         fr.name = parsed.filename;
 
         size_t dotPos = fr.name.find_last_of('.');
@@ -950,9 +1362,14 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         // Directories are reported as a distinct category so the UI can
         // render a folder tree; they carry no recoverable $DATA payload.
         fr.category = isDirectory ? "Folder" : categoryForName(fr.name);
-        fr.source = "ntfs_mft";
+        fr.source = parsed.dataEfs ? "ntfs_efs"
+            : (parsed.reparsePrintName.empty() ? "ntfs_mft" : "ntfs_reparse");
         fr.compressed = parsed.dataCompressed;
         fr.residentData = parsed.residentBytes;
+        if (fr.residentData.empty() && !parsed.reparsePrintName.empty()) {
+            fr.residentData.assign(parsed.reparsePrintName.begin(), parsed.reparsePrintName.end());
+            if (fr.sizeBytes == 0) fr.sizeBytes = fr.residentData.size();
+        }
         fr.createdAt = parsed.createdAt;
         fr.modifiedAt = parsed.modifiedAt;
 
@@ -979,6 +1396,52 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             adsFr.confidence = std::max(0, fr.confidence - 5);
             applyRecordBoosts(adsFr, entry.mftRef);
             adsChildren.push_back(std::move(adsFr));
+        }
+        for (const auto& ea : parsed.eaEntries) {
+            FileRecord eaFr = fr;
+            eaFr.id = emitId++;
+            eaFr.name = parsed.filename + ":ea:" + (ea.streamName.empty() ? "ea" : ea.streamName);
+            eaFr.extension = ea.streamName;
+            eaFr.sizeBytes = ea.size;
+            eaFr.runs = ea.runs;
+            eaFr.residentData = ea.residentData;
+            eaFr.startSector = entry.byteOffset / sectorSize;
+            eaFr.endSector = eaFr.startSector;
+            eaFr.source = "ntfs_ea";
+            eaFr.confidence = std::max(0, fr.confidence - 5);
+            applyRecordBoosts(eaFr, entry.mftRef);
+            adsChildren.push_back(std::move(eaFr));
+        }
+        if (!parsed.objectIdGuid.empty()) {
+            FileRecord oidFr = fr;
+            oidFr.id = emitId++;
+            oidFr.name = parsed.filename + ":objectid";
+            oidFr.extension = "objectid";
+            oidFr.sizeBytes = parsed.objectIdGuid.size();
+            oidFr.runs.clear();
+            oidFr.residentData.assign(parsed.objectIdGuid.begin(), parsed.objectIdGuid.end());
+            oidFr.startSector = entry.byteOffset / sectorSize;
+            oidFr.endSector = oidFr.startSector;
+            oidFr.source = "ntfs_object_id";
+            oidFr.confidence = 5;
+            applyRecordBoosts(oidFr, entry.mftRef);
+            adsChildren.push_back(std::move(oidFr));
+        }
+        if (!parsed.volumeName.empty()) {
+            FileRecord volFr = fr;
+            volFr.id = emitId++;
+            volFr.name = parsed.volumeName;
+            volFr.extension.clear();
+            volFr.sizeBytes = parsed.volumeName.size();
+            volFr.runs.clear();
+            volFr.residentData.assign(parsed.volumeName.begin(), parsed.volumeName.end());
+            volFr.startSector = entry.byteOffset / sectorSize;
+            volFr.endSector = volFr.startSector;
+            volFr.source = "ntfs_vol_name";
+            volFr.confidence = 5;
+            volFr.category = "System";
+            applyRecordBoosts(volFr, entry.mftRef);
+            adsChildren.push_back(std::move(volFr));
         }
 
         applyRecordBoosts(fr, entry.mftRef);
@@ -1041,6 +1504,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         FileRecord fr;
         fr.id = kOrphanSweepIdBase + (orphanSweepCount++);
         fr.parentId = -1;
+        fr.mftRef = persistMftRef(entry.mftRef);
         fr.name = "";     // the directory walk never produced a name
         fr.path = "/";
         fr.sizeBytes = 0;
@@ -1084,94 +1548,191 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         }
     }
 
-    std::vector<ntfs::IndexNameHint> unallocI30Hints;
-    {
-        std::unordered_set<uint64_t> ownedI30;
-        for (const auto& stream : i30Allocs) {
-            for (const auto& run : stream.runs) {
-                if (run.startSector == UINT64_MAX) continue;
-                for (uint64_t i = 0; i < run.sectorCount; ++i)
-                    ownedI30.insert(run.startSector + i);
-            }
+    std::unordered_set<uint64_t> ownedI30;
+    for (const auto& stream : i30Allocs) {
+        for (const auto& run : stream.runs) {
+            if (run.startSector == UINT64_MAX) continue;
+            for (uint64_t i = 0; i < run.sectorCount; ++i)
+                ownedI30.insert(run.startSector + i);
         }
-        uint32_t recBytes = static_cast<uint32_t>(sectorsPerCluster) * sectorSize;
-        if (recBytes < 512 || recBytes > 65536) recBytes = 4096;
-        if (sectorSize != 0 && recBytes % sectorSize == 0) {
-            const uint32_t recSectors = recBytes / sectorSize;
-            auto tryUnallocIndx = [&](uint64_t startSec) {
-                if (ownedI30.count(startSec)) return;
-                if (isRunning && !(*isRunning)) return;
-                std::vector<uint8_t> rec(recBytes);
-                if (!readComplete(reader.readSectors(startSec * sectorSize, recBytes, rec.data()), recBytes))
-                    return;
-                if (std::memcmp(rec.data(), "INDX", 4) != 0) return;
-                auto hints = ntfs::parseIndxRecord(rec.data(), recBytes, sectorSize);
-                if (hints.empty()) return;
-                unallocI30Hints.insert(unallocI30Hints.end(), hints.begin(), hints.end());
-            };
-            auto walkRange = [&](uint64_t start, uint64_t count) {
-                if (recSectors == 0 || count < recSectors) return;
-                uint64_t s = start;
-                if (s % recSectors) s += recSectors - (s % recSectors);
-                const uint64_t end = start + count;
-                for (; s + recSectors <= end; s += recSectors) {
-                    if (isRunning && !(*isRunning)) break;
-                    tryUnallocIndx(s);
-                }
-            };
-            uint64_t volBytes = partitionSizeBytes;
-            if (volBytes == 0 && scanEndSector > volumeStartSector)
-                volBytes = (scanEndSector - volumeStartSector) * sectorSize;
-            auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ntfs,
-                                                 partitionOffsetBytes, volBytes);
-            if (!ranges.empty()) {
-                for (const auto& r : ranges) walkRange(r.start, r.count);
-            } else {
-                // ponytail: $Bitmap yok — 65536 küme tavan; tam HDD linear değil.
-                uint64_t volSectors = scanEndSector > volumeStartSector
-                    ? scanEndSector - volumeStartSector : 0;
-                const uint64_t cap = std::min(volSectors,
-                    65536ull * static_cast<uint64_t>(std::max<uint32_t>(sectorsPerCluster, 1)));
-                walkRange(volumeStartSector, cap);
+    }
+
+    std::vector<ntfs::IndexNameHint> unallocI30Hints;
+    std::vector<SectorRange> unallocWalk;
+    uint32_t recBytes = static_cast<uint32_t>(sectorsPerCluster) * sectorSize;
+    if (recBytes < 512 || recBytes > 65536) recBytes = 4096;
+    const uint32_t recSectors = (sectorSize != 0 && recBytes % sectorSize == 0)
+        ? recBytes / sectorSize : 0;
+    if (recSectors != 0) {
+        auto tryUnallocIndx = [&](uint64_t startSec) {
+            if (ownedI30.count(startSec)) return;
+            if (isRunning && !(*isRunning)) return;
+            std::vector<uint8_t> rec(recBytes);
+            if (!readComplete(reader.readSectors(startSec * sectorSize, recBytes, rec.data()), recBytes)) {
+                i30Unread = true;
+                return;
             }
+            if (std::memcmp(rec.data(), "INDX", 4) != 0) return;
+            auto hints = ntfs::parseIndxRecord(rec.data(), recBytes, sectorSize);
+            if (hints.empty()) return;
+            for (auto& h : hints) h.indxStartSector = startSec;
+            unallocI30Hints.insert(unallocI30Hints.end(), hints.begin(), hints.end());
+        };
+        auto walkRange = [&](uint64_t start, uint64_t count) {
+            if (recSectors == 0 || count < recSectors) return;
+            uint64_t s = start;
+            if (s % recSectors) s += recSectors - (s % recSectors);
+            const uint64_t end = start + count;
+            for (; s + recSectors <= end; s += recSectors) {
+                if (isRunning && !(*isRunning)) break;
+                tryUnallocIndx(s);
+            }
+        };
+        uint64_t volBytes = partitionSizeBytes;
+        if (volBytes == 0 && scanEndSector > volumeStartSector)
+            volBytes = (scanEndSector - volumeStartSector) * sectorSize;
+        auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ntfs,
+                                             partitionOffsetBytes, volBytes);
+        if (!ranges.empty()) {
+            unallocWalk = ranges;
+            for (const auto& r : ranges) walkRange(r.start, r.count);
+        } else {
+            // ponytail: $Bitmap yok — 65536 küme tavan; tam HDD linear değil.
+            uint64_t volSectors = scanEndSector > volumeStartSector
+                ? scanEndSector - volumeStartSector : 0;
+            const uint64_t cap = std::min(volSectors,
+                65536ull * static_cast<uint64_t>(std::max<uint32_t>(sectorsPerCluster, 1)));
+            if (volSectors > cap) i30Unread = true;
+            unallocWalk.push_back({volumeStartSector, cap});
+            walkRange(volumeStartSector, cap);
         }
     }
 
     std::unordered_set<std::string> i30Seen;
     int64_t i30Id = 800000;
-    for (const auto& h : i30Hints) {
-        if (h.name.empty() || h.childMft == 0) continue;
+    auto emitI30Hint = [&](const ntfs::IndexNameHint& h, const char* source) -> bool {
+        if (h.name.empty() || h.childMft == 0) return false;
         const bool unseen = !mftIndex.hasRecord(h.childMft);
         const bool reuse = !unseen && mftIndex.recordName(h.childMft) != h.name;
-        if (!unseen && !reuse) continue;
+        if (!unseen && !reuse) return false;
         const std::string key = std::to_string(h.childMft) + "\n" + h.name;
-        if (!i30Seen.insert(key).second) continue;
+        if (!i30Seen.insert(key).second) return false;
         FileRecord fr{};
         fr.id = i30Id++;
         fr.parentId = static_cast<int64_t>(h.parentMft);
+        fr.mftRef = persistMftRef(h.childMft);
         fr.name = h.name;
         fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
         fr.status = 0;
-        fr.source = "ntfs_i30";
+        fr.source = source;
         fr.confidence = 35;
         fr.category = categoryForName(h.name);
         callback(fr);
-    }
-
+        return true;
+    };
+    auto nameExt = [](const std::string& name) {
+        const size_t dot = name.find_last_of('.');
+        if (dot == std::string::npos || dot + 1 >= name.size()) return std::string{};
+        std::string ext = name.substr(dot + 1);
+        for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+        return ext;
+    };
+    auto sectorOwned = [&](uint64_t s) {
+        return ownedI30.count(s) || ownedMftDataSectors.count(s);
+    };
+    auto tryI30CarveBind = [&](const ntfs::IndexNameHint& h) {
+        // ponytail: JPEG/PNG/PDF/ZIP + FILE_NAME size + nearby unalloc; no BGC.
+        constexpr uint64_t kNearbyClusters = 64;
+        constexpr uint64_t kMaxBytes = 16ull << 20;
+        const std::string ext = nameExt(h.name);
+        if ((ext != "jpg" && ext != "jpeg" && ext != "png" && ext != "pdf" && ext != "zip") ||
+            h.realSize < 8 || h.realSize > kMaxBytes) return;
+        if (recSectors == 0 || sectorSize == 0 || unallocWalk.empty()) return;
+        const uint64_t needSectors = (h.realSize + sectorSize - 1) / sectorSize;
+        if (needSectors == 0) return;
+        const uint64_t originClus = h.indxStartSector / recSectors;
+        uint64_t foundStart = UINT64_MAX;
+        int hits = 0;
+        auto consider = [&](uint64_t startSec) {
+            if (isRunning && !(*isRunning)) return;
+            if (sectorOwned(startSec)) return;
+            const uint64_t clus = startSec / recSectors;
+            const uint64_t dist = clus > originClus ? clus - originClus : originClus - clus;
+            if (dist > kNearbyClusters) return;
+            for (uint64_t i = 0; i < needSectors; ++i) {
+                if (sectorOwned(startSec + i)) return;
+            }
+            const uint32_t take = static_cast<uint32_t>(needSectors * sectorSize);
+            std::vector<uint8_t> buf(take);
+            if (!readComplete(reader.readSectors(startSec * sectorSize, take, buf.data()), take))
+                return;
+            if (h.realSize > buf.size()) return;
+            const uint8_t* p = buf.data();
+            const size_t n = static_cast<size_t>(h.realSize);
+            bool ok = false;
+            if (ext == "jpg" || ext == "jpeg") {
+                ok = p[0] == 0xFF && p[1] == 0xD8 && p[n - 2] == 0xFF && p[n - 1] == 0xD9;
+            } else if (ext == "png" && n >= 24) {
+                static const uint8_t sig[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+                ok = std::memcmp(p, sig, 8) == 0 && std::memcmp(p + n - 8, "IEND", 4) == 0;
+            } else if (ext == "zip" && n >= 8) {
+                if (p[0] == 'P' && p[1] == 'K' && p[2] == 0x03 && p[3] == 0x04) {
+                    const size_t tail = n > 64 ? n - 64 : 0;
+                    for (size_t i = tail; i + 4 <= n; ++i) {
+                        if (p[i] == 'P' && p[i + 1] == 'K' && p[i + 2] == 0x05 && p[i + 3] == 0x06) {
+                            ok = true;
+                            break;
+                        }
+                    }
+                }
+            } else if (ext == "pdf" && n >= 8) {
+                if (std::memcmp(p, "%PDF-", 5) == 0) {
+                    const size_t tail = n > 16 ? n - 16 : 0;
+                    for (size_t i = tail; i + 5 <= n; ++i) {
+                        if (p[i] == '%' && p[i + 1] == '%' && p[i + 2] == 'E' &&
+                            p[i + 3] == 'O' && p[i + 4] == 'F') {
+                            ok = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!ok) return;
+            ++hits;
+            foundStart = startSec;
+        };
+        for (const auto& r : unallocWalk) {
+            if (recSectors == 0 || r.count < recSectors) continue;
+            uint64_t s = r.start;
+            if (s % recSectors) s += recSectors - (s % recSectors);
+            const uint64_t end = r.start + r.count;
+            for (; s + recSectors <= end; s += recSectors) {
+                if (isRunning && !(*isRunning)) break;
+                consider(s);
+                if (hits > 1) break;
+            }
+            if (hits > 1) break;
+        }
+        if (hits != 1 || foundStart == UINT64_MAX) return;
+        FileRecord fr{};
+        fr.id = i30Id++;
+        fr.parentId = static_cast<int64_t>(h.parentMft);
+        fr.mftRef = persistMftRef(h.childMft);
+        fr.name = h.name;
+        fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
+        fr.status = 0;
+        fr.source = "ntfs_i30_carve";
+        fr.confidence = 70;
+        fr.category = categoryForName(h.name);
+        fr.sizeBytes = h.realSize;
+        fr.startSector = foundStart;
+        fr.endSector = foundStart + needSectors;
+        fr.runs.push_back({foundStart, needSectors});
+        callback(fr);
+    };
+    for (const auto& h : i30Hints) emitI30Hint(h, "ntfs_i30");
     for (const auto& h : unallocI30Hints) {
-        if (h.name.empty() || h.childMft == 0) continue;
-        const std::string key = std::to_string(h.childMft) + "\n" + h.name;
-        if (!i30Seen.insert(key).second) continue;
-        FileRecord fr{};
-        fr.id = i30Id++;
-        fr.parentId = static_cast<int64_t>(h.parentMft);
-        fr.name = h.name;
-        fr.path = mftIndex.rebuildPath(h.childMft, h.name, h.parentMft);
-        fr.status = 0;
-        fr.source = "ntfs_i30_unalloc";
-        fr.confidence = 35;
-        fr.category = categoryForName(h.name);
-        callback(fr);
+        if (emitI30Hint(h, "ntfs_i30_unalloc")) tryI30CarveBind(h);
     }
 
     if (i30Unread) {
@@ -1228,6 +1789,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 FileRecord fr;
                 fr.id = -1;                       // not a scannable file
                 fr.parentId = static_cast<int64_t>(usn.fileReference & 0x0000FFFFFFFFFFFFULL);
+                fr.mftRef = persistMftRef(static_cast<uint64_t>(fr.parentId));
                 fr.name = usn.name;
                 fr.extension = "";
                 fr.path = "usn";                  // timeline marker

@@ -22,7 +22,7 @@ std::string mutate(const std::string& base, std::mt19937& rng) {
 
 TEST(RunsCodecFuzz, RandomMutationsNeverThrow) {
     const std::vector<std::string> seeds = {
-        "", "not json", "[[1,2]]", "[[0,1],[4096,16]]",
+        "", "not json", "[[1,2]]", "[[0,1],[4096,16]]", "[[84,1,5],[92,1,5]]",
         "[[999999999999999999999999999999,1]]", "[[1,0]]", "[[abc,2]]",
     };
 

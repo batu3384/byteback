@@ -3,6 +3,7 @@
 #include "crypto/byteback_aes.h"
 #include "imager/ewf_reader.h"
 #include "io/byte_source.h"
+#include "io/vhd_source.h"
 #include <cstring>
 #include <algorithm>
 
@@ -334,6 +335,28 @@ bool DiskReader::attachEwfImage(const std::string& pathOrUrl, std::string* errOu
     return true;
 }
 
+bool DiskReader::attachVhdMemory(std::vector<uint8_t> image, std::string* errOut) {
+    std::vector<uint8_t> payload;
+    std::string err;
+    if (!extractFixedVhdPayload(image.data(), image.size(), payload, err)) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    attachMemoryVolume(std::move(payload), 512);
+    return true;
+}
+
+bool DiskReader::attachVhdFile(const std::string& path, std::string* errOut) {
+    std::vector<uint8_t> payload;
+    std::string err;
+    if (!extractVhdFile(path, payload, err)) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    attachMemoryVolume(std::move(payload), 512);
+    return true;
+}
+
 bool DiskReader::attachRawFile(const std::string& path, std::string* errOut) {
     std::lock_guard<std::mutex> lock(ioMutex_);
     closeDriveUnlocked();
@@ -399,10 +422,21 @@ bool DiskReader::setXtsFvek128(const uint8_t* key32, size_t n) {
     return setXtsFvek(key32, n);
 }
 
+void DiskReader::setXtsDecryptFrom(uint64_t byteOffset) {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    xtsFromBytes_ = byteOffset;
+}
+
+uint64_t DiskReader::xtsDecryptFromBytes() const {
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    return xtsFromBytes_;
+}
+
 void DiskReader::clearXtsFvek() {
     std::lock_guard<std::mutex> lock(ioMutex_);
     xtsKeyLen_ = 0;
     std::memset(xtsKey_, 0, sizeof(xtsKey_));
+    xtsFromBytes_ = 0;
 }
 
 bool DiskReader::hasXtsFvek() const {
@@ -419,13 +453,19 @@ void DiskReader::copyXtsFvekFrom(const DiskReader& src) {
     if (this == &src) return;
     uint8_t key[64];
     uint8_t len = 0;
+    uint64_t from = 0;
     {
         std::lock_guard<std::mutex> lock(src.ioMutex_);
         len = src.xtsKeyLen_;
+        from = src.xtsFromBytes_;
         if (len == 32 || len == 64) std::memcpy(key, src.xtsKey_, len);
     }
-    if (len == 32 || len == 64) setXtsFvek(key, len);
-    else clearXtsFvek();
+    if (len == 32 || len == 64) {
+        setXtsFvek(key, len);
+        setXtsDecryptFrom(from);
+    } else {
+        clearXtsFvek();
+    }
 }
 
 void DiskReader::maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8_t* buffer) {
@@ -434,7 +474,9 @@ void DiskReader::maybeDecryptXts(uint64_t offsetBytes, uint32_t sizeBytes, uint8
     uint32_t ss = sectorSize_ ? sectorSize_ : 512;
     if (ss == 0 || ss % 16 != 0) return;
     for (uint32_t o = 0; o + ss <= sizeBytes; o += ss) {
-        uint64_t sec = (offsetBytes + o) / ss;
+        const uint64_t abs = offsetBytes + o;
+        if (abs < xtsFromBytes_) continue;
+        uint64_t sec = (abs - xtsFromBytes_) / ss;
         uint8_t tweak[16] = {};
         for (int i = 0; i < 8; ++i) tweak[i] = static_cast<uint8_t>(sec >> (8 * i));
         if (xtsKeyLen_ == 32) {

@@ -3,8 +3,6 @@
 #include "fs/virtual_raid.h"
 #include "fs/vss_scanner.h"
 #include "byteback_recovery.h"
-#include "io/volume_mapper_win.h"
-#include "io/hex_bind.h"
 #include <algorithm>
 #include <string>
 #include <cctype>
@@ -208,6 +206,7 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
         for (const auto& run : rec.runs) {
             if (filled >= wantLen) break;
             uint64_t runBytes = run.sectorCount * sectorSize;
+            if (run.byteCount > 0 && run.byteCount < runBytes) runBytes = run.byteCount;
             if (logical + runBytes <= wantOff) {
                 logical += runBytes;
                 continue;
@@ -254,7 +253,7 @@ bool readFileRange(DiskReader& reader, const FileRecord& rec, uint64_t byteOff, 
     if (!rec.runs.empty()) {
         uint64_t total = rec.sizeBytes;
         if (total == 0) {
-            for (const auto& run : rec.runs) total += run.sectorCount * sectorSize;
+            for (const auto& run : rec.runs) total += dataRunPayloadBytes(run, sectorSize);
         }
         if (byteOff >= total) return false;
         uint64_t take = std::min(maxBytes, total - byteOff);
@@ -419,7 +418,7 @@ int runContentSearch(MetadataStore& store, DiskReader& reader,
             if (fileBytes == 0) {
                 uint32_t ss = active->getSectorSize();
                 if (ss == 0) ss = 512;
-                for (const auto& run : f.runs) fileBytes += run.sectorCount * ss;
+                for (const auto& run : f.runs) fileBytes += dataRunPayloadBytes(run, ss);
             }
             if (fileBytes == 0 && f.endSector > f.startSector) {
                 uint32_t ss = active->getSectorSize();
@@ -552,18 +551,11 @@ void ContentSearchCoordinator::startSearch(MetadataStore& store, int driveIndex,
                           onFinished = std::move(onFinished), fvekSource]() mutable {
         DiskReader reader;
         bool opened = false;
-        if (usesRaidBackend(static_cast<bool>(raid), driveIndex)) {
-            reader.setRaidBackend(std::move(raid));
-            opened = true;
-        } else {
-            std::string vp;
-            if (scanId > 0) vp = store.getScanState(scanId).volumePath;
-            if (!vp.empty()) {
-                opened = isWin32VolumeDevicePath(vp) && reader.openVolumePath(vp);
-            } else {
-                opened = driveIndex >= 0 && reader.openDrive(driveIndex);
-            }
-        }
+        std::string vp;
+        if (scanId > 0) vp = store.getScanState(scanId).volumePath;
+        std::string err;
+        FileRecord rec;
+        opened = bindReaderForRecord(reader, rec, driveIndex, raid, err, vp);
         if (!opened) {
             if (onFinished) onFinished(kContentSearchOpenFailed);
             running_ = false;

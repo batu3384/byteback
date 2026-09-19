@@ -20,6 +20,9 @@ inline bool hfsOffsetTableFits(uint32_t blockSize, uint16_t numRecords) {
 // test/emergency brake that emits source=hfs_limit.
 inline constexpr const char* kHfsCatalogUnreadPath = "/hfs-catalog-unread/";
 inline constexpr const char* kHfsCatalogUnreadSource = "hfs_catalog_unread";
+inline constexpr const char* kHfsCatalogUnusedSource = "hfs_catalog_unused";
+inline constexpr const char* kHfsJournalSource = "hfs_journal";
+inline constexpr const char* kHfsVolNameSource = "hfs_vol_name";
 inline constexpr const char* kHfsLinearUnreadPath = "/hfs-linear-unread/";
 inline constexpr const char* kHfsLinearUnreadSource = "hfs_linear_unread";
 

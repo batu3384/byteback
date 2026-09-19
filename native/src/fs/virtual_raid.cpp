@@ -1,5 +1,6 @@
 #include "fs/virtual_raid.h"
 #include "fs/raid_layout.h"
+#include "io/volume_mapper_win.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -28,6 +29,8 @@ std::string VirtualRaid::resumeKey() const {
     k += std::to_string(block_size_);
     k += ":off=";
     k += std::to_string(data_offset_bytes_);
+    k += ":a=";
+    k += std::to_string(static_cast<int>(raid5_algorithm_));
     k += ":sz=";
     k += std::to_string(capacity());
     k += ":f=";
@@ -49,9 +52,9 @@ std::string VirtualRaid::resumeKey() const {
 }
 
 VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size,
-                         uint64_t data_offset_bytes)
+                         uint64_t data_offset_bytes, raid_layout::Raid5Algorithm raid5_algorithm)
     : level_(level), num_disks_(drive_indices.size()), disk_size_(0), block_size_(block_size),
-      data_offset_bytes_(data_offset_bytes) {
+      data_offset_bytes_(data_offset_bytes), raid5_algorithm_(raid5_algorithm) {
     if (num_disks_ < 2) {
         throw std::invalid_argument("RAID requires at least 2 disks.");
     }
@@ -63,6 +66,9 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
     }
     if (level == RaidLevel::RAID10 && (num_disks_ % 2 != 0)) {
         throw std::invalid_argument("RAID 10 requires an even number of disks.");
+    }
+    if (level == RaidLevel::RAID1E && num_disks_ < 3) {
+        throw std::invalid_argument("RAID 1E requires at least 3 disks.");
     }
 
     std::vector<std::shared_ptr<DiskReader>> members;
@@ -78,15 +84,19 @@ VirtualRaid::VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices,
 }
 
 VirtualRaid::VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size,
-                         uint64_t data_offset_bytes)
+                         uint64_t data_offset_bytes, raid_layout::Raid5Algorithm raid5_algorithm,
+                         std::vector<uint64_t> member_data_offsets,
+                         std::vector<uint64_t> member_data_lengths)
     : level_(level), num_disks_(members.size()), disk_size_(0), block_size_(block_size),
-      data_offset_bytes_(data_offset_bytes) {
+      data_offset_bytes_(data_offset_bytes), member_data_offsets_(std::move(member_data_offsets)),
+      member_data_lengths_(std::move(member_data_lengths)),
+      raid5_algorithm_(raid5_algorithm) {
     if (num_disks_ < 2) throw std::invalid_argument("RAID requires at least 2 disks.");
     initFromMembers(std::move(members));
 }
 
 VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images, size_t block_size,
-                                    uint64_t data_offset_bytes) {
+                                    uint64_t data_offset_bytes, raid_layout::Raid5Algorithm raid5_algorithm) {
     std::vector<std::shared_ptr<DiskReader>> members;
     members.reserve(images.size());
     for (auto& img : images) {
@@ -94,7 +104,34 @@ VirtualRaid VirtualRaid::fromImages(RaidLevel level, std::vector<std::vector<uin
         reader->attachMemoryVolume(std::move(img));
         members.push_back(std::move(reader));
     }
-    return VirtualRaid(level, std::move(members), block_size, data_offset_bytes);
+    return VirtualRaid(level, std::move(members), block_size, data_offset_bytes, raid5_algorithm);
+}
+
+VirtualRaid VirtualRaid::fromEvidencePaths(RaidLevel level, const std::vector<std::string>& paths,
+                                           size_t block_size, uint64_t data_offset_bytes,
+                                           raid_layout::Raid5Algorithm raid5_algorithm) {
+    const size_t n = paths.size();
+    if (n < 2 || n > 16) throw std::invalid_argument("RAID requires 2..16 member images.");
+    if (level == RaidLevel::RAID5 && n < 3) throw std::invalid_argument("RAID 5 requires at least 3 disks.");
+    if (level == RaidLevel::RAID6 && n < 4) throw std::invalid_argument("RAID 6 requires at least 4 disks.");
+    if (level == RaidLevel::RAID10 && (n % 2 != 0)) {
+        throw std::invalid_argument("RAID 10 requires an even number of disks.");
+    }
+    if (level == RaidLevel::RAID1E && n < 3) {
+        throw std::invalid_argument("RAID 1E requires at least 3 disks.");
+    }
+    std::vector<std::shared_ptr<DiskReader>> members;
+    members.reserve(n);
+    for (const auto& p : paths) {
+        if (!isEvidenceImagePath(p)) throw std::invalid_argument("invalid RAID member image path");
+        auto reader = std::make_shared<DiskReader>();
+        std::string err;
+        if (!reader->attachEvidenceImage(p, &err)) {
+            throw std::runtime_error(err.empty() ? "Failed to open RAID member image" : err);
+        }
+        members.push_back(std::move(reader));
+    }
+    return VirtualRaid(level, std::move(members), block_size, data_offset_bytes, raid5_algorithm);
 }
 
 void VirtualRaid::initFromMembers(std::vector<std::shared_ptr<DiskReader>> members) {
@@ -110,10 +147,27 @@ void VirtualRaid::initFromMembers(std::vector<std::shared_ptr<DiskReader>> membe
         if (memberSize == 0) throw std::runtime_error("RAID member disk has zero size.");
         disk_size_ = (disk_size_ == 0) ? memberSize : std::min(disk_size_, memberSize);
     }
-    if (data_offset_bytes_ >= disk_size_) {
+    if (!member_data_offsets_.empty() && member_data_offsets_.size() != num_disks_) {
+        throw std::invalid_argument("RAID member data offsets must match disk count.");
+    }
+    if (!member_data_lengths_.empty() && member_data_lengths_.size() != num_disks_) {
+        throw std::invalid_argument("RAID member data lengths must match disk count.");
+    }
+    if (member_data_offsets_.size() == num_disks_) {
+        for (size_t i = 0; i < num_disks_; ++i) {
+            const uint64_t sz = disk_readers_[i]->getDiskSize();
+            if (member_data_offsets_[i] >= sz) {
+                throw std::invalid_argument("RAID data offset exceeds member size.");
+            }
+            if (i < member_data_lengths_.size() && member_data_lengths_[i] > 0 &&
+                member_data_offsets_[i] + member_data_lengths_[i] > sz) {
+                throw std::invalid_argument("RAID member extent exceeds member size.");
+            }
+        }
+    } else if (data_offset_bytes_ >= disk_size_) {
         throw std::invalid_argument("RAID data offset exceeds member size.");
     }
-    if (block_size_ == 0 && level_ != RaidLevel::RAID1) {
+    if (block_size_ == 0 && level_ != RaidLevel::RAID1 && level_ != RaidLevel::JBOD) {
         throw std::invalid_argument("RAID stripe size required");
     }
 }
@@ -122,11 +176,42 @@ void VirtualRaid::write(size_t, const std::vector<uint8_t>&) {
     throw std::runtime_error("Write unsupported on physical RAID mode (forensic read-only).");
 }
 
+uint64_t VirtualRaid::memberBase(size_t disk_idx) const {
+    if (member_data_offsets_.size() == num_disks_ && disk_idx < num_disks_)
+        return member_data_offsets_[disk_idx];
+    return data_offset_bytes_;
+}
+
 uint64_t VirtualRaid::memberPayloadBytes() const {
+    if (member_data_offsets_.size() == num_disks_) {
+        uint64_t payload = (std::numeric_limits<uint64_t>::max)();
+        for (size_t i = 0; i < num_disks_; ++i) {
+            const uint64_t sz = disk_readers_[i]->getDiskSize();
+            const uint64_t off = member_data_offsets_[i];
+            const uint64_t p = sz > off ? sz - off : 0;
+            payload = std::min(payload, p);
+        }
+        return payload == (std::numeric_limits<uint64_t>::max)() ? 0 : payload;
+    }
     return disk_size_ > data_offset_bytes_ ? disk_size_ - data_offset_bytes_ : 0;
 }
 
+uint64_t VirtualRaid::memberExtentBytes(size_t disk_idx) const {
+    if (disk_idx >= num_disks_ || !disk_readers_[disk_idx]) return 0;
+    const uint64_t sz = disk_readers_[disk_idx]->getDiskSize();
+    const uint64_t off = memberBase(disk_idx);
+    uint64_t n = sz > off ? sz - off : 0;
+    if (disk_idx < member_data_lengths_.size() && member_data_lengths_[disk_idx] > 0)
+        n = std::min(n, member_data_lengths_[disk_idx]);
+    return n;
+}
+
 uint64_t VirtualRaid::capacity() const {
+    if (level_ == RaidLevel::JBOD) {
+        uint64_t cap = 0;
+        for (size_t i = 0; i < num_disks_; ++i) cap += memberExtentBytes(i);
+        return cap;
+    }
     // Block-floored usable extent per member: a striped array never exposes
     // the tail of a partial last block — real controllers report floored
     // capacity and the dead zone is unreachable (reads throw honestly).
@@ -141,6 +226,8 @@ uint64_t VirtualRaid::capacity() const {
         case RaidLevel::RAID5: return usable * (num_disks_ - 1);
         case RaidLevel::RAID6: return usable * (num_disks_ - 2);
         case RaidLevel::RAID10: return usable * (num_disks_ / 2);
+        case RaidLevel::JBOD: return 0;
+        case RaidLevel::RAID1E: return (usable * num_disks_) / 2;
     }
     return 0;
 }
@@ -151,7 +238,12 @@ bool VirtualRaid::readMemberAligned(size_t disk_idx, uint64_t offset, size_t len
         std::memset(out, 0, length);
         return false;
     }
-    offset += data_offset_bytes_;
+    const uint64_t base = memberBase(disk_idx);
+    if (base > (std::numeric_limits<uint64_t>::max)() - offset) {
+        std::memset(out, 0, length);
+        return false;
+    }
+    offset += base;
 
     uint32_t sectorSize = disk_readers_[disk_idx]->getSectorSize();
     if (sectorSize == 0) sectorSize = 512;
@@ -193,6 +285,8 @@ std::vector<uint8_t> VirtualRaid::read(size_t offset, size_t length) const {
         case RaidLevel::RAID5: return read_raid5(offset, length);
         case RaidLevel::RAID6: return read_raid6(offset, length);
         case RaidLevel::RAID10: return read_raid10(offset, length);
+        case RaidLevel::JBOD: return read_jbod(offset, length);
+        case RaidLevel::RAID1E: return read_raid1e(offset, length);
     }
     return std::vector<uint8_t>();
 }
@@ -270,9 +364,10 @@ std::vector<uint8_t> VirtualRaid::read_raid5(size_t offset, size_t length) const
         size_t stripe_index = logical_block_index / (num_disks_ - 1);
         size_t block_in_stripe = logical_block_index % (num_disks_ - 1);
 
-        // Left-asymmetric placement lives in raid_layout.cpp (unit-tested).
-        size_t parity_disk = raid_layout::raid5ParityDisk(stripe_index, static_cast<uint32_t>(num_disks_));
-        size_t data_disk = raid_layout::raid5DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe), static_cast<uint32_t>(num_disks_));
+        // Placement lives in raid_layout.cpp (left-asym default, left-sym mdadm).
+        size_t parity_disk = raid_layout::raid5ParityDisk(stripe_index, static_cast<uint32_t>(num_disks_), raid5_algorithm_);
+        size_t data_disk = raid_layout::raid5DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe),
+                                                     static_cast<uint32_t>(num_disks_), raid5_algorithm_);
 
         uint64_t disk_offset = static_cast<uint64_t>(stripe_index) * block_size_ + offset_in_block;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
@@ -474,6 +569,51 @@ std::vector<uint8_t> VirtualRaid::read_raid10(size_t offset, size_t length) cons
         res_idx += read_len;
         offset += read_len;
     }
+    return result;
+}
+
+std::vector<uint8_t> VirtualRaid::read_raid1e(size_t offset, size_t length) const {
+    std::vector<uint8_t> result(length);
+    size_t res_idx = 0;
+    const uint32_t n = static_cast<uint32_t>(num_disks_);
+    while (res_idx < length) {
+        const uint64_t dataIndex = offset / block_size_;
+        const size_t offset_in_block = offset % block_size_;
+        const size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
+        bool ok = false;
+        for (uint32_t c = 0; c < 2 && !ok; ++c) {
+            const auto loc = raid_layout::raid1eCopy(dataIndex, c, n);
+            if (loc.disk >= num_disks_ || !disk_active_[loc.disk]) continue;
+            const uint64_t disk_offset = loc.row * block_size_ + offset_in_block;
+            ok = readMemberAligned(loc.disk, disk_offset, read_len, &result[res_idx]);
+        }
+        if (!ok) {
+            throw std::runtime_error("RAID 1E read failed: both copies unreadable");
+        }
+        res_idx += read_len;
+        offset += read_len;
+    }
+    return result;
+}
+
+std::vector<uint8_t> VirtualRaid::read_jbod(size_t offset, size_t length) const {
+    std::vector<uint8_t> result(length);
+    size_t done = 0;
+    uint64_t pos = offset;
+    for (size_t i = 0; i < num_disks_ && done < length; ++i) {
+        const uint64_t plen = memberExtentBytes(i);
+        if (pos >= plen) {
+            pos -= plen;
+            continue;
+        }
+        const size_t n = static_cast<size_t>(std::min<uint64_t>(length - done, plen - pos));
+        if (!disk_active_[i] || !readMemberAligned(i, pos, n, &result[done])) {
+            throw std::runtime_error("JBOD read failed: member unreadable");
+        }
+        done += n;
+        pos = 0;
+    }
+    if (done < length) throw std::out_of_range("Read exceeds RAID capacity");
     return result;
 }
 

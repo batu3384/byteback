@@ -255,6 +255,71 @@ TEST(RefsParser, UnreadSupbIsSentinelNotMissingVolume) {
     EXPECT_FALSE(volPath.empty());
 }
 
+TEST(RefsParser, BackupSupbUsedWhenPrimaryWiped) {
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 2, 0);
+    writeRefsBoot(img);
+
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    const uint64_t backupOff = img.size() - cluster;
+    std::memcpy(img.data() + backupOff, img.data() + superOff, cluster);
+    std::memset(img.data() + superOff, 0, cluster);
+
+    uint8_t* page = img.data() + cluster;
+    page[0] = 0x30;
+    page[1] = 0x00;
+    page[2] = 0x01;
+    page[3] = 0x00;
+    embedUtf16Name(page, 4, "report.docx");
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawFile = false;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "report.docx") sawFile = true;
+    }, &running));
+    EXPECT_TRUE(sawFile) << "ReFS backup SUPB at last cluster must restore listing";
+}
+
+TEST(RefsParser, BackupSupbUsedWhenPrimaryAndLastWiped) {
+    constexpr uint32_t cluster = 4096;
+    constexpr uint64_t superOff = 30ull * cluster;
+    std::vector<uint8_t> img(superOff + cluster * 3, 0);
+    writeRefsBoot(img);
+
+    uint8_t* supb = img.data() + superOff;
+    std::memcpy(supb, "SUPB", 4);
+    writeLe32(img, superOff + 32, 0);
+
+    const uint64_t lastOff = img.size() - cluster;
+    const uint64_t last1Off = lastOff - cluster;
+    std::memcpy(img.data() + last1Off, img.data() + superOff, cluster);
+    std::memset(img.data() + superOff, 0, cluster);
+
+    uint8_t* page = img.data() + cluster;
+    page[0] = 0x30;
+    page[1] = 0x00;
+    page[2] = 0x01;
+    page[3] = 0x00;
+    embedUtf16Name(page, 4, "report.docx");
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool sawFile = false;
+    std::atomic<bool> running{true};
+    RefsParser refs;
+    ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "report.docx") sawFile = true;
+    }, &running));
+    EXPECT_TRUE(sawFile) << "ReFS backup SUPB at last-1 cluster must restore listing when last is empty";
+}
+
 TEST(RefsParser, UnreadMetadataPageIsSentinelNotEmptyListing) {
     constexpr uint32_t cluster = 4096;
     constexpr uint64_t superOff = 30ull * cluster;

@@ -298,3 +298,37 @@ TEST(PreviewReader, RunBackedPreviewHonorsStartByteOffset) {
     EXPECT_EQ(preview.mime, "image/jpeg");
     EXPECT_EQ(preview.data, jpeg);
 }
+
+TEST(PreviewReader, WavPreviewIsAudioKind) {
+    std::vector<uint8_t> wav = {
+        'R','I','F','F', 40,0,0,0, 'W','A','V','E',
+        'f','m','t',' ', 16,0,0,0, 1,0, 1,0, 0x40,0x1F,0,0, 0x40,0x1F,0,0, 1,0, 8,0,
+        'd','a','t','a', 1,0,0,0, 0x80
+    };
+    DiskReader reader;
+    FileRecord rec;
+    rec.name = "tone.wav";
+    rec.sizeBytes = wav.size();
+    rec.residentData = wav;
+
+    FilePreviewResult preview = readFilePreview(reader, rec);
+    EXPECT_TRUE(preview.success) << preview.error;
+    EXPECT_EQ(preview.kind, "audio");
+    EXPECT_EQ(preview.mime, "audio/wav");
+}
+
+TEST(PreviewReader, AviRiffIsNotAudioKind) {
+    std::vector<uint8_t> avi(12, 0);
+    avi[0] = 'R'; avi[1] = 'I'; avi[2] = 'F'; avi[3] = 'F';
+    avi[8] = 'A'; avi[9] = 'V'; avi[10] = 'I'; avi[11] = ' ';
+    DiskReader reader;
+    FileRecord rec;
+    rec.name = "clip.avi";
+    rec.category = "Video";
+    rec.sizeBytes = avi.size();
+    rec.residentData = avi;
+
+    FilePreviewResult preview = readFilePreview(reader, rec);
+    EXPECT_TRUE(preview.success) << preview.error;
+    EXPECT_NE(preview.kind, "audio");
+}

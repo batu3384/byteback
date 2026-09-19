@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
+#include <cstddef>
 
 namespace byteback {
 
@@ -170,6 +172,8 @@ struct Ext4_Dirent {
 };
 #pragma pack(pop)
 
+static_assert(offsetof(Ext4_SuperBlock, s_journal_inum) == 0xE0, "jbd2 s_journal_inum");
+
 namespace {
 constexpr uint16_t EXT4_EXT_MAGIC = 0xF30A;
 constexpr uint32_t EXT4_EXTENTS_FLAG = 0x80000;
@@ -304,6 +308,115 @@ static void collectExtentRuns(DiskReader& reader, const uint8_t* nodeBytes, size
     }
 }
 
+constexpr uint32_t kJbd2Magic = 0xC03B3998;
+constexpr uint32_t kJbd2Desc = 1;
+constexpr uint32_t kJbd2Commit = 2;
+constexpr uint32_t kJbd2FlagSameUuid = 2;
+constexpr uint32_t kJbd2FlagDeleted = 4;
+constexpr uint32_t kJbd2FlagLastTag = 8;
+
+uint32_t jbd2Be32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+
+struct Jbd2Applied {
+    uint32_t fsBlock = 0;
+    size_t jbufOff = 0;
+};
+
+bool jbufOffToRun(const std::vector<FileRecord::DataRun>& runs, uint32_t sectorSize,
+                  size_t off, uint32_t blockSize, FileRecord::DataRun& run) {
+    if (sectorSize == 0) return false;
+    uint64_t byteOff = 0;
+    for (const auto& r : runs) {
+        const uint64_t runBytes = r.sectorCount * static_cast<uint64_t>(sectorSize);
+        if (off >= byteOff && off < byteOff + runBytes) {
+            const uint64_t within = off - byteOff;
+            run.startSector = r.startSector + within / sectorSize;
+            run.sectorCount = (blockSize + sectorSize - 1) / sectorSize;
+            return true;
+        }
+        byteOff += runBytes;
+    }
+    return false;
+}
+
+// Walk descriptor+commit. Uncommitted data is marked consumed so the naive
+// dirent pass cannot treat it as a live name. Disk is never written.
+void walkCommittedJbd2(const std::vector<uint8_t>& jbuf, uint32_t blockSize,
+                       std::vector<Jbd2Applied>& out, std::unordered_set<size_t>& consumed) {
+    if (blockSize < 36 || jbuf.size() < blockSize) return;
+    const uint8_t* sb = jbuf.data();
+    if (jbd2Be32(sb) != kJbd2Magic) return;
+    const uint32_t btype = jbd2Be32(sb + 4);
+    if (btype != 3 && btype != 4) return;
+    const uint32_t jbs = jbd2Be32(sb + 12);
+    if (jbs != blockSize) return;
+    const uint32_t sFirst = jbd2Be32(sb + 20);
+    const uint32_t sStart = jbd2Be32(sb + 28);
+    consumed.insert(0);
+    size_t rel = sStart ? sStart : (sFirst ? sFirst : 1);
+    int hops = 0;
+    while (rel * static_cast<size_t>(blockSize) + blockSize <= jbuf.size() && hops++ < 4096) {
+        const size_t jb = rel * blockSize;
+        const uint8_t* p = jbuf.data() + jb;
+        if (jbd2Be32(p) != kJbd2Magic) {
+            ++rel;
+            continue;
+        }
+        consumed.insert(rel);
+        const uint32_t type = jbd2Be32(p + 4);
+        const uint32_t seq = jbd2Be32(p + 8);
+        if (type != kJbd2Desc) {
+            ++rel;
+            continue;
+        }
+        std::vector<uint32_t> tags;
+        size_t tagOff = 12;
+        while (tagOff + 8 <= blockSize) {
+            const uint32_t tblock = jbd2Be32(p + tagOff);
+            const uint32_t tflags = jbd2Be32(p + tagOff + 4);
+            tagOff += 8;
+            if ((tflags & kJbd2FlagSameUuid) == 0) {
+                if (tagOff + 16 > blockSize) break;
+                tagOff += 16;
+            }
+            if ((tflags & kJbd2FlagDeleted) == 0) tags.push_back(tblock);
+            if (tflags & kJbd2FlagLastTag) break;
+        }
+        bool dataOk = true;
+        for (size_t i = 0; i < tags.size(); ++i) {
+            const size_t drel = rel + 1 + i;
+            if (drel * static_cast<size_t>(blockSize) + blockSize > jbuf.size()) {
+                dataOk = false;
+                break;
+            }
+            consumed.insert(drel);
+        }
+        if (!dataOk) break;
+        const size_t crel = rel + 1 + tags.size();
+        bool committed = false;
+        if (crel * static_cast<size_t>(blockSize) + blockSize <= jbuf.size()) {
+            const uint8_t* cp = jbuf.data() + crel * blockSize;
+            committed = jbd2Be32(cp) == kJbd2Magic && jbd2Be32(cp + 4) == kJbd2Commit &&
+                        jbd2Be32(cp + 8) == seq;
+        }
+        if (committed) {
+            consumed.insert(crel);
+            for (size_t i = 0; i < tags.size(); ++i) {
+                Jbd2Applied a;
+                a.fsBlock = tags[i];
+                a.jbufOff = (rel + 1 + i) * blockSize;
+                out.push_back(a);
+            }
+            rel = crel + 1;
+        } else {
+            rel = rel + 1 + tags.size();
+        }
+    }
+}
+
 bool Ext4Parser::scan(DiskReader& reader, FileRecordCallback callback, std::atomic<bool>* isRunning) {
     return scanAt(reader, callback, isRunning, 0);
 }
@@ -323,6 +436,14 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     }
 
     Ext4_SuperBlock* sb = reinterpret_cast<Ext4_SuperBlock*>(sb_buffer.data() + 1024);
+    auto acceptSb = [&](const uint8_t* p) {
+        const auto* cand = reinterpret_cast<const Ext4_SuperBlock*>(p);
+        if (cand->s_magic != 0xEF53 || cand->s_log_block_size > 6) return false;
+        const size_t n = std::min<size_t>(1024, sb_buffer.size() - 1024);
+        std::memcpy(sb_buffer.data() + 1024, p, n);
+        sb = reinterpret_cast<Ext4_SuperBlock*>(sb_buffer.data() + 1024);
+        return true;
+    };
     if (sb->s_magic != 0xEF53) {
         bool found = false;
         uint32_t search_len = 4 * 1024 * 1024;
@@ -332,11 +453,32 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             ? search_len
             : (searchRes.success ? std::min<uint64_t>(searchRes.bytesRead, search_len) : 0);
         for (uint32_t i = 1024; i + 1024 < walk; i += 512) {
-            Ext4_SuperBlock* cand = reinterpret_cast<Ext4_SuperBlock*>(search_buf.data() + i);
-            if (cand->s_magic == 0xEF53 && cand->s_log_block_size <= 6) {
-                sb = cand;
+            if (acceptSb(search_buf.data() + i)) {
                 found = true;
                 break;
+            }
+        }
+        if (!found) {
+            const uint64_t disk = reader.getDiskSize();
+            const uint64_t extra[] = {
+                4ull << 20,
+                8193ull * 1024,
+                16384ull * 1024,
+                32768ull * 4096,
+            };
+            std::vector<uint8_t> extraBuf(2048);
+            for (uint64_t rel : extra) {
+                const uint64_t abs = volumeOffsetBytes + rel;
+                if (abs + extraBuf.size() > disk) continue;
+                if (!readComplete(reader.readSectors(abs, static_cast<uint32_t>(extraBuf.size()),
+                                                     extraBuf.data()),
+                                  extraBuf.size())) {
+                    continue;
+                }
+                if (acceptSb(extraBuf.data()) || acceptSb(extraBuf.data() + 1024)) {
+                    found = true;
+                    break;
+                }
             }
         }
         if (!found) return false;
@@ -344,6 +486,22 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     // s_log_block_size is validated (0..6 => 1K..64K blocks); a larger value
     // would be a shift UB and an absurd block size.
     if (sb->s_log_block_size > 6) return false;
+
+    {
+        size_t n = 16;
+        while (n > 0 && (sb->s_volume_name[n - 1] == 0 || sb->s_volume_name[n - 1] == ' ')) --n;
+        if (n > 0) {
+            FileRecord fr;
+            fr.id = -1;
+            fr.name.assign(sb->s_volume_name, n);
+            fr.path = "/";
+            fr.status = 1;
+            fr.confidence = 5;
+            fr.category = "System";
+            fr.source = "ext4_vol_name";
+            callback(fr);
+        }
+    }
 
     uint32_t block_size = 1024 << sb->s_log_block_size;
     uint32_t inodes_per_group = sb->s_inodes_per_group;
@@ -386,16 +544,47 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     std::unordered_map<uint32_t, InodeMeta> inodeMap;
     std::vector<uint32_t> dirInodes;
     bool dirUnread = false;
+    const uint32_t journalIno = sb->s_journal_inum;
+    InodeMeta journalMeta;
+    bool haveJournal = false;
+    bool journalUnread = false;
 
     std::vector<uint8_t> gdtSector(sectorSize);
-    for (uint32_t off = 0; off < gdt_read_len; off += sectorSize) {
-        uint32_t take = std::min(sectorSize, gdt_read_len - off);
-        auto gdtRes = reader.readSectors(gdt_offset + off, take, gdtSector.data());
-        if (!readComplete(gdtRes, take)) {
-            dirUnread = true;
-            continue;
+    auto loadGdtAt = [&](uint64_t off) {
+        std::fill(gdt_buffer.begin(), gdt_buffer.end(), 0);
+        bool anyUnread = false;
+        for (uint32_t o = 0; o < gdt_read_len; o += sectorSize) {
+            uint32_t take = std::min(sectorSize, gdt_read_len - o);
+            auto gdtRes = reader.readSectors(off + o, take, gdtSector.data());
+            if (!readComplete(gdtRes, take)) {
+                anyUnread = true;
+                continue;
+            }
+            std::memcpy(gdt_buffer.data() + o, gdtSector.data(), take);
         }
-        std::memcpy(gdt_buffer.data() + off, gdtSector.data(), take);
+        return anyUnread;
+    };
+    auto gdtGroup0HasInodeTable = [&]() {
+        if (gdt_buffer.size() < desc_size) return false;
+        const auto* gd0 = reinterpret_cast<const Ext4_GroupDesc*>(gdt_buffer.data());
+        uint64_t it = gd0->bg_inode_table_lo;
+        if (desc_size > 32) it |= static_cast<uint64_t>(gd0->bg_inode_table_hi) << 32;
+        return it != 0;
+    };
+
+    if (loadGdtAt(gdt_offset)) dirUnread = true;
+    if (!gdtGroup0HasInodeTable()) {
+        const uint64_t group0Sb = (block_size == 1024) ? 1ull : 0ull;
+        const uint32_t tryGroups[] = {1, 3, 5, 7};
+        for (uint32_t g : tryGroups) {
+            if (g >= num_groups) break;
+            const uint64_t bakBlock = group0Sb + static_cast<uint64_t>(g) * blocks_per_group + 1ull;
+            const uint64_t bakOff = volumeOffsetBytes + bakBlock * block_size;
+            const uint64_t disk = reader.getDiskSize();
+            if (bakOff + gdt_read_len > disk) continue;
+            if (loadGdtAt(bakOff)) continue;
+            if (gdtGroup0HasInodeTable()) break;
+        }
     }
 
     for (uint32_t g = 0; g < num_groups; ++g) {
@@ -450,7 +639,23 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
                 uint32_t inode_idx = (offset / inode_size) + i;
                 uint32_t inode_num = g * inodes_per_group + inode_idx + 1;
-                if (inode_num < 11) continue; // reserved metadata inodes
+                if (inode_num < 11) {
+                    if (journalIno != 0 && inode_num == journalIno && (is_regular || is_directory)) {
+                        journalMeta.size = file_size;
+                        journalMeta.crtime = inode->i_crtime;
+                        journalMeta.mtime = inode->i_mtime;
+                        if (inode->i_flags & EXT4_EXTENTS_FLAG) {
+                            collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
+                                              sizeof(inode->i_block),
+                                              block_size, sectorSize, volumeOffsetBytes, journalMeta.runs, 5, journalUnread);
+                        } else if (inode->i_block[0] != 0) {
+                            collectLegacyBlockRuns(reader, inode->i_block, block_size, sectorSize,
+                                                   volumeOffsetBytes, file_size, journalMeta.runs, journalUnread);
+                        }
+                        haveJournal = true;
+                    }
+                    continue;
+                }
 
                 InodeMeta meta;
                 meta.size = file_size;
@@ -481,7 +686,8 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     }
 
     // ---- Pass 2: walk directory blocks -> real names, parents, deleted slack ----
-    auto emitFile = [&](const std::string& name, uint32_t ino, const InodeMeta* meta, int confidence, int status) {
+    auto emitFile = [&](const std::string& name, uint32_t ino, const InodeMeta* meta, int confidence, int status,
+                        const char* source = "ext4_dirent") {
         FileRecord fr;
         fr.id = ino;
         fr.parentId = 0;
@@ -502,11 +708,13 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         fr.status = status;
         fr.confidence = confidence;
         fr.category = "File";
-        fr.source = "ext4_dirent";
+        fr.source = source;
         fr.createdAt = meta ? meta->crtime : 0;
         fr.modifiedAt = meta ? meta->mtime : 0;
         callback(fr);
     };
+
+    std::unordered_set<std::string> seenNames;
 
     std::vector<uint8_t> dirBuf;
     for (uint32_t dirIno : dirInodes) {
@@ -540,7 +748,6 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
                     if (nameOk && name != "." && name != "..") {
                         if (de->inode != 0) {
-                            // Live entry: look up the inode's metadata.
                             auto mit = inodeMap.find(de->inode);
                             if (mit != inodeMap.end()) {
                                 const InodeMeta& meta = mit->second;
@@ -550,12 +757,10 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                             } else {
                                 emitFile(name, de->inode, nullptr, 50, 1);
                             }
+                            seenNames.insert(name);
                         } else if (de->file_type == 1 /*EXT4_FT_REG_FILE*/) {
-                            // inode == 0 with a surviving name: the entry was
-                            // deleted and its space merged into this rec_len.
-                            // The name is forensic evidence even though the
-                            // inode link is gone.
                             emitFile(name, 0, nullptr, 45, 0);
+                            seenNames.insert(name);
                         }
                     }
                 }
@@ -573,6 +778,132 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         fr.confidence = 20;
         fr.category = "System";
         fr.source = "ext4_dir_unread";
+        callback(fr);
+    }
+
+    if (haveJournal) {
+        std::vector<uint8_t> jbuf;
+        for (const auto& run : journalMeta.runs) {
+            if (isRunning && !(*isRunning)) break;
+            uint64_t runBytes = run.sectorCount * static_cast<uint64_t>(sectorSize);
+            if (runBytes == 0 || runBytes > 8ull * 1024 * 1024) continue;
+            const size_t at = jbuf.size();
+            jbuf.resize(at + static_cast<size_t>(runBytes));
+            auto jres = reader.readSectors(run.startSector * sectorSize,
+                                           static_cast<uint32_t>(runBytes), jbuf.data() + at);
+            if (!readComplete(jres, runBytes)) {
+                journalUnread = true;
+                jbuf.resize(at);
+                continue;
+            }
+        }
+
+        std::vector<Jbd2Applied> applied;
+        std::unordered_set<size_t> consumed;
+        walkCommittedJbd2(jbuf, block_size, applied, consumed);
+
+        std::unordered_map<uint32_t, size_t> fsToOff;
+        for (const auto& a : applied) fsToOff[a.fsBlock] = a.jbufOff;
+
+        uint64_t itable = 0;
+        if (num_groups > 0 && gdt_buffer.size() >= desc_size) {
+            const auto* gd0 = reinterpret_cast<const Ext4_GroupDesc*>(gdt_buffer.data());
+            itable = gd0->bg_inode_table_lo;
+        }
+        const uint32_t inodesPerBlk = inode_size ? (block_size / inode_size) : 0;
+        const uint32_t itableBlocks = inodesPerBlk
+            ? (inodes_per_group + inodesPerBlk - 1) / inodesPerBlk : 0;
+
+        std::unordered_map<uint32_t, InodeMeta> jInodes;
+        for (const auto& a : applied) {
+            if (a.jbufOff + block_size > jbuf.size()) continue;
+            const uint8_t* p = jbuf.data() + a.jbufOff;
+            const bool inItable = itable != 0 && inodesPerBlk > 0 && a.fsBlock >= itable &&
+                                  a.fsBlock < itable + itableBlocks;
+            if (inItable) {
+                const uint32_t first = 1 + static_cast<uint32_t>((a.fsBlock - itable) * inodesPerBlk);
+                for (uint32_t i = 0; i < inodesPerBlk; ++i) {
+                    const auto* ino = reinterpret_cast<const Ext4_Inode*>(p + i * inode_size);
+                    if ((ino->i_mode & 0xF000) != 0x8000) continue;
+                    InodeMeta m;
+                    m.size = ino->i_size_lo;
+                    m.deleted = ino->i_links_count == 0 || ino->i_dtime != 0;
+                    FileRecord::DataRun run{};
+                    auto dit = fsToOff.find(ino->i_block[0]);
+                    if (dit != fsToOff.end() &&
+                        jbufOffToRun(journalMeta.runs, sectorSize, dit->second, block_size, run)) {
+                        m.runs.push_back(run);
+                    }
+                    jInodes[first + i] = std::move(m);
+                }
+            }
+        }
+
+        for (const auto& a : applied) {
+            if (a.jbufOff + block_size > jbuf.size()) continue;
+            const bool inItable = itable != 0 && inodesPerBlk > 0 && a.fsBlock >= itable &&
+                                  a.fsBlock < itable + itableBlocks;
+            if (inItable) continue;
+            const uint8_t* p = jbuf.data() + a.jbufOff;
+            size_t pos = 0;
+            while (pos + sizeof(Ext4_Dirent) <= block_size) {
+                const Ext4_Dirent* de = reinterpret_cast<const Ext4_Dirent*>(p + pos);
+                if (de->rec_len < 8 || pos + de->rec_len > block_size) break;
+                if (de->name_len > 0 && de->name_len < de->rec_len) {
+                    std::string name(reinterpret_cast<const char*>(p + pos + sizeof(Ext4_Dirent)),
+                                     de->name_len);
+                    bool nameOk = true;
+                    for (char c : name) {
+                        if (static_cast<unsigned char>(c) < 0x20 || c == '/') { nameOk = false; break; }
+                    }
+                    if (nameOk && name != "." && name != ".." && !seenNames.count(name)) {
+                        const InodeMeta* meta = nullptr;
+                        auto iit = jInodes.find(de->inode);
+                        if (iit != jInodes.end() && !iit->second.runs.empty()) meta = &iit->second;
+                        if (meta) {
+                            emitFile(name, de->inode, meta, 48, 0, "ext4_journal_replay");
+                            seenNames.insert(name);
+                        }
+                    }
+                }
+                pos += de->rec_len;
+            }
+        }
+
+        for (size_t blk = 0; blk + block_size <= jbuf.size(); blk += block_size) {
+            if (consumed.count(blk / block_size)) continue;
+            const uint8_t* p = jbuf.data() + blk;
+            if (block_size >= 8 && jbd2Be32(p) == kJbd2Magic) continue;
+            size_t pos = 0;
+            while (pos + sizeof(Ext4_Dirent) <= block_size) {
+                const Ext4_Dirent* de = reinterpret_cast<const Ext4_Dirent*>(p + pos);
+                if (de->rec_len < 8 || pos + de->rec_len > block_size) break;
+                if (de->name_len > 0 && de->name_len < de->rec_len) {
+                    std::string name(reinterpret_cast<const char*>(p + pos + sizeof(Ext4_Dirent)),
+                                     de->name_len);
+                    bool nameOk = true;
+                    for (char c : name) {
+                        if (static_cast<unsigned char>(c) < 0x20 || c == '/') { nameOk = false; break; }
+                    }
+                    if (nameOk && name != "." && name != ".." && !seenNames.count(name)) {
+                        emitFile(name, de->inode, nullptr, 40, 0, "ext4_journal");
+                        seenNames.insert(name);
+                    }
+                }
+                pos += de->rec_len;
+            }
+        }
+    }
+
+    if (journalUnread) {
+        FileRecord fr;
+        fr.id = -1;
+        fr.name = "Ext4_JournalUnread";
+        fr.path = "/ext4-journal-unread/";
+        fr.status = 0;
+        fr.confidence = 20;
+        fr.category = "System";
+        fr.source = "ext4_journal_unread";
         callback(fr);
     }
 

@@ -1,7 +1,13 @@
 #include "byteback_io.h"
+#include "recovery/path_util.h"
+#include "test_temp_path.h"
+
 #include <gtest/gtest.h>
 #include <vector>
 #include <cstring>
+#include <string>
+#include <filesystem>
+#include <fstream>
 
 using namespace byteback;
 
@@ -42,4 +48,38 @@ TEST(DiskReaderMem, RejectsUnalignedRead) {
     uint8_t buf[512];
     auto res = reader.readSectors(1, 512, buf);
     EXPECT_FALSE(res.success);
+}
+
+TEST(DiskReaderMem, AttachEvidenceImageRejectsHttpAndDevice) {
+    DiskReader reader;
+    std::string err;
+    EXPECT_FALSE(reader.attachEvidenceImage("http://host/disk.img", &err));
+    EXPECT_FALSE(reader.attachEvidenceImage("\\\\.\\PhysicalDrive0", &err));
+    EXPECT_FALSE(reader.attachEvidenceImage("\\\\.\\C:", &err));
+}
+
+TEST(DiskReaderMem, AttachEvidenceImageUtf8Path) {
+    std::vector<uint8_t> img(512, 0x5A);
+    auto dir = std::filesystem::temp_directory_path() /
+               std::filesystem::u8path(u8"byteback_\u00fcye");
+    dir += "_";
+    dir += std::to_string(bytebackTestPid());
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto p = dir / std::filesystem::u8path(u8"kan\u0131t.img");
+    {
+        std::ofstream o(p, std::ios::binary | std::ios::trunc);
+        o.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+    }
+    {
+        DiskReader reader;
+        std::string err;
+        ASSERT_TRUE(reader.attachEvidenceImage(pathToUtf8(p), &err)) << err;
+        EXPECT_EQ(reader.getDiskSize(), img.size());
+        uint8_t buf[512] = {};
+        auto res = reader.readSectors(0, 512, buf);
+        EXPECT_TRUE(res.success);
+        EXPECT_EQ(buf[0], 0x5A);
+    }
+    std::filesystem::remove_all(dir);
 }

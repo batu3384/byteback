@@ -25,6 +25,7 @@ struct XfsSuperblock {
     uint8_t agblklog = 0;
     uint16_t versionnum = 0;
     uint16_t inodesize = 0;
+    std::string fname;
     // v3 inodes exist only on XFS_SB_VERSION_5 filesystems (versionnum numbits == 5).
     // The old body here tested 0x2000 calling it "the CRC bit", but 0x2000 is
     // XFS_SB_VERSION_DIRV2BIT (xfs_format.h) and is set on v4 filesystems too,
@@ -41,12 +42,20 @@ inline constexpr const char* kXfsInodeUnreadPath = "/xfs-inode-unread/";
 inline constexpr const char* kXfsInodeUnreadSource = "xfs_inode_unread";
 inline constexpr const char* kXfsBmapUnreadPath = "/xfs-bmap-unread/";
 inline constexpr const char* kXfsBmapUnreadSource = "xfs_bmap_unread";
+inline constexpr const char* kXfsUnlinkedPathPrefix = "/xfs-unlinked/";
+inline constexpr const char* kXfsUnlinkedSource = "xfs_unlinked";
+inline constexpr const char* kXfsVolNamePathPrefix = "/xfs-vol-name/";
+inline constexpr const char* kXfsVolNameSource = "xfs_vol_name";
+
+// xfs_dinode.di_crc is LE32 at offset 100 (XFS_DINODE_CRC_OFF). v1/v2 have no CRC.
+bool xfsDinodeCrcOk(const uint8_t* inode, size_t len);
 
 class XfsParser {
 public:
     using FileCallback = std::function<void(const std::string& path, uint64_t inodeNo,
                                             uint64_t sizeBytes, bool isDirectory,
-                                            const std::vector<std::pair<uint64_t, uint64_t>>& runs)>;
+                                            const std::vector<std::pair<uint64_t, uint64_t>>& runs,
+                                            int confidence, int64_t modifiedAt)>;
 
     bool open(DiskReader& reader, uint64_t partitionOffsetBytes);
     const XfsSuperblock& superblock() const { return sb_; }

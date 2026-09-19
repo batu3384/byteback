@@ -7,6 +7,7 @@
 #include "crypto/byteback_md5.h"
 #include "recovery/path_util.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -72,8 +73,8 @@ GoldenStats runGoldenPipeline(DiskReader& reader, MetadataStore& store, const st
 class GoldenRecoveryTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        dbPath_ = (std::filesystem::temp_directory_path() / "byteback_golden.db").string();
-        dest_ = (std::filesystem::temp_directory_path() / "byteback_golden_out").string();
+        dbPath_ = bytebackTestTemp("byteback_golden", ".db").string();
+        dest_ = bytebackTestTemp("byteback_golden_out").string();
         std::filesystem::remove(dbPath_);
         std::filesystem::remove_all(dest_);
         std::filesystem::create_directories(dest_);
@@ -218,6 +219,53 @@ TEST_F(GoldenRecoveryTest, Fat32FiveDeletedJpegMd5) {
         if (ent.is_regular_file()) got.insert(md5File(ent.path()));
     }
     EXPECT_EQ(got, want);
+}
+
+TEST_F(GoldenRecoveryTest, Fat16DeletedFragmentedUsesBackupFatMd5) {
+    const auto jpegA = testfix::minimalValidJpeg(0x11);
+    auto vol = testfix::buildFat16DeletedFragmentedJpegVolume(true);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(vol));
+
+    FileRecord hit{};
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.status == 0 && fr.name.find("HOTO1") != std::string::npos) hit = fr;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    ASSERT_FALSE(hit.name.empty());
+    RecoveryEngine engine;
+    auto res = engine.recoverFile(reader, hit, dest_);
+    EXPECT_TRUE(res.success) << res.error << " " << res.validationError;
+
+    const auto outPath = std::filesystem::path(dest_) / hit.name;
+    ASSERT_TRUE(std::filesystem::exists(outPath));
+    EXPECT_EQ(md5File(outPath), md5Bytes(jpegA));
+}
+
+TEST_F(GoldenRecoveryTest, Fat16DeletedFragmentedDoesNotSucceedWithPoisonGlue) {
+    const auto jpegA = testfix::minimalValidJpeg(0x11);
+    auto vol = testfix::buildFat16DeletedFragmentedJpegVolume(false);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(vol));
+
+    FileRecord hit{};
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.status == 0 && fr.name.find("HOTO1") != std::string::npos) hit = fr;
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    ASSERT_FALSE(hit.name.empty());
+    RecoveryEngine engine;
+    auto res = engine.recoverFile(reader, hit, dest_);
+    const auto outPath = std::filesystem::path(dest_) / hit.name;
+    if (res.success) {
+        ASSERT_TRUE(std::filesystem::exists(outPath));
+        EXPECT_EQ(md5File(outPath), md5Bytes(jpegA))
+            << "contiguous undelete must not report success for a glue of cluster 2+3";
+    } else {
+        EXPECT_FALSE(res.success);
+    }
 }
 
 TEST_F(GoldenRecoveryTest, ExFatDeletedPreservePathsMd5) {

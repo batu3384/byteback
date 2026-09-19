@@ -3,6 +3,7 @@
 // at each offset (linux/fs/xfs/libxfs/xfs_format.h, xfs_da_format.h). Several
 // assertions use hand-computed hex literals so an offset slip fails loudly.
 #include "byteback_io.h"
+#include "fs/refs_integrity.h"
 #include "fs/xfs_parser.h"
 #include "scan_coordinator.h"
 #include <gtest/gtest.h>
@@ -155,6 +156,17 @@ void WriteSfDir(std::vector<uint8_t>& img, const Spec& s, uint64_t ino, uint64_t
     WriteInode(img, s, ino, 0x41ED /*S_IFDIR|0755*/, 1 /*FMT_LOCAL*/, f.size(), f);
 }
 
+// xfs_agi at AG+1024 (XFS_AGI_DADDR=2 * 512-byte BB). Magic 'XAGI' BE32@0,
+// agi_unlinked[64] BE32 starts at offset 40 (xfs_format.h).
+void WriteAgiUnlinked0(std::vector<uint8_t>& img, const Spec& s, uint32_t ag, uint32_t agino) {
+    const size_t o = static_cast<size_t>(AgBytes(s, ag) + 1024);
+    Wb32(img, o, 0x58414749); // 'XAGI'
+    Wb32(img, o + 4, 1);      // agi_versionnum
+    Wb32(img, o + 8, ag);     // agi_seqno
+    Wb32(img, o + 12, s.agblocks);
+    Wb32(img, o + 40, agino); // agi_unlinked[0]
+}
+
 // One xfs_dir2_data_entry at `off`: inumber BE64@0, namelen u8@8, name@9,
 // tag BE16 in the last 2 bytes of the 8-byte-aligned record.
 void WriteDataEntry(std::vector<uint8_t>& img, size_t off, uint64_t ino, const char* name) {
@@ -172,13 +184,14 @@ struct Hit {
     uint64_t size = 0;
     bool isDir = false;
     std::vector<std::pair<uint64_t, uint64_t>> runs;
+    int64_t mtime = 0;
 };
 
 std::vector<Hit> Walk(XfsParser* p) {
     std::vector<Hit> hits;
     p->walkTree([&](const std::string& path, uint64_t ino, uint64_t size, bool isDir,
-                    const std::vector<std::pair<uint64_t, uint64_t>>& runs) {
-        hits.push_back({path, ino, size, isDir, runs});
+                    const std::vector<std::pair<uint64_t, uint64_t>>& runs, int, int64_t mtime) {
+        hits.push_back({path, ino, size, isDir, runs, mtime});
     });
     return hits;
 }
@@ -226,19 +239,51 @@ TEST(XfsParser, SuperblockAcceptAndFields) {
     }
 }
 
+TEST(XfsParser, VolumeNameFromSbFname) {
+    Spec s;
+    auto img = BuildImage(s);
+    std::memcpy(img.data() + 108, "BYTEBACK", 8);
+    std::memcpy(img.data() + static_cast<size_t>(AgBytes(s, 1)) + 108, "BYTEBACK", 8);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    EXPECT_EQ(p.superblock().fname, "BYTEBACK");
+    const auto hits = Walk(&p);
+    ASSERT_NE(FindHit(hits, std::string(kXfsVolNamePathPrefix) + "BYTEBACK"), nullptr)
+        << "sb_fname[12] @108 must emit xfs volume-name path";
+}
+
 TEST(XfsParser, SuperblockRejectsBadMagic) {
     auto img = BuildImage(Spec{});
     img[0] = 'X'; // "XFSA": sb_magicnum != XFSB (also covers all-zero garbage)
     img[3] = 'A';
+    std::memset(img.data() + static_cast<size_t>(AgBytes(Spec{}, 1)), 0, 512);
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img), 512);
     XfsParser p;
     EXPECT_FALSE(p.open(reader, 0));
 }
 
+TEST(XfsParser, BackupAg1SuperblockUsedWhenPrimaryWiped) {
+    Spec s;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteSfDir(img, s, 0x45, 0x45, {{"alfa", 7}}, false);
+    img[0] = 'X';
+    img[3] = 'A';
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0)) << "AG1 XFSB copy must mount when AG0 magic is wiped";
+    const auto hits = Walk(&p);
+    ASSERT_NE(FindHit(hits, "/alfa"), nullptr);
+}
+
 TEST(XfsParser, SuperblockRejectsBadBlocklog) {
     auto img = BuildImage(Spec{});
     img[120] = 7; // sb_blocklog != log2(sb_blocksize=512)=9
+    std::memset(img.data() + static_cast<size_t>(AgBytes(Spec{}, 1)), 0, 512);
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img), 512);
     XfsParser p;
@@ -248,6 +293,7 @@ TEST(XfsParser, SuperblockRejectsBadBlocklog) {
 TEST(XfsParser, SuperblockRejectsNonPow2Blocksize) {
     auto img = BuildImage(Spec{});
     Wb32(img, 4, 1000); // sb_blocksize not a power of two
+    std::memset(img.data() + static_cast<size_t>(AgBytes(Spec{}, 1)), 0, 512);
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img), 512);
     XfsParser p;
@@ -292,7 +338,7 @@ TEST(XfsParser, UnreadRootInodeIsSentinelNotEmptyTree) {
     XfsParser p;
     ASSERT_TRUE(p.open(reader, 0));
     ASSERT_TRUE(p.walkTree([](const std::string&, uint64_t, uint64_t, bool,
-                              const std::vector<std::pair<uint64_t, uint64_t>>&) {}));
+                              const std::vector<std::pair<uint64_t, uint64_t>>&, int, int64_t) {}));
     const auto hits = Walk(&p);
     EXPECT_EQ(FindHit(hits, "/alfa"), nullptr)
         << "unread root inode must not parse zeros as an empty successful tree of /alfa";
@@ -304,7 +350,7 @@ TEST(XfsParser, UnopenedParserFails) {
     std::vector<uint8_t> raw;
     EXPECT_FALSE(p.readInode(0, raw));
     EXPECT_FALSE(p.walkTree([](const std::string&, uint64_t, uint64_t, bool,
-                              const std::vector<std::pair<uint64_t, uint64_t>>&) {}));
+                              const std::vector<std::pair<uint64_t, uint64_t>>&, int, int64_t) {}));
 }
 
 // ---- inode location (golden offsets) ------------------------------------------
@@ -419,6 +465,21 @@ TEST(XfsParser, ShortformDirWalk) {
     const Hit* b = FindHit(hits, "/beta.txt");
     ASSERT_NE(b, nullptr);
     EXPECT_EQ(b->ino, 8u);
+}
+
+TEST(XfsParser, DiMtimeSetsHitMtime) {
+    auto img = BuildImage(Spec{});
+    WriteInode(img, Spec{}, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteSfDir(img, Spec{}, 0x45, 0x45, {{"alfa", 7}}, false);
+    Wb32(img, static_cast<size_t>(InoOff(Spec{}, 7)) + 40, 1577923200u);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    XfsParser p;
+    ASSERT_TRUE(p.open(reader, 0));
+    const Hit* a = FindHit(Walk(&p), "/alfa");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->mtime, 1577923200);
 }
 
 // ---- block dir walk ('XD2B', entries + unused region + leaf-table tail) --------
@@ -679,7 +740,7 @@ TEST(XfsParser, CycleGuardTerminates) {
     ASSERT_TRUE(p.open(reader, 0));
     const auto hits = Walk(&p);
     EXPECT_TRUE(p.walkTree([](const std::string&, uint64_t, uint64_t, bool,
-                              const std::vector<std::pair<uint64_t, uint64_t>>&) {}));
+                              const std::vector<std::pair<uint64_t, uint64_t>>&, int, int64_t) {}));
     ASSERT_EQ(hits.size(), 2u); // "/" and "/b" — visited set breaks the cycle
     EXPECT_EQ(hits[0].path, "/");
     EXPECT_EQ(hits[1].path, "/b");
@@ -709,4 +770,100 @@ TEST(XfsParser, DepthCapBounded) {
     for (const auto& h : hits) EXPECT_TRUE(h.isDir);
     ASSERT_NE(FindHit(hits, "/d"), nullptr);
     EXPECT_EQ(FindHit(hits, "/d")->ino, 3u); // first child
+}
+
+TEST(XfsParser, V3InodeCrcOkAndMismatch) {
+    Spec s;
+    s.v3 = true;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    const size_t o = static_cast<size_t>(InoOff(s, 7));
+    ASSERT_EQ(o, 0x700u);
+    EXPECT_FALSE(xfsDinodeCrcOk(img.data() + o, s.inodesize))
+        << "unstamped v3 inode (di_crc=0) must not verify";
+    const uint32_t crc = refsCrc32cSkip4(img.data() + o, s.inodesize, 100);
+    img[o + 100] = static_cast<uint8_t>(crc);
+    img[o + 101] = static_cast<uint8_t>(crc >> 8);
+    img[o + 102] = static_cast<uint8_t>(crc >> 16);
+    img[o + 103] = static_cast<uint8_t>(crc >> 24);
+    EXPECT_TRUE(xfsDinodeCrcOk(img.data() + o, s.inodesize));
+    img[o + 56] ^= 1; // di_size
+    EXPECT_FALSE(xfsDinodeCrcOk(img.data() + o, s.inodesize));
+}
+
+TEST(XfsScan, V3CrcMismatchLowersConfidenceKeepsFile) {
+    Spec s;
+    s.v3 = true;
+    s.rootino = 0x44;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteSfDir(img, s, 0x44, 0x44, {{"note", 7}}, true);
+    const size_t o = static_cast<size_t>(InoOff(s, 7));
+    img[o + 2] ^= 0; // keep mode
+    img[o + 56] ^= 0;
+    // Leave di_crc zero so skip-4 CRC fails against ITU-style Castagnoli.
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    std::atomic<bool> running{true};
+    FileRecord note{};
+    bool saw = false;
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "note") {
+            note = fr;
+            saw = true;
+        }
+    }, [](uint64_t, uint64_t) {}, &running);
+    ASSERT_TRUE(saw) << "CRC mismatch must not drop the file";
+    EXPECT_EQ(note.source, "xfs_inode");
+    EXPECT_GE(note.confidence, 40);
+    EXPECT_LE(note.confidence, 55);
+}
+
+TEST(XfsScan, UnlinkedInodeEmitsDeletedFile) {
+    Spec s;
+    auto img = BuildImage(s);
+    ASSERT_EQ(AgBytes(s, 0) + 1024, 0x400u); // XFS_AGI_DADDR golden
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    Wb32(img, static_cast<size_t>(InoOff(s, 7)) + 16, 0); // di_nlink = 0
+    WriteAgiUnlinked0(img, s, 0, 7);
+    WriteSfDir(img, s, 0x45, 0x45, {}, false); // not in the live namespace
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    std::atomic<bool> running{true};
+    FileRecord hit{};
+    bool saw = false;
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "xfs_unlinked") {
+            hit = fr;
+            saw = true;
+        }
+    }, [](uint64_t, uint64_t) {}, &running);
+    ASSERT_TRUE(saw) << "AGI iunlinked inode with nlink=0 must emit even if absent from dirs";
+    EXPECT_EQ(hit.name, "inode-7");
+    EXPECT_EQ(hit.status, 0);
+    EXPECT_GE(hit.confidence, 40);
+    EXPECT_LE(hit.confidence, 55);
+    EXPECT_FALSE(hit.runs.empty());
+}
+
+TEST(XfsScan, TreeFileOnUnlinkedListIsNotDuplicated) {
+    Spec s;
+    auto img = BuildImage(s);
+    WriteInode(img, s, 7, 0x81A4, 2, 4096, OneExtentFork(60, 1));
+    WriteAgiUnlinked0(img, s, 0, 7);
+    WriteSfDir(img, s, 0x45, 0x45, {{"note", 7}}, false);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    std::atomic<bool> running{true};
+    int notes = 0;
+    int unlinked = 0;
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (fr.name == "note") ++notes;
+        if (fr.source == "xfs_unlinked") ++unlinked;
+    }, [](uint64_t, uint64_t) {}, &running);
+    EXPECT_EQ(notes, 1);
+    EXPECT_EQ(unlinked, 0);
 }

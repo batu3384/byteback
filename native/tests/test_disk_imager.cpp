@@ -6,6 +6,7 @@
 #include "imager/ewf_reader.h"
 #include "fs/virtual_raid.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
@@ -123,7 +124,7 @@ TEST(DiskImagerTest, RawImageMatchesSourceAndMd5) {
     DiskReader reader;
     reader.attachMemoryVolume(std::move(copy));
 
-    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_test.raw").string();
+    const std::string dest = bytebackTestTemp("bb_img_test", ".raw").string();
     DiskImager imager;
     std::atomic<bool> done{false};
     std::string md5AtEnd;
@@ -146,13 +147,64 @@ TEST(DiskImagerTest, RawImageMatchesSourceAndMd5) {
     std::filesystem::remove(dest);
 }
 
+TEST(DiskImagerTest, RawImageWritesUtf8DestDir) {
+    const auto vol = makeVolume(8, 0x5A);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+
+    auto dir = std::filesystem::temp_directory_path() /
+               std::filesystem::u8path(u8"byteback_\u00c7\u0131k\u0131\u015f");
+    dir += "_";
+    dir += std::to_string(bytebackTestPid());
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string dest = (dir / "disk.dd").u8string();
+    DiskImager imager;
+    std::atomic<bool> done{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 200 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+    ASSERT_TRUE(done.load());
+    const auto outPath = dir / "disk.dd";
+    ASSERT_TRUE(std::filesystem::exists(outPath));
+    EXPECT_EQ(std::filesystem::file_size(outPath), vol.size());
+    std::filesystem::remove_all(dir);
+}
+
+TEST(DiskImagerTest, ImagesEvidenceFileToRawClone) {
+    const auto vol = makeVolume(8, 0xA5);
+    const std::string src = bytebackTestTemp("byteback_img_src", ".img").u8string();
+    const std::string dest = bytebackTestTemp("byteback_img_clone", ".dd").u8string();
+    std::filesystem::remove(src);
+    std::filesystem::remove(dest);
+    writeRaw(src, vol);
+
+    DiskImager imager;
+    std::atomic<bool> done{false};
+    std::atomic<bool> failed{false};
+    imager.startImaging(-2, dest, [&](uint64_t cur, uint64_t total) {
+        if (total == 0) failed = true;
+        if (cur == total && total > 0) done = true;
+    }, ImageFormat::Raw, {}, src);
+    for (int i = 0; i < 400 && !done && !failed; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+    ASSERT_TRUE(done.load()) << "failed=" << failed.load();
+    EXPECT_EQ(readFile(dest), vol);
+    std::filesystem::remove(src);
+    std::filesystem::remove(dest);
+}
+
 TEST(DiskImagerTest, EwfImageCarriesDigestAndRereadsIdentical) {
     const auto vol = makeVolume(32, 0x42);
     std::vector<uint8_t> copy = vol;
     DiskReader reader;
     reader.attachMemoryVolume(std::move(copy));
 
-    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_test.E01").string();
+    const std::string dest = bytebackTestTemp("bb_img_test", ".E01").string();
     DiskImager imager;
     std::atomic<bool> done{false};
     imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
@@ -185,7 +237,7 @@ TEST(DiskImagerTest, CancelledEwfIsReadableButUnverified) {
     DiskReader reader;
     reader.attachMemoryVolume(std::move(copy));
 
-    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_cancel.E01").string();
+    const std::string dest = bytebackTestTemp("bb_img_cancel", ".E01").string();
     DiskImager imager;
     std::atomic<bool> finished{false};
     imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
@@ -228,7 +280,7 @@ TEST(DiskImagerTest, BadRegionZeroedGranularly) {
     reader.attachMemoryVolume(std::move(copy));
     reader.setMemoryFaultRange(100, 4); // sectors 100..103 fail
 
-    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_faults.raw").string();
+    const std::string dest = bytebackTestTemp("bb_img_faults", ".raw").string();
     DiskImager imager;
     std::atomic<bool> done{false};
     imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
@@ -268,7 +320,7 @@ TEST(DiskImagerAcquiryErrors, FaultRangeLandsInEwfErrorSection) {
     reader.attachMemoryVolume(std::move(copy));
     reader.setMemoryFaultRange(100, 4); // sectors 100..103 fail
 
-    const std::string dest = (std::filesystem::temp_directory_path() / "bb_img_faults.E01").string();
+    const std::string dest = bytebackTestTemp("bb_img_faults", ".E01").string();
     std::filesystem::remove(dest);
     DiskImager imager;
     std::atomic<bool> done{false};
@@ -307,8 +359,7 @@ TEST(DiskImagerResume, CancelThenResumeProducesByteExactImage) {
     DiskReader reader;
     reader.attachMemoryVolume(std::move(copy));
 
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -374,8 +425,7 @@ TEST(DiskImagerResume, SameSizeDifferentSourceSidecarStartsFresh) {
     const auto volA = makeVolume(kSectors, 0x77);
     const auto volB = makeVolume(kSectors, 0x5C); // different content, same size
 
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume_swap.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume_swap", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -443,8 +493,7 @@ TEST(DiskImagerResume, StaleSidecarStartsFresh) {
     DiskReader reader;
     reader.attachMemoryVolume(std::move(copy));
 
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume_stale.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume_stale", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -495,7 +544,6 @@ TEST(DiskImagerResume, StaleSidecarStartsFresh) {
 TEST(DiskImagerResume, HostileSidecarVariantsNeverCorruptOutput) {
     constexpr size_t kSectors = 8192; // 4 MiB
     const auto vol = makeVolume(kSectors, 0xA7);
-    const auto tmp = std::filesystem::temp_directory_path();
     const std::string sourceKey = "memory:" + std::to_string(vol.size());
 
     struct Variant { const char* name; std::string json; };
@@ -559,7 +607,7 @@ TEST(DiskImagerResume, HostileSidecarVariantsNeverCorruptOutput) {
     }
 
     for (const auto& v : variants) {
-        const std::string dest = (tmp / "bb_resume_hostile.raw").string();
+        const std::string dest = bytebackTestTemp("bb_resume_hostile", ".raw").string();
         const std::string part = dest + ".part";
         const std::string side = dest + ".part.json";
         std::filesystem::remove(dest);
@@ -599,8 +647,7 @@ TEST(DiskImagerResume, HostileSidecarVariantsNeverCorruptOutput) {
 TEST(DiskImagerResume, PartShorterThanSidecarRestartsFresh) {
     constexpr size_t kSectors = 8192;
     const auto vol = makeVolume(kSectors, 0xB2);
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume_short.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume_short", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -636,8 +683,7 @@ TEST(DiskImagerResume, PartShorterThanSidecarRestartsFresh) {
 TEST(DiskImagerResume, PartLongerThanSidecarIsTruncatedAndResumes) {
     constexpr size_t kSectors = 8192;
     const auto vol = makeVolume(kSectors, 0xC3);
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume_long.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume_long", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -678,8 +724,7 @@ TEST(DiskImagerResume, PartLongerThanSidecarIsTruncatedAndResumes) {
 TEST(DiskImagerResume, RestartAfterSelfStopProducesByteExactImage) {
     constexpr size_t kSectors = 8192;
     const auto vol = makeVolume(kSectors, 0xD4);
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string dest = (tmp / "bb_resume_selfstop.raw").string();
+    const std::string dest = bytebackTestTemp("bb_resume_selfstop", ".raw").string();
     const std::string part = dest + ".part";
     const std::string side = dest + ".part.json";
     std::filesystem::remove(dest);
@@ -733,7 +778,7 @@ TEST(DiskImagerResume, MemorySamePrefixDifferentTailStartsFresh) {
     std::vector<uint8_t> volB(kSectors * 512, 0x11);
     for (size_t i = 1024ull * 1024ull; i < volB.size(); ++i) volB[i] = 0x22;
 
-    const auto dest = (std::filesystem::temp_directory_path() / "bb_resume_prefix_tail.raw").string();
+    const auto dest = bytebackTestTemp("bb_resume_prefix_tail", ".raw").string();
     std::filesystem::remove(dest);
     std::filesystem::remove(dest + ".part");
     std::filesystem::remove(dest + ".part.json");
@@ -792,9 +837,8 @@ TEST(DiskImagerResume, SamePathReplacedFileStartsFresh) {
     std::vector<uint8_t> volB(kSectors * 512, 0x11);
     for (size_t i = 1024ull * 1024ull; i < volB.size(); ++i) volB[i] = 0x33;
 
-    const auto tmp = std::filesystem::temp_directory_path();
-    const std::string srcPath = (tmp / "bb_resume_replaced.src").string();
-    const std::string dest = (tmp / "bb_resume_replaced.raw").string();
+    const std::string srcPath = bytebackTestTemp("bb_resume_replaced", ".src").string();
+    const std::string dest = bytebackTestTemp("bb_resume_replaced", ".raw").string();
     std::filesystem::remove(srcPath);
     std::filesystem::remove(dest);
     std::filesystem::remove(dest + ".part");
@@ -860,7 +904,7 @@ TEST(DiskImagerResume, RaidSameSizeDifferentMembersStartsFresh) {
     ASSERT_EQ(raidA->capacity(), raidB->capacity());
     ASSERT_NE(raidA->resumeKey(), raidB->resumeKey());
 
-    const auto dest = (std::filesystem::temp_directory_path() / "bb_raid_resume_swap.raw").string();
+    const auto dest = bytebackTestTemp("bb_raid_resume_swap", ".raw").string();
     std::filesystem::remove(dest);
     std::filesystem::remove(dest + ".part");
     std::filesystem::remove(dest + ".part.json");
@@ -914,7 +958,7 @@ TEST(DiskImager, ImagesAssembledRaid0FromReader) {
         VirtualRaid::fromImages(RaidLevel::RAID0, {d0, d1}, 65536));
     DiskReader reader;
     reader.setRaidBackend(raid);
-    const auto dest = (std::filesystem::temp_directory_path() / "byteback_raid0.img").string();
+    const auto dest = bytebackTestTemp("byteback_raid0", ".img").string();
     std::filesystem::remove(dest);
     std::filesystem::remove(dest + ".part");
     std::filesystem::remove(dest + ".part.json");

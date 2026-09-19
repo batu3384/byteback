@@ -332,14 +332,18 @@ void scanNtfsLogFileHints(DiskReader& reader, uint64_t partitionOffsetBytes,
         callback(fr);
     };
 
-    std::vector<uint8_t> boot(sectorSize);
-    if (!readComplete(reader.readSectors(partitionOffsetBytes, sectorSize, boot.data()),
-                      sectorSize)) {
-        emitUnread();
+    std::vector<uint8_t> boot;
+    uint32_t bps = sectorSize;
+    uint32_t spcBoot = 8;
+    uint64_t mftLcn = 0;
+    uint32_t recBytes = 1024;
+    bool primaryUnread = false;
+    if (!ntfs::loadNtfsBoot(reader, partitionOffsetBytes, 0, sectorSize, boot, bps,
+                            spcBoot, mftLcn, recBytes, &primaryUnread)) {
+        if (primaryUnread) emitUnread();
         return;
     }
     if (boot.size() < 512 || boot[510] != 0x55 || boot[511] != 0xAA) return;
-    if (std::memcmp(boot.data() + 3, "NTFS    ", 8) != 0) return;
     if (boot.size() < sizeof(BootSector)) return;
     auto* bs = reinterpret_cast<BootSector*>(boot.data());
 

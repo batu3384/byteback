@@ -3,6 +3,7 @@
 #include "fixtures/volume_fixtures.h"
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,69 @@ TEST(Ext4Parser, FindsNoteTxt) {
         if (!fr.name.empty()) names.push_back(fr.name);
     }, &running));
 
+    bool found = false;
+    for (const auto& n : names) {
+        if (n == "note.txt") found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(Ext4Parser, VolumeNameFromSuperblock) {
+    auto img = byteback::testfix::buildExt4Volume();
+    std::memcpy(img.data() + 1024 + 120, "BYTEBACK", 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    Ext4Parser ext4;
+    ASSERT_TRUE(ext4.scan(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ext4_vol_name" && fr.name == "BYTEBACK") found = true;
+    }, &running));
+    EXPECT_TRUE(found) << "ext4 s_volume_name at super+120 must emit ext4_vol_name";
+}
+
+TEST(Ext4Parser, BackupSuperblockOutside4MibSpray) {
+    auto img = byteback::testfix::buildExt4Volume();
+    constexpr size_t kBackup = 4u * 1024u * 1024u;
+    img.resize(kBackup + 2048, 0);
+    std::memcpy(img.data() + kBackup, img.data() + 1024, 256);
+    img[1024 + 56] = 0;
+    img[1024 + 57] = 0;
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    Ext4Parser ext4;
+    ASSERT_TRUE(ext4.scan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, &running)) << "ext4 group backup super past 4 MiB spray must still mount";
+    bool found = false;
+    for (const auto& n : names) {
+        if (n == "note.txt") found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(Ext4Parser, BackupGdtUsedWhenPrimaryWiped) {
+    auto img = byteback::testfix::buildExt4Volume();
+    constexpr uint32_t bs = 1024;
+    constexpr uint32_t bpg = 8;
+    const size_t primaryGdt = 2 * bs;
+    const size_t backupGdt = (1 + bpg + 1) * bs;
+    if (img.size() < backupGdt + bs) img.resize(backupGdt + bs, 0);
+    std::memcpy(img.data() + backupGdt, img.data() + primaryGdt, 32);
+    std::memset(img.data() + primaryGdt, 0, bs);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    Ext4Parser ext4;
+    ASSERT_TRUE(ext4.scan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, &running)) << "ext4 backup GDT after group-1 super must list files when primary GDT is wiped";
     bool found = false;
     for (const auto& n : names) {
         if (n == "note.txt") found = true;

@@ -72,6 +72,7 @@ set(SOURCES
   src/bridge/bridge_ops.cpp
   src/byteback_engine.cpp
   src/io/byte_source.cpp
+  src/io/vhd_source.cpp
   src/imager/ewf_writer.cpp
   src/imager/ewf_reader.cpp
   src/carver/content_classifier.cpp
@@ -80,6 +81,7 @@ set(SOURCES
   src/db/metadata_store_content.cpp
   src/db/runs_codec.cpp
   src/fs/ntfs_parser.cpp
+  src/fs/mft_record_view.cpp
   src/fs/fat_parser.cpp
   src/fs/ext4_parser.cpp
   src/fs/hfs_parser.cpp
@@ -93,8 +95,14 @@ set(SOURCES
   src/fs/volume_identity.cpp
   src/fs/bitlocker_fve.cpp
   src/fs/bitlocker_unlock.cpp
+  src/fs/luks.cpp
   src/search/content_search.cpp
+  src/search/hex_search.cpp
   src/fs/partition_scanner.cpp
+  src/fs/lvm_parser.cpp
+  src/fs/ldm_parser.cpp
+  src/fs/iso9660_parser.cpp
+  src/fs/udf_parser.cpp
   src/fs/unallocated_map.cpp
   src/fs/ntfs_path_rebuild.cpp
   src/fs/virtual_raid.cpp
@@ -186,6 +194,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_ewf.cpp
     tests/test_ewf_reader.cpp
     tests/test_http_url.cpp
+    tests/test_split_raw.cpp
     tests/test_content_classifier.cpp
     tests/test_audit_sha256.cpp
     tests/test_fat_chain.cpp
@@ -193,17 +202,25 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_runs_codec.cpp
     tests/test_metadata_store.cpp
     tests/test_partition_probe.cpp
+    tests/test_lvm_parser.cpp
+    tests/test_ldm_parser.cpp
+    tests/test_iso9660_parser.cpp
+    tests/test_udf_parser.cpp
     tests/test_recovery_engine.cpp
     tests/test_path_util.cpp
     tests/test_disk_reader_mem.cpp
     tests/test_fat_parser.cpp
     tests/test_ext4_parser.cpp
+    tests/test_jbd2.cpp
     tests/test_ntfs_parser.cpp
+    tests/test_mft_record_view.cpp
     tests/test_ntfs_logfile.cpp
     tests/test_usn_summary.cpp
     tests/test_vss_scan.cpp
     tests/test_raid_scan.cpp
     tests/test_content_search.cpp
+    tests/test_hex_search.cpp
+    tests/test_vhd_source.cpp
     tests/test_apple_fs.cpp
     tests/test_refs_parser.cpp
     tests/test_refs_integrity.cpp
@@ -238,6 +255,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/bench_scan.cpp
     tests/test_ata_health.cpp
     tests/test_crypto_fve.cpp
+    tests/test_luks.cpp
     tests/test_shredder.cpp
     # Compile the units under test directly into the test binary. The engine
     # itself ships as a .node shared library whose symbols are not exported on
@@ -259,6 +277,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/imager/ewf_reader.cpp
     src/imager/disk_imager.cpp
     src/io/byte_source.cpp
+    src/io/vhd_source.cpp
     src/carver/content_classifier.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp
@@ -270,6 +289,10 @@ if(BYTEBACK_BUILD_TESTS)
     src/db/metadata_store_case.cpp
     src/db/metadata_store_content.cpp
     src/fs/partition_scanner.cpp
+    src/fs/lvm_parser.cpp
+    src/fs/ldm_parser.cpp
+    src/fs/iso9660_parser.cpp
+    src/fs/udf_parser.cpp
     src/fs/unallocated_map.cpp
     src/fs/ntfs_path_rebuild.cpp
     src/fs/fat_parser.cpp
@@ -285,8 +308,11 @@ if(BYTEBACK_BUILD_TESTS)
     src/fs/volume_identity.cpp
     src/fs/bitlocker_fve.cpp
     src/fs/bitlocker_unlock.cpp
+    src/fs/luks.cpp
     src/search/content_search.cpp
+    src/search/hex_search.cpp
     src/fs/ntfs_parser.cpp
+    src/fs/mft_record_view.cpp
     src/fs/virtual_raid.cpp
     src/fs/raid_detect.cpp
     src/fs/xfs_parser.cpp
@@ -317,7 +343,7 @@ if(BYTEBACK_BUILD_TESTS)
     target_link_libraries(byteback_tests PRIVATE setupapi winhttp)
   endif()
   include(GoogleTest)
-  gtest_discover_tests(byteback_tests)
+  gtest_discover_tests(byteback_tests PROPERTIES TIMEOUT 1800)
 endif()
 
 

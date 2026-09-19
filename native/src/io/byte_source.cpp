@@ -1,9 +1,17 @@
 #include "io/byte_source.h"
+#include "recovery/path_util.h"
 
 #include <fstream>
 #include <algorithm>
 #include <cstring>
 #include <cctype>
+#include <cstdlib>
+#include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -25,12 +33,26 @@ bool httpProbeStatusOk(unsigned status) {
     return status == 200 || status == 206;
 }
 
+bool httpProbeNeedsRangeGetFallback(unsigned status) {
+    return status == 405 || status == 501;
+}
+
+bool httpParseContentRangeTotal(const std::string& header, uint64_t& total) {
+    total = 0;
+    const auto slash = header.find_last_of('/');
+    if (slash == std::string::npos || slash + 1 >= header.size()) return false;
+    if (header[slash + 1] == '*') return false;
+    char* end = nullptr;
+    total = std::strtoull(header.c_str() + slash + 1, &end, 10);
+    return total > 0 && end != header.c_str() + slash + 1;
+}
+
 namespace {
 
 class FileByteSource final : public ByteSource {
 public:
     explicit FileByteSource(const std::string& path) {
-        file_.open(path, std::ios::binary);
+        file_.open(utf8Path(path), std::ios::binary);
         if (!file_.is_open()) {
             err_ = "could not open file";
             return;
@@ -60,6 +82,105 @@ public:
 
 private:
     std::ifstream file_;
+    uint64_t size_ = 0;
+    std::string err_;
+};
+
+bool parseSplitNumericExt(const std::string& path, std::string& stem, int& n) {
+    const auto dot = path.find_last_of('.');
+    if (dot == std::string::npos || dot + 4 != path.size()) return false;
+    for (size_t i = 1; i <= 3; ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(path[dot + i]))) return false;
+    }
+    n = (path[dot + 1] - '0') * 100 + (path[dot + 2] - '0') * 10 + (path[dot + 3] - '0');
+    stem = path.substr(0, dot);
+    return true;
+}
+
+std::string splitSegmentPath(const std::string& stem, int n) {
+    char ext[8];
+    std::snprintf(ext, sizeof(ext), ".%03d", n);
+    return stem + ext;
+}
+
+std::vector<std::string> collectSplitRawSegments(const std::string& first) {
+    std::string stem;
+    int start = 0;
+    if (!parseSplitNumericExt(first, stem, start) || (start != 0 && start != 1)) return {first};
+    std::vector<std::string> out;
+    out.reserve(8);
+    for (int i = start; i < start + 256; ++i) {
+        const std::string p = splitSegmentPath(stem, i);
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(utf8Path(p), ec) || ec) break;
+        out.push_back(p);
+    }
+    if (out.size() < 2) return {first};
+    return out;
+}
+
+class SplitByteSource final : public ByteSource {
+public:
+    explicit SplitByteSource(const std::vector<std::string>& paths) {
+        uint64_t base = 0;
+        for (const auto& p : paths) {
+            auto src = std::make_unique<FileByteSource>(p);
+            if (!src->lastError().empty()) {
+                err_ = src->lastError();
+                parts_.clear();
+                size_ = 0;
+                return;
+            }
+            Part part;
+            part.size = src->size();
+            part.base = base;
+            part.src = std::move(src);
+            base += part.size;
+            parts_.push_back(std::move(part));
+        }
+        size_ = base;
+    }
+
+    bool read(uint64_t offset, uint8_t* buf, size_t len) override {
+        if (parts_.empty() || !buf) return false;
+        if (len == 0) return true;
+        if (offset + len > size_) {
+            err_ = "read past end";
+            return false;
+        }
+        size_t done = 0;
+        while (done < len) {
+            const uint64_t at = offset + done;
+            const Part* part = nullptr;
+            for (const auto& p : parts_) {
+                if (at >= p.base && at < p.base + p.size) {
+                    part = &p;
+                    break;
+                }
+            }
+            if (!part || !part->src) return false;
+            const uint64_t local = at - part->base;
+            const size_t n = static_cast<size_t>(
+                std::min<uint64_t>(len - done, part->size - local));
+            if (!part->src->read(local, buf + done, n)) {
+                err_ = part->src->lastError();
+                return false;
+            }
+            done += n;
+        }
+        return true;
+    }
+
+    uint64_t size() const override { return size_; }
+    std::string lastError() const override { return err_; }
+
+private:
+    struct Part {
+        std::unique_ptr<FileByteSource> src;
+        uint64_t size = 0;
+        uint64_t base = 0;
+    };
+    std::vector<Part> parts_;
     uint64_t size_ = 0;
     std::string err_;
 };
@@ -205,8 +326,13 @@ private:
                                 WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
                                 WINHTTP_NO_HEADER_INDEX) &&
             !httpProbeStatusOk(status)) {
+            const unsigned headStatus = status;
             WinHttpCloseHandle(hRequest);
-            err_ = "http HEAD status " + std::to_string(status);
+            if (httpProbeNeedsRangeGetFallback(headStatus)) {
+                probeSizeViaRangeGet();
+                return;
+            }
+            err_ = "http HEAD status " + std::to_string(headStatus);
             return;
         }
         wchar_t lenBuf[64] = {};
@@ -217,6 +343,53 @@ private:
         }
         WinHttpCloseHandle(hRequest);
         if (size_ == 0) err_ = "http content-length unknown";
+    }
+
+    void probeSizeViaRangeGet() {
+        if (!hConnect_) return;
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect_, L"GET", path_.c_str(), nullptr,
+                                                WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                useTls_ ? WINHTTP_FLAG_SECURE : 0);
+        if (!hRequest) {
+            err_ = "http HEAD-less GET failed";
+            return;
+        }
+        WinHttpAddRequestHeaders(hRequest, L"Range: bytes=0-0", static_cast<DWORD>(-1),
+                                 WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+            !WinHttpReceiveResponse(hRequest, nullptr)) {
+            WinHttpCloseHandle(hRequest);
+            err_ = "http HEAD-less range request failed";
+            return;
+        }
+        DWORD status = 0, statusSize = sizeof(status);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
+                            WINHTTP_NO_HEADER_INDEX);
+        if (status != 206) {
+            WinHttpCloseHandle(hRequest);
+            err_ = "http HEAD-less range not honored (status " + std::to_string(status) + ")";
+            return;
+        }
+        wchar_t crBuf[128] = {};
+        DWORD crSize = sizeof(crBuf);
+        if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_HEADER_NAME_BY_INDEX,
+                                 crBuf, &crSize, WINHTTP_NO_HEADER_INDEX)) {
+            WinHttpCloseHandle(hRequest);
+            err_ = "http HEAD-less Content-Range missing";
+            return;
+        }
+        std::string cr;
+        for (const wchar_t* p = crBuf; *p; ++p) cr.push_back(static_cast<char>(*p));
+        uint64_t total = 0;
+        if (!httpParseContentRangeTotal(cr, total)) {
+            WinHttpCloseHandle(hRequest);
+            err_ = "http HEAD-less Content-Range unusable";
+            return;
+        }
+        size_ = total;
+        WinHttpCloseHandle(hRequest);
     }
 
     HINTERNET hSession_ = nullptr;
@@ -306,9 +479,12 @@ bool isHttpUrl(const std::string& s) {
 }
 
 std::unique_ptr<ByteSource> openFileByteSource(const std::string& path, std::string& err) {
-    auto src = std::make_unique<FileByteSource>(path);
-    if (src->size() == 0 && src->lastError().empty()) {
-        // empty file is valid
+    const auto segs = collectSplitRawSegments(path);
+    std::unique_ptr<ByteSource> src;
+    if (segs.size() >= 2) {
+        src = std::make_unique<SplitByteSource>(segs);
+    } else {
+        src = std::make_unique<FileByteSource>(path);
     }
     if (!src->lastError().empty()) {
         err = src->lastError();
