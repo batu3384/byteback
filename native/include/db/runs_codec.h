@@ -5,7 +5,7 @@
 
 namespace byteback {
 
-// Serialize NTFS/FAT/ext4 data runs for SQLite storage (JSON array of pairs).
+// Serialize NTFS/FAT/ext4/ISO data runs for SQLite (JSON array of [start,count] or [start,count,byteCount]).
 std::string serializeRuns(const std::vector<FileRecord::DataRun>& runs);
 
 // Parse runs_json; malformed input yields an empty vector (never throws).

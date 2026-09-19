@@ -1,5 +1,7 @@
 #include "crypto/byteback_sha256.h"
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace byteback {
 namespace crypto {
@@ -75,6 +77,61 @@ void sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
         out[i * 4 + 1] = static_cast<uint8_t>(state[i] >> 16);
         out[i * 4 + 2] = static_cast<uint8_t>(state[i] >> 8);
         out[i * 4 + 3] = static_cast<uint8_t>(state[i]);
+    }
+}
+
+void hmacSha256(const uint8_t* key, size_t keyLen, const uint8_t* data, size_t dataLen, uint8_t out[32]) {
+    uint8_t kh[32];
+    const uint8_t* k = key;
+    size_t kn = keyLen;
+    if (kn > 64) {
+        sha256(key, keyLen, kh);
+        k = kh;
+        kn = 32;
+    }
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    std::memset(ipad, 0x36, 64);
+    std::memset(opad, 0x5c, 64);
+    for (size_t i = 0; i < kn; ++i) {
+        ipad[i] = static_cast<uint8_t>(ipad[i] ^ k[i]);
+        opad[i] = static_cast<uint8_t>(opad[i] ^ k[i]);
+    }
+    std::vector<uint8_t> inner(64 + dataLen);
+    std::memcpy(inner.data(), ipad, 64);
+    if (data && dataLen) std::memcpy(inner.data() + 64, data, dataLen);
+    uint8_t idig[32];
+    sha256(inner.data(), inner.size(), idig);
+    uint8_t outer[64 + 32];
+    std::memcpy(outer, opad, 64);
+    std::memcpy(outer + 64, idig, 32);
+    sha256(outer, sizeof(outer), out);
+}
+
+void pbkdf2HmacSha256(const uint8_t* pass, size_t passLen, const uint8_t* salt, size_t saltLen,
+                      uint32_t iter, uint8_t* out, size_t outLen) {
+    if (!out || outLen == 0 || iter == 0) return;
+    uint32_t block = 1;
+    size_t done = 0;
+    while (done < outLen) {
+        uint8_t u[32];
+        std::vector<uint8_t> msg(saltLen + 4);
+        if (salt && saltLen) std::memcpy(msg.data(), salt, saltLen);
+        msg[saltLen] = static_cast<uint8_t>(block >> 24);
+        msg[saltLen + 1] = static_cast<uint8_t>(block >> 16);
+        msg[saltLen + 2] = static_cast<uint8_t>(block >> 8);
+        msg[saltLen + 3] = static_cast<uint8_t>(block);
+        hmacSha256(pass, passLen, msg.data(), msg.size(), u);
+        uint8_t t[32];
+        std::memcpy(t, u, 32);
+        for (uint32_t i = 1; i < iter; ++i) {
+            hmacSha256(pass, passLen, u, 32, u);
+            for (int b = 0; b < 32; ++b) t[b] = static_cast<uint8_t>(t[b] ^ u[b]);
+        }
+        const size_t n = std::min(outLen - done, static_cast<size_t>(32));
+        std::memcpy(out + done, t, n);
+        done += n;
+        ++block;
     }
 }
 

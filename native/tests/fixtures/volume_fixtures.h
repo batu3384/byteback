@@ -22,6 +22,20 @@ inline void writeLe32(std::vector<uint8_t>& img, size_t off, uint32_t v) {
     img[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
 }
 
+inline void writeBe16(std::vector<uint8_t>& img, size_t off, uint16_t v) {
+    if (off + 2 > img.size()) img.resize(off + 2, 0);
+    img[off] = static_cast<uint8_t>(v >> 8);
+    img[off + 1] = static_cast<uint8_t>(v & 0xFF);
+}
+
+inline void writeBe32(std::vector<uint8_t>& img, size_t off, uint32_t v) {
+    if (off + 4 > img.size()) img.resize(off + 4, 0);
+    img[off] = static_cast<uint8_t>(v >> 24);
+    img[off + 1] = static_cast<uint8_t>(v >> 16);
+    img[off + 2] = static_cast<uint8_t>(v >> 8);
+    img[off + 3] = static_cast<uint8_t>(v);
+}
+
 #pragma pack(push, 1)
 struct TestFatBpb {
     uint8_t  jmp[3];
@@ -102,6 +116,40 @@ inline std::vector<uint8_t> buildMbrDiskWithFatPartition(const std::vector<uint8
     writeLe32(disk, pe + 8, partStartSector);
     writeLe32(disk, pe + 12, partSectors);
     disk[pe + 4] = 0x06;
+    return disk;
+}
+
+inline std::vector<uint8_t> buildApmDiskWithFatPartition(const std::vector<uint8_t>& fatVol,
+                                                         uint32_t partStartSector = 64,
+                                                         uint32_t apmBlk = 512) {
+    constexpr uint32_t ss = 512;
+    if (apmBlk != 512 && apmBlk != 2048) apmBlk = 512;
+    uint32_t partSectors = static_cast<uint32_t>(fatVol.size() / ss);
+    uint32_t diskSectors = partStartSector + partSectors;
+    const uint32_t apmSecs = apmBlk / ss;
+    if (apmSecs && (diskSectors % apmSecs) != 0)
+        diskSectors += apmSecs - (diskSectors % apmSecs);
+    std::vector<uint8_t> disk(diskSectors * ss, 0);
+    std::memcpy(disk.data() + partStartSector * ss, fatVol.data(), fatVol.size());
+    disk[0] = 'E';
+    disk[1] = 'R';
+    writeBe16(disk, 2, static_cast<uint16_t>(apmBlk));
+    writeBe32(disk, 4, diskSectors / apmSecs);
+    auto plantPm = [&](uint32_t apmIndex, uint32_t startApm, uint32_t cntApm, const char* type) {
+        const size_t o = static_cast<size_t>(apmIndex) * apmBlk;
+        disk[o] = 'P';
+        disk[o + 1] = 'M';
+        writeBe32(disk, o + 4, 2);
+        writeBe32(disk, o + 8, startApm);
+        writeBe32(disk, o + 12, cntApm);
+        const size_t n = std::strlen(type);
+        if (n > 31) return;
+        std::memcpy(disk.data() + o + 48, type, n);
+    };
+    const uint32_t startApm = partStartSector * ss / apmBlk;
+    const uint32_t cntApm = (partSectors * ss + apmBlk - 1) / apmBlk;
+    plantPm(1, 1, 2, "Apple_partition_map");
+    plantPm(2, startApm, cntApm, "Apple_HFS");
     return disk;
 }
 
@@ -254,6 +302,128 @@ inline std::vector<uint8_t> buildExt4CarveVolume() {
 
     const size_t bmp = 4 * bs;
     img[bmp] = 0xFF; // blocks 0-7 allocated; blocks 8+ clear in following bytes
+    return img;
+}
+
+// ext4 + jbd2 journal holding a dirent the live directory no longer has.
+inline std::vector<uint8_t> buildExt4JournalVolume() {
+    auto img = buildExt4Volume();
+    constexpr uint32_t bs = 1024;
+    writeLe32(img, bs + 0xE0, 8); // s_journal_inum
+
+    auto writeInode = [&](uint32_t ino, uint16_t mode, uint32_t size, uint32_t b0, uint32_t b1 = 0, uint32_t b2 = 0) {
+        size_t off = 5 * bs + (ino - 1) * 128;
+        writeLe16(img, off + 0x00, mode);
+        writeLe16(img, off + 0x18, 1);
+        writeLe32(img, off + 0x04, size);
+        writeLe32(img, off + 0x28, b0);
+        writeLe32(img, off + 0x2C, b1);
+        writeLe32(img, off + 0x30, b2);
+    };
+    writeInode(8, 0x8000, 3 * bs, 8, 9, 10);
+
+    auto writeBe32 = [&](size_t off, uint32_t v) {
+        img[off] = static_cast<uint8_t>(v >> 24);
+        img[off + 1] = static_cast<uint8_t>(v >> 16);
+        img[off + 2] = static_cast<uint8_t>(v >> 8);
+        img[off + 3] = static_cast<uint8_t>(v);
+    };
+    constexpr uint32_t kJbd2Magic = 0xC03B3998;
+    writeBe32(8 * bs, kJbd2Magic);
+    writeBe32(8 * bs + 4, 4); // superblock v2
+    writeBe32(9 * bs, kJbd2Magic);
+    writeBe32(9 * bs + 4, 1); // descriptor
+    size_t de = 10 * bs;
+    writeLe32(img, de + 0x00, 99);
+    writeLe16(img, de + 0x04, 16);
+    img[de + 0x06] = 8;
+    img[de + 0x07] = 1;
+    std::memcpy(img.data() + de + 8, "gone.txt", 8);
+    return img;
+}
+
+// Committed jbd2 txn: dirent + inode + data. Uncommitted txn: phantom dirent, no commit.
+inline std::vector<uint8_t> buildExt4JournalReplayVolume() {
+    auto img = buildExt4Volume();
+    constexpr uint32_t bs = 1024;
+    writeLe32(img, bs + 0xE0, 8); // s_journal_inum
+
+    uint32_t jblocks[8] = {8, 9, 10, 11, 12, 13, 14, 15};
+    {
+        size_t off = 5 * bs + 7 * 128; // inode 8
+        writeLe16(img, off + 0x00, 0x8000);
+        writeLe16(img, off + 0x1A, 1); // i_links_count
+        writeLe32(img, off + 0x04, 8 * bs);
+        for (int i = 0; i < 8; ++i) writeLe32(img, off + 0x28 + i * 4, jblocks[i]);
+    }
+
+    auto writeBe32 = [&](size_t off, uint32_t v) {
+        img[off] = static_cast<uint8_t>(v >> 24);
+        img[off + 1] = static_cast<uint8_t>(v >> 16);
+        img[off + 2] = static_cast<uint8_t>(v >> 8);
+        img[off + 3] = static_cast<uint8_t>(v);
+    };
+    constexpr uint32_t kJbd2Magic = 0xC03B3998;
+    constexpr uint32_t kSameUuid = 2;
+    constexpr uint32_t kLastTag = 8;
+
+    // journal superblock @ FS block 8 (journal block 0)
+    writeBe32(8 * bs, kJbd2Magic);
+    writeBe32(8 * bs + 4, 4);
+    writeBe32(8 * bs + 8, 1);
+    writeBe32(8 * bs + 12, bs);
+    writeBe32(8 * bs + 16, 8);
+    writeBe32(8 * bs + 20, 1); // s_first
+    writeBe32(8 * bs + 24, 1); // s_sequence
+    writeBe32(8 * bs + 28, 1); // s_start
+
+    // descriptor seq 1 @ journal block 1 (FS 9): tags FS 30, 6, 32
+    writeBe32(9 * bs, kJbd2Magic);
+    writeBe32(9 * bs + 4, 1);
+    writeBe32(9 * bs + 8, 1);
+    writeBe32(9 * bs + 12, 30);
+    writeBe32(9 * bs + 16, kSameUuid);
+    writeBe32(9 * bs + 20, 6);
+    writeBe32(9 * bs + 24, kSameUuid);
+    writeBe32(9 * bs + 28, 32);
+    writeBe32(9 * bs + 32, kSameUuid | kLastTag);
+
+    // data 0: dirent gone.dat -> inode 14 @ FS 30 copy (FS 10)
+    size_t de = 10 * bs;
+    writeLe32(img, de + 0x00, 14);
+    writeLe16(img, de + 0x04, 20);
+    img[de + 0x06] = 8;
+    img[de + 0x07] = 1;
+    std::memcpy(img.data() + de + 8, "gone.dat", 8);
+
+    // data 1: inode table block 6 copy (inodes 9-16); inode 14 at offset 640
+    size_t it = 11 * bs;
+    size_t i14 = it + (14 - 9) * 128;
+    writeLe16(img, i14 + 0x00, 0x8000);
+    writeLe32(img, i14 + 0x04, 8);     // size
+    writeLe32(img, i14 + 0x14, 1);     // i_dtime
+    writeLe16(img, i14 + 0x1A, 0);     // links=0 deleted
+    writeLe32(img, i14 + 0x28, 32);    // i_block[0] = FS 32
+
+    // data 2: file payload @ FS 32 copy (FS 12)
+    std::memcpy(img.data() + 12 * bs, "JBD2DATA", 8);
+
+    // commit seq 1 @ FS 13
+    writeBe32(13 * bs, kJbd2Magic);
+    writeBe32(13 * bs + 4, 2);
+    writeBe32(13 * bs + 8, 1);
+
+    // uncommitted descriptor seq 2 + phantom dirent, no commit
+    writeBe32(14 * bs, kJbd2Magic);
+    writeBe32(14 * bs + 4, 1);
+    writeBe32(14 * bs + 8, 2);
+    writeBe32(14 * bs + 12, 40);
+    writeBe32(14 * bs + 16, kSameUuid | kLastTag);
+    writeLe32(img, 15 * bs + 0x00, 50);
+    writeLe16(img, 15 * bs + 0x04, 20);
+    img[15 * bs + 0x06] = 11;
+    img[15 * bs + 0x07] = 1;
+    std::memcpy(img.data() + 15 * bs + 8, "phantom.bin", 11);
     return img;
 }
 
@@ -810,7 +980,78 @@ inline std::vector<uint8_t> minimalValidJpeg(uint8_t tag, size_t payloadLen = 58
     return jpeg;
 }
 
-inline std::vector<uint8_t> buildIndxNamed(const char* n, uint8_t childMftLo) {
+// Deleted FAT16 JPEG split across cluster 2 and 10. Cluster 3 holds a second
+// deleted JPEG (poison). FAT1 file entries stay 0. When writeBackupChain,
+// FAT2 keeps 2→10 EOC so a mirror walk reconstructs the original.
+inline std::vector<uint8_t> buildFat16DeletedFragmentedJpegVolume(bool writeBackupChain) {
+    constexpr uint32_t ss = 512;
+    constexpr uint32_t fatSectors = 16;
+    constexpr uint32_t totalSectors = 4120;
+    std::vector<uint8_t> img(totalSectors * ss, 0);
+
+    TestFatBpb bpb{};
+    bpb.jmp[0] = 0xEB; bpb.jmp[1] = 0x3C; bpb.jmp[2] = 0x90;
+    std::memcpy(bpb.oem, "MSWIN4.1", 8);
+    bpb.bytesPerSector = static_cast<uint16_t>(ss);
+    bpb.sectorsPerCluster = 1;
+    bpb.reservedSectors = 1;
+    bpb.numFats = 2;
+    bpb.rootEntryCount = 16;
+    bpb.media = 0xF8;
+    bpb.fatSize16 = static_cast<uint16_t>(fatSectors);
+    bpb.totalSectors32 = totalSectors;
+    bpb.bootSig = 0x29;
+    std::memcpy(bpb.fsType, "FAT16   ", 8);
+    std::memcpy(img.data(), &bpb, sizeof(bpb));
+    img[510] = 0x55; img[511] = 0xAA;
+
+    const uint32_t fat1 = bpb.reservedSectors;
+    const uint32_t fat2 = fat1 + fatSectors;
+    const uint32_t rootStart = fat1 + bpb.numFats * fatSectors;
+    const uint32_t dataStart = rootStart + 1;
+
+    auto writeFat16 = [&](uint32_t fatBase, uint32_t clus, uint16_t val) {
+        writeLe16(img, static_cast<size_t>(fatBase) * ss + static_cast<size_t>(clus) * 2, val);
+    };
+    writeFat16(fat1, 0, 0xFFF8);
+    writeFat16(fat1, 1, 0xFFFF);
+    writeFat16(fat2, 0, 0xFFF8);
+    writeFat16(fat2, 1, 0xFFFF);
+
+    const auto jpegA = minimalValidJpeg(0x11);
+    const auto jpegB = minimalValidJpeg(0x22);
+
+    size_t de = rootStart * ss;
+    std::memcpy(img.data() + de, "PHOTO1  JPG", 11);
+    img[de] = 0xE5;
+    img[de + 11] = 0x20;
+    writeLe16(img, de + 26, 2);
+    writeLe32(img, de + 28, static_cast<uint32_t>(jpegA.size()));
+
+    de += 32;
+    std::memcpy(img.data() + de, "PHOTO2  JPG", 11);
+    img[de] = 0xE5;
+    img[de + 11] = 0x20;
+    writeLe16(img, de + 26, 3);
+    writeLe32(img, de + 28, static_cast<uint32_t>(jpegB.size()));
+
+    const size_t clus2 = static_cast<size_t>(dataStart) * ss;
+    const size_t clus3 = static_cast<size_t>(dataStart + 1) * ss;
+    const size_t clus10 = static_cast<size_t>(dataStart + 8) * ss;
+    std::memcpy(img.data() + clus2, jpegA.data(), ss);
+    std::memcpy(img.data() + clus10, jpegA.data() + ss, jpegA.size() - ss);
+    std::memcpy(img.data() + clus3, jpegB.data(), jpegB.size());
+
+    if (writeBackupChain) {
+        writeFat16(fat2, 2, 10);
+        writeFat16(fat2, 10, 0xFFFF);
+        writeFat16(fat2, 3, 4);
+        writeFat16(fat2, 4, 0xFFFF);
+    }
+    return img;
+}
+
+inline std::vector<uint8_t> buildIndxNamed(const char* n, uint8_t childMftLo, uint64_t realSize = 0) {
     std::vector<uint8_t> indx(0x40, 0);
     std::memcpy(indx.data(), "INDX", 4);
     writeLe16(indx, 4, 0x28);
@@ -826,6 +1067,10 @@ inline std::vector<uint8_t> buildIndxNamed(const char* n, uint8_t childMftLo) {
     indx[start + 10] = static_cast<uint8_t>(keyLen & 0xFF);
     indx[start + 11] = static_cast<uint8_t>((keyLen >> 8) & 0xFF);
     indx[start + 16] = 5;
+    if (realSize > 0) {
+        writeLe64(indx, start + 16 + 40, (realSize + 4095ull) & ~4095ull);
+        writeLe64(indx, start + 16 + 48, realSize);
+    }
     indx[start + 16 + 64] = static_cast<uint8_t>(nlen);
     indx[start + 16 + 65] = 1;
     for (size_t i = 0; i < nlen; ++i)
@@ -966,6 +1211,105 @@ inline std::vector<uint8_t> buildNtfsUnallocIndxVolume() {
     img.resize(ss * 128, 0);
     auto indx = buildIndxNamed("unalloc_only.txt", 88);
     std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    return img;
+}
+
+// Unalloc INDX names gone.jpg (MFT 88 missing). JPEG sits in free cluster 11,
+// or only inside live MFT $DATA at LCN 12 when jpegOnLiveMftData.
+inline std::vector<uint8_t> buildNtfsUnallocIndxJpegVolume(bool jpegOnLiveMftData = false) {
+    constexpr uint32_t ss = 512;
+    auto img = buildNtfsIndexAllocationVolume();
+    img.resize(ss * 128, 0);
+    const auto jpeg = minimalValidJpeg(0xAB);
+    auto indx = buildIndxNamed("gone.jpg", 88, jpeg.size());
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    if (jpegOnLiveMftData) {
+        const size_t rec2 = 8 * ss + 2048;
+        std::memcpy(img.data() + rec2, "FILE", 4);
+        writeLe16(img, rec2 + 0x14, 0x38);
+        writeLe16(img, rec2 + 0x16, 0x01);
+        writeLe32(img, rec2 + 0x18, 256);
+        writeLe32(img, rec2 + 0x1C, 1024);
+        const size_t attr = rec2 + 0x38;
+        writeLe32(img, attr + 0, 0x80);
+        writeLe32(img, attr + 4, 72);
+        img[attr + 8] = 1;
+        writeLe16(img, attr + 0x20, 0x40);
+        writeLe64(img, attr + 0x28, 4096);
+        writeLe64(img, attr + 0x30, jpeg.size());
+        img[attr + 0x40] = 0x11;
+        img[attr + 0x41] = 0x01;
+        img[attr + 0x42] = 0x0C;
+        writeLe32(img, attr + 72, 0xFFFFFFFF);
+        std::memcpy(img.data() + 12 * 4096, jpeg.data(), jpeg.size());
+    } else {
+        std::memcpy(img.data() + 11 * 4096, jpeg.data(), jpeg.size());
+    }
+    return img;
+}
+
+inline std::vector<uint8_t> buildNtfsUnallocIndxPngVolume() {
+    constexpr uint32_t ss = 512;
+    auto img = buildNtfsIndexAllocationVolume();
+    img.resize(ss * 128, 0);
+    const auto png = buildMinimalValidPng();
+    auto indx = buildIndxNamed("gone.png", 88, png.size());
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    std::memcpy(img.data() + 11 * 4096, png.data(), png.size());
+    return img;
+}
+
+inline std::vector<uint8_t> buildMinimalPdf() {
+    const char* s = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF";
+    return std::vector<uint8_t>(s, s + std::strlen(s));
+}
+
+inline std::vector<uint8_t> buildNtfsUnallocIndxPdfVolume() {
+    constexpr uint32_t ss = 512;
+    auto img = buildNtfsIndexAllocationVolume();
+    img.resize(ss * 128, 0);
+    const auto pdf = buildMinimalPdf();
+    auto indx = buildIndxNamed("gone.pdf", 88, pdf.size());
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    std::memcpy(img.data() + 11 * 4096, pdf.data(), pdf.size());
+    return img;
+}
+
+inline std::vector<uint8_t> buildMinimalZip() {
+    std::vector<uint8_t> b;
+    const uint8_t local[] = {'P', 'K', 0x03, 0x04};
+    b.insert(b.end(), local, local + 4);
+    b.insert(b.end(), 26, 0);
+    const uint8_t central[] = {'P', 'K', 0x01, 0x02};
+    b.insert(b.end(), central, central + 4);
+    const uint8_t eocd[] = {'P', 'K', 0x05, 0x06};
+    b.insert(b.end(), eocd, eocd + 4);
+    auto le16 = [&](uint16_t x) {
+        b.push_back(static_cast<uint8_t>(x & 0xFF));
+        b.push_back(static_cast<uint8_t>((x >> 8) & 0xFF));
+    };
+    auto le32 = [&](uint32_t x) {
+        le16(static_cast<uint16_t>(x & 0xFFFF));
+        le16(static_cast<uint16_t>(x >> 16));
+    };
+    le16(0);
+    le16(0);
+    le16(1);
+    le16(1);
+    le32(30);
+    le32(30);
+    le16(0);
+    return b;
+}
+
+inline std::vector<uint8_t> buildNtfsUnallocIndxZipVolume() {
+    constexpr uint32_t ss = 512;
+    auto img = buildNtfsIndexAllocationVolume();
+    img.resize(ss * 128, 0);
+    const auto zip = buildMinimalZip();
+    auto indx = buildIndxNamed("gone.zip", 88, zip.size());
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    std::memcpy(img.data() + 11 * 4096, zip.data(), zip.size());
     return img;
 }
 

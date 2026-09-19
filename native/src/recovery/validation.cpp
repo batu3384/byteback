@@ -79,7 +79,8 @@ void checkSizeConsistency(RecoveryResult& result, const FileRecord& record) {
 }
 
 void validateRecoveredStructure(RecoveryResult& result, const FileRecord& record) {
-    std::ifstream in(utf8Path(result.destPath), std::ios::binary);
+    const std::string& path = result.repairedPath.empty() ? result.destPath : result.repairedPath;
+    std::ifstream in(utf8Path(path), std::ios::binary);
     if (!in) {
         result.validationScore = 0;
         result.validationError = "could not reopen recovered file";
@@ -156,8 +157,81 @@ int validateCarvedBuffer(const std::string& ext, const uint8_t* data, size_t siz
     return score < 0 ? 0 : score;
 }
 
+bool writeRepairedSidecar(RecoveryResult& result, const std::vector<uint8_t>& buf) {
+    const auto dest = utf8Path(result.destPath);
+    const std::string name = pathToUtf8(dest.stem()) + "_repaired" + pathToUtf8(dest.extension());
+    const std::string path = uniqueDestPath(pathToUtf8(dest.parent_path()), name);
+    if (path.empty()) return false;
+    std::ofstream out(utf8Path(path), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    if (!out) return false;
+    result.repairedPath = path;
+    return true;
+}
+
+void maybeAppendJpegEoiOnDisk(RecoveryResult& result, const FileRecord& record) {
+    const std::string ext = extensionFromRecord(record);
+    if (ext != "jpg" && ext != "jpeg") return;
+    if (result.destPath.empty()) return;
+    std::ifstream in(utf8Path(result.destPath), std::ios::binary | std::ios::ate);
+    if (!in) return;
+    const std::streamoff sz = in.tellg();
+    if (sz <= 0 || sz > static_cast<std::streamoff>(16 << 20)) return;
+    const size_t n = static_cast<size_t>(sz);
+    in.seekg(0);
+    std::vector<uint8_t> buf(n);
+    in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(n));
+    if (static_cast<size_t>(in.gcount()) != n) return;
+    in.close();
+    if (!carver::appendMissingJpegEoi(buf)) return;
+    writeRepairedSidecar(result, buf);
+}
+
+void maybeRebuildPdfXrefOnDisk(RecoveryResult& result, const FileRecord& record) {
+    if (extensionFromRecord(record) != "pdf") return;
+    if (result.destPath.empty()) return;
+    std::ifstream in(utf8Path(result.destPath), std::ios::binary | std::ios::ate);
+    if (!in) return;
+    const std::streamoff sz = in.tellg();
+    if (sz <= 0 || sz > static_cast<std::streamoff>(16 << 20)) return;
+    const size_t n = static_cast<size_t>(sz);
+    in.seekg(0);
+    std::vector<uint8_t> buf(n);
+    in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(n));
+    if (static_cast<size_t>(in.gcount()) != n) return;
+    in.close();
+    if (!carver::rebuildMissingPdfXref(buf)) return;
+    writeRepairedSidecar(result, buf);
+}
+
+void maybeRebuildZipDirectoryOnDisk(RecoveryResult& result, const FileRecord& record) {
+    const std::string ext = extensionFromRecord(record);
+    if (ext != "zip" && ext != "docx" && ext != "xlsx" && ext != "pptx" &&
+        ext != "odt" && ext != "ods" && ext != "odp" && ext != "epub" && ext != "jar") {
+        return;
+    }
+    if (result.destPath.empty()) return;
+    std::ifstream in(utf8Path(result.destPath), std::ios::binary | std::ios::ate);
+    if (!in) return;
+    const std::streamoff sz = in.tellg();
+    if (sz <= 0 || sz > static_cast<std::streamoff>(16 << 20)) return;
+    const size_t n = static_cast<size_t>(sz);
+    in.seekg(0);
+    std::vector<uint8_t> buf(n);
+    in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(n));
+    if (static_cast<size_t>(in.gcount()) != n) return;
+    in.close();
+    if (!carver::rebuildMissingZipDirectory(buf)) return;
+    writeRepairedSidecar(result, buf);
+}
+
 void applyPostRecoveryValidation(RecoveryResult& result, const FileRecord& record) {
     if (!result.success || result.destPath.empty()) return;
+
+    maybeAppendJpegEoiOnDisk(result, record);
+    maybeRebuildPdfXrefOnDisk(result, record);
+    maybeRebuildZipDirectoryOnDisk(result, record);
 
     checkSizeConsistency(result, record);
 

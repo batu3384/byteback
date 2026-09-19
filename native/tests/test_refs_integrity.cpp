@@ -11,6 +11,24 @@ TEST(RefsIntegrity, Crc32cKnownVector) {
     EXPECT_EQ(refsCrc32c(nullptr, 0), 0u);
 }
 
+TEST(RefsIntegrity, Crc32cSkip4MatchesConcatenated) {
+    // XFS v5 (xfs_cksum.h): CRC-32C skips the 4-byte checksum field.
+    const uint8_t s[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    const uint32_t want = 0xE3069283u;
+    uint8_t buf[13];
+    std::memcpy(buf, s, 3);
+    buf[3] = buf[4] = buf[5] = buf[6] = 0xAA;
+    std::memcpy(buf + 7, s + 3, 6);
+    EXPECT_EQ(refsCrc32cSkip4(buf, sizeof(buf), 3), want);
+    buf[3] = static_cast<uint8_t>(want);
+    buf[4] = static_cast<uint8_t>(want >> 8);
+    buf[5] = static_cast<uint8_t>(want >> 16);
+    buf[6] = static_cast<uint8_t>(want >> 24);
+    EXPECT_TRUE(refsCrc32cSkip4MatchesLe(buf, sizeof(buf), 3));
+    buf[0] ^= 1;
+    EXPECT_FALSE(refsCrc32cSkip4MatchesLe(buf, sizeof(buf), 3));
+}
+
 TEST(RefsIntegrity, Crc64EcmaKnownVector) {
     const uint8_t s[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     EXPECT_EQ(refsCrc64Ecma(s, sizeof(s)), 0x6C40DF5F0B497347ULL);

@@ -4,6 +4,33 @@
 #include "byteback_carver.h"
 #include "io/volume_mapper_win.h"
 #include "io/hex_bind.h"
+#include "io/byte_source.h"
+#include "search/hex_search.h"
+#include "fs/mft_record_view.h"
+
+namespace {
+
+std::string acceptedHexVolumePath(const std::string& vp) {
+    if (byteback::isWin32VolumeDevicePath(vp)) return vp;
+    if (vp.empty() || byteback::isHttpUrl(vp)) return {};
+    if (vp.size() >= 4 && vp.compare(0, 4, "\\\\.\\") == 0) return {};
+#ifndef _WIN32
+    if (vp.size() >= 5 && vp.compare(0, 5, "/dev/") == 0) return {};
+#endif
+    return vp;
+}
+
+bool bindHexIo(byteback::DiskReader& reader, BridgeData* bdata, byteback::Engine* engine,
+               int driveIndex, const std::string& volumePath, std::string& err) {
+    byteback::FileRecord rec;
+    std::shared_ptr<byteback::VirtualRaid> raid = bdata ? bdata->raid : nullptr;
+    if (!byteback::bindReaderForRecord(reader, rec, driveIndex, raid, err, volumePath))
+        return false;
+    if (engine) reader.copyXtsFvekFrom(engine->getDiskReader());
+    return true;
+}
+
+} // namespace
 
 namespace {
 
@@ -90,6 +117,66 @@ private:
     std::string error_;
 };
 
+class HexSearchWorker : public Napi::AsyncWorker {
+public:
+    HexSearchWorker(Napi::Env& env, byteback::Engine* engine, int driveIndex,
+                    std::vector<uint8_t> needle, uint64_t maxHits,
+                    std::string volumePath, BridgeData* bdata,
+                    Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), engine_(engine), driveIndex_(driveIndex),
+          needle_(std::move(needle)), maxHits_(maxHits), volumePath_(std::move(volumePath)),
+          bdata_(bdata), deferred_(deferred) {}
+
+    void Execute() override {
+        try {
+            byteback::DiskReader reader;
+            std::string err;
+            if (!bindHexIo(reader, bdata_, engine_, driveIndex_, volumePath_, err)) {
+                error_ = err.empty() ? "Could not open volume device" : err;
+                return;
+            }
+            std::atomic<bool> running{true};
+            hits_ = byteback::searchRawBytes(reader, needle_.data(), needle_.size(),
+                                             maxHits_, &running, &unread_);
+        } catch (const std::exception& e) {
+            error_ = e.what();
+        } catch (...) {
+            error_ = "unknown hex search error";
+        }
+    }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (bdata_) bdata_->endHeavyOp();
+        Napi::Object out = Napi::Object::New(env);
+        Napi::Array arr = Napi::Array::New(env, hits_.size());
+        for (size_t i = 0; i < hits_.size(); ++i) {
+            arr[i] = Napi::Number::New(env, static_cast<double>(hits_[i].byteOffset));
+        }
+        out.Set("hits", arr);
+        out.Set("unread", Napi::Boolean::New(env, unread_));
+        if (!error_.empty()) out.Set("error", Napi::String::New(env, error_));
+        deferred_.Resolve(out);
+    }
+
+    void OnError(const Napi::Error& e) override {
+        if (bdata_) bdata_->endHeavyOp();
+        deferred_.Reject(Napi::String::New(Env(), e.what()));
+    }
+
+private:
+    byteback::Engine* engine_;
+    int driveIndex_;
+    std::vector<uint8_t> needle_;
+    uint64_t maxHits_;
+    std::string volumePath_;
+    BridgeData* bdata_;
+    Napi::Promise::Deferred deferred_;
+    std::vector<byteback::HexSearchHit> hits_;
+    bool unread_ = false;
+    std::string error_;
+};
+
 } // namespace
 
 Napi::Value ScanLostPartitions(const Napi::CallbackInfo& info) {
@@ -112,6 +199,106 @@ Napi::Value ScanLostPartitions(const Napi::CallbackInfo& info) {
     auto* worker = new LostPartitionsWorker(env, &bdata->engine, driveIndex, stepSectors, bdata, deferred);
     worker->Queue();
     return deferred.Promise();
+    NAPI_CATCH
+}
+
+Napi::Value SearchHex(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBuffer()) {
+        Napi::TypeError::New(env, "Expected driveIndex and needle buffer").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto needleBuf = info[1].As<Napi::Buffer<uint8_t>>();
+    if (needleBuf.Length() == 0 || needleBuf.Length() > byteback::kHexSearchMaxNeedle) {
+        Napi::TypeError::New(env, "Needle length must be 1..64").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!bdata->tryBeginHeavyOp()) {
+        Napi::Error::New(env, "Another disk operation is already running").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    uint64_t maxHits = byteback::kHexSearchMaxHits;
+    if (info.Length() >= 3 && info[2].IsNumber()) {
+        const uint32_t n = info[2].As<Napi::Number>().Uint32Value();
+        if (n > 0) maxHits = std::min(byteback::kHexSearchMaxHits, static_cast<uint64_t>(n));
+    }
+    std::string volumePath;
+    if (info.Length() >= 4 && info[3].IsString()) {
+        const std::string vp = info[3].As<Napi::String>().Utf8Value();
+        volumePath = acceptedHexVolumePath(vp);
+    }
+    std::vector<uint8_t> needle(needleBuf.Data(), needleBuf.Data() + needleBuf.Length());
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    auto* worker = new HexSearchWorker(env, &bdata->engine, driveIndex, std::move(needle),
+                                       maxHits, std::move(volumePath), bdata, deferred);
+    worker->Queue();
+    return deferred.Promise();
+    NAPI_CATCH
+}
+
+Napi::Value GetMftRecord(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    byteback::Engine* engine = bdata ? &bdata->engine : nullptr;
+    if (!engine || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        return env.Undefined();
+    }
+    Napi::Object fail = Napi::Object::New(env);
+    fail.Set("ok", Napi::Boolean::New(env, false));
+    fail.Set("unread", Napi::Boolean::New(env, false));
+    if (sharedReaderBusy(bdata)) {
+        fail.Set("error", Napi::String::New(env, "Another disk operation is already running"));
+        return fail;
+    }
+
+    const int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    const double refN = info[1].As<Napi::Number>().DoubleValue();
+    if (!(refN >= 0) || refN > 1e15) {
+        fail.Set("error", Napi::String::New(env, "Invalid MFT reference"));
+        return fail;
+    }
+    const uint64_t mftRef = static_cast<uint64_t>(refN);
+    std::string volumePath;
+    if (info.Length() >= 3 && info[2].IsString()) {
+        const std::string vp = info[2].As<Napi::String>().Utf8Value();
+        volumePath = acceptedHexVolumePath(vp);
+    }
+
+    byteback::DiskReader diskReader;
+    std::string bindErr;
+    if (!bindHexIo(diskReader, bdata, engine, driveIndex, volumePath, bindErr)) {
+        fail.Set("error", Napi::String::New(env, bindErr.empty() ? "Could not open volume device" : bindErr));
+        return fail;
+    }
+
+    bool unread = false;
+    auto view = byteback::getMftRecordView(diskReader, mftRef, 0, &unread);
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("unread", Napi::Boolean::New(env, unread));
+    if (!view) {
+        out.Set("ok", Napi::Boolean::New(env, false));
+        return out;
+    }
+    out.Set("ok", Napi::Boolean::New(env, true));
+    out.Set("mftRef", Napi::Number::New(env, static_cast<double>(view->mftRef)));
+    out.Set("byteOffset", Napi::Number::New(env, static_cast<double>(view->byteOffset)));
+    out.Set("signature", jsUtf8(env, view->signature));
+    out.Set("flags", Napi::Number::New(env, view->flags));
+    Napi::Array attrs = Napi::Array::New(env, view->attrs.size());
+    for (size_t i = 0; i < view->attrs.size(); ++i) {
+        Napi::Object a = Napi::Object::New(env);
+        a.Set("type", Napi::Number::New(env, view->attrs[i].type));
+        a.Set("name", jsUtf8(env, view->attrs[i].name));
+        a.Set("resident", Napi::Boolean::New(env, view->attrs[i].resident));
+        attrs[i] = a;
+    }
+    out.Set("attrs", attrs);
+    return out;
     NAPI_CATCH
 }
 
@@ -189,9 +376,7 @@ Napi::Value ListPartitions(const Napi::CallbackInfo& info) {
     }
 
     byteback::PartitionScanner scanner(&reader);
-    std::vector<byteback::PartitionInfo> parts = scanner.parseMBR();
-    std::vector<byteback::PartitionInfo> gpt = scanner.parseGPT();
-    if (!gpt.empty()) parts = std::move(gpt);
+    std::vector<byteback::PartitionInfo> parts = scanner.parseTables();
     if (scanner.tableUnread()) {
         byteback::PartitionInfo unread;
         unread.type = "table_unread";
@@ -236,7 +421,7 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     std::string volumePath;
     if (info.Length() >= 4 && info[3].IsString()) {
         const std::string vp = info[3].As<Napi::String>().Utf8Value();
-        if (byteback::isWin32VolumeDevicePath(vp)) volumePath = vp;
+        volumePath = acceptedHexVolumePath(vp);
     }
 
     constexpr uint32_t kMaxRead = 1024 * 1024;
@@ -246,35 +431,14 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info) {
     }
 
     byteback::DiskReader diskReader;
-    if (byteback::hexUsesRaidBackend(static_cast<bool>(bdata->raid), driveIndex)) {
-        diskReader.setRaidBackend(bdata->raid);
-        diskReader.copyXtsFvekFrom(engine->getDiskReader());
-    } else if (!volumePath.empty()) {
-        if (!diskReader.openVolumePath(volumePath)) {
-            Napi::Object fail = Napi::Object::New(env);
-            fail.Set("success", Napi::Boolean::New(env, false));
-            fail.Set("bytesRead", Napi::Number::New(env, 0));
-            fail.Set("paddedZeros", Napi::Boolean::New(env, false));
-            fail.Set("error", Napi::String::New(env, "Could not open volume device"));
-            return fail;
-        }
-        diskReader.copyXtsFvekFrom(engine->getDiskReader());
-    } else if (driveIndex < 0) {
+    std::string bindErr;
+    if (!bindHexIo(diskReader, bdata, engine, driveIndex, volumePath, bindErr)) {
         Napi::Object fail = Napi::Object::New(env);
         fail.Set("success", Napi::Boolean::New(env, false));
         fail.Set("bytesRead", Napi::Number::New(env, 0));
         fail.Set("paddedZeros", Napi::Boolean::New(env, false));
-        fail.Set("error", Napi::String::New(env, "RAID array not assembled"));
+        fail.Set("error", Napi::String::New(env, bindErr.empty() ? "Could not open volume device" : bindErr));
         return fail;
-    } else if (!diskReader.openDrive(driveIndex)) {
-        Napi::Object fail = Napi::Object::New(env);
-        fail.Set("success", Napi::Boolean::New(env, false));
-        fail.Set("bytesRead", Napi::Number::New(env, 0));
-        fail.Set("paddedZeros", Napi::Boolean::New(env, false));
-        fail.Set("error", Napi::String::New(env, "Could not open drive"));
-        return fail;
-    } else {
-        diskReader.copyXtsFvekFrom(engine->getDiskReader());
     }
 
     uint8_t* buffer = static_cast<uint8_t*>(_aligned_malloc(size, 4096));

@@ -1,4 +1,6 @@
 #include "byteback_shredder.h"
+#include "recovery/path_util.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -10,12 +12,12 @@ using security::DataShredder;
 
 namespace {
 std::string makeTempPath(const char* name) {
-    return (std::filesystem::temp_directory_path() / name).string();
+    return bytebackTestTemp(name).string();
 }
 } // namespace
 
 TEST(Shredder, RefusesDirectory) {
-    auto dir = std::filesystem::temp_directory_path() / "byteback_shred_dir_test";
+    auto dir = bytebackTestTemp("byteback_shred_dir_test");
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     ASSERT_TRUE(std::filesystem::create_directories(dir, ec));
@@ -23,6 +25,26 @@ TEST(Shredder, RefusesDirectory) {
     // A directory must never be "shredded" (an empty one would just be removed).
     EXPECT_FALSE(s.shred_file(dir.string()));
     EXPECT_TRUE(std::filesystem::exists(dir));
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(Shredder, Utf8PathWipesAndRemoves) {
+    auto dir = std::filesystem::temp_directory_path() / std::filesystem::u8path("byteback_şred");
+    dir += "_";
+    dir += std::to_string(bytebackTestPid());
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(dir, ec));
+    auto p = dir / std::filesystem::u8path("günes.bin");
+    {
+        std::ofstream f(p, std::ios::binary);
+        std::string data(4096, 'Y');
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    }
+    ASSERT_TRUE(std::filesystem::exists(p));
+    DataShredder s;
+    EXPECT_TRUE(s.shred_file(byteback::pathToUtf8(p)));
+    EXPECT_FALSE(std::filesystem::exists(p));
     std::filesystem::remove_all(dir, ec);
 }
 
@@ -57,7 +79,7 @@ TEST(Shredder, RefusesReadOnlyFile) {
 }
 
 TEST(Shredder, FreeSpaceFillerIsRemoved) {
-    auto dir = std::filesystem::temp_directory_path() / "byteback_wipe_test";
+    auto dir = bytebackTestTemp("byteback_wipe_test");
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     ASSERT_TRUE(std::filesystem::create_directories(dir, ec));

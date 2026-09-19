@@ -681,3 +681,11 @@ TEST(EwfReaderCompressed, BackwardSeekDoesNotServeStaleChunk) {
     EXPECT_TRUE(r.verifyDigest());
     ::remove(path);
 }
+
+TEST(EwfReader, HttpSiblingSegmentPathIsE02) {
+    EXPECT_EQ(ewfSegmentPath("https://evidence.example/case.E01", 2),
+              "https://evidence.example/case.E02");
+    EXPECT_EQ(ewfSegmentPath("https://evidence.example/case.E01", 1),
+              "https://evidence.example/case.E01");
+    EXPECT_EQ(ewfSegmentPath("C:\\ev\\disk.E01", 2), "C:\\ev\\disk.E02");
+}

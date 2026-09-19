@@ -1,7 +1,11 @@
 #include "byteback_fs.h"
 #include "byteback_io.h"
+#include "byteback_recovery.h"
+#include "crypto/byteback_md5.h"
 #include "fixtures/volume_fixtures.h"
+#include "fs/mft_record_view.h"
 #include "fs/ntfs_util.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
@@ -63,7 +67,8 @@ public:
         const uint64_t mftZoneBytes = recordCount * recBytes;  // incl. record 0 ($MFT)
 
         pathOut = (std::filesystem::temp_directory_path() /
-                   ("byteback_ntfs_mem_test_" + std::to_string(hostPid()) + ".img"))
+                   ("byteback_ntfs_mem_test_" + std::to_string(recordCount) + "_" +
+                    std::to_string(hostPid()) + ".img"))
                       .string();
         std::ofstream f(pathOut, std::ios::binary | std::ios::trunc);
         if (!f.good()) {
@@ -577,6 +582,1318 @@ TEST(NtfsParser, WalksMftFromBootLcnIgnoresOrphan) {
     EXPECT_FALSE(orphan);
 }
 
+TEST(NtfsParser, BackupBootUsedWhenPrimaryWiped) {
+    auto img = buildNtfsBootMftWalkDisk();
+    constexpr size_t ss = 512;
+    std::memcpy(img.data() + img.size() - ss, img.data(), ss);
+    std::memset(img.data() + 3, 0, 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) names.push_back(fr.name);
+    }, &running, 0, 0, false));
+    bool doc = false;
+    for (const auto& n : names) {
+        if (n == "doc.txt") doc = true;
+    }
+    EXPECT_TRUE(doc) << "NTFS backup boot at last sector must restore $MFT LCN";
+}
+
+TEST(NtfsParser, MftMirrUsedWhenPrimaryRec0Wiped) {
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr size_t clusterBytes = ss * spc;
+    constexpr uint32_t mirrLcn = 2;
+    constexpr uint32_t dataLcn = 300;
+    std::vector<uint8_t> img(clusterBytes * 320, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = static_cast<uint8_t>(spc);
+    writeLe64(img, 0x30, 1);
+    writeLe64(img, 0x38, mirrLcn);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = mirrLcn * clusterBytes;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, 2048);
+    img[attr + 0x40] = 0x12;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = static_cast<uint8_t>(dataLcn & 0xFF);
+    img[attr + 0x43] = static_cast<uint8_t>((dataLcn >> 8) & 0xFF);
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = dataLcn * clusterBytes + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 256);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "doc.txt";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    writeLe64(img, attr + 56, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "doc.txt") found = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$MFTMirr rec0 must restore $MFT data runs when primary rec0 is wiped";
+}
+
+TEST(NtfsParser, AttributeListPullsDataFromExtensionRecord) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "big.dat";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x20);
+    writeLe32(img, attr + 4, 56);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 26);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0x80);
+    writeLe16(img, attr + 28, 26);
+    img[attr + 30] = 0;
+    img[attr + 31] = 26;
+    writeLe64(img, attr + 32, 0);
+    writeLe64(img, attr + 40, 3);
+    writeLe16(img, attr + 48, 0);
+    writeLe32(img, attr + 56, 0xFFFFFFFF);
+
+    const size_t rec3 = rec0 + 3 * 1024;
+    std::memcpy(img.data() + rec3, "FILE", 4);
+    writeLe16(img, rec3 + 0x14, 0x38);
+    writeLe16(img, rec3 + 0x16, 0x01);
+    writeLe32(img, rec3 + 0x18, 256);
+    writeLe32(img, rec3 + 0x1C, 1024);
+    writeLe64(img, rec3 + 0x20, 1);
+    attr = rec3 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "big.dat" && fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "hello", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$ATTRIBUTE_LIST must pull unnamed $DATA from the extension record";
+}
+
+TEST(NtfsParser, NonResidentAttributeListPullsDataFromExtensionRecord) {
+    constexpr size_t ss = 512;
+    constexpr size_t clusterBytes = ss * 8;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, clusterBytes);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "big.dat";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x20);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, 26);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x02;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t listOff = 2 * clusterBytes;
+    writeLe32(img, listOff + 0, 0x80);
+    writeLe16(img, listOff + 4, 26);
+    img[listOff + 6] = 0;
+    img[listOff + 7] = 26;
+    writeLe64(img, listOff + 8, 0);
+    writeLe64(img, listOff + 16, 3);
+    writeLe16(img, listOff + 24, 0);
+
+    const size_t rec3 = rec0 + 3 * 1024;
+    std::memcpy(img.data() + rec3, "FILE", 4);
+    writeLe16(img, rec3 + 0x14, 0x38);
+    writeLe16(img, rec3 + 0x16, 0x01);
+    writeLe32(img, rec3 + 0x18, 256);
+    writeLe32(img, rec3 + 0x1C, 1024);
+    writeLe64(img, rec3 + 0x20, 1);
+    attr = rec3 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 29);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 29;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "big.dat" && fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "hello", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "non-resident $ATTRIBUTE_LIST must pull unnamed $DATA from the extension record";
+}
+
+TEST(NtfsParser, AttributeListPullsNamedAdsFromExtensionRecord) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "big.dat";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x20);
+    writeLe32(img, attr + 4, 64);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 32);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0x80);
+    writeLe16(img, attr + 28, 32);
+    img[attr + 30] = 1;
+    img[attr + 31] = 26;
+    writeLe64(img, attr + 32, 0);
+    writeLe64(img, attr + 40, 3);
+    writeLe16(img, attr + 48, 0);
+    writeLe16(img, attr + 50, static_cast<uint16_t>('z'));
+    writeLe32(img, attr + 64, 0xFFFFFFFF);
+
+    const size_t rec3 = rec0 + 3 * 1024;
+    std::memcpy(img.data() + rec3, "FILE", 4);
+    writeLe16(img, rec3 + 0x14, 0x38);
+    writeLe16(img, rec3 + 0x16, 0x01);
+    writeLe32(img, rec3 + 0x18, 256);
+    writeLe32(img, rec3 + 0x1C, 1024);
+    writeLe64(img, rec3 + 0x20, 1);
+    attr = rec3 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    img[attr + 9] = 1;
+    writeLe16(img, attr + 10, 24);
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 26);
+    writeLe16(img, attr + 24, static_cast<uint16_t>('z'));
+    std::memcpy(img.data() + attr + 26, "hello", 5);
+    attr += 32;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_ads" && fr.name == "big.dat:z" &&
+            fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "hello", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$ATTRIBUTE_LIST must pull named ADS from the extension record";
+}
+
+TEST(NtfsParser, ReparsePointEmitsSymlinkPrintName) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "link.dat";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    const char* tgt = "t.txt";
+    const size_t tgtChars = 5;
+    const size_t tgtBytes = tgtChars * 2;
+    const uint32_t rpVal = 8 + 12 + static_cast<uint32_t>(tgtBytes * 2);
+    writeLe32(img, attr + 0, 0xC0);
+    writeLe32(img, attr + 4, 16 + 8 + rpVal);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, rpVal);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0xA000000C);
+    writeLe16(img, attr + 28, static_cast<uint16_t>(12 + tgtBytes * 2));
+    writeLe16(img, attr + 32, 0);
+    writeLe16(img, attr + 34, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, attr + 36, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, attr + 38, static_cast<uint16_t>(tgtBytes));
+    writeLe32(img, attr + 40, 0);
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, attr + 44 + i * 2, static_cast<uint16_t>(tgt[i]));
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, attr + 44 + tgtBytes + i * 2, static_cast<uint16_t>(tgt[i]));
+    attr += 16 + 8 + rpVal;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "link.dat" && fr.source == "ntfs_reparse" &&
+            fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "t.txt", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$REPARSE_POINT symlink print name must be recoverable";
+}
+
+TEST(NtfsParser, ReparsePointEmitsMountPrintName) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "mnt.dat";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    const char* tgt = "D:\\vol";
+    const size_t tgtChars = 6;
+    const size_t tgtBytes = tgtChars * 2;
+    const uint32_t rpVal = 16 + static_cast<uint32_t>(tgtBytes);
+    writeLe32(img, attr + 0, 0xC0);
+    writeLe32(img, attr + 4, 16 + 8 + rpVal);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, rpVal);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0xA0000003);
+    writeLe16(img, attr + 28, static_cast<uint16_t>(8 + tgtBytes));
+    writeLe16(img, attr + 32, 0);
+    writeLe16(img, attr + 34, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, attr + 36, 0);
+    writeLe16(img, attr + 38, static_cast<uint16_t>(tgtBytes));
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, attr + 40 + i * 2, static_cast<uint16_t>(tgt[i]));
+    attr += 16 + 8 + rpVal;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "mnt.dat" && fr.source == "ntfs_reparse" &&
+            fr.residentData.size() == 6 &&
+            std::memcmp(fr.residentData.data(), "D:\\vol", 6) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$REPARSE_POINT mount 0xA0000003 print name must emit ntfs_reparse";
+}
+
+TEST(NtfsParser, NonResidentReparsePointEmitsSymlinkPrintName) {
+    constexpr size_t ss = 512;
+    constexpr size_t clusterBytes = ss * 8;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, clusterBytes);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "link.dat";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    const char* tgt = "t.txt";
+    const size_t tgtChars = 5;
+    const size_t tgtBytes = tgtChars * 2;
+    writeLe32(img, attr + 0, 0xC0);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, 8 + 12 + tgtBytes * 2);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x02;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rpOff = 2 * clusterBytes;
+    writeLe32(img, rpOff, 0xA000000C);
+    writeLe16(img, rpOff + 4, static_cast<uint16_t>(12 + tgtBytes * 2));
+    writeLe16(img, rpOff + 8, 0);
+    writeLe16(img, rpOff + 10, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, rpOff + 12, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, rpOff + 14, static_cast<uint16_t>(tgtBytes));
+    writeLe32(img, rpOff + 16, 0);
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, rpOff + 20 + i * 2, static_cast<uint16_t>(tgt[i]));
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, rpOff + 20 + tgtBytes + i * 2, static_cast<uint16_t>(tgt[i]));
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "link.dat" && fr.source == "ntfs_reparse" &&
+            fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "t.txt", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "non-resident $REPARSE_POINT must emit symlink print name";
+}
+
+TEST(NtfsParser, ResidentEaEmitsNamedStream) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "note.txt";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 32;
+
+    const char* eaName = "user.x";
+    const char* eaVal = "bar";
+    const uint8_t eaNameLen = 6;
+    const uint16_t eaValLen = 3;
+    const uint32_t eaPacked = 8 + eaNameLen + 1 + eaValLen; // 18
+    const uint32_t eaAligned = (eaPacked + 3u) & ~3u;       // 20
+    writeLe32(img, attr + 0, 0xE0);
+    writeLe32(img, attr + 4, 16 + 8 + eaAligned);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, eaAligned);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0);
+    img[attr + 28] = 0;
+    img[attr + 29] = eaNameLen;
+    writeLe16(img, attr + 30, eaValLen);
+    std::memcpy(img.data() + attr + 32, eaName, eaNameLen);
+    img[attr + 32 + eaNameLen] = 0;
+    std::memcpy(img.data() + attr + 32 + eaNameLen + 1, eaVal, eaValLen);
+    attr += 16 + 8 + eaAligned;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_ea" && fr.name == "note.txt:ea:user.x" &&
+            fr.residentData.size() == 3 &&
+            std::memcmp(fr.residentData.data(), "bar", 3) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "resident $EA must emit as a recoverable named stream";
+}
+
+TEST(NtfsParser, AttributeListPullsEaFromExtensionRecord) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "note.txt";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 32;
+
+    writeLe32(img, attr + 0, 0x20);
+    writeLe32(img, attr + 4, 56);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 26);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0xE0);
+    writeLe16(img, attr + 28, 26);
+    img[attr + 30] = 0;
+    img[attr + 31] = 26;
+    writeLe64(img, attr + 32, 0);
+    writeLe64(img, attr + 40, 3);
+    writeLe16(img, attr + 48, 0);
+    writeLe32(img, attr + 56, 0xFFFFFFFF);
+
+    const size_t rec3 = rec0 + 3 * 1024;
+    std::memcpy(img.data() + rec3, "FILE", 4);
+    writeLe16(img, rec3 + 0x14, 0x38);
+    writeLe16(img, rec3 + 0x16, 0x01);
+    writeLe32(img, rec3 + 0x18, 256);
+    writeLe32(img, rec3 + 0x1C, 1024);
+    writeLe64(img, rec3 + 0x20, 1);
+    attr = rec3 + 0x38;
+    const char* eaName = "user.x";
+    const char* eaVal = "bar";
+    const uint8_t eaNameLen = 6;
+    const uint16_t eaValLen = 3;
+    const uint32_t eaPacked = 8 + eaNameLen + 1 + eaValLen;
+    const uint32_t eaAligned = (eaPacked + 3u) & ~3u;
+    writeLe32(img, attr + 0, 0xE0);
+    writeLe32(img, attr + 4, 16 + 8 + eaAligned);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, eaAligned);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0);
+    img[attr + 28] = 0;
+    img[attr + 29] = eaNameLen;
+    writeLe16(img, attr + 30, eaValLen);
+    std::memcpy(img.data() + attr + 32, eaName, eaNameLen);
+    img[attr + 32 + eaNameLen] = 0;
+    std::memcpy(img.data() + attr + 32 + eaNameLen + 1, eaVal, eaValLen);
+    attr += 16 + 8 + eaAligned;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_ea" && fr.name == "note.txt:ea:user.x" &&
+            fr.residentData.size() == 3 &&
+            std::memcmp(fr.residentData.data(), "bar", 3) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$ATTRIBUTE_LIST must pull $EA from the extension record";
+}
+
+TEST(NtfsParser, AttributeListPullsReparseFromExtensionRecord) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "link.dat";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    writeLe32(img, attr + 0, 0x20);
+    writeLe32(img, attr + 4, 56);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 26);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0xC0);
+    writeLe16(img, attr + 28, 26);
+    img[attr + 30] = 0;
+    img[attr + 31] = 26;
+    writeLe64(img, attr + 32, 0);
+    writeLe64(img, attr + 40, 3);
+    writeLe16(img, attr + 48, 0);
+    writeLe32(img, attr + 56, 0xFFFFFFFF);
+
+    const size_t rec3 = rec0 + 3 * 1024;
+    std::memcpy(img.data() + rec3, "FILE", 4);
+    writeLe16(img, rec3 + 0x14, 0x38);
+    writeLe16(img, rec3 + 0x16, 0x01);
+    writeLe32(img, rec3 + 0x18, 256);
+    writeLe32(img, rec3 + 0x1C, 1024);
+    writeLe64(img, rec3 + 0x20, 1);
+    attr = rec3 + 0x38;
+    const char* tgt = "t.txt";
+    const size_t tgtChars = 5;
+    const size_t tgtBytes = tgtChars * 2;
+    const uint32_t rpVal = 8 + 12 + static_cast<uint32_t>(tgtBytes * 2);
+    writeLe32(img, attr + 0, 0xC0);
+    writeLe32(img, attr + 4, 16 + 8 + rpVal);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, rpVal);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24, 0xA000000C);
+    writeLe16(img, attr + 28, static_cast<uint16_t>(12 + tgtBytes * 2));
+    writeLe16(img, attr + 32, 0);
+    writeLe16(img, attr + 34, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, attr + 36, static_cast<uint16_t>(tgtBytes));
+    writeLe16(img, attr + 38, static_cast<uint16_t>(tgtBytes));
+    writeLe32(img, attr + 40, 0);
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, attr + 44 + i * 2, static_cast<uint16_t>(tgt[i]));
+    for (size_t i = 0; i < tgtChars; ++i)
+        writeLe16(img, attr + 44 + tgtBytes + i * 2, static_cast<uint16_t>(tgt[i]));
+    attr += 16 + 8 + rpVal;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "link.dat" && fr.source == "ntfs_reparse" &&
+            fr.residentData.size() == 5 &&
+            std::memcmp(fr.residentData.data(), "t.txt", 5) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$ATTRIBUTE_LIST must pull $REPARSE_POINT from the extension record";
+}
+
+TEST(NtfsParser, NonResidentEaEmitsNamedStream) {
+    constexpr size_t ss = 512;
+    constexpr size_t clusterBytes = ss * 8;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, clusterBytes);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "note.txt";
+    const size_t nameLen = 8;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0xE0);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes);
+    writeLe64(img, attr + 0x30, 20);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x02;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t eaOff = 2 * clusterBytes;
+    const char* eaName = "user.x";
+    const char* eaVal = "bar";
+    writeLe32(img, eaOff + 0, 0);
+    img[eaOff + 4] = 0;
+    img[eaOff + 5] = 6;
+    writeLe16(img, eaOff + 6, 3);
+    std::memcpy(img.data() + eaOff + 8, eaName, 6);
+    img[eaOff + 14] = 0;
+    std::memcpy(img.data() + eaOff + 15, eaVal, 3);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_ea" && fr.name == "note.txt:ea:user.x" &&
+            fr.residentData.size() == 3 &&
+            std::memcmp(fr.residentData.data(), "bar", 3) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "non-resident $EA must emit as a recoverable named stream";
+}
+
+TEST(NtfsParser, EncryptedStandardInfoIsEfsNotPlaintext) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    writeLe32(img, attr + 0, 0x10);
+    writeLe32(img, attr + 4, 16 + 8 + 48);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 48);
+    writeLe16(img, attr + 20, 24);
+    writeLe32(img, attr + 24 + 32, 0x4000);
+    attr += 16 + 8 + 48;
+    const char* name = "secret.txt";
+    const size_t nameLen = 10;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 32;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "secret.txt" && fr.source == "ntfs_efs") found = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "FILE_ATTRIBUTE_ENCRYPTED must not look like plaintext ntfs_mft";
+}
+
+TEST(NtfsParser, ObjectIdEmitsGuidDiscovery) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "oid.txt";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    const uint8_t guid[16] = {
+        0x67, 0x45, 0x23, 0x01, 0xAB, 0x89, 0xEF, 0xCD,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
+    writeLe32(img, attr + 0, 0x40);
+    writeLe32(img, attr + 4, 16 + 8 + 16);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 16);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, guid, 16);
+    attr += 16 + 8 + 16;
+
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 5);
+    writeLe16(img, attr + 20, 24);
+    std::memcpy(img.data() + attr + 24, "hello", 5);
+    attr += 32;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_object_id" && fr.name == "oid.txt:objectid" &&
+            fr.residentData.size() == 36 &&
+            std::memcmp(fr.residentData.data(), "01234567-89AB-CDEF-0123-456789ABCDEF", 36) == 0) {
+            found = true;
+        }
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$OBJECT_ID must emit Windows GUID as ntfs_object_id";
+}
+
+TEST(NtfsParser, VolumeNameEmitsLabelDiscovery) {
+    constexpr size_t ss = 512;
+    std::vector<uint8_t> img(ss * 64, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = 8;
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = 8 * ss;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, 4096);
+    writeLe64(img, attr + 0x30, 4096);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x01;
+    img[attr + 0x42] = 0x01;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec1 = rec0 + 1024;
+    std::memcpy(img.data() + rec1, "FILE", 4);
+    writeLe16(img, rec1 + 0x14, 0x38);
+    writeLe16(img, rec1 + 0x16, 0x01);
+    writeLe32(img, rec1 + 0x18, 400);
+    writeLe32(img, rec1 + 0x1C, 1024);
+    attr = rec1 + 0x38;
+    const char* name = "$Volume";
+    const size_t nameLen = 7;
+    const size_t fnValueLen = 66 + nameLen * 2;
+    writeLe32(img, attr + 0, 0x30);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + fnValueLen));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(fnValueLen));
+    writeLe16(img, attr + 20, 24);
+    writeLe64(img, attr + 24, 5);
+    img[attr + 24 + 64] = static_cast<uint8_t>(nameLen);
+    img[attr + 24 + 65] = 1;
+    for (size_t i = 0; i < nameLen; ++i)
+        writeLe16(img, attr + 24 + 66 + i * 2, static_cast<uint16_t>(name[i]));
+    attr += 16 + 8 + fnValueLen;
+
+    const char* label = "BYTEBACK";
+    const size_t labelLen = 8;
+    writeLe32(img, attr + 0, 0x60);
+    writeLe32(img, attr + 4, static_cast<uint32_t>(16 + 8 + labelLen * 2));
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, static_cast<uint32_t>(labelLen * 2));
+    writeLe16(img, attr + 20, 24);
+    for (size_t i = 0; i < labelLen; ++i)
+        writeLe16(img, attr + 24 + i * 2, static_cast<uint16_t>(label[i]));
+    attr += 16 + 8 + labelLen * 2;
+    writeLe32(img, attr + 0, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    bool found = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.source == "ntfs_vol_name" && fr.name == "BYTEBACK") found = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(found) << "$VOLUME_NAME must emit the volume label as ntfs_vol_name";
+}
+
 TEST(NtfsParser, BadMftSectorDoesNotDropSiblingRecords) {
     auto img = buildNtfsBootMftWalkDisk();
     DiskReader reader;
@@ -762,18 +2079,206 @@ TEST(NtfsParser, UnallocIndxEmitsNameFromFreeCluster) {
     auto img = byteback::testfix::buildNtfsUnallocIndxVolume();
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
-    bool hit = false;
+    FileRecord unalloc{};
     bool fromMftI30 = false;
     std::atomic<bool> running{true};
     NTFSParser ntfs;
     ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
-        if (fr.name == "unalloc_only.txt") {
-            hit = fr.source == "ntfs_i30_unalloc" && fr.status == 0;
-        }
+        if (fr.name == "unalloc_only.txt") unalloc = fr;
         if (fr.name == "indx_only.txt" && fr.source == "ntfs_i30") fromMftI30 = true;
     }, &running, 0, 0, false));
-    EXPECT_TRUE(hit);
+    EXPECT_EQ(unalloc.source, "ntfs_i30_unalloc");
+    EXPECT_EQ(unalloc.status, 0);
+    EXPECT_NE(unalloc.path.find("unalloc_only.txt"), std::string::npos)
+        << "unalloc INDX recarve must keep the FILE_NAME in the rebuilt path";
     EXPECT_TRUE(fromMftI30);
+}
+
+TEST(NtfsParser, UnallocIndxUnreadOnIoFail) {
+    auto img = byteback::testfix::buildNtfsUnallocIndxVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    reader.setMemoryFaultRange(80, 8);
+
+    bool hit = false;
+    bool sawUnread = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "unalloc_only.txt") hit = true;
+        if (fr.source == "ntfs_i30_unread") sawUnread = true;
+    }, &running, 0, 0, false));
+    EXPECT_FALSE(hit) << "unread unalloc INDX must not parse as unalloc_only.txt";
+    EXPECT_TRUE(sawUnread);
+}
+
+TEST(NtfsParser, UnallocIndxSkipsLiveMftSameName) {
+    auto img = byteback::testfix::buildNtfsIndexAllocationVolume();
+    img.resize(512 * 128, 0);
+    auto indx = byteback::testfix::buildIndxNamed("Dir", 1);
+    std::memcpy(img.data() + 10 * 4096, indx.data(), indx.size());
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool unallocDir = false;
+    bool liveDir = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "Dir" && fr.source == "ntfs_i30_unalloc") unallocDir = true;
+        if (fr.name == "Dir" && fr.source == "ntfs_mft") liveDir = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(liveDir);
+    EXPECT_FALSE(unallocDir) << "live MFT Dir must not also emit as unalloc INDX Extra Found";
+}
+
+TEST(NtfsParser, UnallocIndxCarveBindJpeg) {
+    const auto jpeg = byteback::testfix::minimalValidJpeg(0xAB);
+    auto img = byteback::testfix::buildNtfsUnallocIndxJpegVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool nameOnly = false;
+    FileRecord carve{};
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "gone.jpg" && fr.source == "ntfs_i30_unalloc" && fr.status == 0)
+            nameOnly = true;
+        if (fr.name == "gone.jpg" && fr.source == "ntfs_i30_carve")
+            carve = fr;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(nameOnly) << "name-only Extra Found must stay";
+    ASSERT_FALSE(carve.runs.empty());
+    EXPECT_EQ(carve.sizeBytes, jpeg.size());
+    EXPECT_EQ(carve.status, 0);
+
+    const auto dest = bytebackTestTemp("byteback_i30_carve").string();
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, carve, dest);
+    EXPECT_TRUE(result.success) << result.error;
+    crypto::Md5 md5;
+    md5.update(jpeg.data(), jpeg.size());
+    EXPECT_EQ(result.md5Hash, md5.finalHex());
+    std::error_code ec;
+    std::filesystem::remove_all(dest, ec);
+}
+
+TEST(NtfsParser, UnallocIndxCarveDoesNotStealLiveData) {
+    auto img = byteback::testfix::buildNtfsUnallocIndxJpegVolume(true);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool nameOnly = false;
+    bool carve = false;
+    bool liveData = false;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "gone.jpg" && fr.source == "ntfs_i30_unalloc") nameOnly = true;
+        if (fr.source == "ntfs_i30_carve") carve = true;
+        if (fr.source == "ntfs_mft" && !fr.runs.empty() && fr.sizeBytes > 0) liveData = true;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(nameOnly);
+    EXPECT_TRUE(liveData);
+    EXPECT_FALSE(carve) << "live MFT $DATA must not become ntfs_i30_carve";
+}
+
+TEST(NtfsParser, UnallocIndxCarveBindPng) {
+    const auto png = byteback::testfix::buildMinimalValidPng();
+    auto img = byteback::testfix::buildNtfsUnallocIndxPngVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool nameOnly = false;
+    FileRecord carve{};
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "gone.png" && fr.source == "ntfs_i30_unalloc" && fr.status == 0)
+            nameOnly = true;
+        if (fr.name == "gone.png" && fr.source == "ntfs_i30_carve")
+            carve = fr;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(nameOnly);
+    ASSERT_FALSE(carve.runs.empty());
+    EXPECT_EQ(carve.sizeBytes, png.size());
+
+    const auto dest = bytebackTestTemp("byteback_i30_png").string();
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, carve, dest);
+    EXPECT_TRUE(result.success) << result.error;
+    crypto::Md5 md5;
+    md5.update(png.data(), png.size());
+    EXPECT_EQ(result.md5Hash, md5.finalHex());
+    std::error_code ec;
+    std::filesystem::remove_all(dest, ec);
+}
+
+TEST(NtfsParser, UnallocIndxCarveBindPdf) {
+    const auto pdf = byteback::testfix::buildMinimalPdf();
+    auto img = byteback::testfix::buildNtfsUnallocIndxPdfVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool nameOnly = false;
+    FileRecord carve{};
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "gone.pdf" && fr.source == "ntfs_i30_unalloc" && fr.status == 0)
+            nameOnly = true;
+        if (fr.name == "gone.pdf" && fr.source == "ntfs_i30_carve")
+            carve = fr;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(nameOnly);
+    ASSERT_FALSE(carve.runs.empty());
+    EXPECT_EQ(carve.sizeBytes, pdf.size());
+
+    const auto dest = bytebackTestTemp("byteback_i30_pdf").string();
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, carve, dest);
+    EXPECT_TRUE(result.success) << result.error;
+    crypto::Md5 md5;
+    md5.update(pdf.data(), pdf.size());
+    EXPECT_EQ(result.md5Hash, md5.finalHex());
+    std::error_code ec;
+    std::filesystem::remove_all(dest, ec);
+}
+
+TEST(NtfsParser, UnallocIndxCarveBindZip) {
+    const auto zip = byteback::testfix::buildMinimalZip();
+    auto img = byteback::testfix::buildNtfsUnallocIndxZipVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    bool nameOnly = false;
+    FileRecord carve{};
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "gone.zip" && fr.source == "ntfs_i30_unalloc" && fr.status == 0)
+            nameOnly = true;
+        if (fr.name == "gone.zip" && fr.source == "ntfs_i30_carve")
+            carve = fr;
+    }, &running, 0, 0, false));
+    EXPECT_TRUE(nameOnly);
+    ASSERT_FALSE(carve.runs.empty());
+    EXPECT_EQ(carve.sizeBytes, zip.size());
+
+    const auto dest = bytebackTestTemp("byteback_i30_zip").string();
+    std::filesystem::create_directories(dest);
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, carve, dest);
+    EXPECT_TRUE(result.success) << result.error;
+    crypto::Md5 md5;
+    md5.update(zip.data(), zip.size());
+    EXPECT_EQ(result.md5Hash, md5.finalHex());
+    std::error_code ec;
+    std::filesystem::remove_all(dest, ec);
 }
 
 TEST(NtfsParser, AdsSurvivesParentDedup) {
@@ -951,8 +2456,8 @@ TEST(NtfsParser, OrphanPassDoesNotDuplicateLiveMftRecords) {
 // RED evidence (pre-refactor): standalone probe over the same fixture measured
 // PEAK_DELTA=254.7 MB at 200K (tempFiles: FileRecord + residentData). The
 // bound below fails on the old two-phase full-buffer code and must hold on
-// the streaming design. The 2M point is measured with a standalone probe and
-// reported against the <700 MB gate.
+// the streaming design. Sibling TEST StreamingScanPeakMemoryBelowBoundAt2M
+// is the 2M / <700 MB gate (separate process: PeakWorkingSetSize is monotonic).
 // ---------------------------------------------------------------------------
 TEST(NtfsParser, StreamingScanPeakMemoryBelowBoundAt200K) {
     const uint64_t kRecords = 200000;
@@ -975,6 +2480,37 @@ TEST(NtfsParser, StreamingScanPeakMemoryBelowBoundAt200K) {
 
     EXPECT_EQ(emitted.load(), kRecords);  // $MFT record (fallback name) + 199,999 named
     EXPECT_LT(peakAfterMB - peakBeforeMB, 150.0);
+}
+
+// ---------------------------------------------------------------------------
+// FAZ 1.1 (A2/D2, in-suite 2M point): 10× the 200K fixture, same attachRawFile
+// isolation. Linear tempFiles growth from the old 254.7 MB / 200K probe would
+// be ~2.5 GB here; the streaming gate is peak delta < 700 MB. 200K bound
+// 150 MB × 10 = 1500 MB, so this 700 MB ceiling also rejects that linear
+// envelope. Own gtest_discover process: do not pair with the 200K TEST.
+// ---------------------------------------------------------------------------
+TEST(NtfsParser, StreamingScanPeakMemoryBelowBoundAt2M) {
+    const uint64_t kRecords = 2000000;
+    std::string path, err;
+    ASSERT_TRUE(NtfsVolumeFile::write(kRecords, path, err)) << err;
+    NtfsVolumeFile cleanup(path);
+
+    DiskReader reader;
+    std::string attachErr;
+    ASSERT_TRUE(reader.attachRawFile(path, &attachErr)) << attachErr;
+
+    const double peakBeforeMB = PeakWorkingSetMB();
+    std::atomic<bool> running{true};
+    std::atomic<uint64_t> emitted{0};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.id >= 0 && !fr.name.empty()) ++emitted;
+    }, &running, 0, 0, false));
+    const double peakAfterMB = PeakWorkingSetMB();
+    const double delta = peakAfterMB - peakBeforeMB;
+
+    EXPECT_EQ(emitted.load(), kRecords);
+    EXPECT_LT(delta, 700.0) << "peak delta=" << delta << " MB (gate <700)";
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +2570,26 @@ TEST(NtfsParser, StreamingRecordFieldsMatchLegacySemantics) {
     // deleted(45) + resident payload(25) - USA fixup missing(20) = 50 —
     // identical to the pre-refactor score for this fixture.
     EXPECT_EQ(doc.confidence, 50);
+    EXPECT_EQ(doc.mftRef, 1); // rec1 = doc.txt; parentId stays parent MFT (5)
+}
+
+TEST(NtfsParser, EmittedMftRefOpensRecordView) {
+    auto img = byteback::testfix::buildNtfsDeletedResidentVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    FileRecord doc;
+    std::atomic<bool> running{true};
+    NTFSParser ntfs;
+    ASSERT_TRUE(ntfs.scanAt(reader, [&](const FileRecord& fr) {
+        if (fr.name == "doc.txt") doc = fr;
+    }, &running, 0, 0, false));
+    ASSERT_EQ(doc.mftRef, 1);
+    bool unread = false;
+    auto view = getMftRecordView(reader, static_cast<uint64_t>(doc.mftRef), 0, &unread);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_FALSE(unread);
+    EXPECT_EQ(view->signature, "FILE");
+    EXPECT_EQ(view->mftRef, 1u);
 }
 
 // ---------------------------------------------------------------------------

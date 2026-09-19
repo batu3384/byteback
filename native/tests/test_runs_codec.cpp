@@ -27,7 +27,19 @@ TEST(RunsCodec, MultipleRunsRoundTrip) {
     for (size_t i = 0; i < runs.size(); ++i) {
         EXPECT_EQ(out[i].startSector, runs[i].startSector);
         EXPECT_EQ(out[i].sectorCount, runs[i].sectorCount);
+        EXPECT_EQ(out[i].byteCount, 0u);
     }
+}
+
+TEST(RunsCodec, ByteCountRoundTrip) {
+    std::vector<FileRecord::DataRun> runs = {{84, 1, 5}, {92, 1, 5}};
+    auto json = serializeRuns(runs);
+    EXPECT_EQ(json, "[[84,1,5],[92,1,5]]");
+    auto out = deserializeRuns(json);
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0].byteCount, 5u);
+    EXPECT_EQ(out[1].byteCount, 5u);
+    EXPECT_EQ(deserializeRuns("[[84,1]]")[0].byteCount, 0u);
 }
 
 TEST(RunsCodec, MalformedInputNeverThrows) {

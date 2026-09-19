@@ -9,6 +9,7 @@
 //                      xfs_dir2_sf_hdr/sf_entry, block magics
 //   xfs_bmap_btree.h - xfs_bmbt_rec bit layout, bmdr key/ptr addressing
 #include "fs/xfs_parser.h"
+#include "fs/refs_integrity.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -114,6 +115,7 @@ struct InodeView {
     uint8_t format = 0;
     uint64_t size = 0;
     uint32_t nextents = 0;
+    int64_t mtime = 0;
     const uint8_t* fork = nullptr;
     size_t forkLen = 0;
 };
@@ -128,6 +130,7 @@ InodeView DecodeInode(const std::vector<uint8_t>& raw) {
     if (v.version < 1 || v.version > 3) return v;
     v.size = Be64(raw.data() + 56);     // di_size
     v.nextents = Be32(raw.data() + 76); // di_nextents
+    v.mtime = static_cast<int32_t>(Be32(raw.data() + 40)); // di_mtime.t_sec
     const size_t dinodeSize = (v.version >= 3) ? kDinodeSizeV3 : kDinodeSizeV2;
     if (raw.size() < dinodeSize) return v;
     const size_t litino = raw.size() - dinodeSize;        // XFS_LITINO
@@ -404,6 +407,7 @@ void WalkInode(WalkCtx& ctx, uint64_t ino, const std::string& path,
     }
     const InodeView v = DecodeInode(raw);
     if (!v.ok) return; // unknown inode version/magic: skip honestly
+    const int confidence = (v.version >= 3 && !xfsDinodeCrcOk(raw.data(), raw.size())) ? 48 : 90;
 
     std::vector<Extent> exts;
     ExtentsForInode(ctx, v, &exts);
@@ -418,7 +422,7 @@ void WalkInode(WalkCtx& ctx, uint64_t ino, const std::string& path,
 
     const uint16_t fmt = v.mode & 0xF000;
     if (fmt == kModeDir) {
-        cb(path.empty() ? "/" : path, ino, v.size, true, runs);
+        cb(path.empty() ? "/" : path, ino, v.size, true, runs, confidence, v.mtime);
         if (!ctx.dirOk) return;
         std::vector<DirEntryRef> entries;
         if (v.format == kFmtLocal) {
@@ -430,25 +434,61 @@ void WalkInode(WalkCtx& ctx, uint64_t ino, const std::string& path,
             WalkInode(ctx, e.ino, path + "/" + e.name, cb, visited, depth + 1);
         }
     } else if (fmt == kModeReg) {
-        cb(path, ino, v.size, false, runs);
+        cb(path, ino, v.size, false, runs, confidence, v.mtime);
     } // symlinks/devices/etc. are out of scope for the file walk
 }
 
-} // namespace
-
-bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
-    reader_ = nullptr;
-    sb_ = {};
-    secondaryUnread_ = false;
-    if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
-
-    uint8_t buf[512] = {};
-    if (!readComplete(reader.readBytes(partitionOffsetBytes, sizeof(buf), buf), sizeof(buf))) {
-        return false;
+void WalkUnlinked(WalkCtx& ctx, const XfsParser::FileCallback& cb, std::set<uint64_t>* visited) {
+    // xfs_agi: magic 'XAGI' BE32@0, agi_unlinked[XFS_AGI_UNLINKED_BUCKETS]
+    // BE32[64] @40. AGI lives at AG+1024 (XFS_AGI_DADDR = 2 × 512-byte BB).
+    constexpr uint32_t kAgiMagic = 0x58414749;
+    constexpr size_t kAgiByteOff = 1024;
+    constexpr size_t kUnlinkedOff = 40;
+    constexpr int kBuckets = 64;
+    constexpr size_t kAgiBytes = kUnlinkedOff + static_cast<size_t>(kBuckets) * 4;
+    constexpr int kMaxHops = 4096; // ponytail: per-AG chain cap; upgrade: AGI btree
+    if (ctx.sb.agblklog >= 64 || ctx.sb.agcount == 0) return;
+    const uint64_t agMask = (1ull << ctx.sb.agblklog) - 1;
+    for (uint32_t ag = 0; ag < ctx.sb.agcount; ++ag) {
+        std::vector<uint8_t> agi(kAgiBytes);
+        const uint64_t off = ctx.partOffset +
+                             static_cast<uint64_t>(ag) * ctx.sb.agblocks * ctx.sb.blocksize + kAgiByteOff;
+        if (!readComplete(ctx.reader->readBytes(off, kAgiBytes, agi.data()), kAgiBytes)) continue;
+        if (Be32(agi.data()) != kAgiMagic) continue;
+        for (int b = 0; b < kBuckets; ++b) {
+            uint32_t agino = Be32(agi.data() + kUnlinkedOff + static_cast<size_t>(b) * 4);
+            int hops = 0;
+            while (agino != 0 && hops++ < kMaxHops) {
+                if (agino > agMask) break;
+                const uint64_t ino = (static_cast<uint64_t>(ag) << ctx.sb.agblklog) | agino;
+                std::vector<uint8_t> raw;
+                if (!ReadInodeAt(*ctx.reader, ctx.partOffset, ctx.sb, ino, &raw)) break;
+                const uint32_t next = (raw.size() >= 100) ? Be32(raw.data() + 96) : 0;
+                if (visited->insert(ino).second) {
+                    const InodeView v = DecodeInode(raw);
+                    if (v.ok && (v.mode & 0xF000) == kModeReg) {
+                        std::vector<Extent> exts;
+                        ExtentsForInode(ctx, v, &exts);
+                        std::vector<std::pair<uint64_t, uint64_t>> runs;
+                        for (const Extent& e : exts) {
+                            if (e.count == 0) continue;
+                            if (e.startblock > (UINT64_MAX >> ctx.sb.blocklog)) continue;
+                            runs.emplace_back(e.startblock * ctx.sb.blocksize,
+                                              e.count * ctx.sb.blocksize);
+                        }
+                        const std::string name = "inode-" + std::to_string(ino);
+                        cb(std::string(kXfsUnlinkedPathPrefix) + name, ino, v.size, false, runs, 48, v.mtime);
+                    }
+                }
+                if (next == agino) break;
+                agino = next;
+            }
+        }
     }
-    if (Be32(buf) != kSbMagic) return false; // xfs_dsb.sb_magicnum
+}
 
-    XfsSuperblock sb;
+bool parseXfsSb(const uint8_t* buf, XfsSuperblock& sb) {
+    if (Be32(buf) != kSbMagic) return false; // xfs_dsb.sb_magicnum
     sb.blocksize = Be32(buf + 4);    // sb_blocksize
     sb.dblocks = Be64(buf + 8);      // sb_dblocks
     sb.rootino = Be64(buf + 56);     // sb_rootino
@@ -456,6 +496,13 @@ bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
     sb.agcount = Be32(buf + 88);     // sb_agcount
     sb.versionnum = Be16(buf + 100); // sb_versionnum
     sb.inodesize = Be16(buf + 104);  // sb_inodesize
+    {
+        char raw[12];
+        std::memcpy(raw, buf + 108, 12); // sb_fname
+        size_t n = 12;
+        while (n > 0 && (raw[n - 1] == 0 || raw[n - 1] == ' ')) --n;
+        if (n > 0) sb.fname.assign(raw, n);
+    }
     sb.blocklog = buf[120];          // sb_blocklog
     sb.inodelog = buf[122];          // sb_inodelog
     sb.inopblog = buf[123];          // sb_inopblog
@@ -469,11 +516,50 @@ bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
     if ((sb.versionnum & kSbVersionNumBits) < 4) return false; // legacy v1-3 layouts
     if (sb.agcount < 1 || sb.agblocks < 1) return false;
     if (sb.agblklog != CeilLog2(sb.agblocks)) return false;
+    return true;
+}
 
-    // Cross-check the secondary superblock: AG 1 starts at agblocks*blocksize and
-    // must carry the same magic (xfs_sb_to_disk writes a full sb per AG).
-    uint8_t sec[4] = {};
-    if (sb.agcount >= 2) {
+} // namespace
+
+bool xfsDinodeCrcOk(const uint8_t* inode, size_t len) {
+    if (!inode || len < 104) return false;
+    if (Be16(inode) != kInodeMagic) return false;
+    if (inode[4] < 3) return true; // v1/v2: no di_crc
+    return refsCrc32cSkip4MatchesLe(inode, len, 100); // XFS_DINODE_CRC_OFF
+}
+
+bool XfsParser::open(DiskReader& reader, uint64_t partitionOffsetBytes) {
+    reader_ = nullptr;
+    sb_ = {};
+    secondaryUnread_ = false;
+    if (!reader.isOpen() && !reader.hasRaidBackend()) return false;
+
+    uint8_t buf[512] = {};
+    if (!readComplete(reader.readBytes(partitionOffsetBytes, sizeof(buf), buf), sizeof(buf))) {
+        return false;
+    }
+    XfsSuperblock sb{};
+    const bool primaryOk = parseXfsSb(buf, sb);
+    if (!primaryOk) {
+        const uint64_t disk = reader.getDiskSize();
+        const uint64_t cap = std::min(disk, uint64_t{1} << 20);
+        bool found = false;
+        uint8_t probe[512] = {};
+        for (uint64_t off = 512; off + 512 <= cap; off += 512) {
+            if (!readComplete(reader.readBytes(partitionOffsetBytes + off, sizeof(probe), probe),
+                              sizeof(probe))) {
+                continue;
+            }
+            if (parseXfsSb(probe, sb)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    } else if (sb.agcount >= 2) {
+        // Cross-check the secondary superblock: AG 1 starts at agblocks*blocksize and
+        // must carry the same magic (xfs_sb_to_disk writes a full sb per AG).
+        uint8_t sec[4] = {};
         auto secRes = reader.readBytes(
             partitionOffsetBytes + static_cast<uint64_t>(sb.agblocks) * sb.blocksize,
             sizeof(sec), sec);
@@ -511,29 +597,34 @@ bool XfsParser::walkTree(const FileCallback& cb) {
     ctx.dirOk = gotDirblklog && dirblklog <= 8 && sb_.blocklog + dirblklog <= 16 &&
                 (sb_.versionnum & kSbVersionDirV2Bit) != 0;
 
+    if (!sb_.fname.empty()) {
+        cb(std::string(kXfsVolNamePathPrefix) + sb_.fname, 0, 0, false, {}, 5, 0);
+    }
+
     std::set<uint64_t> visited;
     std::vector<uint8_t> raw;
     bool rootUnread = false;
     if (!ReadInodeAt(*reader_, partOffset_, sb_, sb_.rootino, &raw, &rootUnread)) {
         if (rootUnread) {
-            cb(kXfsInodeUnreadPath, 0, 0, false, {});
-            if (secondaryUnread_) cb(kXfsSbUnreadPath, 0, 0, false, {});
+            cb(kXfsInodeUnreadPath, 0, 0, false, {}, 20, 0);
+            if (secondaryUnread_) cb(kXfsSbUnreadPath, 0, 0, false, {}, 20, 0);
             return true;
         }
         return false;
     }
     WalkInode(ctx, sb_.rootino, std::string(), cb, &visited, 0);
+    WalkUnlinked(ctx, cb, &visited);
     if (ctx.dirUnread) {
-        cb(kXfsDirUnreadPath, 0, 0, false, {});
+        cb(kXfsDirUnreadPath, 0, 0, false, {}, 20, 0);
     }
     if (ctx.inodeUnread) {
-        cb(kXfsInodeUnreadPath, 0, 0, false, {});
+        cb(kXfsInodeUnreadPath, 0, 0, false, {}, 20, 0);
     }
     if (ctx.bmapUnread) {
-        cb(kXfsBmapUnreadPath, 0, 0, false, {});
+        cb(kXfsBmapUnreadPath, 0, 0, false, {}, 20, 0);
     }
     if (secondaryUnread_) {
-        cb(kXfsSbUnreadPath, 0, 0, false, {});
+        cb(kXfsSbUnreadPath, 0, 0, false, {}, 20, 0);
     }
     return true;
 }

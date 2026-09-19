@@ -5,10 +5,13 @@
 #include "fs/virtual_raid.h"
 #include "byteback_io.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -33,6 +36,44 @@ TEST(ScanCoordinator, QuickScanFindsFatOnMbrPartition) {
         if (n.find("TEST") != std::string::npos) found = true;
     }
     EXPECT_TRUE(found);
+}
+
+TEST(ScanCoordinator, QuickScanFindsFatOnApmPartition) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    auto disk = byteback::testfix::buildApmDiskWithFatPartition(fatVol, 64);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    bool found = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "APM Apple_HFS slot wrapping FAT16 must list TEST.TXT";
+}
+
+TEST(ScanCoordinator, QuickScanFindsFatOnApm2048Partition) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    auto disk = byteback::testfix::buildApmDiskWithFatPartition(fatVol, 64, 2048);
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    std::vector<std::string> names;
+    std::atomic<bool> running{true};
+    runQuickScan(reader, [&](const FileRecord& fr) {
+        if (!fr.name.empty()) names.push_back(fr.name);
+    }, [&](uint64_t, uint64_t) {}, &running, nullptr);
+
+    bool found = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "APM 2048-byte blocks wrapping FAT16 must list TEST.TXT";
 }
 
 TEST(ScanCoordinator, QuickScanPartitionScopeFindsFat) {
@@ -155,6 +196,7 @@ TEST(ScanCoordinator, ParseDriveIndexRejectsPartialAndNegative) {
     EXPECT_FALSE(parseDriveIndex("12abc").has_value());
     EXPECT_FALSE(parseDriveIndex("").has_value());
     EXPECT_FALSE(parseDriveIndex("raid").has_value());
+    EXPECT_FALSE(parseDriveIndex("image").has_value());
     EXPECT_FALSE(parseDriveIndex("-1").has_value());
     EXPECT_FALSE(parseDriveIndex("1.5").has_value());
 }
@@ -485,4 +527,40 @@ TEST(ScanCoordinator, NewScanResetsStalePhaseState) {
     EXPECT_STREQ(g_scanPhase.load(), "metadata");
     EXPECT_EQ(g_phaseCurrent.load(), 0u);
     EXPECT_EQ(g_phaseTotal.load(), 0u);
+}
+
+// Examiner scan-from-image: a FAT16 .img path must list TEST.TXT. drivePath is
+// garbage so a missed imagePath cannot fall through to PhysicalDrive0.
+TEST(ScanCoordinator, RawImagePathFindsFat16TestTxt) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    const auto path = bytebackTestTemp("byteback_scan", ".img").string();
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.write(reinterpret_cast<const char*>(fatVol.data()),
+                              static_cast<std::streamsize>(fatVol.size())));
+    }
+    ScanCoordinator coord;
+    std::vector<std::string> names;
+    std::mutex mu;
+    std::atomic<int> finished{-1};
+    ScanTarget t;
+    t.imagePath = path;
+    coord.startScan("not-a-number", "quick", [&](const FileRecord& fr) {
+        if (!fr.name.empty()) {
+            std::lock_guard<std::mutex> lock(mu);
+            names.push_back(fr.name);
+        }
+    }, [](uint64_t, uint64_t) {}, nullptr, nullptr,
+       [&](int s) { finished = s; }, nullptr, t);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (finished.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::filesystem::remove(path);
+    ASSERT_EQ(finished.load(), 1);
+    bool found = false;
+    for (const auto& n : names) {
+        if (n.find("TEST") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "RAW image scan must expose FAT16 TEST.TXT";
 }

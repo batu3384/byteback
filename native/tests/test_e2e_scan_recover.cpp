@@ -5,6 +5,7 @@
 #include "byteback_io.h"
 #include "byteback_recovery.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 
 #include <gtest/gtest.h>
 #include <atomic>
@@ -18,8 +19,8 @@ using namespace byteback;
 class E2EScanRecoverTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        dbPath_ = (std::filesystem::temp_directory_path() / "byteback_e2e_test.db").string();
-        destDir_ = (std::filesystem::temp_directory_path() / "byteback_e2e_recover").string();
+        dbPath_ = bytebackTestTemp("byteback_e2e_test", ".db").string();
+        destDir_ = bytebackTestTemp("byteback_e2e_recover").string();
         std::filesystem::remove(dbPath_);
         std::filesystem::remove_all(destDir_);
         ASSERT_TRUE(store_.open(dbPath_));

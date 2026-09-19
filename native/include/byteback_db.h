@@ -15,6 +15,9 @@ struct FileRecord {
     // comparisons (found by the dedup hash+size test).
     int64_t id = 0;
     int64_t parentId = -1;
+    // Self MFT record number. parentId is the parent directory's MFT.
+    // -1 = unknown (carve / non-NTFS). Not derived from startSector ($DATA).
+    int64_t mftRef = -1;
     std::string name;
     std::string extension;
     std::string path;
@@ -28,6 +31,9 @@ struct FileRecord {
     // P0-6 content dedup: MD5 of the first 64 KB of payload (carve records
     // only — computed from the already-in-memory probe). Empty = unknown.
     std::string contentHash;
+    // Transient: COUNT of files in this scan sharing (contentHash, sizeBytes).
+    // 0/1 = unique or unhashed; >=2 = same-content group (records are not dropped).
+    int contentGroupSize = 0;
     // CA-031 content-search snippet: context around the first content match,
     // filled by runContentSearch only (transient — never bound in
     // bindFileRecord, never persisted). snippetMatchStart/End are byte
@@ -43,6 +49,7 @@ struct FileRecord {
     struct DataRun {
         uint64_t startSector;
         uint64_t sectorCount;
+        uint64_t byteCount = 0; // 0 = sectorCount * sectorSize (NTFS/FAT). ISO extents set exact.
     };
     std::vector<DataRun> runs;
     std::vector<uint8_t> residentData; // NTFS resident $DATA bytes (no runs)
@@ -55,6 +62,17 @@ struct FileRecord {
     int64_t createdAt = 0;
     int64_t modifiedAt = 0;
 };
+
+// Logical payload of one run. skipBytes is startByteOffset on the first run.
+inline uint64_t dataRunPayloadBytes(const FileRecord::DataRun& run, uint32_t sectorSize,
+                                    uint64_t skipBytes = 0) {
+    if (sectorSize == 0) sectorSize = 512;
+    const uint64_t phys = run.sectorCount * static_cast<uint64_t>(sectorSize);
+    if (skipBytes >= phys) return 0;
+    uint64_t n = phys - skipBytes;
+    if (run.byteCount > 0 && run.byteCount < n) return run.byteCount;
+    return n;
+}
 
 // One point on the unified timeline: a file event observed in the USN
 // journal (or, later, other artifact sources) with its decoded reason.
@@ -205,6 +223,13 @@ public:
     std::vector<int64_t> searchContentFts(int64_t scanId, const std::string& query,
                                           int offset, int limit);
     FileRecord getFileById(int64_t fileId, int64_t scanId = -1);
+
+    // FAZ 2.6: write content_hash only when currently empty. Returns false if
+    // skipped (already set, empty hash, missing row).
+    bool trySetContentHash(int64_t fileId, const std::string& hash);
+    // Hash files with empty content_hash from resident $DATA (and DiskReader
+    // runs when reader != nullptr). Returns number of rows newly hashed.
+    int hashEmptyContent(int64_t scanId, class DiskReader* reader);
 
     // CA-008: real session + recovery bookkeeping.
     int64_t getLatestScanId();

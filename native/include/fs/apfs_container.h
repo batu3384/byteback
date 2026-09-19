@@ -22,5 +22,8 @@ inline constexpr const char* kApfsBlockUnreadPath = "/apfs-block-unread/";
 inline constexpr const char* kApfsBlockUnreadSource = "apfs_block_unread";
 inline constexpr const char* kApfsLinearUnreadPath = "/apfs-linear-unread/";
 inline constexpr const char* kApfsLinearUnreadSource = "apfs_linear_unread";
+inline constexpr const char* kApfsCatalogUnreadPath = "/apfs-catalog-unread/";
+inline constexpr const char* kApfsCatalogUnreadSource = "apfs_catalog_unread";
+inline constexpr const char* kApfsOmapDeletedSource = "apfs_omap_deleted";
 
 } // namespace byteback

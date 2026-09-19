@@ -3,6 +3,7 @@
 #include "crypto/byteback_md5.h"
 #include "fs/virtual_raid.h"
 #include "io/volume_mapper_win.h"
+#include "recovery/path_util.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -227,14 +228,15 @@ void DiskImager::stopImaging() {
 void DiskImager::imagingWorker(int driveIndex, std::string destPath, ProgressCallback onProgress,
                              ImageFormat format, EwfOptions ewfOpts, std::string volumePath) {
     DiskReader reader;
-    const bool bindVolume = isWin32VolumeDevicePath(volumePath);
-    if (bindVolume) {
-        if (!reader.openVolumePath(volumePath)) {
-            if (onProgress) onProgress(0, 0);
-            isRunning_ = false;
-            return;
-        }
-    } else if (!reader.openDrive(driveIndex)) {
+    bool opened = false;
+    if (isWin32VolumeDevicePath(volumePath)) {
+        opened = reader.openVolumePath(volumePath);
+    } else if (!volumePath.empty()) {
+        opened = reader.attachEvidenceImage(volumePath);
+    } else if (driveIndex >= 0) {
+        opened = reader.openDrive(driveIndex);
+    }
+    if (!opened) {
         if (onProgress) onProgress(0, 0);
         isRunning_ = false;
         return;
@@ -307,7 +309,7 @@ bool writeResumeSidecar(const std::string& sidePath, const std::string& sourceKe
     if (!md5.saveState(st)) return false;
     uint8_t blob[92];
     serializeMd5State(st, blob);
-    std::ofstream f(sidePath, std::ios::binary | std::ios::out | std::ios::trunc);
+    std::ofstream f(utf8Path(sidePath), std::ios::binary | std::ios::out | std::ios::trunc);
     if (!f.is_open()) return false;
     f << "{\n"
       << "  \"format\": \"" << kSidecarFormat << "\",\n"
@@ -347,7 +349,7 @@ constexpr uint64_t kResumeSampleWindow = 1024ull * 1024ull;
 bool verifyResumePrefix(const std::string& partPath, uint64_t resumeBytes,
                         DiskReader& reader, crypto::Md5& reseeded, std::string& why) {
     reseeded = crypto::Md5();
-    std::ifstream f(partPath, std::ios::binary);
+    std::ifstream f(utf8Path(partPath), std::ios::binary);
     if (!f.is_open()) {
         why = "part reopen failed";
         return false;
@@ -444,13 +446,13 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         // beyond lastImageMd5/progress, so the note goes to the log).
         bool sidecarPresent = false;
         {
-            std::ifstream side(sidePath, std::ios::binary);
+            std::ifstream side(utf8Path(sidePath), std::ios::binary);
             sidecarPresent = side.is_open();
         }
         uint64_t resumeBytes = 0;
         std::string resumeMd5B64;
         if (sidecarPresent) {
-            std::ifstream side(sidePath, std::ios::binary);
+            std::ifstream side(utf8Path(sidePath), std::ios::binary);
             std::string json((std::istreambuf_iterator<char>(side)),
                              std::istreambuf_iterator<char>());
             side.close();
@@ -476,11 +478,11 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
 
         if (resumeBytes > 0) {
             std::error_code ec;
-            const bool partOk = std::filesystem::exists(partPath, ec) && !ec &&
-                                std::filesystem::file_size(partPath, ec) >= resumeBytes && !ec;
+            const bool partOk = std::filesystem::exists(utf8Path(partPath), ec) && !ec &&
+                                std::filesystem::file_size(utf8Path(partPath), ec) >= resumeBytes && !ec;
             if (partOk) {
                 ec.clear();
-                std::filesystem::resize_file(partPath, resumeBytes, ec);
+                std::filesystem::resize_file(utf8Path(partPath), resumeBytes, ec);
                 crypto::Md5State st;
                 std::vector<uint8_t> blob;
                 if (!ec && b64Decode(resumeMd5B64, blob) &&
@@ -489,7 +491,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
                     std::string why;
                     if (verifyResumePrefix(partPath, resumeBytes, reader, reseeded, why) &&
                         statesMatch(reseeded, st)) {
-                        rawOut.open(partPath, std::ios::binary | std::ios::out | std::ios::app);
+                        rawOut.open(utf8Path(partPath), std::ios::binary | std::ios::out | std::ios::app);
                         if (rawOut.is_open()) {
                             startSector = resumeBytes / sectorSize;
                             resumed = true;
@@ -510,9 +512,9 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         }
         if (!resumed) {
             std::error_code ec;
-            std::filesystem::remove(partPath, ec);
-            std::filesystem::remove(sidePath, ec);
-            rawOut.open(partPath, std::ios::binary | std::ios::out | std::ios::trunc);
+            std::filesystem::remove(utf8Path(partPath), ec);
+            std::filesystem::remove(utf8Path(sidePath), ec);
+            rawOut.open(utf8Path(partPath), std::ios::binary | std::ios::out | std::ios::trunc);
         }
         if (!rawOut.is_open()) {
             fail();
@@ -632,15 +634,15 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             // destination first — same overwrite policy as before) and clear
             // the resume bookkeeping.
             std::error_code ec;
-            std::filesystem::remove(destPath, ec);
+            std::filesystem::remove(utf8Path(destPath), ec);
             ec.clear();
-            std::filesystem::rename(partPath, destPath, ec);
+            std::filesystem::rename(utf8Path(partPath), utf8Path(destPath), ec);
             if (ec) {
                 fail();
                 return;
             }
             ec.clear();
-            std::filesystem::remove(sidePath, ec);
+            std::filesystem::remove(utf8Path(sidePath), ec);
             lastImageMd5_ = rawMd5.finalHex();
         }
     }

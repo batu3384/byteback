@@ -1,5 +1,8 @@
 #include "byteback_db.h"
+#include "byteback_io.h"
+#include "crypto/byteback_md5.h"
 #include "../../third_party/sqlite3.h"
+#include <algorithm>
 #include <cctype>
 #include <mutex>
 #include <string>
@@ -60,6 +63,44 @@ void deleteChunks(sqlite3* db, int64_t fileId) {
         sqlite3_step(del);
         sqlite3_finalize(del);
     }
+}
+
+std::string hashContentPrefix(const uint8_t* data, size_t len, uint64_t actualSize) {
+    if (!data || len == 0 || actualSize == 0) return {};
+    const size_t n = std::min<size_t>({len, size_t{64 * 1024}, static_cast<size_t>(actualSize)});
+    crypto::Md5 md;
+    md.update(data, n);
+    return md.finalHex();
+}
+
+bool hashFromRuns(DiskReader* reader, const FileRecord& fr, std::string& out) {
+    if (!reader || fr.runs.empty() || fr.sizeBytes == 0) return false;
+    uint32_t ss = reader->getSectorSize();
+    if (ss == 0) ss = 512;
+    const size_t want = static_cast<size_t>((std::min)(fr.sizeBytes, uint64_t{64 * 1024}));
+    std::vector<uint8_t> buf(want);
+    size_t got = 0;
+    bool first = true;
+    for (const auto& run : fr.runs) {
+        if (got >= want) break;
+        uint64_t off = run.startSector * static_cast<uint64_t>(ss);
+        uint64_t runBytes = run.sectorCount * static_cast<uint64_t>(ss);
+        if (first) {
+            if (fr.startByteOffset >= runBytes) return false;
+            off += fr.startByteOffset;
+            runBytes -= fr.startByteOffset;
+            first = false;
+        }
+        if (run.byteCount > 0 && run.byteCount < runBytes) runBytes = run.byteCount;
+        const size_t take = static_cast<size_t>((std::min)(static_cast<uint64_t>(want - got), runBytes));
+        if (take == 0) continue;
+        auto res = reader->readBytes(off, static_cast<uint32_t>(take), buf.data() + got);
+        if (!readComplete(res, take)) break;
+        got += take;
+    }
+    if (got == 0) return false;
+    out = hashContentPrefix(buf.data(), got, fr.sizeBytes);
+    return !out.empty();
 }
 } // namespace
 
@@ -188,6 +229,48 @@ std::vector<int64_t> MetadataStore::searchContentFts(int64_t scanId, const std::
     }
     sqlite3_finalize(stmt);
     return ids;
+}
+
+bool MetadataStore::trySetContentHash(int64_t fileId, const std::string& hash) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_ || fileId <= 0 || hash.empty()) return false;
+    const char* sql =
+        "UPDATE files SET content_hash = ? WHERE id = ? AND (content_hash IS NULL OR content_hash = '')";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, fileId);
+    const int before = sqlite3_total_changes(db_);
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && sqlite3_total_changes(db_) > before;
+}
+
+int MetadataStore::hashEmptyContent(int64_t scanId, DiskReader* reader) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_ || scanId <= 0) return 0;
+    const char* sql =
+        "SELECT id FROM files WHERE scan_id = ? AND (content_hash IS NULL OR content_hash = '')";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(stmt, 1, scanId);
+    std::vector<int64_t> ids;
+    while (sqlite3_step(stmt) == SQLITE_ROW) ids.push_back(sqlite3_column_int64(stmt, 0));
+    sqlite3_finalize(stmt);
+
+    int hashed = 0;
+    for (int64_t id : ids) {
+        FileRecord fr = getFileById(id, scanId);
+        if (fr.id <= 0) continue;
+        std::string h;
+        if (!fr.residentData.empty()) {
+            h = hashContentPrefix(fr.residentData.data(), fr.residentData.size(), fr.sizeBytes);
+        } else if (reader) {
+            hashFromRuns(reader, fr, h);
+        }
+        if (!h.empty() && trySetContentHash(id, h)) ++hashed;
+    }
+    return hashed;
 }
 
 } // namespace byteback

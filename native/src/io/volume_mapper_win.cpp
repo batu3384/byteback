@@ -59,6 +59,11 @@ const char* volumeFsKindLabel(VolumeFsKind kind) {
         case VolumeFsKind::Hfs: return "hfs";
         case VolumeFsKind::Refs: return "refs";
         case VolumeFsKind::Unread: return "unread";
+        case VolumeFsKind::Lvm: return "lvm";
+        case VolumeFsKind::Iso9660: return "iso9660";
+        case VolumeFsKind::Udf: return "udf";
+        case VolumeFsKind::Luks: return "luks";
+        case VolumeFsKind::Spaces: return "spaces";
         default: return "unknown";
     }
 }

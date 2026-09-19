@@ -13,7 +13,9 @@
 
 #include <gtest/gtest.h>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 using namespace byteback::carver;
@@ -29,6 +31,30 @@ void appendU16Be(std::vector<uint8_t>& v, uint16_t x) {
 }
 void appendU32Be(std::vector<uint8_t>& v, uint32_t x) {
     for (int i = 3; i >= 0; --i) v.push_back((x >> (8 * i)) & 0xFF);
+}
+void appendU32Le(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(x & 0xFF);
+    v.push_back((x >> 8) & 0xFF);
+    v.push_back((x >> 16) & 0xFF);
+    v.push_back((x >> 24) & 0xFF);
+}
+std::vector<uint8_t> storedZipLocalOnly() {
+    std::vector<uint8_t> b;
+    b.insert(b.end(), {'P', 'K', 0x03, 0x04});
+    appendU16Le(b, 20);
+    appendU16Le(b, 0);
+    appendU16Le(b, 0);
+    appendU16Le(b, 0);
+    appendU16Le(b, 0);
+    appendU32Le(b, 0);
+    appendU32Le(b, 2);
+    appendU32Le(b, 2);
+    appendU16Le(b, 1);
+    appendU16Le(b, 0);
+    b.push_back('a');
+    b.push_back('h');
+    b.push_back('i');
+    return b;
 }
 } // namespace
 
@@ -54,6 +80,37 @@ TEST(JpegValidator, ValidJpegWithEoiScoresHigh) {
 TEST(JpegValidator, SoiOnlyScoresLow) {
     const uint8_t b[] = {0xFF, 0xD8, 0xFF, 0xC0};
     EXPECT_LT(validateJpeg(b, sizeof(b)), 60);
+}
+
+TEST(JpegRepair, AppendsEoiWhenSosPresentButNoEoi) {
+    std::vector<uint8_t> b;
+    b.push_back(0xFF); b.push_back(0xD8);
+    b.push_back(0xFF); b.push_back(0xDB); appendU16Be(b, 3); b.push_back(0x00);
+    b.push_back(0xFF); b.push_back(0xDA); appendU16Be(b, 2);
+    b.push_back(0x00); b.push_back(0x00);
+    EXPECT_GE(validateJpeg(b.data(), b.size()), 50);
+    EXPECT_LT(validateJpeg(b.data(), b.size()), 90);
+    ASSERT_TRUE(appendMissingJpegEoi(b));
+    EXPECT_EQ(b[b.size() - 2], 0xFF);
+    EXPECT_EQ(b.back(), 0xD9);
+    EXPECT_GE(validateJpeg(b.data(), b.size()), 90);
+}
+
+TEST(JpegRepair, LeavesIntactJpegAlone) {
+    std::vector<uint8_t> b;
+    b.push_back(0xFF); b.push_back(0xD8);
+    b.push_back(0xFF); b.push_back(0xDB); appendU16Be(b, 3); b.push_back(0x00);
+    b.push_back(0xFF); b.push_back(0xDA); appendU16Be(b, 2);
+    b.push_back(0x00); b.push_back(0x00);
+    b.push_back(0xFF); b.push_back(0xD9);
+    const size_t n = b.size();
+    EXPECT_FALSE(appendMissingJpegEoi(b));
+    EXPECT_EQ(b.size(), n);
+}
+
+TEST(JpegRepair, RejectsNonJpeg) {
+    std::vector<uint8_t> b = {0x00, 0x01, 0x02, 0x03};
+    EXPECT_FALSE(appendMissingJpegEoi(b));
 }
 
 // ---------------- PNG ----------------
@@ -121,6 +178,29 @@ TEST(ZipValidator, FullArchiveWithEocdScoresHigh) {
     EXPECT_GE(validateZip(b.data(), b.size()), 90);
 }
 
+TEST(ZipRepair, RebuildsEocdWhenMissing) {
+    auto b = storedZipLocalOnly();
+    EXPECT_LT(validateZip(b.data(), b.size()), 90);
+    ASSERT_TRUE(rebuildMissingZipDirectory(b));
+    EXPECT_GE(validateZip(b.data(), b.size()), 90);
+    const std::string s(b.begin(), b.end());
+    EXPECT_NE(s.find(std::string("PK") + '\x01' + '\x02'), std::string::npos);
+    EXPECT_NE(s.find(std::string("PK") + '\x05' + '\x06'), std::string::npos);
+}
+
+TEST(ZipRepair, LeavesIntactZipAlone) {
+    std::vector<uint8_t> b;
+    static const uint8_t local[] = {'P', 'K', 0x03, 0x04};
+    static const uint8_t central[] = {'P', 'K', 0x01, 0x02};
+    static const uint8_t eocd[] = {'P', 'K', 0x05, 0x06};
+    b.insert(b.end(), local, local + sizeof(local));
+    b.insert(b.end(), central, central + sizeof(central));
+    b.insert(b.end(), eocd, eocd + sizeof(eocd));
+    const size_t n = b.size();
+    EXPECT_FALSE(rebuildMissingZipDirectory(b));
+    EXPECT_EQ(b.size(), n);
+}
+
 // ---------------- PDF ----------------
 TEST(PdfValidator, RejectsNonPdf) {
     const uint8_t b[] = {'D', 'O', 'C', '1'};
@@ -141,6 +221,31 @@ TEST(PdfValidator, ValidPdfWithObjAndEof) {
 TEST(PdfValidator, HeaderOnlyWithoutObjScoresLow) {
     const uint8_t b[] = {'%', 'P', 'D', 'F', '-', '1', '.', '4', 0, 0, 0, 0};
     EXPECT_LT(validatePdf(b, sizeof(b)), 60);
+}
+
+TEST(PdfRepair, RebuildsXrefWhenEofMissing) {
+    const char* body = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+    std::vector<uint8_t> b(body, body + std::strlen(body));
+    const size_t objOff = std::strlen("%PDF-1.4\n");
+    EXPECT_LT(validatePdf(b.data(), b.size()), 90);
+    ASSERT_TRUE(rebuildMissingPdfXref(b));
+    EXPECT_GE(validatePdf(b.data(), b.size()), 90);
+    const std::string s(b.begin(), b.end());
+    EXPECT_NE(s.find("xref"), std::string::npos);
+    EXPECT_NE(s.find("startxref"), std::string::npos);
+    EXPECT_NE(s.find("%%EOF"), std::string::npos);
+    char want[16];
+    std::snprintf(want, sizeof(want), "%010zu", objOff);
+    EXPECT_NE(s.find(want), std::string::npos) << "xref must record object 1 offset";
+}
+
+TEST(PdfRepair, LeavesIntactPdfAlone) {
+    std::vector<uint8_t> b;
+    const char* hdr = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF";
+    b.insert(b.end(), hdr, hdr + std::strlen(hdr));
+    const size_t n = b.size();
+    EXPECT_FALSE(rebuildMissingPdfXref(b));
+    EXPECT_EQ(b.size(), n);
 }
 
 // ---------------- GZIP ----------------

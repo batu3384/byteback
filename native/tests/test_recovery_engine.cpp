@@ -5,6 +5,7 @@
 #include "recovery/validation.h"
 #include "fs/virtual_raid.h"
 #include "fixtures/volume_fixtures.h"
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstring>
@@ -20,7 +21,7 @@ using namespace byteback;
 class RecoveryEngineTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        dest_ = (std::filesystem::temp_directory_path() / "byteback_test").string();
+        dest_ = bytebackTestTemp("byteback_test").string();
         std::filesystem::create_directories(dest_);
     }
     void TearDown() override {
@@ -73,6 +74,124 @@ TEST_F(RecoveryEngineTest, CarverSourceGetsValidationScore) {
     auto result = engine.recoverFile(reader, rec, dest_);
     EXPECT_TRUE(result.success) << result.error;
     EXPECT_GE(result.validationScore, 85);
+}
+
+TEST_F(RecoveryEngineTest, TruncatedJpegRecoverAppendsEoi) {
+    auto jpeg = minimalJpegBytes();
+    ASSERT_GE(jpeg.size(), 4u);
+    jpeg.resize(jpeg.size() - 2);
+    ASSERT_LT(carver::validateJpeg(jpeg.data(), jpeg.size()), 90);
+
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512, jpeg.data(), jpeg.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "photo.jpg";
+    rec.sizeBytes = jpeg.size();
+    rec.startSector = 1;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    ASSERT_FALSE(result.destPath.empty());
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), {});
+    ASSERT_GE(out.size(), 2u);
+    EXPECT_TRUE(out[out.size() - 2] != 0xFF || out.back() != 0xD9)
+        << "destPath must keep recovered bytes; repair is a sidecar";
+    ASSERT_FALSE(result.repairedPath.empty());
+    std::ifstream rin(result.repairedPath, std::ios::binary);
+    std::vector<uint8_t> repaired((std::istreambuf_iterator<char>(rin)), {});
+    ASSERT_GE(repaired.size(), 2u);
+    EXPECT_EQ(repaired[repaired.size() - 2], 0xFF);
+    EXPECT_EQ(repaired.back(), 0xD9);
+    EXPECT_GE(result.validationScore, 90);
+}
+
+TEST_F(RecoveryEngineTest, TruncatedPdfRecoverRebuildsXref) {
+    const char* body = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+    std::vector<uint8_t> pdf(body, body + std::strlen(body));
+    ASSERT_LT(carver::validatePdf(pdf.data(), pdf.size()), 90);
+
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512, pdf.data(), pdf.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "report.pdf";
+    rec.sizeBytes = static_cast<int64_t>(pdf.size());
+    rec.startSector = 1;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    ASSERT_FALSE(result.destPath.empty());
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::string out((std::istreambuf_iterator<char>(in)), {});
+    EXPECT_EQ(out.find("%%EOF"), std::string::npos)
+        << "destPath must keep recovered bytes; repair is a sidecar";
+    ASSERT_FALSE(result.repairedPath.empty());
+    std::ifstream rin(result.repairedPath, std::ios::binary);
+    std::string repaired((std::istreambuf_iterator<char>(rin)), {});
+    EXPECT_NE(repaired.find("xref"), std::string::npos);
+    EXPECT_NE(repaired.find("startxref"), std::string::npos);
+    EXPECT_NE(repaired.find("%%EOF"), std::string::npos);
+    EXPECT_GE(result.validationScore, 90);
+}
+
+TEST_F(RecoveryEngineTest, TruncatedZipRecoverRebuildsDirectory) {
+    std::vector<uint8_t> zip;
+    zip.insert(zip.end(), {'P', 'K', 0x03, 0x04});
+    auto put16 = [&](uint16_t x) {
+        zip.push_back(static_cast<uint8_t>(x));
+        zip.push_back(static_cast<uint8_t>(x >> 8));
+    };
+    auto put32 = [&](uint32_t x) {
+        zip.push_back(static_cast<uint8_t>(x));
+        zip.push_back(static_cast<uint8_t>(x >> 8));
+        zip.push_back(static_cast<uint8_t>(x >> 16));
+        zip.push_back(static_cast<uint8_t>(x >> 24));
+    };
+    put16(20); put16(0); put16(0); put16(0); put16(0);
+    put32(0); put32(2); put32(2); put16(1); put16(0);
+    zip.push_back('a');
+    zip.push_back('h');
+    zip.push_back('i');
+    ASSERT_LT(carver::validateZip(zip.data(), zip.size()), 90);
+
+    std::vector<uint8_t> img(512 * 4, 0);
+    std::memcpy(img.data() + 512, zip.data(), zip.size());
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    FileRecord rec;
+    rec.name = "pack.zip";
+    rec.sizeBytes = static_cast<int64_t>(zip.size());
+    rec.startSector = 1;
+    rec.source = "carver";
+
+    RecoveryEngine engine;
+    auto result = engine.recoverFile(reader, rec, dest_);
+    EXPECT_TRUE(result.success) << result.error;
+    ASSERT_FALSE(result.destPath.empty());
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::string out((std::istreambuf_iterator<char>(in)), {});
+    EXPECT_EQ(out.find(std::string("PK") + '\x05' + '\x06'), std::string::npos)
+        << "destPath must keep recovered bytes; repair is a sidecar";
+    ASSERT_FALSE(result.repairedPath.empty());
+    std::ifstream rin(result.repairedPath, std::ios::binary);
+    std::string repaired((std::istreambuf_iterator<char>(rin)), {});
+    EXPECT_NE(repaired.find(std::string("PK") + '\x01' + '\x02'), std::string::npos);
+    EXPECT_NE(repaired.find(std::string("PK") + '\x05' + '\x06'), std::string::npos);
+    EXPECT_GE(result.validationScore, 90);
 }
 
 TEST_F(RecoveryEngineTest, CarvedContiguousFile) {
@@ -229,7 +348,7 @@ TEST_F(RecoveryEngineTest, RecoversResidentPayloadWithoutRuns) {
 
 TEST_F(RecoveryEngineTest, LoadRecoverRecordRejectsMissingIds) {
     MetadataStore store;
-    auto path = (std::filesystem::temp_directory_path() / "byteback_recover_lookup.db").string();
+    auto path = bytebackTestTemp("byteback_recover_lookup", ".db").string();
     std::filesystem::remove(path);
     ASSERT_TRUE(store.open(path));
     FileRecord out;
@@ -345,6 +464,61 @@ TEST(RecoveryHelpers, BindIgnoresLiveRaidWhenRecordIsPhysicalVolume) {
     std::string err;
     EXPECT_FALSE(bindReaderForRecord(reader, rec, 0, raid, err, "\\\\.\\PhysicalDrive0"));
     EXPECT_EQ(err, "volume device not available");
+}
+
+TEST(RecoveryHelpers, BindReaderAttachesRawImagePath) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    const auto path = bytebackTestTemp("byteback_bind", ".img").string();
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.write(reinterpret_cast<const char*>(fatVol.data()),
+                              static_cast<std::streamsize>(fatVol.size())));
+    }
+    bool ok = false;
+    uint64_t sz = 0;
+    std::string err;
+    {
+        DiskReader reader;
+        FileRecord rec;
+        rec.source = "fat";
+        rec.runs = {{0, 1}};
+        ok = bindReaderForRecord(reader, rec, -2, nullptr, err, path);
+        sz = reader.getDiskSize();
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_TRUE(err.empty());
+    EXPECT_EQ(sz, fatVol.size());
+}
+
+TEST_F(RecoveryEngineTest, RecoversFat16FromBoundImagePath) {
+    auto fatVol = byteback::testfix::buildFat16Volume();
+    const auto path = bytebackTestTemp("byteback_recover_img", ".img").string();
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.write(reinterpret_cast<const char*>(fatVol.data()),
+                              static_cast<std::streamsize>(fatVol.size())));
+    }
+    FileRecord rec;
+    rec.name = "TEST.TXT";
+    rec.sizeBytes = 11;
+    rec.runs = {{34, 1}};
+    rec.source = "fat";
+    RecoveryResult result;
+    {
+        DiskReader reader;
+        std::string err;
+        ASSERT_TRUE(bindReaderForRecord(reader, rec, -2, nullptr, err, path)) << err;
+        RecoveryEngine engine;
+        result = engine.recoverFile(reader, rec, dest_);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ASSERT_TRUE(result.success) << result.error;
+    std::ifstream in(result.destPath, std::ios::binary);
+    std::string got((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(got, "Hello FAT16");
 }
 
 TEST(RecoveryHelpers, ApplyBoundFvekSkipsVssCopiesPhysical) {
@@ -545,7 +719,9 @@ TEST_F(RecoveryEngineTest, ZipFooterPastFirstMegabyteStillValidates) {
 }
 
 TEST_F(RecoveryEngineTest, RecoversIntoUtf8DestinationDir) {
-    const auto dest = std::filesystem::temp_directory_path() / std::filesystem::u8path(u8"byteback_\u6587");
+    const auto dest = std::filesystem::temp_directory_path() /
+                     std::filesystem::u8path(u8"byteback_\u6587") /
+                     std::to_string(bytebackTestPid());
     std::error_code ec;
     std::filesystem::remove_all(dest, ec);
     std::filesystem::create_directories(dest);

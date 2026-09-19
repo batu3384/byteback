@@ -53,6 +53,13 @@ StructuralParseResult parseMp3Bounded(const uint8_t* probe, size_t probeSize,
                                       uint64_t probeAbsOffset, uint64_t maxBytes,
                                       const BoxHeaderReader& readAt);
 
+// X3F (Sigma/Foveon): last 4 bytes point at SECd; bound is directory +
+// entries + the tail pointer. Targeted readAt fetches the tail when the
+// probe is only the FOVb header. Unboundable without SECd.
+StructuralParseResult parseX3fBounded(const uint8_t* probe, size_t probeSize,
+                                      uint64_t probeAbsOffset, uint64_t maxBytes,
+                                      const BoxHeaderReader& readAt);
+
 // OGG page CRC-32 (poly 0x04c11db7, init 0, unreflected). Exposed so tests
 // can build valid pages; parseOggBounded rejects pages whose checksum
 // (computed with the field zeroed) does not match.

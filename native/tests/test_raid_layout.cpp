@@ -50,6 +50,54 @@ TEST(Raid5Layout, EveryStripeUsesEachDiskOnce) {
     }
 }
 
+// mdadm default (drivers/md/raid5.c algorithm_left_symmetric):
+// dd_idx = (pd_idx + 1 + data_disk) % N. Stripe 0 matches asymmetric;
+// stripe 1 starts after parity (disk 3), not at disk 0.
+TEST(Raid5Layout, LeftSymmetricContinuesAfterParity) {
+    EXPECT_EQ(raid5DataDisk(0, 0, 4, Raid5Algorithm::LeftSymmetric), 0u);
+    EXPECT_EQ(raid5DataDisk(0, 1, 4, Raid5Algorithm::LeftSymmetric), 1u);
+    EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::LeftSymmetric), 2u);
+    EXPECT_EQ(raid5DataDisk(1, 0, 4, Raid5Algorithm::LeftSymmetric), 3u);
+    EXPECT_EQ(raid5DataDisk(1, 1, 4, Raid5Algorithm::LeftSymmetric), 0u);
+    EXPECT_EQ(raid5DataDisk(1, 2, 4, Raid5Algorithm::LeftSymmetric), 1u);
+    EXPECT_NE(raid5DataDisk(1, 0, 4, Raid5Algorithm::LeftSymmetric),
+              raid5DataDisk(1, 0, 4, Raid5Algorithm::LeftAsymmetric));
+}
+
+TEST(Raid5Layout, LeftSymmetricEveryStripeUsesEachDiskOnce) {
+    for (uint64_t s = 0; s < 4; ++s) {
+        std::set<uint32_t> used{raid5ParityDisk(s, 4)};
+        for (uint32_t b = 0; b < 3; ++b) {
+            uint32_t d = raid5DataDisk(s, b, 4, Raid5Algorithm::LeftSymmetric);
+            EXPECT_EQ(used.count(d), 0u) << "stripe " << s << " slot " << b;
+            used.insert(d);
+        }
+        EXPECT_EQ(used.size(), 4u);
+    }
+}
+
+TEST(Raid5Layout, RightParityStartsAtDiskZero) {
+    EXPECT_EQ(raid5ParityDisk(0, 4, Raid5Algorithm::RightAsymmetric), 0u);
+    EXPECT_EQ(raid5ParityDisk(1, 4, Raid5Algorithm::RightAsymmetric), 1u);
+    EXPECT_EQ(raid5ParityDisk(2, 4, Raid5Algorithm::RightAsymmetric), 2u);
+    EXPECT_EQ(raid5ParityDisk(3, 4, Raid5Algorithm::RightAsymmetric), 3u);
+    EXPECT_EQ(raid5ParityDisk(0, 4, Raid5Algorithm::RightSymmetric), 0u);
+    EXPECT_NE(raid5ParityDisk(0, 4, Raid5Algorithm::RightAsymmetric),
+              raid5ParityDisk(0, 4, Raid5Algorithm::LeftAsymmetric));
+}
+
+TEST(Raid5Layout, RightAsymmetricDataSkipsParityInDiskOrder) {
+    EXPECT_EQ(raid5DataDisk(0, 0, 4, Raid5Algorithm::RightAsymmetric), 1u);
+    EXPECT_EQ(raid5DataDisk(0, 1, 4, Raid5Algorithm::RightAsymmetric), 2u);
+    EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::RightAsymmetric), 3u);
+}
+
+TEST(Raid5Layout, RightSymmetricWalksTowardDiskZero) {
+    EXPECT_EQ(raid5DataDisk(0, 0, 4, Raid5Algorithm::RightSymmetric), 3u);
+    EXPECT_EQ(raid5DataDisk(0, 1, 4, Raid5Algorithm::RightSymmetric), 2u);
+    EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::RightSymmetric), 1u);
+}
+
 // ---- RAID 6 (adjacent P/Q rotating together, N=5) ----
 TEST(Raid6Layout, ParityRotationTable) {
     auto m0 = raid6Disks(0, 5); // P=4, Q=3
@@ -108,4 +156,25 @@ TEST(Raid10Layout, PairMapping) {
     EXPECT_EQ(raid10MemberB(2, 4), 1u);
     EXPECT_EQ(raid10MemberA(3, 4), 2u);
     EXPECT_EQ(raid10MemberB(3, 4), 3u);
+}
+
+TEST(Raid1eLayout, NearThreeDiskTable) {
+    auto a = raid1eCopy(0, 0, 3);
+    EXPECT_EQ(a.disk, 0u);
+    EXPECT_EQ(a.row, 0u);
+    auto b = raid1eCopy(0, 1, 3);
+    EXPECT_EQ(b.disk, 1u);
+    EXPECT_EQ(b.row, 0u);
+    auto c = raid1eCopy(1, 0, 3);
+    EXPECT_EQ(c.disk, 2u);
+    EXPECT_EQ(c.row, 0u);
+    auto d = raid1eCopy(1, 1, 3);
+    EXPECT_EQ(d.disk, 0u);
+    EXPECT_EQ(d.row, 1u);
+    auto e = raid1eCopy(2, 0, 3);
+    EXPECT_EQ(e.disk, 1u);
+    EXPECT_EQ(e.row, 1u);
+    auto f = raid1eCopy(2, 1, 3);
+    EXPECT_EQ(f.disk, 2u);
+    EXPECT_EQ(f.row, 1u);
 }

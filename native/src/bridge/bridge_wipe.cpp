@@ -3,7 +3,11 @@
 #include "bridge_common.h"
 #include "fs/vss_scanner.h"
 #include "fs/bitlocker_unlock.h"
+#include "fs/luks.h"
 #include "fs/raid_detect.h"
+#include "fs/lvm_parser.h"
+#include "fs/ldm_parser.h"
+#include "io/volume_mapper_win.h"
 #include "recovery/preview_reader.h"
 #include "recovery/path_util.h"
 #include "forensic/audit_logger.h"
@@ -24,6 +28,20 @@ bool parseU64Number(const Napi::Value& v, uint64_t& out) {
     return true;
 }
 
+void fillRaidDetection(Napi::Env env, Napi::Object out, const byteback::RaidGeometry& geo) {
+    out.Set("raidLevel", Napi::Number::New(env, static_cast<int>(geo.level)));
+    out.Set("blockSize", Napi::Number::New(env, static_cast<double>(geo.blockSize)));
+    out.Set("dataOffsetSectors", Napi::Number::New(env, static_cast<double>(geo.dataOffsetSectors)));
+    out.Set("confidence", Napi::Number::New(env, geo.confidence));
+    out.Set("fsConfirmed", Napi::Boolean::New(env, geo.fsConfirmed));
+    out.Set("raid5Algorithm", Napi::Number::New(env, static_cast<int>(geo.raid5Algorithm)));
+    Napi::Array order = Napi::Array::New(env, geo.memberOrder.size());
+    for (uint32_t i = 0; i < geo.memberOrder.size(); ++i) {
+        order.Set(i, Napi::Number::New(env, static_cast<double>(geo.memberOrder[i])));
+    }
+    out.Set("memberOrder", order);
+}
+
 Napi::Object recoveryResultToJs(Napi::Env env, const byteback::RecoveryResult& r) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("success", Napi::Boolean::New(env, r.success));
@@ -34,6 +52,7 @@ Napi::Object recoveryResultToJs(Napi::Env env, const byteback::RecoveryResult& r
     obj.Set("zeroFilled", Napi::Boolean::New(env, r.zeroFilled));
     obj.Set("validationScore", Napi::Number::New(env, r.validationScore));
     obj.Set("validationError", Napi::String::New(env, r.validationError));
+    obj.Set("repairedPath", Napi::String::New(env, r.repairedPath));
     return obj;
 }
 
@@ -214,6 +233,38 @@ Napi::Value SetBitLockerPassword(const Napi::CallbackInfo& info) {
     NAPI_CATCH
 }
 
+Napi::Value SetLuksPassword(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "Expected driveIndex, password").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (throwIfSharedReaderBusy(env, bdata)) return env.Undefined();
+    int driveIndex = info[0].As<Napi::Number>().Int32Value();
+    std::string password = info[1].As<Napi::String>().Utf8Value();
+    byteback::DiskReader& reader = bdata->engine.getDiskReader();
+    if (!reader.isOpen() || reader.getDriveIndex() != driveIndex) {
+        if (driveIndex == byteback::kScanImageDriveIndex) {
+            return Napi::String::New(env, "no evidence image attached");
+        }
+        if (!reader.openDrive(driveIndex)) {
+            return Napi::String::New(env, "drive open failed");
+        }
+    }
+    auto unlocked = byteback::unlockLuks1WithPassword(reader, password, 0);
+    if (!unlocked.success) {
+        return Napi::String::New(env, unlocked.error);
+    }
+    if (!byteback::applyLuksMasterKey(reader, unlocked)) {
+        return Napi::String::New(env, "LUKS master key apply failed");
+    }
+    forensic::AuditLogger::GetInstance().LogEvent("LUKS_PASSWORD_UNLOCK");
+    return Napi::String::New(env, "");
+    NAPI_CATCH
+}
+
 class PhysicalWipeWorker : public Napi::AsyncWorker {
 public:
     PhysicalWipeWorker(Napi::Env& env, BridgeData* bdata, int index, std::string typed, std::string actual,
@@ -326,11 +377,47 @@ Napi::Value DetectRaid(const Napi::CallbackInfo& info) {
     Napi::Object out = Napi::Object::New(env);
     out.Set("found", Napi::Boolean::New(env, byteback::detectRaidGeometry(rawPtrs, geo)));
     if (out.Get("found").ToBoolean().Value()) {
-        // RaidLevel enum order == reconstruct-raid's raidLevel numbering.
-        out.Set("raidLevel", Napi::Number::New(env, static_cast<int>(geo.level)));
-        out.Set("blockSize", Napi::Number::New(env, static_cast<double>(geo.blockSize)));
-        out.Set("dataOffsetSectors", Napi::Number::New(env, static_cast<double>(geo.dataOffsetSectors)));
-        out.Set("confidence", Napi::Number::New(env, geo.confidence));
+        fillRaidDetection(env, out, geo);
+    }
+    return out;
+    NAPI_CATCH
+}
+
+Napi::Value DetectRaidImages(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (imagePaths: string[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Array pathsArr = info[0].As<Napi::Array>();
+    if (pathsArr.Length() < 2 || pathsArr.Length() > 16) {
+        Napi::Error::New(env, "RAID detection requires 2..16 member images").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::vector<std::string> paths;
+    paths.reserve(pathsArr.Length());
+    for (uint32_t i = 0; i < pathsArr.Length(); ++i) {
+        Napi::Value v = pathsArr[i];
+        if (!v.IsString()) {
+            Napi::TypeError::New(env, "imagePaths must be strings").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        const std::string p = v.As<Napi::String>().Utf8Value();
+        if (p.size() > 4096 || !byteback::isEvidenceImagePath(p)) {
+            Napi::Error::New(env, "invalid RAID member image path").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        paths.push_back(p);
+    }
+
+    byteback::RaidGeometry geo;
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("found", Napi::Boolean::New(env, byteback::detectRaidFromEvidencePaths(paths, geo)));
+    if (out.Get("found").ToBoolean().Value()) {
+        fillRaidDetection(env, out, geo);
     }
     return out;
     NAPI_CATCH
@@ -365,8 +452,8 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
     if (indicesArr.Length() < 2) {
         return fail("RAID requires at least 2 disks");
     }
-    // RaidLevel enum (virtual_raid.h): RAID0=0, RAID1=1, RAID5=2, RAID6=3, RAID10=4
-    if (raidLevel < 0 || raidLevel > 4) {
+    // RaidLevel enum (virtual_raid.h): RAID0=0 … RAID10=4, JBOD=5, RAID1E=6
+    if (raidLevel < 0 || raidLevel > 6) {
         return fail("Unknown RAID level");
     }
 
@@ -383,7 +470,7 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         if (!parseU64Number(info[2], blockSizeU)) return fail("Invalid stripe size");
     }
     // RAID1 layout ignores stripe; a dummy constructor value is fine.
-    if (raidLevel == 1 && blockSizeU == 0) blockSizeU = 64 * 1024;
+    if ((raidLevel == 1 || raidLevel == 5) && blockSizeU == 0) blockSizeU = 64 * 1024;
     if (blockSizeU > (std::numeric_limits<size_t>::max)() ||
         !byteback::isRaidStripeSize(static_cast<size_t>(blockSizeU))) {
         return fail("Invalid stripe size");
@@ -399,9 +486,16 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
     }
     const uint64_t offsetBytes = offsetSectors * 512;
 
+    uint64_t algoU = 0;
+    if (info.Length() >= 5 && !info[4].IsUndefined() && !info[4].IsNull()) {
+        if (!parseU64Number(info[4], algoU)) return fail("Invalid RAID5 algorithm");
+    }
+    if (algoU > 3) return fail("Invalid RAID5 algorithm");
+    const auto raid5Algo = static_cast<byteback::raid_layout::Raid5Algorithm>(static_cast<uint8_t>(algoU));
+
     try {
         auto level = static_cast<byteback::RaidLevel>(raidLevel);
-        auto raid = std::make_shared<byteback::VirtualRaid>(level, drives, blockSize, offsetBytes);
+        auto raid = std::make_shared<byteback::VirtualRaid>(level, drives, blockSize, offsetBytes, raid5Algo);
         // Probe the first block of the array to verify every member disk can
         // actually be read through the assembly before reporting success.
         auto probe = raid->read(0, 512);
@@ -415,6 +509,333 @@ Napi::Value ReconstructRaid(const Napi::CallbackInfo& info) {
         out.Set("success", Napi::Boolean::New(env, true));
         out.Set("capacity", Napi::Number::New(env, static_cast<double>(cap)));
         out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(drives.size())));
+        out.Set("error", Napi::String::New(env, ""));
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
+    NAPI_CATCH
+}
+
+Napi::Value ReconstructRaidImages(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 2 || !info[0].IsArray() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Expected (imagePaths: string[], raidLevel: number, blockSize?: number, dataOffsetSectors?: number)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
+    Napi::Array pathsArr = info[0].As<Napi::Array>();
+    int raidLevel = info[1].As<Napi::Number>().Int32Value();
+    if (pathsArr.Length() < 2 || pathsArr.Length() > 16) return fail("RAID requires 2..16 member images");
+    if (raidLevel < 0 || raidLevel > 6) return fail("Unknown RAID level");
+
+    std::vector<std::string> paths;
+    paths.reserve(pathsArr.Length());
+    for (uint32_t i = 0; i < pathsArr.Length(); ++i) {
+        Napi::Value v = pathsArr[i];
+        if (!v.IsString()) return fail("imagePaths must be strings");
+        const std::string p = v.As<Napi::String>().Utf8Value();
+        if (p.size() > 4096) return fail("invalid RAID member image path");
+        if (!byteback::isEvidenceImagePath(p)) return fail("invalid RAID member image path");
+        paths.push_back(p);
+    }
+
+    uint64_t blockSizeU = 0;
+    if (info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()) {
+        if (!parseU64Number(info[2], blockSizeU)) return fail("Invalid stripe size");
+    }
+    if ((raidLevel == 1 || raidLevel == 5) && blockSizeU == 0) blockSizeU = 64 * 1024;
+    if (blockSizeU > (std::numeric_limits<size_t>::max)() ||
+        !byteback::isRaidStripeSize(static_cast<size_t>(blockSizeU))) {
+        return fail("Invalid stripe size");
+    }
+    const size_t blockSize = static_cast<size_t>(blockSizeU);
+
+    uint64_t offsetSectors = 0;
+    if (info.Length() >= 4 && !info[3].IsUndefined() && !info[3].IsNull()) {
+        if (!parseU64Number(info[3], offsetSectors)) return fail("Invalid data offset");
+    }
+    if (offsetSectors > (std::numeric_limits<uint64_t>::max)() / 512) {
+        return fail("Invalid data offset");
+    }
+    const uint64_t offsetBytes = offsetSectors * 512;
+
+    uint64_t algoU = 0;
+    if (info.Length() >= 5 && !info[4].IsUndefined() && !info[4].IsNull()) {
+        if (!parseU64Number(info[4], algoU)) return fail("Invalid RAID5 algorithm");
+    }
+    if (algoU > 3) return fail("Invalid RAID5 algorithm");
+    const auto raid5Algo = static_cast<byteback::raid_layout::Raid5Algorithm>(static_cast<uint8_t>(algoU));
+
+    try {
+        auto level = static_cast<byteback::RaidLevel>(raidLevel);
+        auto raid = std::make_shared<byteback::VirtualRaid>(
+            byteback::VirtualRaid::fromEvidencePaths(level, paths, blockSize, offsetBytes, raid5Algo));
+        auto probe = raid->read(0, 512);
+        if (probe.size() < 512) {
+            return fail("RAID probe read failed — member disks may be unreadable");
+        }
+        bdata->raid = std::move(raid);
+        bdata->raidMemberDrives.clear();
+
+        uint64_t cap = bdata->raid->capacity();
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(cap)));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(paths.size())));
+        out.Set("error", Napi::String::New(env, ""));
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
+    NAPI_CATCH
+}
+
+Napi::Value AssembleLvm(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (driveIndices: number[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
+    Napi::Array indicesArr = info[0].As<Napi::Array>();
+    if (indicesArr.Length() < 2 || indicesArr.Length() > 16) return fail("LVM requires 2..16 PVs");
+
+    std::vector<int> drives;
+    std::vector<std::shared_ptr<byteback::DiskReader>> owned;
+    std::vector<byteback::DiskReader*> raw;
+    drives.reserve(indicesArr.Length());
+    owned.reserve(indicesArr.Length());
+    raw.reserve(indicesArr.Length());
+    for (uint32_t i = 0; i < indicesArr.Length(); ++i) {
+        Napi::Value v = indicesArr[i];
+        if (!v.IsNumber()) return fail("driveIndices must be numbers");
+        const int idx = v.As<Napi::Number>().Int32Value();
+        if (idx < 0) return fail("driveIndices must be numbers");
+        auto reader = std::make_shared<byteback::DiskReader>();
+        if (!reader->openDrive(idx)) {
+            return fail("Failed to open physical drive " + std::to_string(idx) + " for LVM");
+        }
+        drives.push_back(idx);
+        raw.push_back(reader.get());
+        owned.push_back(std::move(reader));
+    }
+
+    try {
+        auto raid = byteback::assembleLvmFromOpenDisks(raw);
+        if (!raid) return fail("LVM PV/VG assemble failed");
+        auto probe = raid->read(0, 512);
+        if (probe.size() < 512) return fail("LVM probe read failed");
+        bdata->raid = std::move(raid);
+        bdata->raidMemberDrives = drives;
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(bdata->raid->capacity())));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(bdata->raid->num_disks())));
+        out.Set("error", Napi::String::New(env, ""));
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
+    NAPI_CATCH
+}
+
+Napi::Value AssembleLvmImages(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (imagePaths: string[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
+    Napi::Array pathsArr = info[0].As<Napi::Array>();
+    if (pathsArr.Length() < 2 || pathsArr.Length() > 16) return fail("LVM requires 2..16 PV images");
+
+    std::vector<std::string> paths;
+    paths.reserve(pathsArr.Length());
+    for (uint32_t i = 0; i < pathsArr.Length(); ++i) {
+        Napi::Value v = pathsArr[i];
+        if (!v.IsString()) return fail("imagePaths must be strings");
+        const std::string p = v.As<Napi::String>().Utf8Value();
+        if (p.size() > 4096) return fail("invalid LVM PV image path");
+        if (!byteback::isEvidenceImagePath(p)) return fail("invalid LVM PV image path");
+        paths.push_back(p);
+    }
+
+    try {
+        auto raid = byteback::assembleLvmFromEvidencePaths(paths);
+        if (!raid) return fail("LVM PV/VG assemble failed");
+        auto probe = raid->read(0, 512);
+        if (probe.size() < 512) return fail("LVM probe read failed");
+        bdata->raid = std::move(raid);
+        bdata->raidMemberDrives.clear();
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(bdata->raid->capacity())));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(bdata->raid->num_disks())));
+        out.Set("error", Napi::String::New(env, ""));
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
+    NAPI_CATCH
+}
+
+Napi::Value AssembleLdm(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (driveIndices: number[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
+    Napi::Array indicesArr = info[0].As<Napi::Array>();
+    if (indicesArr.Length() < 2 || indicesArr.Length() > 16) return fail("LDM requires 2..16 dynamic disks");
+
+    std::vector<int> drives;
+    std::vector<std::shared_ptr<byteback::DiskReader>> owned;
+    std::vector<byteback::DiskReader*> raw;
+    drives.reserve(indicesArr.Length());
+    owned.reserve(indicesArr.Length());
+    raw.reserve(indicesArr.Length());
+    for (uint32_t i = 0; i < indicesArr.Length(); ++i) {
+        Napi::Value v = indicesArr[i];
+        if (!v.IsNumber()) return fail("driveIndices must be numbers");
+        const int idx = v.As<Napi::Number>().Int32Value();
+        if (idx < 0) return fail("driveIndices must be numbers");
+        auto reader = std::make_shared<byteback::DiskReader>();
+        if (!reader->openDrive(idx)) {
+            return fail("Failed to open physical drive " + std::to_string(idx) + " for LDM");
+        }
+        drives.push_back(idx);
+        raw.push_back(reader.get());
+        owned.push_back(std::move(reader));
+    }
+
+    try {
+        auto raid = byteback::assembleLdmFromOpenDisks(raw);
+        if (!raid) return fail("LDM spanned assemble failed");
+        auto probe = raid->read(0, 512);
+        if (probe.size() < 512) return fail("LDM probe read failed");
+        bdata->raid = std::move(raid);
+        bdata->raidMemberDrives = drives;
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(bdata->raid->capacity())));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(bdata->raid->num_disks())));
+        out.Set("error", Napi::String::New(env, ""));
+        return out;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
+    NAPI_CATCH
+}
+
+Napi::Value AssembleLdmImages(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected (imagePaths: string[])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeData* bdata = env.GetInstanceData<BridgeData>();
+    if (!bdata) {
+        Napi::Error::New(env, "Bridge data unavailable").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    auto fail = [&](const std::string& why) -> Napi::Object {
+        out.Set("success", Napi::Boolean::New(env, false));
+        out.Set("capacity", Napi::Number::New(env, 0));
+        out.Set("numDisks", Napi::Number::New(env, 0));
+        out.Set("error", Napi::String::New(env, why));
+        return out;
+    };
+
+    Napi::Array pathsArr = info[0].As<Napi::Array>();
+    if (pathsArr.Length() < 2 || pathsArr.Length() > 16) return fail("LDM requires 2..16 dynamic-disk images");
+
+    std::vector<std::string> paths;
+    paths.reserve(pathsArr.Length());
+    for (uint32_t i = 0; i < pathsArr.Length(); ++i) {
+        Napi::Value v = pathsArr[i];
+        if (!v.IsString()) return fail("imagePaths must be strings");
+        const std::string p = v.As<Napi::String>().Utf8Value();
+        if (p.size() > 4096) return fail("invalid LDM image path");
+        if (!byteback::isEvidenceImagePath(p)) return fail("invalid LDM image path");
+        paths.push_back(p);
+    }
+
+    try {
+        auto raid = byteback::assembleLdmFromEvidencePaths(paths);
+        if (!raid) return fail("LDM spanned assemble failed");
+        auto probe = raid->read(0, 512);
+        if (probe.size() < 512) return fail("LDM probe read failed");
+        bdata->raid = std::move(raid);
+        bdata->raidMemberDrives.clear();
+        out.Set("success", Napi::Boolean::New(env, true));
+        out.Set("capacity", Napi::Number::New(env, static_cast<double>(bdata->raid->capacity())));
+        out.Set("numDisks", Napi::Number::New(env, static_cast<uint32_t>(bdata->raid->num_disks())));
         out.Set("error", Napi::String::New(env, ""));
         return out;
     } catch (const std::exception& e) {

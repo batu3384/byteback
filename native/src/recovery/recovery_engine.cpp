@@ -71,8 +71,11 @@ uint64_t evidenceClampedSize(const FileRecord& record, uint32_t sectorSize) {
     uint64_t cap = kMaxRecoveryClaimBytes;
     if (!record.runs.empty()) {
         uint64_t span = 0;
+        bool first = true;
         for (const auto& run : record.runs) {
-            span += (uint64_t)run.sectorCount * sectorSize;
+            const uint64_t skip = first ? record.startByteOffset : 0;
+            first = false;
+            span += dataRunPayloadBytes(run, sectorSize, skip);
         }
         cap = std::min(cap, span);
     }
@@ -107,8 +110,19 @@ bool bindReaderForRecord(DiskReader& reader, const FileRecord& rec, int driveInd
         return true;
     }
     if (!volumePath.empty()) {
-        if (!isWin32VolumeDevicePath(volumePath) || !reader.openVolumePath(volumePath)) {
+        if (isWin32VolumeDevicePath(volumePath)) {
+            if (!reader.openVolumePath(volumePath)) {
+                err = "volume device not available";
+                return false;
+            }
+            return true;
+        }
+        if (volumePath.size() >= 4 && volumePath.compare(0, 4, "\\\\.\\") == 0) {
             err = "volume device not available";
+            return false;
+        }
+        if (!reader.attachEvidenceImage(volumePath, &err)) {
+            if (err.empty()) err = "image not available";
             return false;
         }
         return true;
@@ -303,12 +317,13 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         // the first run — skip them or the stitched file that validated at
         // scan time recovers with sector-floor garbage in front.
         uint64_t runOffsetBytes = run.startSector * sectorSize;
-        uint64_t runSizeBytes = run.sectorCount * sectorSize;
+        uint64_t skip = 0;
         if (firstRun && record.startByteOffset > 0 && run.startSector != UINT64_MAX) {
-            const uint64_t skip = std::min<uint64_t>(record.startByteOffset, runSizeBytes);
-            runOffsetBytes += skip;
-            runSizeBytes -= skip;
+            const uint64_t phys = run.sectorCount * static_cast<uint64_t>(sectorSize);
+            skip = std::min(record.startByteOffset, phys);
         }
+        uint64_t runSizeBytes = dataRunPayloadBytes(run, sectorSize, skip);
+        runOffsetBytes += skip;
         firstRun = false;
         uint64_t runBytesRead = 0;
 
@@ -316,7 +331,7 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         // physical clusters). NTFS sparse files and compressed-unit gaps read
         // as zeros, so emit zeros for the whole run without touching the disk.
         if (run.startSector == UINT64_MAX) {
-            uint64_t runSizeBytes = run.sectorCount * sectorSize;
+            uint64_t runSizeBytes = dataRunPayloadBytes(run, sectorSize, 0);
             uint64_t toZero = std::min(runSizeBytes, totalBytes - bytesWritten);
             uint64_t zeroed = 0;
             const uint32_t zeroChunk = readChunk;
@@ -336,7 +351,9 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         while (runBytesRead < runSizeBytes && bytesWritten < totalBytes) {
             if (isRunning && !(*isRunning)) break;
 
-            uint32_t toRead = (uint32_t)std::min((uint64_t)readChunk, runSizeBytes - runBytesRead);
+            const uint64_t remainRun = runSizeBytes - runBytesRead;
+            const uint64_t remainFile = totalBytes - bytesWritten;
+            uint32_t toRead = (uint32_t)std::min((uint64_t)readChunk, remainRun);
             // Align to sector
             toRead = ((toRead + sectorSize - 1) / sectorSize) * sectorSize;
 
@@ -344,23 +361,22 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             
             if (!res.success || res.bytesRead == 0) {
                 result.zeroFilled = true;
-                uint32_t zeroSize = std::min(toRead, (uint32_t)(totalBytes - bytesWritten));
+                uint32_t zeroSize = (uint32_t)std::min({(uint64_t)toRead, remainFile, remainRun});
                 std::vector<char> zeros(zeroSize, 0);
                 outFile.write(zeros.data(), zeroSize);
                 md5ctx.update(reinterpret_cast<const uint8_t*>(zeros.data()), zeroSize);
                 bytesWritten += zeroSize;
-                runBytesRead += toRead;
+                runBytesRead += zeroSize;
                 continue;
             }
             if (res.paddedZeros) result.zeroFilled = true;
 
-            // Don't write beyond the actual file size
-            uint32_t writeSize = (uint32_t)std::min((uint64_t)res.bytesRead, totalBytes - bytesWritten);
+            uint32_t writeSize = (uint32_t)std::min({(uint64_t)res.bytesRead, remainFile, remainRun});
             outFile.write(reinterpret_cast<const char*>(poolBuf->data()), writeSize);
             md5ctx.update(poolBuf->data(), writeSize);
             
             bytesWritten += writeSize;
-            runBytesRead += res.bytesRead;
+            runBytesRead += writeSize;
 
             if (onProgress) onProgress(bytesWritten, totalBytes);
         }

@@ -1,4 +1,6 @@
 #include "byteback_db.h"
+#include "byteback_io.h"
+#include "scan/seed_file_record.h"
 #include "sqlite3.h"
 #include <gtest/gtest.h>
 #include <filesystem>
@@ -7,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <algorithm>
+#include <chrono>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -75,6 +78,22 @@ TEST_F(MetadataStoreTest, FileRunsRoundTrip) {
     ASSERT_EQ(page[0].runs.size(), 2u);
     EXPECT_EQ(page[0].runs[0].startSector, 100u);
     EXPECT_EQ(page[0].runs[1].sectorCount, 4u);
+}
+
+TEST_F(MetadataStoreTest, MftRefRoundTrip) {
+    int64_t scanId = store_.createScan(0, "quick", 1000);
+    ASSERT_GT(scanId, 0);
+    FileRecord r;
+    r.name = "doc.txt";
+    r.source = "ntfs_mft";
+    r.status = 0;
+    r.mftRef = 42;
+    ASSERT_GT(store_.insertFile(scanId, r), 0);
+    auto page = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].mftRef, 42);
+    auto byId = store_.getFileById(page[0].id, scanId);
+    EXPECT_EQ(byId.mftRef, 42);
 }
 
 TEST_F(MetadataStoreTest, BatchInsertPreservesRuns) {
@@ -615,6 +634,83 @@ TEST_F(MetadataStoreTest, ContentHashRoundTrip) {
     EXPECT_EQ(page[0].contentHash, "abc123");
 }
 
+TEST_F(MetadataStoreTest, ContentHashWriteIsIdempotent) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    FileRecord r;
+    r.name = "meta.bin";
+    r.sizeBytes = 5;
+    r.source = "ntfs_mft";
+    r.residentData = {'h', 'e', 'l', 'l', 'o'};
+    int64_t id = store_.insertFile(scanId, r);
+    ASSERT_GT(id, 0);
+    ASSERT_TRUE(store_.trySetContentHash(id, "aa"));
+    EXPECT_EQ(store_.getFileById(id, scanId).contentHash, "aa");
+    EXPECT_FALSE(store_.trySetContentHash(id, "bb")) << "second write must not replace";
+    EXPECT_EQ(store_.getFileById(id, scanId).contentHash, "aa");
+}
+
+TEST_F(MetadataStoreTest, HashEmptyResidentGroupsSamePayload) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    const std::vector<uint8_t> payload = {'h', 'e', 'l', 'l', 'o'};
+    FileRecord a;
+    a.name = "from-mft.txt";
+    a.sizeBytes = payload.size();
+    a.source = "ntfs_mft";
+    a.residentData = payload;
+    FileRecord b;
+    b.name = "from-carve.txt";
+    b.sizeBytes = payload.size();
+    b.source = "carver";
+    b.residentData = payload;
+    FileRecord c;
+    c.name = "other.txt";
+    c.sizeBytes = 3;
+    c.source = "ntfs_mft";
+    c.residentData = {'n', 'o', 'p'};
+    ASSERT_GT(store_.insertFile(scanId, a), 0);
+    ASSERT_GT(store_.insertFile(scanId, b), 0);
+    ASSERT_GT(store_.insertFile(scanId, c), 0);
+
+    EXPECT_EQ(store_.hashEmptyContent(scanId, nullptr), 3);
+    EXPECT_EQ(store_.hashEmptyContent(scanId, nullptr), 0) << "idempotent: already hashed";
+
+    auto page = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(page.size(), 3u);
+    std::string shared;
+    int twins = 0;
+    for (const auto& f : page) {
+        EXPECT_FALSE(f.contentHash.empty());
+        if (f.name != "other.txt" && f.contentGroupSize == 2) {
+            ++twins;
+            shared = f.contentHash;
+        }
+    }
+    EXPECT_EQ(twins, 2);
+    EXPECT_FALSE(shared.empty());
+    for (const auto& f : page) {
+        if (f.name == "other.txt") EXPECT_EQ(f.contentGroupSize, 1);
+    }
+}
+
+TEST_F(MetadataStoreTest, HashEmptyRunsFromReader) {
+    int64_t scanId = store_.createScan(0, "quick", 10);
+    std::vector<uint8_t> img(512, 0);
+    img[0] = 'h'; img[1] = 'e'; img[2] = 'l'; img[3] = 'l'; img[4] = 'o';
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img), 512);
+    FileRecord r;
+    r.name = "run.bin";
+    r.sizeBytes = 5;
+    r.source = "ntfs_mft";
+    r.runs = {{0, 1}};
+    ASSERT_GT(store_.insertFile(scanId, r), 0);
+    EXPECT_EQ(store_.hashEmptyContent(scanId, &reader), 1);
+    auto loaded = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0].contentHash, "5d41402abc4b2a76b9719d911017c592");
+    EXPECT_EQ(store_.hashEmptyContent(scanId, &reader), 0);
+}
+
 // CA-036: the batched timeline insert must persist every event, in order,
 // through one transaction — the per-record path paid a prepared statement
 // per event and dominated scan finalize on journal-heavy volumes.
@@ -1052,6 +1148,42 @@ TEST_F(MetadataStoreTest, ExportCsvLargeRowSetFlushesEvery1000) {
     std::filesystem::remove(dest);
 }
 
+TEST_F(MetadataStoreTest, ExportCsv100kCompletesUnder10s) {
+    const int64_t scanId = store_.createScan(0, "deep", 100000);
+    ASSERT_GT(scanId, 0);
+    constexpr int kN = 100000;
+    std::vector<FileRecord> batch;
+    batch.reserve(1000);
+    for (int i = 0; i < kN; ++i) {
+        FileRecord r;
+        r.name = "r" + std::to_string(i) + ".bin";
+        r.path = "/p/" + r.name;
+        r.sizeBytes = static_cast<uint64_t>(i);
+        r.status = 0;
+        r.confidence = 80;
+        batch.push_back(std::move(r));
+        if (batch.size() == 1000) {
+            ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+            batch.clear();
+        }
+    }
+    if (!batch.empty()) ASSERT_TRUE(store_.insertFilesBatch(scanId, batch));
+
+    const std::string dest =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_csv_100k_" + std::to_string(testPid()) + ".csv")).string();
+    int64_t rows = -1;
+    std::string err;
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_TRUE(store_.exportCsv(scanId, dest, {}, csvHeader(), "x", "—", &rows, &err)) << err;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    EXPECT_EQ(rows, kN);
+    EXPECT_LT(ms, 10000) << "exportCsv 100K took " << ms << " ms (gate <10s)";
+    std::filesystem::remove(dest);
+}
+
 TEST_F(MetadataStoreTest, ExportCsvRejectsBadHeaderAndReportsError) {
     const int64_t scanId = store_.createScan(0, "quick", 10);
     ASSERT_GT(scanId, 0);
@@ -1074,4 +1206,32 @@ TEST_F(MetadataStoreTest, ExportCsvRejectsBadHeaderAndReportsError) {
     EXPECT_FALSE(store_.exportCsv(scanId, dirDest, {}, csvHeader(), "x", "—", &rows, &err));
     EXPECT_FALSE(err.empty());
     std::filesystem::remove_all(dirDest);
+}
+
+TEST(SeedFileRecord, ParseMftRefAcceptsNonNegativeInteger) {
+    EXPECT_EQ(parseSeedMftRef(true, 5.0), 5);
+    EXPECT_EQ(parseSeedMftRef(true, 0.0), 0);
+    EXPECT_EQ(parseSeedMftRef(false, 5.0), -1);
+    EXPECT_EQ(parseSeedMftRef(true, -1.0), -1);
+}
+
+TEST(SeedFileRecord, AppendSeedRunRejectsNonPositive) {
+    FileRecord r;
+    appendSeedRun(r, 1.0, 1.0);
+    ASSERT_EQ(r.runs.size(), 1u);
+    EXPECT_EQ(r.runs[0].startSector, 1u);
+    EXPECT_EQ(r.runs[0].sectorCount, 1u);
+    appendSeedRun(r, 1.0, 0.0);
+    appendSeedRun(r, -1.0, 1.0);
+    EXPECT_EQ(r.runs.size(), 1u);
+}
+
+TEST(SeedFileRecord, ImagePathRejectsDevices) {
+    EXPECT_TRUE(isSeedEvidenceImagePath("C:\\cases\\disk.img"));
+    EXPECT_FALSE(isSeedEvidenceImagePath("\\\\.\\PhysicalDrive0"));
+    EXPECT_FALSE(isSeedEvidenceImagePath("\\\\.\\C:"));
+    EXPECT_FALSE(isSeedEvidenceImagePath("http://host/disk.img"));
+    EXPECT_FALSE(isSeedEvidenceImagePath("HTTPS://host/disk.E01"));
+    EXPECT_FALSE(isSeedEvidenceImagePath("/dev/sda"));
+    EXPECT_FALSE(isSeedEvidenceImagePath(""));
 }

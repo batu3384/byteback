@@ -11,13 +11,26 @@
 namespace byteback {
 namespace raid_layout {
 
-// RAID 5 — left-asymmetric: parity starts on the LAST disk and rotates one
-// disk down per stripe (period = numDisks).
-uint32_t raid5ParityDisk(uint64_t stripeIndex, uint32_t numDisks);
+// RAID 5 data-block order. Cite: drivers/md/raid5.c
+// algorithm_left_asymmetric / left_symmetric / right_asymmetric / right_symmetric.
+// Linux mdadm default is LeftSymmetric.
+enum class Raid5Algorithm : uint8_t {
+    LeftAsymmetric = 0,
+    LeftSymmetric = 1,
+    RightAsymmetric = 2,
+    RightSymmetric = 3,
+};
 
-// RAID 5 — physical data disk for the logical block within the stripe,
-// skipping the parity disk (left-asymmetric: data disks fill in disk order).
-uint32_t raid5DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks);
+// RAID 5 — LEFT: parity starts on the LAST disk and steps down.
+// RIGHT: parity starts on disk 0 and steps up. Period = numDisks.
+uint32_t raid5ParityDisk(uint64_t stripeIndex, uint32_t numDisks,
+                         Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
+
+// RAID 5 — physical data disk for the logical block within the stripe.
+// Left-asymmetric: remaining disks fill in increasing index order.
+// Left-symmetric: remaining disks start at parity+1 and wrap (mdadm default).
+uint32_t raid5DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks,
+                       Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
 
 // RAID 6 — P and Q are adjacent and rotate together: P = RAID-5-style parity,
 // Q sits immediately below P (wrapping to the last disk when P is disk 0).
@@ -36,6 +49,14 @@ uint32_t raid6DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t nu
 uint32_t raid10Pair(uint64_t blockIndex, uint32_t numDisks);
 uint32_t raid10MemberA(uint64_t blockIndex, uint32_t numDisks);
 uint32_t raid10MemberB(uint64_t blockIndex, uint32_t numDisks);
+
+// RAID1E near (2 copies): slot = dataIndex*2 + copy; disk = slot % N; row = slot / N.
+// IBM ServeRAID / md RAID10 layout=n2 on odd N. N >= 3.
+struct Raid1eLoc {
+    uint32_t disk = 0;
+    uint64_t row = 0;
+};
+Raid1eLoc raid1eCopy(uint64_t dataIndex, uint32_t copy, uint32_t numDisks);
 
 } // namespace raid_layout
 } // namespace byteback

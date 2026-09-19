@@ -51,4 +51,21 @@ TEST(HttpRange, ProbeStatusValidation) {
     EXPECT_FALSE(httpProbeStatusOk(404));
     EXPECT_FALSE(httpProbeStatusOk(302));
     EXPECT_FALSE(httpProbeStatusOk(500));
+    EXPECT_FALSE(httpProbeStatusOk(405));
+    EXPECT_FALSE(httpProbeStatusOk(501));
+}
+
+TEST(HttpRange, HeadMethodNotAllowedFallsBackToRangeGet) {
+    EXPECT_TRUE(httpProbeNeedsRangeGetFallback(405));
+    EXPECT_TRUE(httpProbeNeedsRangeGetFallback(501));
+    EXPECT_FALSE(httpProbeNeedsRangeGetFallback(200));
+    EXPECT_FALSE(httpProbeNeedsRangeGetFallback(404));
+}
+
+TEST(HttpRange, ParsesContentRangeTotal) {
+    uint64_t n = 0;
+    EXPECT_TRUE(httpParseContentRangeTotal("bytes 0-0/12345", n));
+    EXPECT_EQ(n, 12345u);
+    EXPECT_FALSE(httpParseContentRangeTotal("bytes 0-0/*", n));
+    EXPECT_FALSE(httpParseContentRangeTotal("bytes 0-0/", n));
 }

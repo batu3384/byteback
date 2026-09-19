@@ -17,11 +17,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     exports.Set("resolveVolume", Napi::Function::New(env, ResolveVolume));
     exports.Set("listVolumeLetters", Napi::Function::New(env, ListVolumeLetters));
+    exports.Set("searchHex", Napi::Function::New(env, SearchHex));
+    exports.Set("getMftRecord", Napi::Function::New(env, GetMftRecord));
 
     // bridge_scan.cpp
     exports.Set("initDatabase", Napi::Function::New(env, InitDatabase));
     exports.Set("getFileCount", Napi::Function::New(env, GetFileCount));
     exports.Set("getFilesPage", Napi::Function::New(env, GetFilesPage));
+    exports.Set("hashEmptyContent", Napi::Function::New(env, HashEmptyContent));
     exports.Set("getScanState", Napi::Function::New(env, GetScanState));
     exports.Set("getLatestScanId", Napi::Function::New(env, GetLatestScanId));
     exports.Set("getLatestUsableScanId", Napi::Function::New(env, GetLatestUsableScanId));
@@ -48,9 +51,16 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setBitLockerFvek", Napi::Function::New(env, SetBitLockerFvek));
     exports.Set("setBitLockerRecoveryPassword", Napi::Function::New(env, SetBitLockerRecoveryPassword));
     exports.Set("setBitLockerPassword", Napi::Function::New(env, SetBitLockerPassword));
+    exports.Set("setLuksPassword", Napi::Function::New(env, SetLuksPassword));
     exports.Set("startPhysicalWipe", Napi::Function::New(env, StartPhysicalWipe));
     exports.Set("detectRaid", Napi::Function::New(env, DetectRaid));
+    exports.Set("detectRaidImages", Napi::Function::New(env, DetectRaidImages));
     exports.Set("reconstructRaid", Napi::Function::New(env, ReconstructRaid));
+    exports.Set("reconstructRaidImages", Napi::Function::New(env, ReconstructRaidImages));
+    exports.Set("assembleLvm", Napi::Function::New(env, AssembleLvm));
+    exports.Set("assembleLvmImages", Napi::Function::New(env, AssembleLvmImages));
+    exports.Set("assembleLdm", Napi::Function::New(env, AssembleLdm));
+    exports.Set("assembleLdmImages", Napi::Function::New(env, AssembleLdmImages));
     exports.Set("failRaidDisk", Napi::Function::New(env, FailRaidDisk));
     exports.Set("getRaidState", Napi::Function::New(env, GetRaidState));
     exports.Set("recoverFile", Napi::Function::New(env, RecoverFile));

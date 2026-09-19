@@ -174,10 +174,24 @@ bool RefsParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
     std::vector<uint8_t> supb;
     bool supbUnread = false;
+    auto looksSupb = [](const std::vector<uint8_t>& b) {
+        return b.size() >= 48 && std::memcmp(b.data(), "SUPB", 4) == 0;
+    };
     if (!readAt(reader, superOff, static_cast<uint32_t>(clusterSize), supb)) {
         supbUnread = true;
-    } else if (supb.size() < 48 || std::memcmp(supb.data(), "SUPB", 4) != 0) {
-        return false;
+    } else if (!looksSupb(supb)) {
+        uint64_t volBytes = partitionSizeBytes != 0 ? partitionSizeBytes : reader.getDiskSize();
+        const uint64_t lastOff =
+            (volBytes >= clusterSize) ? partitionOffsetBytes + volBytes - clusterSize : 0;
+        const uint64_t last1Off =
+            (volBytes >= 2 * clusterSize) ? lastOff - clusterSize : 0;
+        auto tryBackup = [&](uint64_t off) {
+            return off > partitionOffsetBytes && off != superOff &&
+                   readAt(reader, off, static_cast<uint32_t>(clusterSize), supb) && looksSupb(supb);
+        };
+        if (!tryBackup(lastOff) && !tryBackup(last1Off)) {
+            return false;
+        }
     }
 
     int supbIntegrityConf = 90;

@@ -29,7 +29,9 @@ uint32_t rdU32(const uint8_t* p) {
     return v;
 }
 
-std::string segmentPathFor(const std::string& destPath, int number) {
+} // namespace
+
+std::string ewfSegmentPath(const std::string& destPath, int number) {
     std::string base = destPath;
     const size_t slash = base.find_last_of("\\/");
     const size_t dot = base.find_last_of('.');
@@ -46,6 +48,8 @@ std::string segmentPathFor(const std::string& destPath, int number) {
     char b = static_cast<char>('A' + (k % 26));
     return base + ".E" + a + b;
 }
+
+namespace {
 
 bool readExact(ByteSource& src, uint64_t off, uint8_t* buf, size_t len, std::string& err) {
     if (!src.read(off, buf, len)) {
@@ -217,12 +221,12 @@ bool EwfReader::parseAllSegments(const std::string& firstPath, std::string& err)
         if (seg == 1) {
             sm.source = std::move(firstSrc);
         } else {
+            const std::string path = ewfSegmentPath(firstPath, seg);
             if (isHttpUrl(firstPath)) {
-                err = "multi-segment EWF over HTTP not supported";
-                return false;
+                sm.source = openHttpByteSource(path, err);
+            } else {
+                sm.source = openFileByteSource(path, err);
             }
-            const std::string path = segmentPathFor(firstPath, seg);
-            sm.source = openFileByteSource(path, err);
             if (!sm.source) return false;
         }
         sm.imageBaseOffset = imageCursor;

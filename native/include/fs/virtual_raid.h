@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include "byteback_io.h"
+#include "fs/raid_layout.h"
 
 namespace byteback {
 
@@ -15,7 +16,9 @@ enum class RaidLevel {
     RAID1,
     RAID5,
     RAID6,
-    RAID10
+    RAID10,
+    JBOD,   // mdadm LINEAR / concat; Disk Drill JBOD
+    RAID1E  // 2-copy near; slot=D*2+copy; NAPI 6
 };
 
 // Reconstruct IPC trust boundary: power-of-two stripe, 512 B .. 1 MiB.
@@ -34,24 +37,36 @@ inline bool isRaidStripeSize(size_t n) {
 //   RAID0  — left-synchronous stripe, block i lives on disk (i % N).
 //            No redundancy: an unreadable member throws (not silent zeros).
 //   RAID1  — mirror; reads from the first healthy member
-//   RAID5  — left-asymmetric, rotating parity; single-disk failure
-//            reconstructed via XOR of the surviving members
+//   RAID5  — left-asymmetric (default) or left-symmetric (mdadm);
+//            rotating parity; single-disk failure reconstructed via XOR
 //   RAID6  — double parity (P = XOR, Q = GF(2^8) Reed-Solomon); tolerates
 //            two simultaneous failures
 //   RAID10 — stripe of mirrors (pairs: 0+1, 2+3, ...); tolerates one
 //            failure per mirrored pair
+//   JBOD   — concatenate member payloads in order (mdadm LINEAR). No stripe.
+//   RAID1E — 2-copy near (odd N typical): copies at consecutive slots.
 class VirtualRaid {
 public:
     VirtualRaid(RaidLevel level, const std::vector<int>& drive_indices, size_t block_size,
-                uint64_t data_offset_bytes = 0);
+                uint64_t data_offset_bytes = 0,
+                raid_layout::Raid5Algorithm raid5_algorithm = raid_layout::Raid5Algorithm::LeftAsymmetric);
 
     // Assembly from already-opened member readers (unit tests, pre-loaded images).
     VirtualRaid(RaidLevel level, std::vector<std::shared_ptr<DiskReader>> members, size_t block_size,
-                uint64_t data_offset_bytes = 0);
+                uint64_t data_offset_bytes = 0,
+                raid_layout::Raid5Algorithm raid5_algorithm = raid_layout::Raid5Algorithm::LeftAsymmetric,
+                std::vector<uint64_t> member_data_offsets = {},
+                std::vector<uint64_t> member_data_lengths = {});
 
     // Convenience: one in-memory image per member disk.
     static VirtualRaid fromImages(RaidLevel level, std::vector<std::vector<uint8_t>> images,
-                                  size_t block_size, uint64_t data_offset_bytes = 0);
+                                  size_t block_size, uint64_t data_offset_bytes = 0,
+                                  raid_layout::Raid5Algorithm raid5_algorithm = raid_layout::Raid5Algorithm::LeftAsymmetric);
+
+    // Local evidence files (RAW/E01/VHD family). Rejects devices, http(s), /dev/.
+    static VirtualRaid fromEvidencePaths(RaidLevel level, const std::vector<std::string>& paths,
+                                         size_t block_size, uint64_t data_offset_bytes = 0,
+                                         raid_layout::Raid5Algorithm raid5_algorithm = raid_layout::Raid5Algorithm::LeftAsymmetric);
 
     // Reads are read-only; write() always throws (forensic mode).
     void write(size_t offset, const std::vector<uint8_t>& data);
@@ -81,6 +96,9 @@ private:
     uint64_t disk_size_;
     size_t block_size_;
     uint64_t data_offset_bytes_ = 0;
+    std::vector<uint64_t> member_data_offsets_;
+    std::vector<uint64_t> member_data_lengths_;
+    raid_layout::Raid5Algorithm raid5_algorithm_ = raid_layout::Raid5Algorithm::LeftAsymmetric;
     std::vector<std::shared_ptr<byteback::DiskReader>> disk_readers_;
     mutable std::vector<bool> disk_active_;
 
@@ -95,12 +113,16 @@ private:
     // RAID level inherits the per-member reservation.
     bool readMemberAligned(size_t disk_idx, uint64_t offset, size_t length, uint8_t* out) const;
     uint64_t memberPayloadBytes() const;
+    uint64_t memberBase(size_t disk_idx) const;
 
     std::vector<uint8_t> read_raid0(size_t offset, size_t length) const;
     std::vector<uint8_t> read_raid1(size_t offset, size_t length) const;
     std::vector<uint8_t> read_raid5(size_t offset, size_t length) const;
     std::vector<uint8_t> read_raid6(size_t offset, size_t length) const;
     std::vector<uint8_t> read_raid10(size_t offset, size_t length) const;
+    std::vector<uint8_t> read_jbod(size_t offset, size_t length) const;
+    std::vector<uint8_t> read_raid1e(size_t offset, size_t length) const;
+    uint64_t memberExtentBytes(size_t disk_idx) const;
 };
 
 // GF(2^8) arithmetic used by RAID 6 Q-syndrome (Reed-Solomon). Polynomial

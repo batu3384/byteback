@@ -393,3 +393,64 @@ TEST(UnallocatedMap, UnreadBitmapEmitsDiscoverySentinel) {
     EXPECT_TRUE(sawUnread);
     EXPECT_STREQ(g_scanPhase.load(std::memory_order_relaxed), "carve_bitmap_unread");
 }
+
+TEST(UnallocatedMap, NtfsBitmapFollowsMftDataRuns) {
+    using byteback::testfix::writeLe16;
+    using byteback::testfix::writeLe32;
+    using byteback::testfix::writeLe64;
+    constexpr size_t ss = 512;
+    constexpr uint32_t spc = 8;
+    constexpr size_t clusterBytes = ss * spc;
+    std::vector<uint8_t> img(32 * clusterBytes, 0);
+    std::memcpy(img.data() + 3, "NTFS    ", 8);
+    writeLe16(img, 0x0B, 512);
+    img[0x0D] = static_cast<uint8_t>(spc);
+    writeLe64(img, 0x30, 1);
+    img[0x40] = 0xF6;
+    img[510] = 0x55;
+    img[511] = 0xAA;
+
+    const size_t rec0 = clusterBytes;
+    std::memcpy(img.data() + rec0, "FILE", 4);
+    writeLe16(img, rec0 + 0x14, 0x38);
+    writeLe16(img, rec0 + 0x16, 0x01);
+    writeLe32(img, rec0 + 0x18, 256);
+    writeLe32(img, rec0 + 0x1C, 1024);
+    size_t attr = rec0 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 72);
+    img[attr + 8] = 1;
+    writeLe16(img, attr + 0x20, 0x40);
+    writeLe64(img, attr + 0x28, clusterBytes * 2);
+    writeLe64(img, attr + 0x30, 8 * 1024);
+    img[attr + 0x40] = 0x11;
+    img[attr + 0x41] = 0x02;
+    img[attr + 0x42] = 0x02;
+    writeLe32(img, attr + 72, 0xFFFFFFFF);
+
+    const size_t rec6 = 2 * clusterBytes + 6 * 1024;
+    std::memcpy(img.data() + rec6, "FILE", 4);
+    writeLe16(img, rec6 + 0x14, 0x38);
+    writeLe16(img, rec6 + 0x16, 0x01);
+    writeLe32(img, rec6 + 0x18, 80);
+    writeLe32(img, rec6 + 0x1C, 1024);
+    attr = rec6 + 0x38;
+    writeLe32(img, attr + 0, 0x80);
+    writeLe32(img, attr + 4, 32);
+    img[attr + 8] = 0;
+    writeLe32(img, attr + 16, 4);
+    writeLe16(img, attr + 20, 24);
+    img[attr + 24] = 0xFF;
+    img[attr + 25] = 0xFB;
+    img[attr + 26] = 0xFF;
+    img[attr + 27] = 0xFF;
+    writeLe32(img, attr + 32, 0xFFFFFFFF);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    auto ranges = buildUnallocatedRanges(reader, VolumeFsKind::Ntfs, 0, reader.getDiskSize());
+    ASSERT_FALSE(ranges.empty()) << "$Bitmap rec6 lives in $MFT data runs, not boot LCN+6";
+    const uint64_t freeSec = 10ull * spc;
+    EXPECT_TRUE(rangeCovers(ranges, freeSec));
+    EXPECT_FALSE(rangeCovers(ranges, 0));
+}

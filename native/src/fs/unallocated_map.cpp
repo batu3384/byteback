@@ -174,14 +174,14 @@ std::vector<SectorRange> buildNtfsUnallocated(DiskReader& reader, uint64_t volOf
     if (sectorSize == 0) sectorSize = 512;
     const uint64_t volumeStartSector = volOffsetBytes / sectorSize;
 
-    std::vector<uint8_t> boot(sectorSize);
-    if (!readMapBytes(reader, volOffsetBytes, sectorSize, boot.data())) return out;
-
+    std::vector<uint8_t> boot;
     uint32_t bps = sectorSize;
     uint32_t spc = 8;
     uint64_t mftLcn = 0;
     uint32_t recBytes = 1024;
-    if (!ntfs::parseNtfsBoot(boot.data(), boot.size(), bps, spc, mftLcn, recBytes) || mftLcn == 0) {
+    if (!ntfs::loadNtfsBoot(reader, volOffsetBytes, volSizeBytes, sectorSize, boot, bps, spc, mftLcn,
+                            recBytes) ||
+        mftLcn == 0) {
         return out;
     }
 
@@ -190,10 +190,34 @@ std::vector<SectorRange> buildNtfsUnallocated(DiskReader& reader, uint64_t volOf
                                            : reader.getDiskSize() / sectorSize - volumeStartSector;
     uint64_t totalClusters = (volSectors + spc - 1) / spc;
 
+    auto loadMftRec0 = [&](uint64_t startCluster, std::vector<uint8_t>& rec0) {
+        rec0.assign(recBytes, 0);
+        const uint64_t off = volOffsetBytes + startCluster * clusterBytes;
+        if (!readMapBytes(reader, off, recBytes, rec0.data())) return false;
+        return std::strncmp(reinterpret_cast<char*>(rec0.data()), "FILE", 4) == 0;
+    };
+    std::vector<uint8_t> rec0;
+    std::vector<FileRecord::DataRun> mftRuns;
+    if (loadMftRec0(mftLcn, rec0)) {
+        mftRuns = ntfsUnnamedDataRuns(rec0.data(), recBytes, volumeStartSector, spc);
+    } else if (boot.size() >= 0x40) {
+        uint64_t mirrLcn = 0;
+        for (int i = 0; i < 8; ++i) mirrLcn |= static_cast<uint64_t>(boot[0x38 + i]) << (8 * i);
+        if (mirrLcn > 0 && mirrLcn != mftLcn && loadMftRec0(mirrLcn, rec0))
+            mftRuns = ntfsUnnamedDataRuns(rec0.data(), recBytes, volumeStartSector, spc);
+    }
+
     std::vector<uint8_t> rec(recBytes, 0);
-    const uint64_t bitmapOff = volOffsetBytes + mftLcn * clusterBytes + 6ull * recBytes;
-    if (!readMapBytes(reader, bitmapOff, recBytes, rec.data())) return out;
-    if (std::strncmp(reinterpret_cast<char*>(rec.data()), "FILE", 4) != 0) return out;
+    bool gotBitmapRec = false;
+    if (!mftRuns.empty()) {
+        gotBitmapRec = readBytesFromRuns(reader, mftRuns, 6ull * recBytes, recBytes, rec.data()) &&
+                       std::strncmp(reinterpret_cast<char*>(rec.data()), "FILE", 4) == 0;
+    }
+    if (!gotBitmapRec) {
+        const uint64_t bitmapOff = volOffsetBytes + mftLcn * clusterBytes + 6ull * recBytes;
+        if (!readMapBytes(reader, bitmapOff, recBytes, rec.data())) return out;
+        if (std::strncmp(reinterpret_cast<char*>(rec.data()), "FILE", 4) != 0) return out;
+    }
 
     const auto* hdr = reinterpret_cast<const uint16_t*>(rec.data() + 4);
     uint16_t usaOff = hdr[0];
@@ -671,6 +695,11 @@ std::vector<SectorRange> buildUnallocatedRanges(DiskReader& reader, VolumeFsKind
         case VolumeFsKind::Refs:
         case VolumeFsKind::Apfs:
         case VolumeFsKind::Hfs:
+        case VolumeFsKind::Lvm:
+        case VolumeFsKind::Luks:
+        case VolumeFsKind::Spaces:
+        case VolumeFsKind::Iso9660:
+        case VolumeFsKind::Udf:
         case VolumeFsKind::Unknown:
         case VolumeFsKind::Unread:
             return {};
@@ -700,9 +729,7 @@ std::vector<SectorRange> collectUnallocatedForScan(DiskReader& reader,
         parts.push_back(p);
     } else {
         PartitionScanner scanner(&reader);
-        parts = scanner.parseMBR();
-        std::vector<PartitionInfo> gpt = scanner.parseGPT();
-        if (!gpt.empty()) parts = std::move(gpt);
+        parts = scanner.parseTables();
         if (parts.empty()) {
             PartitionInfo whole;
             whole.startSector = 0;

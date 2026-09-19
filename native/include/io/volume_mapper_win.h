@@ -29,6 +29,24 @@ inline bool isWin32VolumeDevicePath(const std::string& p) {
     return p[5] == ':';
 }
 
+/** Local evidence file — not a volume device, PhysicalDrive, http(s), or /dev/. */
+inline bool isEvidenceImagePath(const std::string& p) {
+    if (p.empty()) return false;
+    if (p.size() >= 4 && p.compare(0, 4, "\\\\.\\") == 0) return false;
+    auto startsNoCase = [](const std::string& s, const char* prefix) {
+        for (size_t i = 0; prefix[i] != '\0'; ++i) {
+            if (i >= s.size()) return false;
+            char c = s[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (c != prefix[i]) return false;
+        }
+        return true;
+    };
+    if (startsNoCase(p, "http://") || startsNoCase(p, "https://")) return false;
+    if (p.compare(0, 5, "/dev/") == 0) return false;
+    return true;
+}
+
 // "d", "D:", "D:\\" -> L"D:"
 std::optional<std::wstring> normalizeDriveLetter(const std::wstring& input);
 std::optional<std::wstring> normalizeDriveLetterUtf8(const std::string& input);
