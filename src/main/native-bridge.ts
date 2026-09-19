@@ -43,6 +43,7 @@ interface BytebackEngine {
   initDatabase(path: string): boolean
   getFileCount(scanId: number, filter?: import('../shared/ipc-contract').FileListFilter): number
   getFilesPage(scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter): FileRecord[]
+  hashEmptyContent(scanId: number): Promise<{ hashed: number; error?: string }>
   searchFiles(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string): FileRecord[]
   searchFileContent(scanId: number, query: string, offset: number, limit: number, useRegex?: boolean): FileRecord[]
   /** FAZ 1.3c: single-pass streaming CSV export; resolves { ok, rows } or rejects with the native error. */
@@ -72,6 +73,21 @@ interface BytebackEngine {
     paddedZeros?: boolean
     data?: Buffer
   }
+  searchHex(driveIndex: number, needle: Buffer, maxHits?: number, volumePath?: string): Promise<{
+    hits: number[]
+    unread: boolean
+    error?: string
+  }>
+  getMftRecord(driveIndex: number, mftRef: number, volumePath?: string): Promise<{
+    ok: boolean
+    unread: boolean
+    mftRef?: number
+    byteOffset?: number
+    signature?: string
+    flags?: number
+    attrs?: { type: number; name: string; resident: boolean }[]
+    error?: string
+  }>
   getSmartStatus(driveIndex: number): SmartStatus
   startScan(
     drivePath: string,
@@ -93,9 +109,16 @@ interface BytebackEngine {
   setBitLockerFvek(hex: string): boolean
   setBitLockerRecoveryPassword(driveIndex: number, password: string): string
   setBitLockerPassword(driveIndex: number, password: string): string
+  setLuksPassword(driveIndex: number, password: string): string
   startPhysicalWipe(driveIndex: number, typedSerial: string): Promise<boolean>
   detectRaid(driveIndices: number[]): RaidDetection
-  reconstructRaid(driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number): RaidAssemblyResult
+  detectRaidImages(imagePaths: string[]): RaidDetection
+  reconstructRaid(driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number): RaidAssemblyResult
+  reconstructRaidImages(imagePaths: string[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number): RaidAssemblyResult
+  assembleLvm(driveIndices: number[]): RaidAssemblyResult
+  assembleLvmImages(imagePaths: string[]): RaidAssemblyResult
+  assembleLdm(driveIndices: number[]): RaidAssemblyResult
+  assembleLdmImages(imagePaths: string[]): RaidAssemblyResult
   failRaidDisk(diskIndex: number): boolean
   // Synced with the native emission (bridge_wipe.cpp GetRaidState): both index
   // arrays are always present, empty when the array is inactive.
@@ -139,7 +162,7 @@ interface BytebackEngine {
   getNsrlStats(): { count: number; path: string }
   setSignaturesDir(dir: string): boolean
   /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
-  seedScanFixture(files: Array<Record<string, unknown>>): number
+  seedScanFixture(files: Array<Record<string, unknown>>, imagePath?: string): number
 }
 
 let engine: BytebackEngine | null = null

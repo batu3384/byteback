@@ -26,7 +26,7 @@ export type {
   SearchFilesResult,
 } from './ipc-contract'
 
-export type { HexReadResult, IpcOkResult } from './ipc-result'
+export type { HexReadResult, HexSearchResult, MftRecordResult, IpcOkResult } from './ipc-result'
 
 import type {
   DriveInfo,
@@ -52,7 +52,7 @@ import type {
   NsrlStats,
   SearchFilesResult,
 } from './ipc-contract'
-import type { HexReadResult, IpcOkResult } from './ipc-result'
+import type { HexReadResult, HexSearchResult, MftRecordResult, IpcOkResult } from './ipc-result'
 
 declare global {
   interface Window {
@@ -65,6 +65,8 @@ declare global {
       listPartitions: (driveIndex: number) => Promise<PartitionInfo[]>
       resolveVolume: (letter: string) => Promise<ResolvedVolume | null>
       listVolumeLetters: () => Promise<string[]>
+      pickScanImage: () => Promise<string | null>
+      pickRaidMemberImages: () => Promise<string[]>
 
       startScan: (driveIndex: number, scanType: string, scanOptions?: ScanOptions) => Promise<number>
       stopScan: () => void
@@ -72,18 +74,31 @@ declare global {
       onScanComplete: (callback: ScanCompleteCallback) => () => void
       removeAllScanListeners: () => void
       /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
-      seedScanFixture: (files: Array<Record<string, unknown>>) => Promise<number>
+      seedScanFixture: (files: Array<Record<string, unknown>>, imagePath?: string) => Promise<number>
+      seedImageDest: (destPath: string) => Promise<boolean>
 
       startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf', volumePath?: string) => void
       stopImaging: () => void
       onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled' }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
-      getDataPaths: () => Promise<{ userData: string; dbPath: string; sessionLog: string; auditLog: string }>
+      getDataPaths: () => Promise<{
+        userData: string
+        dbPath: string
+        sessionLog: string
+        auditLog: string
+        crashDumps?: string
+        lastCrashDump?: string | null
+      }>
       readHexData: (driveIndex: number, offset: number, size: number, volumePath?: string) => Promise<HexReadResult>
+      searchHex: (driveIndex: number, needle: number[], maxHits?: number, volumePath?: string) => Promise<HexSearchResult>
+      getMftRecord: (driveIndex: number, mftRef: number, volumePath?: string) => Promise<MftRecordResult>
+      getHexMarks: () => Promise<import('./hex-marks').HexMark[]>
+      setHexMarks: (marks: import('./hex-marks').HexMark[]) => Promise<IpcOkResult>
 
       getFileCount: (scanId: number, filter?: FileListFilter) => Promise<number>
       getFilesPage: (scanId: number, offset: number, limit: number, filter?: FileListFilter) => Promise<FileRecord[]>
+      hashEmptyContent: (scanId: number) => Promise<{ hashed: number; error?: string }>
       searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => Promise<SearchFilesResult>
       searchFileContent: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) => Promise<SearchFilesResult>
       startContentSearch: (scanId: number, query: string, useRegex?: boolean) => Promise<IpcOkResult>
@@ -108,8 +123,15 @@ declare global {
       setBitLockerFvek: (hex: string) => Promise<boolean>
       setBitLockerRecoveryPassword: (driveIndex: number, password: string) => Promise<string>
       setBitLockerPassword: (driveIndex: number, password: string) => Promise<string>
+      setLuksPassword: (driveIndex: number, password: string) => Promise<string>
       detectRaid: (driveIndices: number[]) => Promise<RaidDetection>
-      reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number) => Promise<RaidAssemblyResult>
+      detectRaidImages: (imagePaths: string[]) => Promise<RaidDetection>
+  reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number) => Promise<RaidAssemblyResult>
+  reconstructRaidImages: (imagePaths: string[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number) => Promise<RaidAssemblyResult>
+  assembleLvm: (driveIndices: number[]) => Promise<RaidAssemblyResult>
+  assembleLvmImages: (imagePaths: string[]) => Promise<RaidAssemblyResult>
+  assembleLdm: (driveIndices: number[]) => Promise<RaidAssemblyResult>
+  assembleLdmImages: (imagePaths: string[]) => Promise<RaidAssemblyResult>
       failRaidDisk: (diskIndex: number) => Promise<boolean>
       getRaidState: () => Promise<{ active: boolean; capacity: number; numDisks: number; level: number; failedDisks?: number[]; memberDriveIndices?: number[] }>
 

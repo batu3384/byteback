@@ -10,6 +10,8 @@ interface DataPaths {
   dbPath: string
   sessionLog: string
   auditLog: string
+  crashDumps?: string
+  lastCrashDump?: string | null
 }
 
 const emptyCase: CaseInfo = {
@@ -259,6 +261,8 @@ function CaseView(): React.ReactElement {
             ['db', dataPaths.dbPath],
             ['sessionLog', dataPaths.sessionLog],
             ['auditLog', dataPaths.auditLog],
+            ...(dataPaths.crashDumps ? [['crashDumps', dataPaths.crashDumps] as const] : []),
+            ...(dataPaths.lastCrashDump ? [['lastCrashDump', dataPaths.lastCrashDump] as const] : []),
           ] as const).map(([label, value]) => (
             <div key={label} className="case-path-row">
               <code>{value}</code>

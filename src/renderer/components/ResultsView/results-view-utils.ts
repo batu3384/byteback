@@ -14,8 +14,10 @@ export type MappedFile = {
   sourceLabel: string
   dateLabel: string
   qualityLabel: string
+  sameContentGroup: number
   confidence?: number
   confidenceTier: 'high' | 'mid' | 'low' | 'none'
+  mftRef?: number
 }
 
 export type TreeNode = {

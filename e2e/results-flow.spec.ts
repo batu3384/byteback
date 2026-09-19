@@ -72,6 +72,42 @@ test('seeded scan flows into results triage and unlocks the report nav', async (
   await closeApp(launched)
 })
 
+test('results MFT action opens hex search and the MFT record box', async () => {
+  const launched = await launchApp()
+  const { win } = launched
+  try {
+    const scanId = await win.evaluate(() => window.api.seedScanFixture([
+      {
+        name: 'report.docx',
+        path: 'Users/bat/Documents/report.docx',
+        sizeBytes: 120_000,
+        confidence: 90,
+        status: 0,
+        source: 'ntfs_mft',
+        category: 'Document',
+        startSector: 30000,
+        endSector: 30100,
+        mftRef: 5,
+      },
+    ]))
+    expect(scanId).toBeGreaterThan(0)
+    await win.reload()
+    await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
+    await win.getByTestId('nav-results').click()
+    await expect(win.getByTestId('result-row')).toHaveCount(1)
+    await win.locator('tbody input[type="checkbox"]').first().check()
+    await expect(win.getByRole('button', { name: 'Önizle' })).toBeEnabled()
+    await win.getByRole('button', { name: 'Önizle' }).click()
+    await expect(win.getByRole('button', { name: /Seçilenleri Kurtar \(1\)/ })).toBeVisible()
+    await expect(win.getByTestId('show-mft')).toBeVisible()
+    await win.getByTestId('show-mft').click()
+    await expect(win.getByTestId('hex-mft-ref')).toHaveValue('5')
+    await expect(win.getByTestId('hex-search-query')).toBeVisible()
+  } finally {
+    await closeApp(launched)
+  }
+})
+
 test('language toggle switches the sidebar labels and back', async () => {
   const launched = await launchApp()
   const { win } = launched
@@ -400,6 +436,25 @@ test('seeded APFS linear-unread record surfaces the honesty banner on results', 
   await closeApp(launched)
 })
 
+test('seeded APFS catalog-unread record surfaces the honesty banner on results', async () => {
+  const launched = await launchApp()
+  const { win } = launched
+
+  const scanId = await win.evaluate(() => window.api.seedScanFixture([
+    { name: 'Apfs_CatalogUnread', path: '/apfs-catalog-unread/', sizeBytes: 0, confidence: 20, status: 0, source: 'apfs_catalog_unread', category: 'System', startSector: 0, endSector: 1 },
+  ]))
+  expect(scanId).toBeGreaterThan(0)
+
+  await win.reload()
+  await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
+  await expect(win.getByTestId('nav-results')).toBeEnabled()
+  await win.getByTestId('nav-results').click()
+  await expect(win.getByTestId('apfs-nxsb-unread')).toBeVisible()
+  await expect(win.getByTestId('results-honesty-load-error')).toHaveCount(0)
+
+  await closeApp(launched)
+})
+
 test('seeded NTFS $I30-unread record surfaces the honesty banner on results', async () => {
   const launched = await launchApp()
   const { win } = launched
@@ -416,6 +471,25 @@ test('seeded NTFS $I30-unread record surfaces the honesty banner on results', as
   await win.getByTestId('nav-results').click()
   await expect(win.getByTestId('ntfs-i30-unread')).toBeVisible()
   await expect(win.getByTestId('ntfs-i30-unread')).toContainText('$I30')
+  await expect(win.getByTestId('results-honesty-load-error')).toHaveCount(0)
+
+  await closeApp(launched)
+})
+
+test('seeded NTFS unalloc $I30 Extra Found surfaces the honesty banner on results', async () => {
+  const launched = await launchApp()
+  const { win } = launched
+
+  const scanId = await win.evaluate(() => window.api.seedScanFixture([
+    { name: 'unalloc_only.txt', path: '/', sizeBytes: 0, confidence: 35, status: 0, source: 'ntfs_i30_unalloc', category: 'Document', startSector: 80, endSector: 88 },
+  ]))
+  expect(scanId).toBeGreaterThan(0)
+
+  await win.reload()
+  await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })
+  await expect(win.getByTestId('nav-results')).toBeEnabled()
+  await win.getByTestId('nav-results').click()
+  await expect(win.getByTestId('ntfs-i30-unalloc')).toBeVisible()
   await expect(win.getByTestId('results-honesty-load-error')).toHaveCount(0)
 
   await closeApp(launched)

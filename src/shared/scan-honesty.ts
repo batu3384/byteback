@@ -33,7 +33,7 @@ export const SCAN_HONESTY_FAT_FILTER: FileListFilter = {
 
 export const SCAN_HONESTY_EXT4_FILTER: FileListFilter = {
   includeDiscovery: true,
-  sourceLike: 'ext4_dir_unread',
+  sourceLike: 'ext4_%_unread',
 }
 
 export const SCAN_HONESTY_XFS_FILTER: FileListFilter = {
@@ -44,6 +44,11 @@ export const SCAN_HONESTY_XFS_FILTER: FileListFilter = {
 export const SCAN_HONESTY_I30_FILTER: FileListFilter = {
   includeDiscovery: true,
   sourceLike: 'ntfs_i30_unread',
+}
+
+export const SCAN_HONESTY_I30_UNALLOC_FILTER: FileListFilter = {
+  includeDiscovery: true,
+  sourceLike: 'ntfs_i30_unalloc',
 }
 
 export const SCAN_HONESTY_UNALLOC_FILTER: FileListFilter = {
@@ -86,6 +91,7 @@ export type ScanHonestyFlags = {
   ext4DirUnread: boolean
   xfsDirUnread: boolean
   ntfsI30Unread: boolean
+  ntfsI30Unalloc: boolean
   unallocMapUnread: boolean
   ntfsLogfileUnread: boolean
   usnUnread: boolean
@@ -104,7 +110,7 @@ export function isHfsCatalogUnreadRecord(f: { source?: string }): boolean {
 
 export function isApfsNxsbUnreadRecord(f: { source?: string }): boolean {
   return f.source === 'apfs_nxsb_unread' || f.source === 'apfs_block_unread' ||
-    f.source === 'apfs_linear_unread'
+    f.source === 'apfs_linear_unread' || f.source === 'apfs_catalog_unread'
 }
 
 export function isRefsProbeCappedRecord(f: { source?: string; path?: string }): boolean {
@@ -121,7 +127,7 @@ export function isFatDirUnreadRecord(f: { source?: string }): boolean {
 }
 
 export function isExt4DirUnreadRecord(f: { source?: string }): boolean {
-  return f.source === 'ext4_dir_unread'
+  return f.source === 'ext4_dir_unread' || f.source === 'ext4_journal_unread'
 }
 
 export function isXfsDirUnreadRecord(f: { source?: string }): boolean {
@@ -131,6 +137,10 @@ export function isXfsDirUnreadRecord(f: { source?: string }): boolean {
 
 export function isNtfsI30UnreadRecord(f: { source?: string }): boolean {
   return f.source === 'ntfs_i30_unread'
+}
+
+export function isNtfsI30UnallocRecord(f: { source?: string }): boolean {
+  return f.source === 'ntfs_i30_unalloc'
 }
 
 export function isUnallocMapUnreadRecord(f: { source?: string }): boolean {
@@ -177,6 +187,7 @@ export const SCAN_HONESTY_LANES: readonly ScanHonestyLane[] = [
   { flag: 'ext4DirUnread', filter: SCAN_HONESTY_EXT4_FILTER, pageLimit: 1, match: isExt4DirUnreadRecord, testId: 'ext4-dir-unread', messageKey: 'ext4DirUnread' },
   { flag: 'xfsDirUnread', filter: SCAN_HONESTY_XFS_FILTER, pageLimit: 1, match: isXfsDirUnreadRecord, testId: 'xfs-dir-unread', messageKey: 'xfsDirUnread' },
   { flag: 'ntfsI30Unread', filter: SCAN_HONESTY_I30_FILTER, pageLimit: 1, match: isNtfsI30UnreadRecord, testId: 'ntfs-i30-unread', messageKey: 'ntfsI30Unread' },
+  { flag: 'ntfsI30Unalloc', filter: SCAN_HONESTY_I30_UNALLOC_FILTER, pageLimit: 1, match: isNtfsI30UnallocRecord, testId: 'ntfs-i30-unalloc', messageKey: 'ntfsI30Unalloc' },
   { flag: 'unallocMapUnread', filter: SCAN_HONESTY_UNALLOC_FILTER, pageLimit: 1, match: isUnallocMapUnreadRecord, testId: 'unalloc-map-unread', messageKey: 'unallocMapUnread' },
   { flag: 'ntfsLogfileUnread', filter: SCAN_HONESTY_LOGFILE_FILTER, pageLimit: 1, match: isNtfsLogfileUnreadRecord, testId: 'ntfs-logfile-unread', messageKey: 'ntfsLogfileUnread' },
   { flag: 'usnUnread', filter: SCAN_HONESTY_USN_FILTER, pageLimit: 1, match: isUsnUnreadRecord, testId: 'usn-unread', messageKey: 'usnUnread' },

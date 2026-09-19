@@ -49,7 +49,8 @@ export default function ResultsPreviewPanel({
     : 'none'
   const [failedKey, setFailedKey] = useState<string | null>(null)
   const imgFailed = failedKey === previewKey
-  const previewImgUrl = preview && !imgFailed ? previewDataUrl(preview) : null
+  const previewImgUrl = preview && !imgFailed && preview.kind === 'image' ? previewDataUrl(preview) : null
+  const audioUrl = preview && preview.kind === 'audio' ? previewDataUrl(preview) : null
   const detectedMime = preview ? resolvePreviewImageMime(preview) : null
 
   const pdfInfo = useMemo(
@@ -99,6 +100,8 @@ export default function ResultsPreviewPanel({
               onError={() => setFailedKey(previewKey)}
               className="preview-img"
             />
+          ) : preview.kind === 'audio' && audioUrl ? (
+            <audio className="preview-audio" controls src={audioUrl} data-testid="preview-audio" />
           ) : preview.kind === 'image' && (imgFailed || !detectedMime) ? (
             <InlineAlert variant="error">{t('preview.imageMismatch')}</InlineAlert>
           ) : preview.kind === 'text' && preview.data ? (

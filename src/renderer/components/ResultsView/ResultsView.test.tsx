@@ -161,7 +161,7 @@ describe('ResultsView scan honesty banners', () => {
   it('shows the ext4 directory-unread warning from a discovery page', async () => {
     const getFilesPage = vi.fn(
       async (_scanId: number, _offset: number, _limit: number, filter?: { includeDiscovery?: boolean; sourceLike?: string }) => {
-        if (filter?.includeDiscovery && filter.sourceLike === 'ext4_dir_unread') {
+        if (filter?.includeDiscovery && filter.sourceLike === 'ext4_%_unread') {
           return [{
             id: 12,
             name: 'Ext4_DirectoryUnread',
@@ -437,5 +437,78 @@ describe('ResultsView list unread ≠ empty filter', () => {
     expect(empty?.textContent).toContain('Sonuç listesi okunamadı')
     expect(empty?.textContent).not.toContain('Bu süzgeçte dosya yok')
     expect(document.body.textContent).not.toContain('Bu süzgeçte dosya yok')
+  })
+})
+
+describe('ResultsView content-hash analyze (FAZ 2.6)', () => {
+  it('hashes empty content then shows same-content badge without dropping rows', async () => {
+    const hashEmptyContent = vi.fn(async () => ({ hashed: 2 }))
+    const getFilesPage = vi.fn(async () => [
+      { id: 1, name: 'from-mft.txt', path: '/a', status: 0, sizeBytes: 5, source: 'ntfs_mft', contentGroupSize: 2 } as FileRecord,
+      { id: 2, name: 'from-carve.txt', path: '/b', status: 0, sizeBytes: 5, source: 'carver', contentGroupSize: 2 } as FileRecord,
+    ])
+    ;(window as unknown as { api: unknown }).api = {
+      getFilesPage,
+      getFileCount: vi.fn(async () => 2),
+      searchFiles: vi.fn(async () => ({ rows: [] })),
+      hashEmptyContent,
+    }
+    render(<ResultsView filesFound={[]} driveIndex={null} scanId={9} />)
+    await waitFor(() => expect(document.querySelectorAll('[data-testid="result-row"]').length).toBe(2))
+    fireEvent.click(document.querySelector('[data-testid="analyze-content-hash"]') as HTMLButtonElement)
+    await waitFor(() => expect(hashEmptyContent).toHaveBeenCalledWith(9))
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="content-hash-report"]')?.textContent).toContain('2')
+    })
+    expect(document.querySelectorAll('[data-testid="same-content-badge"]').length).toBe(2)
+    expect(document.querySelectorAll('[data-testid="result-row"]').length).toBe(2)
+  })
+
+  it('stays closed while a scan is busy', async () => {
+    const hashEmptyContent = vi.fn(async () => ({ hashed: 1 }))
+    ;(window as unknown as { api: unknown }).api = {
+      getFilesPage: vi.fn(async () => PAGE_A),
+      getFileCount: vi.fn(async () => 2),
+      searchFiles: vi.fn(async () => ({ rows: [] })),
+      hashEmptyContent,
+    }
+    render(<ResultsView filesFound={[]} driveIndex={null} scanId={5} scanBusy />)
+    await waitFor(() => expect(document.querySelector('[data-testid="analyze-content-hash"]')).not.toBeNull())
+    expect((document.querySelector('[data-testid="analyze-content-hash"]') as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(document.querySelector('[data-testid="analyze-content-hash"]') as HTMLButtonElement)
+    expect(hashEmptyContent).not.toHaveBeenCalled()
+  })
+})
+
+describe('ResultsView show MFT (FAZ 4.2)', () => {
+  it('shows MFT action for ntfs_mft rows with mftRef and calls onShowMft', async () => {
+    const onShowMft = vi.fn()
+    ;(window as unknown as { api: unknown }).api = {
+      getFilesPage: vi.fn(async () => [
+        { id: 1, name: 'doc.txt', path: '/doc.txt', status: 0, sizeBytes: 5, source: 'ntfs_mft', mftRef: 5 } as FileRecord,
+        { id: 2, name: 'carve.bin', path: '/carve.bin', status: 0, sizeBytes: 8, source: 'carver' } as FileRecord,
+      ]),
+      getFileCount: vi.fn(async () => 2),
+      searchFiles: vi.fn(async () => ({ rows: [] })),
+    }
+    render(<ResultsView filesFound={[]} driveIndex={0} scanId={11} onShowMft={onShowMft} />)
+    await waitFor(() => expect(document.querySelectorAll('[data-testid="result-row"]').length).toBe(2))
+    const buttons = document.querySelectorAll('[data-testid="show-mft"]')
+    expect(buttons.length).toBe(1)
+    fireEvent.click(buttons[0] as HTMLButtonElement)
+    expect(onShowMft).toHaveBeenCalledWith(5)
+  })
+
+  it('hides MFT action when mftRef is missing', async () => {
+    ;(window as unknown as { api: unknown }).api = {
+      getFilesPage: vi.fn(async () => [
+        { id: 3, name: 'fat.txt', path: '/fat.txt', status: 0, sizeBytes: 4, source: 'fat' } as FileRecord,
+      ]),
+      getFileCount: vi.fn(async () => 1),
+      searchFiles: vi.fn(async () => ({ rows: [] })),
+    }
+    render(<ResultsView filesFound={[]} driveIndex={0} scanId={12} onShowMft={vi.fn()} />)
+    await waitFor(() => expect(document.querySelector('[data-testid="result-row"]')).not.toBeNull())
+    expect(document.querySelector('[data-testid="show-mft"]')).toBeNull()
   })
 })

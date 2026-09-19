@@ -36,6 +36,7 @@ function App(): React.ReactElement {
   const [selectedDriveSectorSize, setSelectedDriveSectorSize] = useState<number>(512)
   /** DriveCard hex = PhysicalDrive dump. Sidebar hex keeps scan volume device. */
   const [hexForceDisk, setHexForceDisk] = useState(false)
+  const [hexInitialMftRef, setHexInitialMftRef] = useState<number | undefined>(undefined)
 
   // Global Scan State (Persists across tab changes)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, badSectors: [] as number[], phase: 'metadata' })
@@ -363,7 +364,10 @@ function App(): React.ReactElement {
     if (isScanDependentPage(page) && !hasValidScanId(activeScanId)) return
     if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
-    if (page === 'hex') setHexForceDisk(true)
+    if (page === 'hex') {
+      setHexForceDisk(true)
+      setHexInitialMftRef(undefined)
+    }
     setActivePage(page)
   }
 
@@ -373,7 +377,10 @@ function App(): React.ReactElement {
     // render a bogus "Sürücü undefined taranıyor" with a live stop button.
     if (page === 'scan' && scanPhase === 'idle' && !hasValidScanId(activeScanId)) return
     if (isDiskBusyPage(page) && scanBusy) return
-    if (page === 'hex') setHexForceDisk(false)
+    if (page === 'hex') {
+      setHexForceDisk(false)
+      setHexInitialMftRef(undefined)
+    }
     setActivePage(page as Page)
   }
 
@@ -410,7 +417,19 @@ function App(): React.ReactElement {
                  onViewResults={() => setActivePage('results')}
                />
       case 'results':
-        return <ResultsView filesFound={[]} driveIndex={scanConfig.driveIndex} scanId={activeScanId} scanBusy={scanBusy} />
+        return (
+          <ResultsView
+            filesFound={[]}
+            driveIndex={scanConfig.driveIndex}
+            scanId={activeScanId}
+            scanBusy={scanBusy}
+            onShowMft={(ref) => {
+              setHexInitialMftRef(ref)
+              setHexForceDisk(false)
+              setActivePage('hex')
+            }}
+          />
+        )
       case 'search':
         return <KeywordSearch scanId={activeScanId} />
       case 'timeline':
@@ -425,6 +444,7 @@ function App(): React.ReactElement {
             scanBusy={scanBusy}
             volumePath={scanRowState?.volumePath}
             forceDisk={hexForceDisk}
+            initialMftRef={hexInitialMftRef}
           />
         )
       case 'smart':

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { FilePreviewResult } from './ipc-contract'
-import { formatPreviewHex, isImagePreviewKind, previewDataUrl, sniffImageMime } from './preview-utils'
+import { formatPreviewHex, isImagePreviewKind, isAudioPreviewKind, previewDataUrl, sniffImageMime } from './preview-utils'
 
 describe('preview contract', () => {
   it('formats hex dump with offset column', () => {
@@ -41,6 +41,18 @@ describe('preview contract', () => {
   it('returns null data url for failed preview', () => {
     const mock: FilePreviewResult = { success: false, error: 'disk closed' }
     expect(previewDataUrl(mock)).toBeNull()
+  })
+
+  it('builds audio/wav data url for audio kind', () => {
+    const wav = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
+    const mock: FilePreviewResult = {
+      success: true,
+      kind: 'audio',
+      mime: 'audio/wav',
+      data: wav,
+    }
+    expect(isAudioPreviewKind(mock.kind)).toBe(true)
+    expect(previewDataUrl(mock)?.startsWith('data:audio/wav;base64,')).toBe(true)
   })
 
   it('passes through structural note from native', () => {

@@ -8,7 +8,7 @@ vi.mock('electron', () => ({
   powerSaveBlocker: { start: () => 1, stop: () => {}, isStarted: () => false },
 }))
 
-import { clampInt, scanProgressPayload, sanitizeRaidIndices } from './ipc-handlers'
+import { clampInt, scanProgressPayload, sanitizeRaidIndices, sanitizeRaidImagePaths, startScanDrivePath } from './ipc-handlers'
 
 // Main once dropped phaseCurrent/phaseTotal from native progress events, leaving
 // the ScanView phase % dead despite the renderer reading them (bridge_scan.cpp
@@ -67,5 +67,26 @@ describe('sanitizeRaidIndices', () => {
   it('keeps exactly max members and rejects below the pair threshold upstream', () => {
     expect(sanitizeRaidIndices([0, 1], 64)).toEqual([0, 1])
     expect(sanitizeRaidIndices([5], 64)).toEqual([5])
+  })
+})
+
+describe('sanitizeRaidImagePaths', () => {
+  it('keeps local files, drops devices, and dedupes', () => {
+    expect(sanitizeRaidImagePaths(
+      ['C:\\a.img', '\\\\.\\PhysicalDrive0', 'C:\\a.img', 'D:\\b.E01', 'http://x/y'],
+      16,
+    )).toEqual(['C:\\a.img', 'D:\\b.E01'])
+  })
+  it('returns empty for non-arrays and arrays over the cap', () => {
+    expect(sanitizeRaidImagePaths(null, 16)).toEqual([])
+    expect(sanitizeRaidImagePaths(Array.from({ length: 17 }, (_, i) => `C:\\m${i}.img`), 16)).toEqual([])
+  })
+})
+
+describe('startScanDrivePath', () => {
+  it('uses image sentinel path when an evidence file is bound', () => {
+    expect(startScanDrivePath(-2, 'C:\\case\\disk.img')).toBe('image')
+    expect(startScanDrivePath(-1)).toBe('raid')
+    expect(startScanDrivePath(3)).toBe('3')
   })
 })

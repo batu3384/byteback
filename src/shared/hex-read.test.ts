@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { hexDataOrNull, hexUsesRaidBackend, isHexDriveIndex, HEX_RAID_DRIVE_INDEX, probeRaidState } from './hex-read'
+import {
+  hexDataOrNull,
+  hexUsesRaidBackend,
+  isHexDriveIndex,
+  HEX_RAID_DRIVE_INDEX,
+  probeRaidState,
+  parseHexSearchNeedle,
+  hexSearchHitSector,
+  HEX_SEARCH_MAX_NEEDLE,
+  mftAttrTypeLabel,
+} from './hex-read'
 
 describe('hexDataOrNull', () => {
   it('returns bytes for a clean read', () => {
@@ -16,11 +26,12 @@ describe('hexDataOrNull', () => {
 })
 
 describe('hex drive bind', () => {
-  it('allows the RAID sentinel and non-negative integers only', () => {
+  it('allows the RAID sentinel, image sentinel, and non-negative integers', () => {
     expect(isHexDriveIndex(HEX_RAID_DRIVE_INDEX)).toBe(true)
     expect(isHexDriveIndex(0)).toBe(true)
     expect(isHexDriveIndex(12)).toBe(true)
-    expect(isHexDriveIndex(-2)).toBe(false)
+    expect(isHexDriveIndex(-2)).toBe(true)
+    expect(isHexDriveIndex(-3)).toBe(false)
     expect(isHexDriveIndex(1.5)).toBe(false)
     expect(isHexDriveIndex('0')).toBe(false)
   })
@@ -49,5 +60,42 @@ describe('probeRaidState', () => {
 
   it('returns the live state when the probe succeeds', async () => {
     expect(await probeRaidState(async () => inactive)).toEqual({ status: 'ok', state: inactive })
+  })
+})
+
+describe('parseHexSearchNeedle', () => {
+  it('parses even hex digits including spaces and 0x', () => {
+    expect(parseHexSearchNeedle('DEADBEEF')).toEqual({ ok: true, bytes: [0xde, 0xad, 0xbe, 0xef] })
+    expect(parseHexSearchNeedle('de ad be ef')).toEqual({ ok: true, bytes: [0xde, 0xad, 0xbe, 0xef] })
+    expect(parseHexSearchNeedle('0x46494C45')).toEqual({ ok: true, bytes: [0x46, 0x49, 0x4c, 0x45] })
+  })
+
+  it('treats non-hex text as latin1 bytes', () => {
+    expect(parseHexSearchNeedle('FILE')).toEqual({ ok: true, bytes: [0x46, 0x49, 0x4c, 0x45] })
+  })
+
+  it('rejects empty and over-cap needles', () => {
+    expect(parseHexSearchNeedle('')).toEqual({ ok: false, reason: 'empty' })
+    expect(parseHexSearchNeedle('   ')).toEqual({ ok: false, reason: 'empty' })
+    const tooLong = 'aa'.repeat(HEX_SEARCH_MAX_NEEDLE + 1)
+    expect(parseHexSearchNeedle(tooLong)).toEqual({ ok: false, reason: 'too_long' })
+    const longText = 'x'.repeat(HEX_SEARCH_MAX_NEEDLE + 1)
+    expect(parseHexSearchNeedle(longText)).toEqual({ ok: false, reason: 'too_long' })
+  })
+})
+
+describe('hexSearchHitSector', () => {
+  it('maps a byte offset onto the containing sector', () => {
+    expect(hexSearchHitSector(1000, 512)).toBe(1)
+    expect(hexSearchHitSector(512, 512)).toBe(1)
+    expect(hexSearchHitSector(0, 512)).toBe(0)
+  })
+})
+
+describe('mftAttrTypeLabel', () => {
+  it('names well-known NTFS attribute types', () => {
+    expect(mftAttrTypeLabel(0x80)).toBe('$DATA')
+    expect(mftAttrTypeLabel(0x30)).toBe('$FILE_NAME')
+    expect(mftAttrTypeLabel(0x10)).toBe('$STANDARD_INFORMATION')
   })
 })

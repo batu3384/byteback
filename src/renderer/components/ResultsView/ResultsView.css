@@ -243,6 +243,19 @@
   font-size: 0.8rem;
 }
 
+.same-content-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-blue);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
 .results-scroll {
   flex: 1;
   overflow-y: auto;
@@ -508,11 +521,17 @@
   margin-bottom: 8px;
 }
 
-.preview-img {
+.preview-img,
+.preview-audio {
   max-width: 100%;
   max-height: 240px;
   object-fit: contain;
   border-radius: var(--radius-md);
+}
+
+.preview-audio {
+  max-height: none;
+  width: 100%;
 }
 
 .preview-text,
