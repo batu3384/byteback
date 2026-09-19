@@ -16,6 +16,10 @@ export function isImagePreviewKind(kind?: FilePreviewResult['kind']): boolean {
   return kind === 'image'
 }
 
+export function isAudioPreviewKind(kind?: FilePreviewResult['kind']): boolean {
+  return kind === 'audio'
+}
+
 /** Magic-byte sniff for common image MIME types. Returns null if unknown. */
 export function sniffImageMime(data: Uint8Array): string | null {
   if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg'
@@ -76,8 +80,10 @@ export function resolvePreviewImageMime(preview: FilePreviewResult): string | nu
 }
 
 export function previewDataUrl(preview: FilePreviewResult): string | null {
-  if (!preview.success || !preview.data?.length || !isImagePreviewKind(preview.kind)) return null
-  const mime = resolvePreviewImageMime(preview)
+  if (!preview.success || !preview.data?.length) return null
+  let mime: string | null = null
+  if (isImagePreviewKind(preview.kind)) mime = resolvePreviewImageMime(preview)
+  else if (isAudioPreviewKind(preview.kind) && preview.mime?.startsWith('audio/')) mime = preview.mime
   if (!mime) return null
   const bytes = preview.data
   // Chunked conversion — per-byte string concat was slow on 64KB previews.

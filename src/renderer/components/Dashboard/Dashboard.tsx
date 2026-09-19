@@ -5,12 +5,13 @@ import type { DriveInfo, LostPartitionHit, ResolvedVolume, ScanOptions, ScanStat
 import { SCAN_PROFILES, mediaNeedsTrimAck, smartTrimSignals } from '../../../shared/scan-profiles'
 import type { ScanProfile } from '../../../shared/scan-profiles'
 import { isPausedScan, scanProgressPercent, scanShowsMetadataResume } from '../../../shared/scan-session'
+import { SCAN_IMAGE_DRIVE_INDEX } from '../../../shared/hex-read'
 import './Dashboard.css'
 import InlineAlert from '../InlineAlert'
 import ConfirmModal from '../ConfirmModal'
 import { localizeNote, useI18n, tFormat, formatInt } from '../../i18n'
 import { formatSize } from '../ResultsView/results-view-utils'
-import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle } from 'lucide-react'
+import { ShieldAlert, RotateCw, HardDrive, RefreshCw, Activity, FolderCheck, Play, Search, AlertTriangle, FileSearch } from 'lucide-react'
 
 interface DashboardProps {
   onStartScan?: (driveIndex: number, scanType: string, scanOptions?: import('../../../shared/ipc-contract').ScanOptions) => void
@@ -38,6 +39,8 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   const [recoveryStatus, setRecoveryStatus] = useState<string | null>(null)
   const [userPassword, setUserPassword] = useState('')
   const [userPasswordStatus, setUserPasswordStatus] = useState<string | null>(null)
+  const [luksPassword, setLuksPassword] = useState('')
+  const [luksPasswordStatus, setLuksPasswordStatus] = useState<string | null>(null)
   const [volumeLetters, setVolumeLetters] = useState<string[]>([])
   const [volumeLetter, setVolumeLetter] = useState('C:')
   const [volumeLettersError, setVolumeLettersError] = useState<string | null>(null)
@@ -66,6 +69,9 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
   const [lostStatus, setLostStatus] = useState<string | null>(null)
   const [lostPartitions, setLostPartitions] = useState<LostPartitionHit[] | null>(null)
   const [lostUnread, setLostUnread] = useState(false)
+  const [imagePath, setImagePath] = useState<string | null>(null)
+  const [imageStatus, setImageStatus] = useState<string | null>(null)
+  const [lastCrashDump, setLastCrashDump] = useState<string | null>(null)
 
   useEffect(() => {
     fetchDrives()
@@ -82,6 +88,15 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
         console.warn('[Dashboard] listVolumeLetters failed', e)
         if (!aliveRef.current) return
         setVolumeLettersError(t('dash.volumeLettersFailed'))
+      })
+    }
+    if (window.api?.getDataPaths) {
+      window.api.getDataPaths().then((p) => {
+        if (!aliveRef.current) return
+        setLastCrashDump(p.lastCrashDump ?? null)
+      }).catch(() => {
+        if (!aliveRef.current) return
+        setLastCrashDump(null)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -276,6 +291,11 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
       <div className="glass-panel dash-note" role="note">
         {t('dash.evidenceNote')}
       </div>
+      {lastCrashDump && (
+        <InlineAlert variant="warning" testId="dash-last-crash-dump">
+          {tFormat('dash.lastCrashDump', { path: lastCrashDump })}
+        </InlineAlert>
+      )}
 
       <div className="glass-panel scan-profile-legend" data-testid="scan-profile-legend">
         <div className="legend-title">{t('dash.profilesTitle')}</div>
@@ -339,6 +359,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             {drives.map((d) => (
               <option key={d.index} value={d.index}>{d.index}: {d.model || t('dash.diskFallback')}</option>
             ))}
+            <option value={SCAN_IMAGE_DRIVE_INDEX}>{t('dash.evidenceImageOption')}</option>
           </select>
         </div>
         <div className="dash-field-row">
@@ -399,6 +420,35 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           </button>
         </div>
         {recoveryStatus && <span id="recovery-status" className="dash-status">{recoveryStatus}</span>}
+        <div className="dash-field-row">
+          <label htmlFor="luks-password">{t('dash.luksPasswordLabel')}</label>
+          <input
+            id="luks-password"
+            className="dash-input"
+            aria-label={t('dash.luksPasswordAria')}
+            aria-describedby="luks-password-status"
+            type="password"
+            autoComplete="off"
+            value={luksPassword}
+            onChange={(e) => { setLuksPassword(e.target.value); setLuksPasswordStatus(null) }}
+            placeholder={t('dash.luksPasswordPlaceholder')}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={async () => {
+              if (!window.api?.setLuksPassword) {
+                setLuksPasswordStatus(t('dash.noApiShort'))
+                return
+              }
+              const err = await window.api.setLuksPassword(recoveryDrive, luksPassword)
+              setLuksPasswordStatus(err ? err : t('dash.luksUnlocked'))
+            }}
+          >
+            {t('dash.luksUnlock')}
+          </button>
+        </div>
+        {luksPasswordStatus && <span id="luks-password-status" className="dash-status">{luksPasswordStatus}</span>}
       </div>
 
       <div className="glass-panel dash-panel">
@@ -459,6 +509,98 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           </button>
         </div>
         {volumeResolveStatus && <span className="dash-status">{volumeResolveStatus}</span>}
+      </div>
+
+      <div className="glass-panel dash-panel">
+        <div className="dash-panel-title">{t('dash.imageScanTitle')}</div>
+        <p>{t('dash.imageScanHint')}</p>
+        <div className="dash-field-row">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={scanBusy}
+            data-testid="image-scan-pick"
+            onClick={async () => {
+              if (!window.api?.pickScanImage) {
+                setImageStatus(t('dash.noApiShort'))
+                return
+              }
+              const picked = await window.api.pickScanImage()
+              if (!picked) return
+              setImagePath(picked)
+              setImageStatus(picked)
+            }}
+          >
+            <FileSearch size={16} /> {t('dash.imageScanPick')}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={scanBusy || !imagePath}
+            data-testid="image-scan-quick"
+            title={t('profile.quick.detail')}
+            onClick={() => {
+              if (!onStartScan || !imagePath) {
+                setImageStatus(t('dash.imageScanNeedFile'))
+                return
+              }
+              onStartScan(SCAN_IMAGE_DRIVE_INDEX, 'quick', { imagePath })
+            }}
+          >
+            {t('profile.quick.label')}
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={scanBusy || !imagePath}
+            data-testid="image-scan-deep"
+            title={t('profile.deep.detail')}
+            onClick={() => {
+              if (!onStartScan || !imagePath) {
+                setImageStatus(t('dash.imageScanNeedFile'))
+                return
+              }
+              onStartScan(SCAN_IMAGE_DRIVE_INDEX, 'deep', { imagePath })
+            }}
+          >
+            <Search size={16} /> {t('profile.deep.label')}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={scanBusy || !imagePath}
+            data-testid="image-scan-carve-only"
+            title={t('profile.carve_only.detail')}
+            onClick={() => {
+              if (!onStartScan || !imagePath) {
+                setImageStatus(t('dash.imageScanNeedFile'))
+                return
+              }
+              onStartScan(SCAN_IMAGE_DRIVE_INDEX, 'carve_only', { imagePath })
+            }}
+          >
+            {t('profile.carve_only.label')}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary btn-warn-edge"
+            disabled={scanBusy || !imagePath}
+            data-testid="image-scan-full-carve"
+            title={t('profile.full_carve.detail')}
+            onClick={() => {
+              if (!onStartScan || !imagePath) {
+                setImageStatus(t('dash.imageScanNeedFile'))
+                return
+              }
+              onStartScan(SCAN_IMAGE_DRIVE_INDEX, 'full_carve', { imagePath })
+            }}
+          >
+            <AlertTriangle size={14} /> {t('profile.full_carve.label')}
+          </button>
+        </div>
+        <span className="dash-status" data-testid="image-scan-status">
+          {imageStatus ?? t('dash.imageScanNone')}
+        </span>
       </div>
 
       <div className="glass-panel dash-panel">
@@ -578,6 +720,12 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
                   if (pausedSession.volumePath) extra.volumePath = pausedSession.volumePath
                   if (pausedSession.evidenceDiskIndices?.length)
                     extra.evidenceDiskIndices = pausedSession.evidenceDiskIndices
+                  if (pausedSession.driveIndex === SCAN_IMAGE_DRIVE_INDEX) {
+                    if (!pausedSession.volumePath) return
+                    extra.imagePath = pausedSession.volumePath
+                    onStartScan(pausedSession.driveIndex, pausedSession.scanType, extra)
+                    return
+                  }
                   const type = driveTypeOf(pausedSession.driveIndex)
                   const sig = await probeTrimSignals(pausedSession.driveIndex)
                   if (mediaNeedsTrimAck(pausedSession.scanType, type, sig)) {

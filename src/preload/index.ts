@@ -9,13 +9,16 @@ contextBridge.exposeInMainWorld('api', {
   listPartitions: (driveIndex: number) => ipcRenderer.invoke('list-partitions', driveIndex),
   resolveVolume: (letter: string) => ipcRenderer.invoke('resolve-volume', letter),
   listVolumeLetters: () => ipcRenderer.invoke('list-volume-letters'),
+  pickScanImage: () => ipcRenderer.invoke('pick-scan-image') as Promise<string | null>,
+  pickRaidMemberImages: () => ipcRenderer.invoke('pick-raid-member-images') as Promise<string[]>,
   
   startScan: (driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) =>
     ipcRenderer.invoke('start-scan', driveIndex, scanType, scanOptions),
   stopScan: () => ipcRenderer.send('stop-scan'),
 
-  seedScanFixture: (files: Array<Record<string, unknown>>) =>
-    ipcRenderer.invoke('seed-scan-fixture', files),
+  seedScanFixture: (files: Array<Record<string, unknown>>, imagePath?: string) =>
+    ipcRenderer.invoke('seed-scan-fixture', files, imagePath),
+  seedImageDest: (destPath: string) => ipcRenderer.invoke('seed-image-dest', destPath),
   
   onScanProgress: (callback: (data: { scanId?: number, current: number, total: number, badSectors?: number[], phase?: string, phaseCurrent?: number, phaseTotal?: number }) => void) => {
     const handler = (event: IpcRendererEvent, data: any) => callback(data)
@@ -41,9 +44,18 @@ contextBridge.exposeInMainWorld('api', {
   getSmartStatus: (driveIndex: number) => ipcRenderer.invoke('get-smart-status', driveIndex),
   getDataPaths: () => ipcRenderer.invoke('get-data-paths'),
   readHexData: (driveIndex: number, offset: number, size: number, volumePath?: string) => ipcRenderer.invoke('read-hex-data', driveIndex, offset, size, volumePath),
+  searchHex: (driveIndex: number, needle: number[], maxHits?: number, volumePath?: string) =>
+    ipcRenderer.invoke('search-hex', driveIndex, needle, maxHits, volumePath),
+  getMftRecord: (driveIndex: number, mftRef: number, volumePath?: string) =>
+    ipcRenderer.invoke('get-mft-record', driveIndex, mftRef, volumePath),
+  getHexMarks: () => ipcRenderer.invoke('get-hex-marks'),
+  setHexMarks: (marks: import('../shared/hex-marks').HexMark[]) =>
+    ipcRenderer.invoke('set-hex-marks', marks),
 
   getFileCount: (scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-file-count', scanId, filter),
   getFilesPage: (scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => ipcRenderer.invoke('get-files-page', scanId, offset, limit, filter),
+  hashEmptyContent: (scanId: number) =>
+    ipcRenderer.invoke('hash-empty-content', scanId) as Promise<{ hashed: number; error?: string }>,
   searchFiles: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) =>
     ipcRenderer.invoke('search-files', scanId, query, offset, limit, useRegex, category),
   searchFileContent: (scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) =>
@@ -88,9 +100,18 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('set-bitlocker-recovery-password', driveIndex, password),
   setBitLockerPassword: (driveIndex: number, password: string) =>
     ipcRenderer.invoke('set-bitlocker-password', driveIndex, password),
+  setLuksPassword: (driveIndex: number, password: string) =>
+    ipcRenderer.invoke('set-luks-password', driveIndex, password),
   detectRaid: (driveIndices: number[]) => ipcRenderer.invoke('detect-raid', driveIndices),
-  reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number) =>
-    ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel, blockSize, dataOffsetSectors),
+  detectRaidImages: (imagePaths: string[]) => ipcRenderer.invoke('detect-raid-images', imagePaths),
+  reconstructRaid: (driveIndices: number[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number) =>
+    ipcRenderer.invoke('reconstruct-raid', driveIndices, raidLevel, blockSize, dataOffsetSectors, raid5Algorithm),
+  reconstructRaidImages: (imagePaths: string[], raidLevel: number, blockSize: number, dataOffsetSectors?: number, raid5Algorithm?: number) =>
+    ipcRenderer.invoke('reconstruct-raid-images', imagePaths, raidLevel, blockSize, dataOffsetSectors, raid5Algorithm),
+  assembleLvm: (driveIndices: number[]) => ipcRenderer.invoke('assemble-lvm', driveIndices),
+  assembleLvmImages: (imagePaths: string[]) => ipcRenderer.invoke('assemble-lvm-images', imagePaths),
+  assembleLdm: (driveIndices: number[]) => ipcRenderer.invoke('assemble-ldm', driveIndices),
+  assembleLdmImages: (imagePaths: string[]) => ipcRenderer.invoke('assemble-ldm-images', imagePaths),
   failRaidDisk: (diskIndex: number) => ipcRenderer.invoke('fail-raid-disk', diskIndex),
   getRaidState: () => ipcRenderer.invoke('get-raid-state'),
   recoverFile: (driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) =>

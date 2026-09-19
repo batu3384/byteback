@@ -9,6 +9,7 @@ import {
   isExt4DirUnreadRecord,
   isXfsDirUnreadRecord,
   isNtfsI30UnreadRecord,
+  isNtfsI30UnallocRecord,
   isUnallocMapUnreadRecord,
   isNtfsLogfileUnreadRecord,
   isUsnUnreadRecord,
@@ -25,6 +26,7 @@ import {
   SCAN_HONESTY_EXT4_FILTER,
   SCAN_HONESTY_XFS_FILTER,
   SCAN_HONESTY_I30_FILTER,
+  SCAN_HONESTY_I30_UNALLOC_FILTER,
   SCAN_HONESTY_UNALLOC_FILTER,
   SCAN_HONESTY_LOGFILE_FILTER,
   SCAN_HONESTY_USN_FILTER,
@@ -55,6 +57,7 @@ const ALL_TRUE: Record<string, boolean> = {
   ext4DirUnread: true,
   xfsDirUnread: true,
   ntfsI30Unread: true,
+  ntfsI30Unalloc: true,
   unallocMapUnread: true,
   ntfsLogfileUnread: true,
   usnUnread: true,
@@ -74,6 +77,7 @@ describe('scan honesty sentinels', () => {
     expect(isApfsNxsbUnreadRecord({ source: 'apfs_nxsb_unread' })).toBe(true)
     expect(isApfsNxsbUnreadRecord({ source: 'apfs_block_unread' })).toBe(true)
     expect(isApfsNxsbUnreadRecord({ source: 'apfs_linear_unread' })).toBe(true)
+    expect(isApfsNxsbUnreadRecord({ source: 'apfs_catalog_unread' })).toBe(true)
     expect(isApfsNxsbUnreadRecord({ source: 'apfs_container' })).toBe(false)
     expect(isRefsProbeCappedRecord({ source: 'refs_volume', path: '/refs-probe-capped/' })).toBe(true)
     expect(isRefsProbeCappedRecord({ source: 'refs_volume', path: '/refs/' })).toBe(false)
@@ -84,7 +88,9 @@ describe('scan honesty sentinels', () => {
     expect(isFatDirUnreadRecord({ source: 'fat_chain_unread' })).toBe(true)
     expect(isFatDirUnreadRecord({ source: 'fat' })).toBe(false)
     expect(isExt4DirUnreadRecord({ source: 'ext4_dir_unread' })).toBe(true)
+    expect(isExt4DirUnreadRecord({ source: 'ext4_journal_unread' })).toBe(true)
     expect(isExt4DirUnreadRecord({ source: 'ext4_dirent' })).toBe(false)
+    expect(isExt4DirUnreadRecord({ source: 'ext4_journal' })).toBe(false)
     expect(isXfsDirUnreadRecord({ source: 'xfs_dir_unread' })).toBe(true)
     expect(isXfsDirUnreadRecord({ source: 'xfs_sb_unread' })).toBe(true)
     expect(isXfsDirUnreadRecord({ source: 'xfs_inode_unread' })).toBe(true)
@@ -92,6 +98,8 @@ describe('scan honesty sentinels', () => {
     expect(isXfsDirUnreadRecord({ source: 'xfs_inode' })).toBe(false)
     expect(isNtfsI30UnreadRecord({ source: 'ntfs_i30_unread' })).toBe(true)
     expect(isNtfsI30UnreadRecord({ source: 'ntfs_i30' })).toBe(false)
+    expect(isNtfsI30UnallocRecord({ source: 'ntfs_i30_unalloc' })).toBe(true)
+    expect(isNtfsI30UnallocRecord({ source: 'ntfs_i30_unread' })).toBe(false)
     expect(isUnallocMapUnreadRecord({ source: 'unalloc_map_unread' })).toBe(true)
     expect(isUnallocMapUnreadRecord({ source: 'carver' })).toBe(false)
     expect(isNtfsLogfileUnreadRecord({ source: 'ntfs_logfile_unread' })).toBe(true)
@@ -124,7 +132,7 @@ describe('scan honesty sentinels', () => {
       if (filter?.sourceLike === 'fat_%_unread') {
         return [rec({ source: 'fat_dir_unread', name: 'FAT_DirectoryUnread', path: '/fat-dir-unread/' })]
       }
-      if (filter?.sourceLike === 'ext4_dir_unread') {
+      if (filter?.sourceLike === 'ext4_%_unread') {
         return [rec({ source: 'ext4_dir_unread', name: 'Ext4_DirectoryUnread', path: '/ext4-dir-unread/' })]
       }
       if (filter?.sourceLike === 'xfs_%_unread') {
@@ -132,6 +140,9 @@ describe('scan honesty sentinels', () => {
       }
       if (filter?.sourceLike === 'ntfs_i30_unread') {
         return [rec({ source: 'ntfs_i30_unread', name: 'Ntfs_I30Unread', path: '/ntfs-i30-unread/' })]
+      }
+      if (filter?.sourceLike === 'ntfs_i30_unalloc') {
+        return [rec({ source: 'ntfs_i30_unalloc', name: 'unalloc_only.txt', path: '/' })]
       }
       if (filter?.sourceLike === 'unalloc_map_unread') {
         return [rec({ source: 'unalloc_map_unread', name: 'Unalloc_MapUnread', path: '/unalloc-map-unread/' })]
@@ -164,6 +175,7 @@ describe('scan honesty sentinels', () => {
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_EXT4_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_XFS_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_I30_FILTER)
+    expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_I30_UNALLOC_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_UNALLOC_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_LOGFILE_FILTER)
     expect(getFilesPage).toHaveBeenCalledWith(9, 0, 1, SCAN_HONESTY_USN_FILTER)
@@ -173,7 +185,7 @@ describe('scan honesty sentinels', () => {
   })
 
   it('keeps one lane table as fetch and banner source', async () => {
-    expect(SCAN_HONESTY_LANES).toHaveLength(15)
+    expect(SCAN_HONESTY_LANES).toHaveLength(16)
     expect(SCAN_HONESTY_LANES.map((l) => l.filter)).toEqual([
       SCAN_HONESTY_HFS_FILTER,
       SCAN_HONESTY_HFS_CATALOG_FILTER,
@@ -184,6 +196,7 @@ describe('scan honesty sentinels', () => {
       SCAN_HONESTY_EXT4_FILTER,
       SCAN_HONESTY_XFS_FILTER,
       SCAN_HONESTY_I30_FILTER,
+      SCAN_HONESTY_I30_UNALLOC_FILTER,
       SCAN_HONESTY_UNALLOC_FILTER,
       SCAN_HONESTY_LOGFILE_FILTER,
       SCAN_HONESTY_USN_FILTER,
@@ -211,6 +224,7 @@ describe('scan honesty sentinels', () => {
       { source: 'ext4_dir_unread' },
       { source: 'xfs_dir_unread' },
       { source: 'ntfs_i30_unread' },
+      { source: 'ntfs_i30_unalloc' },
       { source: 'unalloc_map_unread' },
       { source: 'ntfs_logfile_unread' },
       { source: 'usn_unread' },

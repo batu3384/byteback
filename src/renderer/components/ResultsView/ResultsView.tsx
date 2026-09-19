@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import './ResultsView.css'
-import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown } from 'lucide-react'
+import { File, FileImage, FileText, FileVideo, FileAudio, FileArchive, Download, ShieldCheck, Folder, FolderOpen, ListTree, List, Eye, LayoutGrid, Loader2, ChevronUp, ChevronDown, Binary } from 'lucide-react'
 import type { FileRecord, FilePreviewResult, RaidState } from '../../../shared/ipc-contract'
 import { localizeSourceLabel, isDiscoveryOnlySource, canRecoverSource, isRecoverableListSource, isDuplicateSource } from '../../../shared/source-label'
 import { emptyScanHonestyFlags, loadScanHonestyFlags } from '../../../shared/scan-honesty'
@@ -37,6 +37,7 @@ interface ResultsViewProps {
   driveIndex: number | null
   scanId?: number
   scanBusy?: boolean
+  onShowMft?: (mftRef: number) => void
 }
 
 const PAGE_SIZE = 500
@@ -76,7 +77,10 @@ function ThumbCard({ f, thumb, thumbUrl, onVisible, onOpen, noPreviewLabel, aria
     io.observe(el)
     return () => io.disconnect()
   }, [visible, f.id, onVisible])
-  const dataUrl = useMemo(() => (thumb ? previewDataUrl(thumb) : null), [thumb])
+  const dataUrl = useMemo(
+    () => (thumb && thumb.kind === 'image' ? previewDataUrl(thumb) : null),
+    [thumb],
+  )
   // L1 (in-memory data URL) wins when both exist; thumb:// covers the L2 hit.
   const imgSrc = dataUrl ?? (thumbUrl || null)
   return (
@@ -107,7 +111,7 @@ function ThumbCard({ f, thumb, thumbUrl, onVisible, onOpen, noPreviewLabel, aria
   )
 }
 
-function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewProps): React.ReactElement {
+function ResultsView({ filesFound, driveIndex, scanId, scanBusy, onShowMft }: ResultsViewProps): React.ReactElement {
   const { t } = useI18n()
   const [statusFilter, setStatusFilter] = useState<'deleted' | 'all' | 'allocated' | 'carved'>('deleted')
   const [typeFilter, setTypeFilter] = useState('all')
@@ -155,6 +159,8 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
   const [exportError, setExportError] = useState<string | null>(null)
   // FAZ 1.3c: success surface with the natively written row count + path.
   const [csvReport, setCsvReport] = useState<string | null>(null)
+  const [hashingContent, setHashingContent] = useState(false)
+  const [hashReport, setHashReport] = useState<string | null>(null)
   const loadGenRef = useRef(0)
   // FAZ 1.2 keyset pagination: last row (native sort-key value + id) of each
   // loaded page; fetching page N attaches page N-1's cursor to the filter.
@@ -346,6 +352,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
         modifiedAt: f.modifiedAt,
         runs: f.runs,
         source: f.source,
+        mftRef: f.mftRef,
       })).filter((f) => isRecoverableListSource(f.source) || (showDuplicates && isDuplicateSource(f.source)))
 
   const runRecover = async (destDir: string, effectiveDrive: number, raidState: RaidState): Promise<void> => {
@@ -387,7 +394,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       else validatedBad++
     }
 
-    const noteResult = async (res: { success?: boolean; zeroFilled?: boolean; error?: string; validationScore?: number; validationError?: string; md5Hash?: string; destPath?: string }, id: number) => {
+    const noteResult = async (res: { success?: boolean; zeroFilled?: boolean; error?: string; validationScore?: number; validationError?: string; md5Hash?: string; destPath?: string; repairedPath?: string }, id: number) => {
       if (res.success) successCount++
       else {
         failedCount++
@@ -395,6 +402,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
       }
       if (res.zeroFilled) zeroFilledCount++
       if (res.validationError) errors.push(tFormat('results.validationError', { id: String(id), err: res.validationError }))
+      if (res.repairedPath) verified.push(tFormat('results.repairedLine', { id: String(id), path: res.repairedPath }))
       if (res.md5Hash) {
         let nsrlLine = `#${id} MD5: ${res.md5Hash}`
         if (window.api.lookupNsrl) {
@@ -581,6 +589,25 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     }
   }
 
+  const analyzeContentHash = async () => {
+    if (effectiveScanId <= 0 || !window.api?.hashEmptyContent || hashingContent || scanBusy) return
+    setHashingContent(true)
+    setHashReport(null)
+    setExportError(null)
+    try {
+      const res = await window.api.hashEmptyContent(effectiveScanId)
+      if (res?.error) throw new Error(res.error)
+      const n = typeof res?.hashed === 'number' ? res.hashed : 0
+      setHashReport(tFormat('results.analyzeDedupDone', { n: formatInt(n) }))
+      await loadPage(effectiveScanId, page)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setExportError(msg || t('results.analyzeDedupFailed'))
+    } finally {
+      setHashingContent(false)
+    }
+  }
+
   const mappedFiles: MappedFile[] = sourceFiles.map((f) => ({
     id: f.id,
     name: f.name,
@@ -594,8 +621,10 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
     sourceLabel: localizeSourceLabel(f.source, t),
     dateLabel: formatFsTimestamp(f.modifiedAt || f.createdAt, f.source),
     qualityLabel: qualityHint(f),
+    sameContentGroup: (f.contentGroupSize ?? 0) >= 2 ? (f.contentGroupSize ?? 0) : 0,
     confidence: f.confidence,
     confidenceTier: confidenceTier(f.confidence),
+    mftRef: typeof f.mftRef === 'number' && Number.isInteger(f.mftRef) && f.mftRef >= 0 ? f.mftRef : undefined,
   }))
 
   const filteredFiles = mappedFiles
@@ -792,6 +821,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           <input type="checkbox" className="tree-check" checked={selectedFiles.has(f.id)} onChange={() => toggleSelection(f.id)} onClick={(e) => e.stopPropagation()} aria-hidden="true" tabIndex={-1} />
           {getIconForType(f.type)}
           <span className="tree-file-name">{f.name}</span>
+          {f.sameContentGroup >= 2 ? (
+            <span className="same-content-badge" title={tFormat('results.sameContentTitle', { n: String(f.sameContentGroup) })}>
+              {t('results.sameContent')}
+            </span>
+          ) : null}
           {f.sourceLabel ? <span className="tree-file-src">{f.sourceLabel}</span> : null}
           <span className="tree-file-size">{f.size}</span>
         </button>
@@ -907,6 +941,11 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
           {csvReport}
         </div>
       )}
+      {hashReport && (
+        <div className="glass-panel results-report status-ok" role="status" data-testid="content-hash-report">
+          {hashReport}
+        </div>
+      )}
 
           {effectiveScanId > 0 && totalPages > 1 ? (
             <div className="pager" role="navigation" aria-label={t('results.pageLabel')}>
@@ -954,6 +993,16 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
               <input type="checkbox" checked={showDuplicates} onChange={(e) => setShowDuplicates(e.target.checked)} data-testid="show-duplicates" />
               {t('results.duplicates')}
             </label>
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid="analyze-content-hash"
+              onClick={() => void analyzeContentHash()}
+              disabled={effectiveScanId <= 0 || hashingContent || !!scanBusy || !window.api?.hashEmptyContent}
+              title={scanBusy ? t('results.analyzeDedupBusy') : undefined}
+            >
+              {hashingContent ? t('results.analyzingDedup') : t('results.analyzeDedup')}
+            </button>
           </div>
           <div className="filter-row">
             <span className="filter-label">{t('results.typeFilter')}</span>
@@ -1168,6 +1217,30 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy }: ResultsViewPr
                     <td className="file-name-cell">
                       {getIconForType(f.type)}
                       {f.name}
+                      {typeof f.mftRef === 'number' && onShowMft ? (
+                        <button
+                          type="button"
+                          className="btn-secondary show-mft"
+                          data-testid="show-mft"
+                          title={t('results.showMft')}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onShowMft(f.mftRef as number)
+                          }}
+                        >
+                          <Binary size={14} aria-hidden="true" />
+                          {t('results.showMft')}
+                        </button>
+                      ) : null}
+                      {f.sameContentGroup >= 2 ? (
+                        <span
+                          className="same-content-badge"
+                          data-testid="same-content-badge"
+                          title={tFormat('results.sameContentTitle', { n: String(f.sameContentGroup) })}
+                        >
+                          {t('results.sameContent')}
+                        </span>
+                      ) : null}
                     </td>
                     <td
                       className="path-cell"

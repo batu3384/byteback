@@ -31,6 +31,7 @@ describe('results-view-utils', () => {
         sourceLabel: 'ntfs_mft',
         dateLabel: '—',
         qualityLabel: '—',
+        sameContentGroup: 0,
         confidenceTier: 'none',
       },
     ])
@@ -53,6 +54,7 @@ describe('results-view-utils', () => {
         sourceLabel: 'carver',
         dateLabel: 'FS tarihi yok',
         qualityLabel: 'Zayıf',
+        sameContentGroup: 0,
         confidenceTier: 'low',
       },
     ])

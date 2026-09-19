@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, powerMonitor, protocol, session } from 'electron'
-import { existsSync, readFileSync } from 'fs'
+import { app, BrowserWindow, crashReporter, dialog, powerMonitor, protocol, session } from 'electron'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { extname, join } from 'path'
 import { broadcastScanComplete, isImagingLive, registerIpcHandlers } from './ipc-handlers'
 import { getEngine } from './native-bridge'
 import { redactPaths } from './redact-paths'
 import { mimeForExt, resolveThumbUrlToPath, THUMB_DIR_NAME } from './thumb-cache'
+import { CRASH_DUMPS_DIR_NAME } from './crash-dumps'
 import {
   appendSessionLog,
   initSessionLog,
@@ -20,6 +21,19 @@ let allowClose = false
 // only — a packaged forensic build must never relocate its evidence store (F4).
 if (process.env.BYTEBACK_USER_DATA && !app.isPackaged) {
   app.setPath('userData', process.env.BYTEBACK_USER_DATA)
+}
+
+// 5.5: local minidumps only — uploadToServer false, no electron-updater.
+{
+  const crashDir = join(app.getPath('userData'), CRASH_DUMPS_DIR_NAME)
+  try { mkdirSync(crashDir, { recursive: true }) } catch { /* dir may already exist */ }
+  app.setPath('crashDumps', crashDir)
+  crashReporter.start({
+    productName: 'Byteback',
+    submitURL: 'http://127.0.0.1',
+    uploadToServer: false,
+    compress: true,
+  })
 }
 
 // Forensic exclusivity: two instances would fight over the same SQLite store and

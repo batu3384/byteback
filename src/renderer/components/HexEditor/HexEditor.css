@@ -79,6 +79,50 @@
   gap: var(--space-md);
 }
 
+.hex-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 12px 16px;
+}
+
+.hex-search-input {
+  width: min(280px, 100%);
+  text-align: left;
+}
+
+.hex-search-hits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.hex-search-hits button {
+  font-family: var(--font-mono, monospace);
+  background: var(--well-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.hex-search-empty {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.hex-mft-attrs {
+  margin: 8px 0 0;
+  padding-left: 1.2rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85rem;
+}
+
 .sector-input-group {
   display: flex;
   align-items: center;

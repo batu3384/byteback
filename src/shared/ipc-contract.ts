@@ -12,6 +12,7 @@ export interface DriveInfo {
 export interface DataRun {
   startSector: number
   sectorCount: number
+  byteCount?: number
 }
 
 export interface FileRecord {
@@ -32,6 +33,10 @@ export interface FileRecord {
   modifiedAt?: number
   runs?: DataRun[]
   contentHash?: string
+  /** NTFS self MFT record number. -1/absent = unknown (not parentId). */
+  mftRef?: number
+  /** Transient: COUNT of files sharing (contentHash, sizeBytes) in this scan. >=2 = same-content group. */
+  contentGroupSize?: number
   /** Content-search only: sanitized text around the first match (not persisted). */
   snippet?: string
   /** Byte offsets of the match span inside snippet; absent/-1 = no highlight. */
@@ -84,6 +89,7 @@ export interface RecoverResult {
   zeroFilled?: boolean
   validationScore?: number
   validationError?: string
+  repairedPath?: string
 }
 
 export interface FilePreviewResult {
@@ -166,7 +172,7 @@ export interface RaidState {
 /** Parity-consistency autodetection over candidate member drives. */
 export interface RaidDetection {
   found: boolean
-  /** RaidLevel numbering as in reconstruct-raid (0=RAID0 … 4=RAID10). Present when found. */
+  /** RaidLevel numbering as in reconstruct-raid (0=RAID0 … 4=RAID10, 5=JBOD, 6=RAID1E). Present when found. */
   raidLevel?: number
   /** Stripe/chunk size in bytes. Present when found. */
   blockSize?: number
@@ -174,6 +180,12 @@ export interface RaidDetection {
   dataOffsetSectors?: number
   /** Parity-consistency score 0..1. Present when found. */
   confidence?: number
+  /** True when assembled MBR/NTFS/FAT/ext magic pinned the RAID5 stripe. */
+  fsConfirmed?: boolean
+  /** 0=left-asym, 1=left-sym (mdadm), 2=right-asym, 3=right-sym. Present when found. */
+  raid5Algorithm?: number
+  /** Slot permutation of the input member list. Empty/omitted = identity. */
+  memberOrder?: number[]
   error?: string
 }
 
@@ -229,6 +241,8 @@ export interface ScanOptions {
   allowSsdDeepScan?: boolean
   /** Windows volume device "\\.\X:" — scan binds this instead of PhysicalDrive+LBA. */
   volumePath?: string
+  /** Local evidence image (RAW/E01/VHD family). driveIndex must be SCAN_IMAGE_DRIVE_INDEX (-2). */
+  imagePath?: string
   /** PhysicalDrive indices of a spanned/striped volume (dest-on-source). */
   evidenceDiskIndices?: number[]
 }

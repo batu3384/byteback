@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import './HexEditor.css'
-import { Binary, ChevronLeft, ChevronRight, Search, Server } from 'lucide-react'
+import { Binary, Bookmark, ChevronLeft, ChevronRight, Search, Server } from 'lucide-react'
 import { calculateEntropy, classifyEntropy } from '../../../shared/entropy'
-import { HEX_RAID_DRIVE_INDEX, probeRaidState } from '../../../shared/hex-read'
+import { HEX_RAID_DRIVE_INDEX, probeRaidState, parseHexSearchNeedle, hexSearchHitSector, HEX_SEARCH_MAX_HITS, mftAttrTypeLabel } from '../../../shared/hex-read'
+import { addHexMark, type HexMark } from '../../../shared/hex-marks'
 import { useI18n, tFormat } from '../../i18n'
 import InlineAlert from '../InlineAlert'
 
@@ -14,6 +15,8 @@ interface HexEditorProps {
   volumePath?: string
   /** DriveCard opened hex as a PhysicalDrive dump — default off the volume device. */
   forceDisk?: boolean
+  /** Results "show MFT" jumps here; HexEditor loads that record on mount. */
+  initialMftRef?: number
 }
 
 type HexSource = 'disk' | 'volume' | 'raid'
@@ -21,7 +24,7 @@ type HexSource = 'disk' | 'volume' | 'raid'
 // Static cache to preserve sector across unmounts
 let globalSectorCache = 0;
 
-function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDisk }: HexEditorProps): React.ReactElement {
+function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDisk, initialMftRef }: HexEditorProps): React.ReactElement {
   const { t } = useI18n()
   const [sector, setSector] = useState(globalSectorCache)
   const [data, setData] = useState<number[]>([])
@@ -32,6 +35,21 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
   const [raidActive, setRaidActive] = useState(false)
   const [raidStateUnread, setRaidStateUnread] = useState(false)
   const [source, setSource] = useState<HexSource>('disk')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchHits, setSearchHits] = useState<number[]>([])
+  const [searchUnread, setSearchUnread] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searched, setSearched] = useState(false)
+  const [mftRefInput, setMftRefInput] = useState('0')
+  const [mftUnread, setMftUnread] = useState(false)
+  const [mftError, setMftError] = useState<string | null>(null)
+  const [mftView, setMftView] = useState<{
+    signature: string
+    flags: number
+    attrs: { type: number; name: string; resident: boolean }[]
+  } | null>(null)
+  const [marks, setMarks] = useState<HexMark[]>([])
   // Generation guard: rapid prev/next clicks fire overlapping reads; only the
   // latest one may paint the grid (out-of-order IPC would show the wrong
   // sector's bytes and dead-stale loading state).
@@ -40,6 +58,19 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
   const canHexDisk = driveIndex !== undefined && driveIndex !== null && driveIndex >= 0
   const raidIntended = driveIndex === HEX_RAID_DRIVE_INDEX
   const canHexRaid = raidActive || raidIntended
+  const canHexVolume = !!volumePath
+  const boundDriveIndex = source === 'raid' ? HEX_RAID_DRIVE_INDEX : (driveIndex ?? 0)
+  const boundVolume = source === 'volume' && volumePath ? volumePath : ''
+  const visibleMarks = marks.filter((m) => m.driveIndex === boundDriveIndex && m.volumePath === boundVolume)
+
+  useEffect(() => {
+    let alive = true
+    void window.api?.getHexMarks?.().then((loaded) => {
+      if (!alive || !Array.isArray(loaded)) return
+      setMarks(loaded)
+    }).catch(() => { /* sidecar missing is empty marks, not a hex read failure */ })
+    return () => { alive = false }
+  }, [])
 
   // Update cache whenever sector changes
   useEffect(() => {
@@ -76,7 +107,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
   const fetchSector = async (secIndex: number) => {
     const idx = source === 'raid' ? HEX_RAID_DRIVE_INDEX : driveIndex
     if (idx === undefined || idx === null) return
-    if (source !== 'raid' && idx < 0) return
+    if (source !== 'raid' && source !== 'volume' && idx < 0) return
     const gen = ++fetchGenRef.current
     if (scanBusy) {
       setReadFailed(true)
@@ -116,10 +147,120 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
     }
   }
 
+  const runSearch = async () => {
+    const idx = source === 'raid' ? HEX_RAID_DRIVE_INDEX : driveIndex
+    if (idx === undefined || idx === null) return
+    if (source !== 'raid' && source !== 'volume' && idx < 0) return
+    if (scanBusy) {
+      setSearchError(t('hex.busyError'))
+      return
+    }
+    const parsed = parseHexSearchNeedle(searchQuery)
+    if (!parsed.ok) {
+      setSearchHits([])
+      setSearchUnread(false)
+      setSearched(false)
+      setSearchError(t('hex.searchInvalid'))
+      return
+    }
+    setSearching(true)
+    setSearchError(null)
+    setSearchUnread(false)
+    try {
+      if (!window.api?.searchHex) {
+        setSearchError(t('hex.searchInvalid'))
+        return
+      }
+      const boundVolume = source === 'volume' && volumePath ? volumePath : undefined
+      const result = await window.api.searchHex(idx, parsed.bytes, HEX_SEARCH_MAX_HITS, boundVolume)
+      setSearchHits(Array.isArray(result.hits) ? result.hits : [])
+      setSearchUnread(!!result.unread)
+      setSearched(true)
+      setSearchError(result.error ?? null)
+    } catch (err) {
+      console.error(err)
+      setSearchHits([])
+      setSearched(true)
+      setSearchError(t('hex.readFailedShort'))
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const loadMftRecord = async (refOverride?: number) => {
+    const idx = source === 'raid' ? HEX_RAID_DRIVE_INDEX : driveIndex
+    if (idx === undefined || idx === null) return
+    if (source !== 'raid' && source !== 'volume' && idx < 0) return
+    if (scanBusy) {
+      setMftError(t('hex.busyError'))
+      return
+    }
+    const ref = refOverride !== undefined ? refOverride : Number(mftRefInput)
+    if (!Number.isInteger(ref) || ref < 0) {
+      setMftError(t('hex.searchInvalid'))
+      return
+    }
+    if (refOverride !== undefined) setMftRefInput(String(refOverride))
+    setMftError(null)
+    setMftUnread(false)
+    try {
+      if (!window.api?.getMftRecord) {
+        setMftError(t('hex.readFailedShort'))
+        return
+      }
+      const boundVolume = source === 'volume' && volumePath ? volumePath : undefined
+      const result = await window.api.getMftRecord(idx, ref, boundVolume)
+      setMftUnread(!!result.unread)
+      if (!result.ok) {
+        setMftView(null)
+        setMftError(result.error ?? (result.unread ? t('hex.mftUnread') : t('hex.readFailedShort')))
+        return
+      }
+      setMftView({
+        signature: result.signature ?? '',
+        flags: result.flags ?? 0,
+        attrs: Array.isArray(result.attrs) ? result.attrs : [],
+      })
+      if (typeof result.byteOffset === 'number' && Number.isFinite(result.byteOffset)) {
+        setSector(hexSearchHitSector(result.byteOffset, sectorSize))
+      }
+    } catch (err) {
+      console.error(err)
+      setMftView(null)
+      setMftError(t('hex.readFailedShort'))
+    }
+  }
+
+  const persistMarks = async (next: HexMark[]) => {
+    setMarks(next)
+    try {
+      await window.api?.setHexMarks?.(next)
+    } catch {
+      /* local list still updated; sidecar write is best-effort */
+    }
+  }
+
+  const addCurrentMark = () => {
+    if (!Number.isInteger(boundDriveIndex)) return
+    void persistMarks(addHexMark(marks, {
+      driveIndex: boundDriveIndex,
+      volumePath: boundVolume,
+      sector,
+      label: '',
+    }))
+  }
+
   useEffect(() => {
     const ready = source === 'raid' ? canHexRaid : source === 'volume' ? !!volumePath : canHexDisk
     if (ready) fetchSector(sector)
   }, [driveIndex, sector, scanBusy, source, volumePath, canHexRaid, canHexDisk])
+
+  useEffect(() => {
+    if (typeof initialMftRef !== 'number' || !Number.isInteger(initialMftRef) || initialMftRef < 0) return
+    const ready = source === 'raid' ? canHexRaid : source === 'volume' ? !!volumePath : canHexDisk
+    if (!ready) return
+    void loadMftRecord(initialMftRef)
+  }, [initialMftRef, driveIndex, volumePath, source, scanBusy, canHexRaid, canHexDisk])
 
 
   const currentEntropy = calculateEntropy(data);
@@ -133,7 +274,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
     <InlineAlert variant="error" testId="hex-raid-state-error">{t('hex.raidStateFailed')}</InlineAlert>
   ) : null
 
-  if (!canHexDisk && !canHexRaid) {
+  if (!canHexDisk && !canHexRaid && !canHexVolume) {
     return (
       <>
         {raidStateBanner}
@@ -209,6 +350,131 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
           <button type="button" className="btn-primary" onClick={() => fetchSector(sector)}><Search size={16} aria-hidden="true" /> {t('hex.go')}</button>
         </div>
       </div>
+
+      <div className="hex-search glass-panel">
+        <label htmlFor="hex-search-query">{t('hex.search')}</label>
+        <input
+          id="hex-search-query"
+          data-testid="hex-search-query"
+          className="sector-input hex-search-input"
+          type="text"
+          value={searchQuery}
+          placeholder={t('hex.searchPlaceholder')}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void runSearch()
+          }}
+          aria-label={t('hex.search')}
+        />
+        <button
+          type="button"
+          className="btn-primary"
+          data-testid="hex-search-go"
+          onClick={() => void runSearch()}
+          disabled={searching || !!scanBusy}
+        >
+          <Search size={16} aria-hidden="true" /> {searching ? t('hex.searching') : t('hex.search')}
+        </button>
+      </div>
+
+      {searchUnread && (
+        <InlineAlert variant="warning" testId="hex-search-unread">{t('hex.searchUnread')}</InlineAlert>
+      )}
+      {searchError && (
+        <InlineAlert variant="error">{searchError}</InlineAlert>
+      )}
+      {searched && searchHits.length === 0 && !searchError && (
+        <p className="hex-search-empty" data-testid="hex-search-no-hits" role="status">{t('hex.noHits')}</p>
+      )}
+      {searchHits.length > 0 && (
+        <ul className="hex-search-hits glass-panel" data-testid="hex-search-hits">
+          {searchHits.map((off, i) => (
+            <li key={`${off}:${i}`}>
+              <button
+                type="button"
+                data-testid={`hex-search-hit-${i}`}
+                onClick={() => setSector(hexSearchHitSector(off, sectorSize))}
+              >
+                0x{off.toString(16).toUpperCase()} ({off})
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="hex-search glass-panel">
+        <button
+          type="button"
+          className="btn-secondary"
+          data-testid="hex-mark-add"
+          onClick={addCurrentMark}
+        >
+          <Bookmark size={16} aria-hidden="true" /> {t('hex.markAdd')}
+        </button>
+      </div>
+      {visibleMarks.length > 0 && (
+        <ul className="hex-search-hits glass-panel" data-testid="hex-marks" aria-label={t('hex.marks')}>
+          {visibleMarks.map((m, i) => (
+            <li key={`${m.driveIndex}:${m.volumePath}:${m.sector}`}>
+              <button
+                type="button"
+                data-testid={`hex-mark-${i}`}
+                onClick={() => setSector(m.sector)}
+              >
+                {m.label || String(m.sector)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="hex-search glass-panel">
+        <label htmlFor="hex-mft-ref">{t('hex.mftGo')}</label>
+        <input
+          id="hex-mft-ref"
+          data-testid="hex-mft-ref"
+          className="sector-input"
+          type="number"
+          min="0"
+          value={mftRefInput}
+          onChange={(e) => setMftRefInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void loadMftRecord()
+          }}
+          aria-label={t('hex.mftGo')}
+        />
+        <button
+          type="button"
+          className="btn-primary"
+          data-testid="hex-mft-go"
+          onClick={() => void loadMftRecord()}
+          disabled={!!scanBusy}
+        >
+          {t('hex.mftGo')}
+        </button>
+      </div>
+      {mftUnread && (
+        <InlineAlert variant="warning" testId="hex-mft-unread">{t('hex.mftUnread')}</InlineAlert>
+      )}
+      {mftError && (
+        <InlineAlert variant="error">{mftError}</InlineAlert>
+      )}
+      {mftView && (
+        <div className="template-panel glass-panel" data-testid="hex-mft-view">
+          <h4>{t('hex.mftTitle')}</h4>
+          <div className="template-fields">
+            <div><strong>{t('hex.signature')}</strong> <span className="field-accent">{mftView.signature}</span></div>
+            <div><strong>flags</strong> 0x{mftView.flags.toString(16).toUpperCase()} {mftView.flags & 0x01 ? t('hex.inUse') : t('scan.deleted')}</div>
+          </div>
+          <ul className="hex-mft-attrs">
+            {mftView.attrs.map((a, i) => (
+              <li key={`${a.type}:${a.name}:${i}`} data-testid={`hex-mft-attr-${i}`}>
+                {mftAttrTypeLabel(a.type)}{a.name ? `:${a.name}` : ''} {a.resident ? 'resident' : 'non-resident'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {readFailed && (
         <InlineAlert variant="error">

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import './ImagerView.css'
 import { HardDrive, Save, Activity, CheckCircle, Square, Server, Play } from 'lucide-react'
 import { ewfWillRotateSegments } from '../../../shared/ewf-limits'
-import { defaultImagerUseVolume } from '../../../shared/win32-volume-path'
+import { defaultImagerUseVolume, imagerStartArgs } from '../../../shared/win32-volume-path'
 import { HEX_RAID_DRIVE_INDEX, probeRaidState } from '../../../shared/hex-read'
 import InlineAlert from '../InlineAlert'
 import { useI18n, tFormat, formatInt } from '../../i18n'
@@ -162,7 +162,8 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
       setFormError(t('imager.noApi'))
       return
     }
-    if (selectedDrive === '' || selectedDrive === undefined) {
+    const args = imagerStartArgs(selectedDrive, destPath, useVolume, scanVolumePath)
+    if (!args) {
       setFormError(t('imager.selectDrive'))
       return
     }
@@ -174,18 +175,11 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
     setElapsed(0)
     setImageMd5('')
 
-    if (window.api && window.api.startImaging) {
-      const raidSource = selectedDrive === HEX_RAID_DRIVE_INDEX
-      const vp = !raidSource && useVolume && scanVolumePath ? scanVolumePath : undefined
-      window.api.startImaging(Number(selectedDrive), destPath, format, vp)
-    } else {
-      setImaging(false)
-      onImagingStateChange(false)
-    }
+    window.api.startImaging(args.driveIndex, destPath, format, args.volumePath)
   }
 
   const handleStartImaging = () => {
-    if (selectedDrive === '' || destPath.trim() === '') {
+    if (!imagerStartArgs(selectedDrive, destPath, useVolume, scanVolumePath) || destPath.trim() === '') {
       setFormError(t('imager.needSourceDest'))
       return
     }
