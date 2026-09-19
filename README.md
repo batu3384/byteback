@@ -20,20 +20,56 @@ not on lab fixture counts alone.
 
 - **NTFS** — UTF-16 names, USA fixup, `$STANDARD_INFORMATION` timestamps,
   sparse data runs, LZNT1 decompression, ADS, USN journal parse, INDX slack
-  scan, directory tree rebuild. Quick scan: boot `$MFT` LCN run walk. Deep:
-  orphan FILE carve.
+  scan, directory tree rebuild. Quick scan: boot `$MFT` LCN run walk (primary
+  or last-sector backup boot; `$MFTMirr` rec0 `$DATA` when primary rec0
+  is wiped). `$ATTRIBUTE_LIST` pulls unnamed `$DATA`, named ADS, `$EA`, and
+  `$REPARSE_POINT` from extension MFT records (resident or non-resident list). `$Bitmap` rec6 follows `$MFT`
+  `$DATA` runs (`$MFTMirr` rec0 if primary wiped). Resident or non-resident
+  `$EA` emits `name:ea:…` (`ntfs_ea`). `$REPARSE_POINT`
+  symlink/mount print name is recoverable (`ntfs_reparse`). EFS
+  (`FILE_ATTRIBUTE_ENCRYPTED`) is discovery-only (`ntfs_efs`). Resident
+  `$OBJECT_ID` emits Windows GUID as `name:objectid` (`ntfs_object_id`). `$VOLUME_NAME`
+  is discovery-only (`ntfs_vol_name`). MFT record view maps
+  `mftRef` through the same `$MFT` `$DATA` runs. Deep: orphan FILE carve. Streaming MFT emit:
+  2M-record in-suite peak working-set delta stays under 700MB (no full
+  `tempFiles` buffer).
 - **FAT12/16/32 + exFAT** — FAT chain walk (loop-safe), VFAT long names, exFAT
-  entry-set state machine, DOS timestamps.
+  entry-set state machine, DOS timestamps. Backup boot: reserved `bkBootSec`
+  or sector 6 when primary BPB bytes-per-sector / cluster size is wiped.
+  exFAT Backup Boot Region at sector 12 when primary OEM is wiped.
+  Volume label dirent (`ATTR_VOLUME` 0x08) is discovery-only (`fat_vol_label`).
+  exFAT volume label entry `0x83` is discovery-only (`exfat_vol_label`).
 - **Ext2/3/4** — extent tree (multi-level), real names from directory entries,
-  deleted inode/dirent evidence.
+  deleted inode/dirent evidence. Backup superblock past the 4 MiB spray
+  (4 MiB / 8193×1K / 32768×4K). Backup GDT at groups 1/3/5/7 when group-0
+  descriptors are wiped. Superblock `s_volume_name` is discovery-only
+  (`ext4_vol_name`).
+- **XFS** — dir2/dir3 walk, AG1 backup super, unlinked inodes. `sb_fname`
+  (12 bytes @108) is discovery-only (`xfs_vol_name`). Inode `di_mtime.t_sec`
+  fills `modifiedAt`.
 - **ReFS** — boot/SUPB probe, ministore metadata walk, integrity-stream
-  CRC64-ECMA validation (SUPB self-check + resident file trailer).
-- **E01 read** — local multi-segment `.E01` and HTTP Range raw images via
+  CRC64-ECMA validation (SUPB self-check + resident file trailer). Backup
+  SUPB at last cluster when cluster 30 magic is wiped.
+- **E01 read** — local and HTTP Range multi-segment `.E01`→`.E02` via
   `attachEwfImage` / `attachHttpRawImage` / `attachRawFile` on `DiskReader`.
-- **HFS+ / APFS** — HFS+ catalog B-tree (until cancelled). APFS NXSB
+- **HFS+ / APFS** — HFS+ catalog B-tree (until cancelled), unused leaf
+  slots (`hfs_catalog_unused`), committed journal catalog leaves
+  (`hfs_journal`; BE/LE `JNLX`, disk never written), TN1150 backup
+  volume header at volume-end-1024, resource fork as `name.rsrc`
+  (overflow extents forkType 0xFF merged), catalog create/mod dates.
+  sibling, and root-folder volume name (`hfs_vol_name`). APFS NXSB (last 4096 backup when primary
+  magic is wiped),
   discovery, APSB volume, btree leaf drec (`source=apfs_file`) and file extent
-  runs (`apfs_extent`). Catalog: `nx_fs_oid` + first 256 blocks + recursive omap
+  runs (`apfs_extent`). Inode `j_inode_val` create/mod times fill `createdAt`/`modifiedAt`. Catalog: `nx_fs_oid` + first 256 blocks + recursive omap
   btree (not a full container snapshot walk).
+- **ISO 9660 / UDF** — PVD `CD001`, Joliet, Rock Ridge `NM`+`SL` (`iso9660_rr_sl`),
+  PVD/Joliet volume identifier (`iso9660_vol_id`),
+  El Torito `BOOT.IMG`, multi-extent `byteCount`. Directory recording date
+  fills `modifiedAt` (Rock Ridge `TF` MODIFY overrides, `CE` continuation `NM`/`SL`/`TF`). UDF AVDP/VAT/metadata
+  partition (mirror + bitmap orphan). LVD volume identifier (`udf_vol_id`)
+  and PVD volume identifier (`udf_pvd_id`) and file set identifier
+  (`udf_fsd_id`). File Entry Modification Date fills `modifiedAt`; Extended
+  File Entry Create Date fills `createdAt`.
 - **Carving** — Aho–Corasick signature scan (150 built-in signatures: embedded
   engine + curated `resources/signatures-extended.json` / `-supplement.json`;
   the set is validation-focused — text-magic signatures are intentionally
@@ -90,6 +126,14 @@ npm run dev
 ```
 
 Run as **Administrator** for `\\.\PhysicalDriveN` access.
+
+## Updates
+
+Byteback does **not** auto-update. This is an examiner tool: silent `electron-updater`
+would change the binary under a live case. Install the next version from GitHub
+Releases (`npm run dist` locally, or a signed installer when 5.1 code-sign is
+available). Crash dumps stay on disk under `%APPDATA%/byteback/CrashDumps`
+(`crashReporter` `uploadToServer: false`) — no telemetry.
 
 ## Commands
 
