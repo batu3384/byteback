@@ -11,8 +11,8 @@ Protokol: `docs/field-test-protocol.md`. Kit: `row-b/`, `row-c/`, `row-a/` (`RES
 | C | kullanıcı + icraacı | bekliyor | exFAT SD — fiziksel |
 | D | icraacı | lab-kanıt | gtest `NtfsParser.OrphanSweepEmitsEntriesLostToMidScanReadFailure` — bozuk/okunamayan MFT kaydı orphan+low-conf; UI saha oturumu yok |
 | E | kullanıcı + icraacı | bekliyor | kötü bölgeli USB — opsiyonel |
-| F | icraacı | lab-kanıt | gtest `DiskImagerTest.EwfImageCarriesDigestAndRereadsIdentical` + `DiskImagerResume.CancelThenResumeProducesByteExactImage`; UI imager oturumu yok |
-| G | icraacı | lab-kanıt | gtest `RaidDetect.DetectsRaid5BlockSizeAndConfidence`; Virtual RAID UI oturumu yok |
+| F | icraacı | lab-kanıt | gtest `ImagesEvidenceFileToRawClone` + e2e `images FAT16 evidence file to a raw clone via IPC`; EWF digest gtest durur. Fiziksel disk UI oturumu yok |
+| G | icraacı | lab-kanıt | gtest `RaidDetect.DetectsRaid5BlockSizeAndConfidence` + `DetectsRaid10StripeViaFsSignature` + `DetectsRaid6FromEvidenceFiles` + `AssemblesRaid0FromEvidenceFiles`; e2e RAID1 iki FAT16 imaj → tespit `raidLevel===1` + `Hello FAT16`. Fiziksel üye USB oturumu yok |
 | H | kullanıcı + icraacı | bekliyor | BitLocker — kurtarma anahtarı gerekli |
 
 Her satır koşulduğunda bu klasör altına `row-<id>/` (screenshot + log + doldurulmuş matris satırı) eklenir ve buradaki durum güncellenir. Lab-kanıt satırları `geçti` sayılmaz; Faz 0.4 kapısı A/B/F UI saha kaydı ister.
