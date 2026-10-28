@@ -32,6 +32,14 @@ Engineering Phases 1–3 are **Done** (`npm run verify:audit:full`). This runboo
 3. Tag `v1.0.0` only when **all** checklist gates including A/B/C and code sign are `[x]` with logs.
 4. `phase4:status` treats CHANGELOG `[x]` without a released section as **DISHONEST**.
 
+## Host probe (2026-10-28, this PC)
+
+Not a PASS. Measured so the next session does not rescan:
+
+- Disks: C: NVMe NTFS, D: SATA NTFS. No USB, no SD.
+- Hyper-V `vmms` running. `Get-VM` listed no VMs. No `*.iso` under `C:\Users\Batuhan` or `D:\` (depth 3).
+- `CSC_LINK` unset. x64 `signtool`: `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe`.
+
 Do **not** mark the Cursor thread goal complete until this runbook is honestly done.
 
 **Status command:** `npm run phase4:status` (exit 1 while checklist rows above stay `[ ]`). Vitest smoke (Windows): `src/shared/audit-phase4-gate.test.ts`.
