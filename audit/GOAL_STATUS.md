@@ -4,9 +4,9 @@
 
 ## Engineering (objective items 1–7 + honest gaps doc)
 
-All **Done** with tests or CI. Evidence: `audit/OBJECTIVE_CHECKLIST.md`. Gate: `npm run verify:audit`.
+All **Done** with tests or CI. Evidence: `audit/OBJECTIVE_CHECKLIST.md`. Gate: `npm run verify:audit`. Remediation commit: `2484eee` (2026-10-28).
 
-Last verified: 2026-10-28 20:20 local (`verify:audit:full` exit 0 — 490 Vitest, native ctest subset 5/5, posix verify; `phase4:status` exit 1 expected).
+Last verified: 2026-10-28 20:32 local (`verify:audit` 490; `phase4:status` exit 1 expected).
 
 ## Phase 4 (objective item 8 — product / release)
 
