@@ -10,6 +10,7 @@
 #include <thread>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -128,6 +129,89 @@ TEST_F(MetadataStoreTest, ScanStateNamedColumns) {
     EXPECT_EQ(st.status, 0);
 }
 
+TEST_F(MetadataStoreTest, CaseDbUsesWalFullSync) {
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.c_str(), &db), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db, "PRAGMA synchronous;", -1, &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(stmt, 0), 2);
+    sqlite3_finalize(stmt);
+    ASSERT_EQ(sqlite3_prepare_v2(db, "PRAGMA journal_mode;", -1, &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    const unsigned char* mode = sqlite3_column_text(stmt, 0);
+    ASSERT_NE(mode, nullptr);
+    EXPECT_STRCASEEQ(reinterpret_cast<const char*>(mode), "wal");
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+}
+
+// Audit Faz 2: measure WAL insert cost FULL vs pre-remediation NORMAL baseline.
+// Default 25k rows (FTS triggers on); set BYTEBACK_WAL_EVAL_ROWS=2000000 for full audit scale.
+namespace {
+double runWalEvalWorkload(int syncMode, size_t rowCount) {
+    constexpr size_t kBatch = 500;
+    const std::string path =
+        (std::filesystem::temp_directory_path() /
+         ("byteback_wal_eval_" + std::to_string(testPid()) + "_" + std::to_string(syncMode) + ".db"))
+            .string();
+    std::filesystem::remove(path);
+    MetadataStore store;
+    if (!store.open(path)) return -1.0;
+    if (syncMode != 2 && !store.setSynchronousMode(syncMode)) return -1.0;
+    const int64_t scanId = store.createScan(0, "deep", 2'000'000);
+    if (scanId <= 0) return -1.0;
+
+    std::vector<FileRecord> batch(kBatch);
+    for (size_t i = 0; i < kBatch; ++i) {
+        batch[i].status = 0;
+        batch[i].source = "ntfs_mft";
+        batch[i].category = "Other";
+        batch[i].sizeBytes = 4096;
+        batch[i].runs = {{static_cast<uint64_t>(i), 8}};
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    for (size_t off = 0; off < rowCount; off += kBatch) {
+        for (size_t i = 0; i < kBatch; ++i) {
+            batch[i].name = "mft_" + std::to_string(off + i) + ".bin";
+            batch[i].path = "/vol/" + batch[i].name;
+            batch[i].extension = "bin";
+        }
+        if (!store.insertFilesBatch(scanId, batch)) return -1.0;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    if (store.getFileCount(scanId) != static_cast<int64_t>(rowCount)) return -1.0;
+
+    store.close();
+    std::filesystem::remove(path);
+    return std::chrono::duration<double>(t1 - t0).count();
+}
+} // namespace
+
+TEST(MetadataStoreWalEval, WalSyncFullVsNormalBulkInsertEvaluation) {
+    const size_t rowCount = []() -> size_t {
+        if (const char* env = std::getenv("BYTEBACK_WAL_EVAL_ROWS")) {
+            return static_cast<size_t>(std::stoull(env));
+        }
+        return 25000u;
+    }();
+
+    const double normalSec = runWalEvalWorkload(1, rowCount);
+    const double fullSec = runWalEvalWorkload(2, rowCount);
+    ASSERT_GT(normalSec, 0.0);
+    ASSERT_GT(fullSec, 0.0);
+    const double ratio = fullSec / normalSec;
+
+    RecordProperty("wal_eval_rows", static_cast<int>(rowCount));
+    RecordProperty("wal_normal_sec", normalSec);
+    RecordProperty("wal_full_sec", fullSec);
+    RecordProperty("wal_full_over_normal", ratio);
+
+    // ponytail: ratio not a product SLA — generous ceiling catches pathological regression only
+    EXPECT_LT(ratio, 25.0);
+}
+
 TEST_F(MetadataStoreTest, SearchFilesFindsByName) {
     int64_t scanId = store_.createScan(0, "quick", 100);
     FileRecord a;
@@ -161,6 +245,20 @@ TEST_F(MetadataStoreTest, SearchFilesRegexMode) {
 
     auto hits = store_.searchFiles(scanId, R"(IMG_\d+)", 0, 10, true);
     ASSERT_EQ(hits.size(), 1u);
+}
+
+TEST_F(MetadataStoreTest, SearchFilesRegexReDoSPatternRejected) {
+    int64_t scanId = store_.createScan(0, "quick", 100);
+    FileRecord r;
+    r.name = "aaaaaaa.txt";
+    r.path = "/x";
+    r.sizeBytes = 1;
+    r.status = 0;
+    store_.insertFile(scanId, r);
+
+    auto hits = store_.searchFiles(scanId, "(a+)+$", 0, 10, true);
+    EXPECT_TRUE(hits.empty());
+    EXPECT_EQ(store_.searchFilesCount(scanId, "(a+)+$", true), 0);
 }
 
 TEST_F(MetadataStoreTest, CorruptRunsJsonYieldsEmptyRuns) {

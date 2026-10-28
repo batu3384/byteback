@@ -50,8 +50,10 @@ not on lab fixture counts alone.
 - **ReFS** — boot/SUPB probe, ministore metadata walk, integrity-stream
   CRC64-ECMA validation (SUPB self-check + resident file trailer). Backup
   SUPB at last cluster when cluster 30 magic is wiped.
-- **E01 read** — local and HTTP Range multi-segment `.E01`→`.E02` via
-  `attachEwfImage` / `attachHttpRawImage` / `attachRawFile` on `DiskReader`.
+- **E01 read** — local multi-segment `.E01`→`.E02` chains on `DiskReader`
+  (`attachEwfImage` / `attachRawFile`). The examiner file picker accepts only
+  local paths; HTTP Range helpers exist in the engine but are not wired to IPC
+  or the UI.
 - **HFS+ / APFS** — HFS+ catalog B-tree (until cancelled), unused leaf
   slots (`hfs_catalog_unused`), committed journal catalog leaves
   (`hfs_journal`; BE/LE `JNLX`, disk never written), TN1150 backup
@@ -101,6 +103,7 @@ forensic report with SHA-256 summary, case/NSRL forms, light/dark theme.
 byteback/                  # repository root
 ├── .github/workflows/     # CI
 ├── docs/                  # ARCHITECTURE, audits, roadmap plans
+├── audit/                 # 2026-10-28 audit report + remediation checklist
 ├── native/                # C++ engine + GoogleTest
 ├── src/                   # Electron main, preload, React renderer
 ├── e2e/                   # Playwright smoke tests
@@ -144,14 +147,18 @@ npm run typecheck      # tsc (web + node)
 npm run test           # Vitest (renderer/shared)
 npm run test:native    # GoogleTest via ctest -C Release
 npm run test:e2e       # Playwright Electron smoke (requires npm run build)
-npm run dist           # NSIS x64 installer (release/)
+npm run verify:audit   # typecheck + npm audit (prod+dev) + Vitest — audit roadmap gate
+npm run verify:audit:full  # Windows: above + native audit ctest + release signing guard
+npm run verify:goal    # verify:audit:full + phase4:status (exit 0 only when release checklist Phase 4 closed)
+npm run phase4:status  # lists open field USB / sign / VM / CHANGELOG rows (operator)
+npm run dist           # NSIS x64 installer (release/); use scripts/release-dist.ps1 for signing gate
 ```
 
 > `build:native` resets the test generator cache. Before `test:native`, configure
 > with `cmake -S native -B native/build -DBYTEBACK_BUILD_TESTS=ON`. Test count
 > follows `ctest -C Release` output; `Ewf.OptionalEwfinfoCrossCheck` skips when
-> `BYTEBACK_EWFINFO` is unset. Local gate 2026-09-15: ctest 641 (4 skipped),
-> vitest 390, playwright 38.
+> `BYTEBACK_EWFINFO` is unset. Counts drift — use `npm run verify:audit` (Vitest)
+> and CI `build-windows` for current ctest / Playwright numbers (audit gate 2026-10-28: 490 Vitest).
 
 ## Benchmarks (developers)
 
@@ -169,7 +176,10 @@ Results are machine-dependent; reference only, not marketing claims.
 2. **Phase 7 (examiner surface)** — Case/NSRL page, ATA ACS labels, README/ctest
    alignment.
 3. **Audits** — dated reports under `docs/codebase-audit/` are living documents.
-   A “all fixed” claim in one run does not close the next audit.
+   A “all fixed” claim in one run does not close the next audit. **2026-10-28
+   engineering remediation:** `audit/OBJECTIVE_CHECKLIST.md`, gate `npm run verify:audit`;
+   v1.0 blockers: `docs/release-checklist.md` + operator runbook `audit/PHASE4_OPERATOR_RUNBOOK.md`
+   (`npm run phase4:status`; full thread closure `npm run verify:goal`).
 
 **Documented limits (no false crypto/product claims):** BitLocker unlock via
 **FVEK** (64/128 hex), **0x0800 recovery password**, or **0x2000 user password**
@@ -200,7 +210,8 @@ scan/image/wipe/content-search serialized via `heavyOps`.
 Repository: **https://github.com/batu3384/byteback**
 
 CI: GitHub Actions [`build.yml`](.github/workflows/build.yml) on every push to
-`main` — typecheck, native build + ctest, Vitest, Playwright, unpackaged dist smoke.
+`main` — `verify:audit`, POSIX native syntax (Linux), Windows native build + ctest,
+Vitest, Playwright, unpackaged dist smoke.
 
 ## License
 

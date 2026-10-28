@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('verify-audit-log') as Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>,
   getSessionLog: (maxLines?: number) =>
     ipcRenderer.invoke('get-session-log', maxLines) as Promise<{ path: string; lines: string[]; summary: string; code: string }>,
+  logRendererError: (message: string, componentStack?: string) =>
+    ipcRenderer.invoke('log-renderer-error', message, componentStack),
   exportReportPdf: (html: string) => ipcRenderer.invoke('export-report-pdf', html),
 
   pickAndWipeFile: () => ipcRenderer.invoke('pick-and-wipe-file'),

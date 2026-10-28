@@ -81,7 +81,7 @@ const STRINGS: Record<string, Entry> = {
   'dash.volumeScanTitle': { tr: 'Mantıksal sürücüden tara', en: 'Scan from a logical volume' },
   'dash.volumeScanHint': { tr: 'Harf (ör. D:) → PhysicalDrive + bölüm ofseti. Yalnızca o birimi tarar.', en: 'Letter (e.g. D:) → PhysicalDrive + partition offset. Scans only that volume.' },
   'dash.imageScanTitle': { tr: 'İmaj dosyasından tara', en: 'Scan from a disk image' },
-  'dash.imageScanHint': { tr: 'RAW/dd/img, E01, VHD/VHDX/VMDK/VDI. Yönetici izni gerekmez. VHD ailesi 64 MiB genişleme tavanı.', en: 'RAW/dd/img, E01, VHD/VHDX/VMDK/VDI. Administrator permission not required. VHD family expand cap is 64 MiB.' },
+  'dash.imageScanHint': { tr: 'RAW/dd/img, E01, VHD/VHDX/VMDK/VDI (yalnızca yerel dosya; http:// desteklenmez). Yönetici izni gerekmez. VHD ailesi 64 MiB genişleme tavanı.', en: 'RAW/dd/img, E01, VHD/VHDX/VMDK/VDI (local files only; http:// not supported). Administrator permission not required. VHD family expand cap is 64 MiB.' },
   'dash.imageScanPick': { tr: 'İmaj seç', en: 'Choose image' },
   'dash.imageScanNeedFile': { tr: 'Önce bir imaj dosyası seçin.', en: 'Choose an image file first.' },
   'dash.imageScanNone': { tr: 'Dosya seçilmedi', en: 'No file selected' },

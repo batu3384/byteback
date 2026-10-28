@@ -5,48 +5,34 @@ import { getEngine } from './native-bridge'
 import { hexDataOrNull, isHexDriveIndex, HEX_SEARCH_MAX_NEEDLE, HEX_SEARCH_MAX_HITS, SCAN_IMAGE_DRIVE_INDEX } from '../shared/hex-read'
 import { HEX_MARKS_FILE, parseHexMarks, serializeHexMarks } from '../shared/hex-marks'
 import { diskBusyMessage } from '../shared/scan-required'
-import { parseRecoverIds, parseRecoverIdList } from '../shared/recover-ids'
-import { validateRecoverDestDir, ERR_DEST_ON_SOURCE, ERR_RAID_STATE_UNREAD } from './recover-dest-validator'
-import { isDestOnEvidence } from '../shared/recover-dest-guard'
 import { isWin32VolumeDevicePath, isEvidenceImagePath } from '../shared/win32-volume-path'
 import { raid5AlgorithmForReconstruct, raidOffsetSectorsForReconstruct, raidStripeForReconstruct } from '../shared/raid-geometry'
 import { loadAllowedImageDest, saveAllowedImageDest } from './image-dest-allowlist'
 import { findThumbPath, mimeForExt, storeThumb, thumbUrlFor, THUMB_DIR_NAME } from './thumb-cache'
 import { callNative } from './ipc-native'
 import { appendProgressLog, appendSessionLog, readSessionLog, setScanLive, isScanLive } from './session-log'
-import { CONTENT_SEARCH_MAX_QUERY_BYTES } from '../shared/content-search-status'
 import { CRASH_DUMPS_DIR_NAME, latestCrashDump } from './crash-dumps'
+import { assertDbReady, dbInitErrorMessage, getDbStatusPayload, isDbReady, setDbInitResult } from './ipc-db-state'
+import { registerScanDbIpcHandlers } from './ipc-handlers-scan-db'
+import { registerRecoverIpcHandlers } from './ipc-handlers-recover'
+import { destOnEvidenceError, lastEvidenceDisksIncludes, setLastEvidenceDisks } from './ipc-evidence-context'
+import { assertBoundDriveIndex, assertDriveIndex } from './ipc-guards'
+import { clampInt, sanitizeCsvFileName, scanProgressPayload, sanitizeRaidImagePaths, sanitizeRaidIndices, startScanDrivePath } from './ipc-utils'
+import { wipeSerialMatches } from './wipe-serial'
 
-let dbReady = false
-let dbInitError: string | null = null
+export {
+  clampInt,
+  sanitizeCsvFileName,
+  scanProgressPayload,
+  sanitizeRaidIndices,
+  sanitizeRaidImagePaths,
+  startScanDrivePath,
+} from './ipc-utils'
+
+export { auditChainEvent, asciiForAudit } from './ipc-audit-bridge'
+
 let activeScanToken = 0
 let imagingLive = false
-let lastEvidenceDisks: number[] = []
-
-function assertDbReady(): void {
-  if (!dbReady) {
-    throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor')
-  }
-}
-
-/** Guard: native converts non-finite numbers to 0, so garbage would silently target drive 0. */
-function assertDriveIndex(v: unknown): void {
-  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
-    throw new Error('Geçersiz sürücü indeksi')
-  }
-}
-
-/** RAID -1 and evidence-image -2 are valid sentinels; everything else is PhysicalDrive. */
-function assertBoundDriveIndex(v: unknown): void {
-  if (v === -1 || v === SCAN_IMAGE_DRIVE_INDEX) return
-  assertDriveIndex(v)
-}
-
-export function startScanDrivePath(driveIndex: number, imagePath?: string): string {
-  if (imagePath) return 'image'
-  if (driveIndex === -1) return 'raid'
-  return String(driveIndex)
-}
 
 function hexBindVolumePath(volumePath?: string): string | undefined {
   if (typeof volumePath !== 'string') return undefined
@@ -54,111 +40,9 @@ function hexBindVolumePath(volumePath?: string): string | undefined {
   return undefined
 }
 
-function destOnEvidenceError(destDir: string, driveIndex: number, scanId?: number, extraDisks?: number[]): string | null {
-  const engine = getEngine()
-  let raid: { active: boolean; memberDriveIndices?: number[] }
-  try {
-    raid = engine.getRaidState()
-  } catch {
-    // Unread is not inactive: skipping memberDriveIndices would allow dest on a RAID member.
-    return ERR_RAID_STATE_UNREAD
-  }
-  const members = [
-    ...(raid.active ? (raid.memberDriveIndices ?? []) : []),
-  ]
-  if (typeof scanId === 'number' && scanId > 0) {
-    try {
-      const st = engine.getScanState(scanId)
-      const disks = Array.isArray(st?.evidenceDiskIndices) ? st.evidenceDiskIndices : []
-      const cleaned = disks.filter((n) => Number.isInteger(n) && n >= 0)
-      members.push(...(cleaned.length > 0 ? cleaned : lastEvidenceDisks))
-    } catch {
-      members.push(...lastEvidenceDisks)
-    }
-  } else {
-    members.push(...lastEvidenceDisks)
-  }
-  if (extraDisks) {
-    members.push(...extraDisks.filter((n) => Number.isInteger(n) && n >= 0))
-  }
-  if (isDestOnEvidence(destDir, driveIndex, members, (letter) => engine.resolveVolume(letter))) {
-    return ERR_DEST_ON_SOURCE
-  }
-  return null
-}
-
-/** Clamp renderer-supplied numeric args to a safe int range (NaN/±Infinity → fallback). */
-export function clampInt(v: unknown, min: number, max: number, fallback: number): number {
-  const n = typeof v === 'number' ? v : Number(v)
-  if (!Number.isFinite(n)) return fallback
-  return Math.min(max, Math.max(min, Math.floor(n)))
-}
-
-/** FAZ 1.3c: keep the renderer's suggested CSV file NAME only — never a path.
- *  Strips separators/control chars; falls back to a dated default. */
-export function sanitizeCsvFileName(suggested: unknown): string {
-  const fallback = `byteback-sonuclar-${new Date().toISOString().slice(0, 10)}.csv`
-  if (typeof suggested !== 'string') return fallback
-  const cleaned = suggested.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim()
-  if (!cleaned || !cleaned.toLowerCase().endsWith('.csv')) return fallback
-  return cleaned.slice(0, 180)
-}
-
-/** Shape the native progress event for the renderer: stamp the bound scanId and
- *  forward phase-local counters — dropping them here killed the ScanView phase %. */
-export function scanProgressPayload(scanId: number, data: any): Record<string, unknown> {
-  return {
-    scanId,
-    current: data.current,
-    total: data.total,
-    badSectors: data.badSectors,
-    phase: data.phase,
-    phaseCurrent: data.phaseCurrent,
-    phaseTotal: data.phaseTotal,
-  }
-}
-
 /** True while a native imaging run is in flight (window close / quit must stop it). */
 export function isImagingLive(): boolean {
   return imagingLive
-}
-
-/** ASCII-only sanitizer for hash-chain audit lines (native line format is ASCII;
- *  the full localized error still goes to session.log). */
-export function asciiForAudit(text: string): string {
-  return text.replace(/[^\x20-\x7E]/g, '?').slice(0, 200)
-}
-
-/**
- * Renderer-supplied RAID member arrays enter synchronous native loops on the
- * main process: an unbounded array freezes the whole app, and duplicate members
- * corrupt signature voting / assembly. Keep a small, de-duplicated, valid set
- * (first-occurrence order preserved — member order matters for reconstruction).
- */
-export function sanitizeRaidIndices(v: unknown, max: number): number[] {
-  if (!Array.isArray(v)) return []
-  const valid = v.filter((d): d is number => Number.isInteger(d) && d >= 0)
-  if (valid.length > max) return []
-  return [...new Set(valid)]
-}
-
-export function sanitizeRaidImagePaths(v: unknown, max: number): string[] {
-  if (!Array.isArray(v)) return []
-  const valid = v.filter((p): p is string => typeof p === 'string' && isEvidenceImagePath(p))
-  if (valid.length > max) return []
-  return [...new Set(valid)]
-}
-
-/** Best-effort write into the native hash-chained audit log via the
- *  logAuditEvent bridge export. Never throws: audit failure must not break
- *  the operation being audited (session.log still has the event). */
-export function auditChainEvent(line: string): void {
-  try {
-    const engine = getEngine() as unknown as { logAuditEvent?: (e: string) => boolean }
-    engine.logAuditEvent?.(line)
-  } catch (err) {
-    console.warn('[IPC] auditChainEvent failed:', err instanceof Error ? err.message : err)
-  }
 }
 
 /** Notify renderer and clear main scan-live when native complete IPC may not arrive. */
@@ -179,8 +63,7 @@ export function registerIpcHandlers(): void {
     const engine = getEngine()
     const dbPath = join(app.getPath('userData'), 'byteback.db')
     const ok = engine.initDatabase(dbPath)
-    dbReady = !!ok
-    if (!ok) dbInitError = 'initDatabase returned false'
+    setDbInitResult(!!ok, ok ? null : 'initDatabase returned false')
     // Redact the absolute path: session.log must not embed C:\Users\<name> on
     // every line — the file lives in app.getPath('userData'), which is where
     // support should look for byteback.db.
@@ -204,16 +87,16 @@ export function registerIpcHandlers(): void {
       }
     }
   } catch (err) {
-    dbReady = false
-    dbInitError = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : String(err)
+    setDbInitResult(false, msg)
     console.error('[IPC] Database init failed:', err)
-    appendSessionLog('CRASH', `db_init ${dbInitError}`)
+    appendSessionLog('CRASH', `db_init ${msg}`)
   }
 
-  ipcMain.handle('get-db-status', () => ({
-    ready: dbReady,
-    error: dbInitError ?? undefined,
-  }))
+  registerScanDbIpcHandlers()
+  registerRecoverIpcHandlers()
+
+  ipcMain.handle('get-db-status', () => getDbStatusPayload())
 
   ipcMain.handle('get-version', () =>
     callNative('get-version', () => getEngine().getVersion())
@@ -248,8 +131,8 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('start-scan', async (event, driveIndex: number, scanType: string, scanOptions?: import('../shared/ipc-contract').ScanOptions) => {
-    if (!dbReady) {
-      throw new Error(dbInitError ?? 'Veritabanı kullanılamıyor — tarama başlatılamaz')
+    if (!isDbReady()) {
+      throw new Error(dbInitErrorMessage() ?? 'Veritabanı kullanılamıyor — tarama başlatılamaz')
     }
     // Trust boundary: native std::stoi failure silently defaults to drive 0,
     // so garbage drivePath would scan the wrong disk without error.
@@ -300,7 +183,7 @@ export function registerIpcHandlers(): void {
       const evidence = Array.isArray(scanOptions?.evidenceDiskIndices)
         ? scanOptions.evidenceDiskIndices.filter((n) => Number.isInteger(n) && n >= 0)
         : []
-      lastEvidenceDisks = evidence.length > 0 ? evidence : (driveIndex >= 0 ? [driveIndex] : [])
+      setLastEvidenceDisks(evidence.length > 0 ? evidence : (driveIndex >= 0 ? [driveIndex] : []))
       const optsIn: import('../shared/ipc-contract').ScanOptions = { ...(scanOptions ?? {}) }
       if (typeof optsIn.volumePath === 'string') {
         if (!isWin32VolumeDevicePath(optsIn.volumePath)) delete optsIn.volumePath
@@ -507,6 +390,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('get-session-log', (_event, maxLines?: number) => {
     const n = typeof maxLines === 'number' && maxLines > 0 ? Math.min(maxLines, 500) : 80
     return readSessionLog(n)
+  })
+
+  ipcMain.handle('log-renderer-error', (_event, message: unknown, componentStack?: unknown) => {
+    const msg = typeof message === 'string' ? message.slice(0, 500) : 'unknown'
+    const stack = typeof componentStack === 'string' ? componentStack.slice(0, 4000) : ''
+    appendSessionLog('RENDER_ERROR', stack ? `${msg} | ${stack}` : msg)
   })
 
   ipcMain.handle('get-smart-status', (_event, driveIndex) => {
@@ -732,149 +621,6 @@ export function registerIpcHandlers(): void {
     event.reply('imaging-progress', { current: 0, total: 0, status: 'cancelled' })
   })
 
-  ipcMain.handle('get-file-count', (_event, scanId: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
-    assertDbReady()
-    return callNative('get-file-count', () =>
-      getEngine().getFileCount(clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0), filter)
-    )
-  })
-
-  ipcMain.handle('get-files-page', (_event, scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter) => {
-    assertDbReady()
-    return callNative('get-files-page', () =>
-      getEngine().getFilesPage(
-        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
-        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
-        clampInt(limit, 1, 1000, 100),
-        filter,
-      )
-    )
-  })
-
-  ipcMain.handle('hash-empty-content', async (_event, scanId: number) => {
-    try {
-      assertDbReady()
-      const id = clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0)
-      if (id <= 0) return { hashed: 0, error: 'Geçersiz tarama' }
-      const res = await getEngine().hashEmptyContent(id)
-      const hashed = typeof res?.hashed === 'number' && Number.isFinite(res.hashed) ? Math.max(0, res.hashed) : 0
-      return { hashed, error: res?.error }
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err)
-      const msg = diskBusyMessage(raw) ?? raw
-      console.error('[IPC] hash-empty-content error:', err)
-      return { hashed: 0, error: msg }
-    }
-  })
-
-  ipcMain.handle('get-latest-scan-id', () =>
-    callNative('get-latest-scan-id', () => getEngine().getLatestScanId())
-  )
-
-  ipcMain.handle('get-latest-usable-scan-id', () =>
-    callNative('get-latest-usable-scan-id', () => getEngine().getLatestUsableScanId())
-  )
-
-  ipcMain.handle('reset-scan-database', () => {
-    if (!dbReady) return false
-    try {
-      const ok = getEngine().resetScanDatabase()
-      if (ok) appendSessionLog('DB_RESET', 'scan_data_cleared')
-      return ok
-    } catch (err) {
-      console.error('[IPC] reset-scan-database error:', err)
-      return false
-    }
-  })
-
-  ipcMain.handle('get-scan-state', (_event, scanId: number) =>
-    callNative('get-scan-state', () =>
-      getEngine().getScanState(clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0))
-    )
-  )
-
-  ipcMain.handle('search-files', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean, category?: string) => {
-    try {
-      if (useRegex && typeof query === 'string' && query.length > 128) {
-        return { rows: [], error: 'Regex sorgusu en fazla 128 karakter olabilir.' }
-      }
-      const engine = getEngine()
-      const rows = engine.searchFiles(
-        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
-        query,
-        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
-        clampInt(limit, 1, 1000, 100),
-        !!useRegex,
-        category ?? '',
-      )
-      return { rows }
-    } catch (err) {
-      console.error('[IPC] search-files error:', err)
-      return { rows: [], error: err instanceof Error ? err.message : String(err) }
-    }
-  })
-
-  ipcMain.handle('search-file-content', (_event, scanId: number, query: string, offset: number, limit: number, useRegex?: boolean) => {
-    if (typeof query === 'string' && Buffer.byteLength(query, 'utf8') > CONTENT_SEARCH_MAX_QUERY_BYTES) {
-      return { rows: [], error: 'content query too long' }
-    }
-    try {
-      const engine = getEngine()
-      const rows = engine.searchFileContent(
-        clampInt(scanId, 0, Number.MAX_SAFE_INTEGER, 0),
-        query,
-        clampInt(offset, 0, Number.MAX_SAFE_INTEGER, 0),
-        clampInt(limit, 1, 1000, 100),
-        !!useRegex,
-      )
-      return { rows }
-    } catch (err) {
-      console.error('[IPC] search-file-content error:', err)
-      const raw = err instanceof Error ? err.message : String(err)
-      return { rows: [], error: raw }
-    }
-  })
-
-  ipcMain.handle('start-content-search', async (event, scanId: number, query: string, useRegex?: boolean) => {
-    if (!dbReady) {
-      return { ok: false, error: dbInitError ?? 'Veritabanı kullanılamıyor' }
-    }
-    if (typeof query !== 'string' || Buffer.byteLength(query, 'utf8') > CONTENT_SEARCH_MAX_QUERY_BYTES) {
-      return { ok: false, error: 'content query too long' }
-    }
-    try {
-      const engine = getEngine()
-      const callback = (data: any) => {
-        if (data.type === 'progress') {
-          event.sender.send('content-search-progress', { current: data.current, total: data.total })
-        } else if (data.type === 'match') {
-          event.sender.send('content-search-match', data)
-        } else if (data.type === 'complete') {
-          event.sender.send('content-search-complete', { status: data.status })
-        }
-      }
-      const ok = engine.startContentSearch(scanId, query, callback, !!useRegex)
-      return { ok: !!ok }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error('[IPC] start-content-search error:', err)
-      return { ok: false, error: msg }
-    }
-  })
-
-  ipcMain.on('stop-content-search', () => {
-    try {
-      const engine = getEngine()
-      engine.stopContentSearch()
-    } catch (err) {
-      console.error('[IPC] stop-content-search error:', err)
-    }
-  })
-
-  ipcMain.handle('get-scan-summary', (_event, scanId: number) =>
-    callNative('get-scan-summary', () => getEngine().getScanSummary(scanId))
-  )
-
   ipcMain.handle('pick-and-wipe-file', async () => {
     try {
       const focused = BrowserWindow.getFocusedWindow()
@@ -1013,7 +759,7 @@ export function registerIpcHandlers(): void {
       if (confirmPhrase !== 'IMHA') {
         return { ok: false, error: 'Onay ifadesi IMHA olmalı' }
       }
-      if (isScanLive() && lastEvidenceDisks.includes(driveIndex)) {
+      if (isScanLive() && lastEvidenceDisksIncludes(driveIndex)) {
         appendSessionLog('WIPE_FAIL', `physical dest_rejected drive=${driveIndex}`)
         return { ok: false, error: 'Tarama sürerken kanıt diski imha edilemez' }
       }
@@ -1036,6 +782,15 @@ export function registerIpcHandlers(): void {
         detail: `${target?.model ?? 'disk'} | seri ${target?.serial ?? '?'} | ${target?.type ?? 'Unknown'}. SSD’de NIST 800-88 sanitization değildir. Native katman yazdığınız seriyi liste serisiyle karşılaştırmadan yazmaz.`,
       })
       if (confirm.response !== 1) return { ok: false, error: 'İşlem iptal edildi' }
+      const fresh = getEngine().listDrives().find((d) => d.index === driveIndex)
+      if (!fresh?.serial || !wipeSerialMatches(typedSerial, fresh.serial)) {
+        appendSessionLog('WIPE_FAIL', `physical serial_mismatch drive=${driveIndex}`)
+        return { ok: false, error: 'Disk seri numarası değişti veya eşleşmiyor — imha iptal' }
+      }
+      if (isScanLive() && lastEvidenceDisksIncludes(driveIndex)) {
+        appendSessionLog('WIPE_FAIL', `physical dest_rejected drive=${driveIndex}`)
+        return { ok: false, error: 'Tarama sürerken kanıt diski imha edilemez' }
+      }
       const ok = await getEngine().startPhysicalWipe(driveIndex, typedSerial)
       return { ok: !!ok, error: ok ? undefined : 'Disk imhası başarısız (seri eşleşmesi veya native hata)' }
     } catch (err) {
@@ -1231,84 +986,6 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('recover-file', async (_event, driveIndex: number, fileId: number, destDir: string, scanId: number, preservePaths?: boolean) => {
-    try {
-      assertDbReady()
-      // -1 is the RAID virtual array; everything else must be an integer >= 0.
-      if (driveIndex !== -1) assertBoundDriveIndex(driveIndex)
-      if (!destDir || !destDir.trim()) {
-        return { success: false, error: 'Hedef klasör seçilmedi' }
-      }
-      const parsed = parseRecoverIds(scanId, fileId)
-      if (!parsed.ok) return { success: false, error: parsed.error }
-      // Defense in depth: the native destDirIsSafe blocklist is lexical only
-      // (\\?\ prefixes, 8.3 short names and Startup locations bypass it).
-      // Validate in main and pass the resolved real path to native.
-      const dest = validateRecoverDestDir(destDir)
-      if (!dest.ok) {
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} dest_rejected: ${dest.error}`)
-        return { success: false, error: dest.error }
-      }
-      const onSource = destOnEvidenceError(dest.destDir, driveIndex, parsed.scanId)
-      if (onSource) {
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} dest_rejected: ${onSource}`)
-        return { success: false, error: onSource }
-      }
-      const engine = getEngine()
-      const result = await engine.recoverFile(driveIndex, parsed.fileId, dest.destDir, parsed.scanId, preservePaths)
-      // Native audit-logs only successful recovery (bridge_wipe.cpp RECOVER
-      // event); failures go into the hash chain here via the logAuditEvent
-      // bridge export (ASCII-sanitized — the chain line format is ASCII).
-      if (!result.success) {
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} file=${parsed.fileId} error=${result.error ?? ''}`)
-        auditChainEvent(`RECOVER_FAIL | scanId=${parsed.scanId} file=${parsed.fileId} reason=${asciiForAudit(result.error ?? 'unknown')}`)
-      }
-      return result
-    } catch (err) {
-      console.error('[IPC] recover-file error:', err)
-      const raw = err instanceof Error ? err.message : String(err)
-      return { success: false, error: diskBusyMessage(raw) ?? raw }
-    }
-  })
-
-  ipcMain.handle('recover-files-batch', async (_event, driveIndex: number, fileIds: number[], destDir: string, scanId: number, preservePaths?: boolean) => {
-    try {
-      assertDbReady()
-      // -1 is the RAID virtual array; everything else must be an integer >= 0.
-      if (driveIndex !== -1) assertBoundDriveIndex(driveIndex)
-      if (!destDir || !destDir.trim()) {
-        return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: 'Hedef klasör seçilmedi' }
-      }
-      const parsed = parseRecoverIdList(scanId, fileIds)
-      if (!parsed.ok) return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: parsed.error }
-      // Same main-process destination policy as recover-file (see comment there).
-      const dest = validateRecoverDestDir(destDir)
-      if (!dest.ok) {
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} files=${parsed.fileIds.length} dest_rejected: ${dest.error}`)
-        return { succeeded: 0, failed: parsed.fileIds.length, results: [], error: dest.error }
-      }
-      const onSource = destOnEvidenceError(dest.destDir, driveIndex, parsed.scanId)
-      if (onSource) {
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} files=${parsed.fileIds.length} dest_rejected: ${onSource}`)
-        return { succeeded: 0, failed: parsed.fileIds.length, results: [], error: onSource }
-      }
-      const engine = getEngine()
-      const result = await engine.recoverFilesBatch(driveIndex, parsed.fileIds, dest.destDir, parsed.scanId, preservePaths)
-      // One bounded summary line per batch — per-file failure lines would
-      // flood session.log on large selections.
-      if (result.failed > 0) {
-        const firstError = result.results.find((r) => !r.success)?.error ?? ''
-        appendSessionLog('RECOVER_FAIL', `scanId=${parsed.scanId} failed=${result.failed}/${parsed.fileIds.length} error=${firstError}`)
-        auditChainEvent(`RECOVER_FAIL | scanId=${parsed.scanId} failed=${result.failed}/${parsed.fileIds.length} reason=${asciiForAudit(firstError || 'unknown')}`)
-      }
-      return result
-    } catch (err) {
-      console.error('[IPC] recover-files-batch error:', err)
-      const raw = err instanceof Error ? err.message : String(err)
-      return { succeeded: 0, failed: fileIds?.length ?? 0, results: [], error: diskBusyMessage(raw) ?? raw }
-    }
-  })
-
   // P0-2: TestDisk-style lost partition search (async, heavyOp-gated native).
   ipcMain.handle('scan-lost-partitions', (_event, driveIndex: number, stepSectors?: number) => {
     assertDriveIndex(driveIndex)
@@ -1340,31 +1017,6 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] pick-and-set-signature-overlay error:', err)
       return { ok: false }
-    }
-  })
-
-  ipcMain.handle('read-file-preview', (_event, driveIndex: number, scanId: number, fileId: number) => {
-    try {
-      assertDbReady()
-      // -1 is the RAID virtual array; everything else must be an integer >= 0.
-      if (driveIndex !== -1) assertBoundDriveIndex(driveIndex)
-      const parsed = parseRecoverIds(scanId, fileId)
-      if (!parsed.ok) return { success: false, error: parsed.error }
-      const engine = getEngine()
-      const res = engine.readFilePreview(driveIndex, parsed.scanId, parsed.fileId)
-      if (res && res.error) return { ...res, error: diskBusyMessage(res.error) ?? res.error }
-      // Evidence-access logging at operation granularity: one bounded PREVIEW
-      // event per generated preview (not per chunk), into both the session
-      // log and the hash chain (logAuditEvent bridge export).
-      if (res && res.success) {
-        appendSessionLog('PREVIEW', `scanId=${parsed.scanId} file=${parsed.fileId} kind=${res.kind ?? ''} bytes=${res.data?.length ?? 0}`)
-        auditChainEvent(`PREVIEW | scanId=${parsed.scanId} file=${parsed.fileId} kind=${asciiForAudit(res.kind ?? 'unknown')}`)
-      }
-      return res
-    } catch (err) {
-      console.error('[IPC] read-file-preview error:', err)
-      const raw = err instanceof Error ? err.message : String(err)
-      return { success: false, error: diskBusyMessage(raw) ?? raw }
     }
   })
 

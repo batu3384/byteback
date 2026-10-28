@@ -267,14 +267,29 @@ Napi::Value SetLuksPassword(const Napi::CallbackInfo& info) {
 
 class PhysicalWipeWorker : public Napi::AsyncWorker {
 public:
-    PhysicalWipeWorker(Napi::Env& env, BridgeData* bdata, int index, std::string typed, std::string actual,
-                       uint64_t sizeBytes, Napi::Promise::Deferred deferred)
-        : Napi::AsyncWorker(env), bdata_(bdata), index_(index), typed_(std::move(typed)), actual_(std::move(actual)),
-          sizeBytes_(sizeBytes), deferred_(deferred), success_(false) {}
+    PhysicalWipeWorker(Napi::Env& env, BridgeData* bdata, int index, std::string typed,
+                       Napi::Promise::Deferred deferred)
+        : Napi::AsyncWorker(env), bdata_(bdata), index_(index), typed_(std::move(typed)),
+          deferred_(deferred), success_(false) {}
 
     void Execute() override {
+        std::string actual;
+        uint64_t sizeBytes = 0;
+        if (bdata_) {
+            for (const auto& d : bdata_->engine.getDiskReader().enumerateDrives()) {
+                if (d.index == index_) {
+                    actual = d.serial;
+                    sizeBytes = d.sizeBytes;
+                    break;
+                }
+            }
+        }
+        if (actual.empty() || sizeBytes < 512) {
+            success_ = false;
+            return;
+        }
         security::DataShredder shredder;
-        success_ = shredder.shred_physical_drive(index_, typed_, actual_, sizeBytes_);
+        success_ = shredder.shred_physical_drive(index_, typed_, actual, sizeBytes);
     }
     void OnOK() override {
         if (bdata_) bdata_->endHeavyOp();
@@ -289,8 +304,6 @@ private:
     BridgeData* bdata_;
     int index_;
     std::string typed_;
-    std::string actual_;
-    uint64_t sizeBytes_;
     Napi::Promise::Deferred deferred_;
     bool success_;
 };
@@ -320,14 +333,14 @@ Napi::Value StartPhysicalWipe(const Napi::CallbackInfo& info) {
             break;
         }
     }
-    if (actual.empty() || sizeBytes < 512) {
+    if (actual.empty() || sizeBytes < 512 || !security::DataShredder::wipeSerialMatches(typed, actual)) {
         bdata->endHeavyOp();
         return Napi::Boolean::New(env, false);
     }
     forensic::AuditLogger::GetInstance().LogEvent(
         "PHYSICAL_WIPE_START | drive=" + std::to_string(index));
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
-    (new PhysicalWipeWorker(env, bdata, index, typed, actual, sizeBytes, deferred))->Queue();
+    (new PhysicalWipeWorker(env, bdata, index, typed, deferred))->Queue();
     return deferred.Promise();
     NAPI_CATCH
 }
