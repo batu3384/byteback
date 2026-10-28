@@ -1,6 +1,7 @@
 #include "byteback_db.h"
 #include "db/runs_codec.h"
 #include "scan/discovery_sources.h"
+#include "search/content_search.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
@@ -316,7 +317,8 @@ bool MetadataStore::open(const std::string& dbPath) {
     }
     // Enable WAL mode for concurrent reads
     sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
-    sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
+    // ponytail: audit 2026-10-28 chose FULL over NORMAL for case DB durability; WalSyncFullVsNormalBulkInsertEvaluation records insert cost ratio
+    sqlite3_exec(db_, "PRAGMA synchronous=FULL;", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
     // CA-040: surface structural corruption at open (quick_check: fast, skips
     // index cross-checks — full integrity_check would stall big scan DBs).
@@ -413,6 +415,13 @@ void MetadataStore::close() {
 bool MetadataStore::isOpen() const {
     std::lock_guard<std::recursive_mutex> lock(mu_);
     return db_ != nullptr;
+}
+
+bool MetadataStore::setSynchronousMode(int mode) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_ || mode < 0 || mode > 3) return false;
+    const std::string sql = "PRAGMA synchronous=" + std::to_string(mode) + ";";
+    return sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 bool MetadataStore::createTables() {
@@ -1450,6 +1459,7 @@ std::vector<FileRecord> MetadataStore::searchFiles(int64_t scanId, const std::st
     std::vector<FileRecord> records;
     if (query.empty() || limit <= 0) return records;
     if (useRegex && query.size() > 128) return records;
+    if (useRegex && !contentRegexQueryOk(query)) return records;
 
     const char* baseSql = R"(
         SELECT id, parent_id, name, extension, path, size_bytes,

@@ -17,6 +17,7 @@ import CaseView from './components/CaseView/CaseView'
 import ScanRequiredPanel from './components/ScanRequiredPanel'
 import InlineAlert from './components/InlineAlert'
 import { hasValidScanId, isLiveScanPhase, isScanDependentPage, isDiskBusyPage, scanPhaseFromStatusCode, type ScanPhase } from '../shared/scan-required'
+import AppErrorBoundary from './components/AppErrorBoundary'
 import { sessionLogShowsBanner, type SessionLogCode } from '../shared/session-log'
 import { SCAN_STATUS, scanPhaseFromState } from '../shared/scan-session'
 import type { ScanState } from '../shared/ipc-contract'
@@ -478,6 +479,7 @@ function App(): React.ReactElement {
   }
 
   return (
+    <AppErrorBoundary scanId={activeScanId} scanLive={isLiveScanPhase(scanPhase)}>
     <div className="app-layout">
       <a className="skip-link" href="#main-content" data-testid="skip-to-main">{t('chrome.skipToMain')}</a>
       <div className="app-body">
@@ -537,6 +539,7 @@ function App(): React.ReactElement {
         driveIndex={selectedDrive}
       />
     </div>
+    </AppErrorBoundary>
   )
 }
 

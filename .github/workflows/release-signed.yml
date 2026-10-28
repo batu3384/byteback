@@ -1,0 +1,57 @@
+name: Release (signed, manual)
+
+# Phase 4 Authenticode — runs only when repository secrets are configured.
+# Does not replace field USB rows or clean-box NSIS smoke.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_audit:
+        description: Skip npm run verify:audit (not recommended)
+        type: boolean
+        default: false
+
+jobs:
+  release-windows:
+    name: Build signed NSIS (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: if (Test-Path package-lock.json) { npm ci } else { npm install }
+        shell: pwsh
+
+      - name: Require signing secrets
+        run: |
+          if (-not $env:CSC_LINK) { throw 'GitHub secret CSC_LINK is required for this workflow' }
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Audit roadmap gate
+        if: inputs.skip_audit != true
+        run: npm run verify:audit
+        shell: pwsh
+
+      - name: Build and dist
+        run: npm run build; npm run dist
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Upload NSIS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: byteback-nsis-x64
+          path: release/Byteback Setup *.exe
+          if-no-files-found: error

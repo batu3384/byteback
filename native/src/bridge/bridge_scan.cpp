@@ -952,6 +952,10 @@ Napi::Value SearchFiles(const Napi::CallbackInfo& info) {
     if (info.Length() >= 7 && info[6].IsNumber()) {
         statusFilter = info[6].As<Napi::Number>().Int32Value();
     }
+    if (useRegex && !byteback::contentRegexQueryOk(query)) {
+        Napi::Error::New(env, "regex rejected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
 
     auto files = engine->getMetadataStore().searchFiles(scanId, query, offset, limit, useRegex, categoryFilter, statusFilter);
     Napi::Array result = Napi::Array::New(env, files.size());

@@ -75,70 +75,12 @@ export function buildSnippetParts(snippet: string, start?: number, end?: number)
   return parts
 }
 
+import { isSafeHighlightRegex } from '../../../shared/content-regex-query'
+
+export { isSafeHighlightRegex } from '../../../shared/content-regex-query'
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** Conservative nested-quantifier check for user-supplied highlight regexes.
- *  A quantifier applied to a group that itself contains a quantifier or an
- *  alternation can backtrack catastrophically — "(a+)+$" against a long
- *  non-matching filename freezes the renderer per row (V8 has no match
- *  timeout). Known residual limits, accepted because the failure mode is only
- *  "no highlight" (never wrong output): a quantified alternation is rejected
- *  even when its branches are disjoint — e.g. "(jpg|png)+" — and backreference
- *  ambiguity is not analysed. Ordinary alternation without an outer
- *  quantifier, e.g. "(jpg|png)$", stays highlighted. Pure and unit-testable. */
-export function isSafeHighlightRegex(pattern: string): boolean {
-  interface Frame { quant: boolean; alt: boolean; innerRisk: boolean }
-  const stack: Frame[] = [{ quant: false, alt: false, innerRisk: false }]
-  let inClass = false
-  let prevGroupClose = false // last significant atom was ")"
-  let lastPopped: Frame | null = null
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '\\') { i++; prevGroupClose = false; continue }
-    if (inClass) {
-      if (c === ']') inClass = false
-      continue
-    }
-    if (c === '[') { inClass = true; prevGroupClose = false; continue }
-    if (c === '(') {
-      stack.push({ quant: false, alt: false, innerRisk: false })
-      // Group syntax prefixes — "(?:", "(?=", "(?!", "(?<" — are not
-      // quantifiers even though some contain '*', '+' or '?' characters.
-      if (pattern[i + 1] === '?') {
-        i++ // consume '?'
-        const n = pattern[i + 1]
-        if (n === ':' || n === '=' || n === '!') i++
-      }
-      prevGroupClose = false
-      continue
-    }
-    if (c === ')') {
-      const f = stack.pop()
-      if (!f) return false // unbalanced — compile will fail anyway
-      lastPopped = f
-      const parent = stack[stack.length - 1]
-      if (parent) parent.innerRisk = parent.innerRisk || f.quant || f.alt || f.innerRisk
-      prevGroupClose = true
-      continue
-    }
-    if (c === '|') { stack[stack.length - 1]!.alt = true; prevGroupClose = false; continue }
-    const isQuantifier = c === '*' || c === '+' || c === '?' ||
-      (c === '{' && /^\{\d+(,\d*)?\}/.test(pattern.slice(i)))
-    if (isQuantifier) {
-      if (c === '{') i += pattern.slice(i).match(/^\{\d+(,\d*)?\}/)![0].length - 1
-      const cur = stack[stack.length - 1]!
-      if (prevGroupClose && lastPopped && (lastPopped.quant || lastPopped.alt || lastPopped.innerRisk)) {
-        return false
-      }
-      cur.quant = true
-      prevGroupClose = false
-      continue
-    }
-    prevGroupClose = false
-  }
-  return stack.length === 1
 }
 
 export function buildMatchParts(text: string, query: string, useRegex: boolean): MatchPart[] {

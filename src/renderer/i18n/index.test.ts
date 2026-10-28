@@ -383,6 +383,15 @@ describe('renderer ui-lane keys', () => {
     }
   })
 
+  it('dash.imageScanHint states local-only evidence (no HTTP Range in UI)', () => {
+    setLang('en')
+    expect(t('dash.imageScanHint')).toMatch(/http:\/\//i)
+    expect(t('dash.imageScanHint')).toMatch(/not supported/i)
+    setLang('tr')
+    expect(t('dash.imageScanHint')).toMatch(/http:\/\//i)
+    expect(t('dash.imageScanHint')).toMatch(/desteklenmez/i)
+  })
+
   it('setLang does not throw without a DOM (lang sync guard)', () => {
     expect(() => setLang('en')).not.toThrow()
     expect(() => setLang('tr')).not.toThrow()

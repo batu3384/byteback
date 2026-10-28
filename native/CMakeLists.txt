@@ -73,6 +73,7 @@ set(SOURCES
   src/byteback_engine.cpp
   src/io/byte_source.cpp
   src/io/vhd_source.cpp
+  src/io/vhdx_source.cpp
   src/imager/ewf_writer.cpp
   src/imager/ewf_reader.cpp
   src/carver/content_classifier.cpp
@@ -232,6 +233,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_nsrl.cpp
     tests/test_case_info.cpp
     tests/test_fuzz_runs_codec.cpp
+    tests/test_fuzz_vhd_extract.cpp
     tests/test_virtual_raid_io.cpp
     tests/test_xfs_parser.cpp
     tests/test_raid_detect.cpp
@@ -278,6 +280,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/imager/disk_imager.cpp
     src/io/byte_source.cpp
     src/io/vhd_source.cpp
+  src/io/vhdx_source.cpp
     src/carver/content_classifier.cpp
     src/db/runs_codec.cpp
     src/recovery/path_util.cpp

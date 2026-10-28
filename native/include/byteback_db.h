@@ -149,6 +149,8 @@ public:
     bool open(const std::string& dbPath);
     void close();
     bool isOpen() const;
+    /** SQLite synchronous 0–3; case DB opens at FULL. Used by WAL sync evaluation tests. */
+    bool setSynchronousMode(int mode);
 
     // File records
     int64_t insertFile(int64_t scanId, const FileRecord& record);

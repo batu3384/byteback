@@ -1,4 +1,5 @@
 #include "io/vhd_source.h"
+#include "io/vhd_source_internal.h"
 #include "byteback_fs.h"
 #include "byteback_io.h"
 #include "fixtures/volume_fixtures.h"
@@ -791,4 +792,8 @@ TEST(DmgSource, AttachEvidenceImageListsTestTxt) {
     EXPECT_TRUE(found) << "attachEvidenceImage .dmg must expose FAT16 TEST.TXT";
     reader.detachImageBackend();
     std::filesystem::remove(path);
+}
+
+TEST(VhdFamilyLimits, MaxExpandBytesInSharedHeader) {
+    EXPECT_EQ(kVhdFamilyMaxExpandBytes, 64ull << 20);
 }

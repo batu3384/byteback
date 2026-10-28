@@ -115,6 +115,7 @@ declare global {
       getAuditLog: (maxLines?: number) => Promise<string[]>
       verifyAuditLog: () => Promise<{ ok: boolean; entries: number; brokenAt: number; detail: string }>
       getSessionLog: (maxLines?: number) => Promise<{ path: string; lines: string[]; summary: string; code: string }>
+      logRendererError: (message: string, componentStack?: string) => Promise<void>
       exportReportPdf: (html: string) => Promise<{ success: boolean; path?: string; error?: string; canceled?: boolean }>
 
       pickAndWipeFile: () => Promise<IpcOkResult>
