@@ -549,6 +549,63 @@ TEST_F(MetadataStoreTest, ClearAllScanDataRemovesScans) {
     EXPECT_EQ(store_.getFileCount(scanId), 0);
 }
 
+// A scan resumed in its metadata phase walks the file tables again; its old
+// rows must go first or every file is listed twice. Other scans stay intact.
+TEST_F(MetadataStoreTest, ClearScanRecordsDropsOnlyThatScansRows) {
+    const int64_t a = store_.createScan(0, "deep", 10);
+    const int64_t b = store_.createScan(1, "deep", 10);
+    FileRecord f;
+    f.name = "kept.txt";
+    f.path = "/kept.txt";
+    f.source = "ntfs_mft";
+    ASSERT_TRUE(store_.insertFilesBatch(a, {f, f}));
+    ASSERT_TRUE(store_.insertFilesBatch(b, {f}));
+    TimelineEvent ev{};
+    ev.timestamp = 1;
+    ev.eventType = "create";
+    ev.fileName = "kept.txt";
+    ev.source = "usn_journal";
+    ASSERT_TRUE(store_.appendTimelineEventsBatch(a, {ev}));
+    ASSERT_TRUE(store_.appendTimelineEventsBatch(b, {ev}));
+
+    ASSERT_TRUE(store_.clearScanRecords(a));
+
+    EXPECT_EQ(store_.getFileCount(a), 0);
+    EXPECT_EQ(store_.getTimelineEventCount(a), 0);
+    EXPECT_EQ(store_.getFileCount(b), 1);
+    EXPECT_EQ(store_.getTimelineEventCount(b), 1);
+    EXPECT_EQ(store_.getScanState(a).id, a); // the scan row itself survives
+    // Name search (FTS) must not keep ghosts of the removed rows.
+    EXPECT_TRUE(store_.searchFiles(a, "kept", 0, 10, false).empty());
+    EXPECT_EQ(store_.searchFiles(b, "kept", 0, 10, false).size(), 1u);
+}
+
+// Databases created before the trigger fix still carry the old trigger body;
+// opening them must repair it, or no row of `files` can ever be deleted.
+TEST_F(MetadataStoreTest, ClearScanRecordsWorksOnDatabaseWithLegacyFtsTrigger) {
+    const int64_t scanId = store_.createScan(0, "deep", 10);
+    FileRecord f;
+    f.name = "old.txt";
+    f.path = "/old.txt";
+    f.source = "ntfs_mft";
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {f}));
+    store_.close();
+
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.c_str(), &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db,
+        "DROP TRIGGER IF EXISTS files_fts_ad;"
+        "CREATE TRIGGER files_fts_ad AFTER DELETE ON files BEGIN "
+        "INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension) "
+        "VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension); END;",
+        nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(db);
+
+    ASSERT_TRUE(store_.open(path_));
+    EXPECT_TRUE(store_.clearScanRecords(scanId));
+    EXPECT_EQ(store_.getFileCount(scanId), 0);
+}
+
 TEST_F(MetadataStoreTest, GetLatestUsableScanIdPrefersPausedOrComplete) {
     int64_t failed = store_.createScan(0, "quick", 10);
     ASSERT_TRUE(store_.completeScan(failed, 3));
@@ -1304,6 +1361,32 @@ TEST_F(MetadataStoreTest, ExportCsvRejectsBadHeaderAndReportsError) {
     EXPECT_FALSE(store_.exportCsv(scanId, dirDest, {}, csvHeader(), "x", "—", &rows, &err));
     EXPECT_FALSE(err.empty());
     std::filesystem::remove_all(dirDest);
+}
+
+// The save dialog hands over a UTF-8 path; Turkish profile folders ("Masaüstü")
+// are the normal case, not an edge case.
+TEST_F(MetadataStoreTest, ExportCsvWritesToNonAsciiUtf8Path) {
+    const int64_t scanId = store_.createScan(0, "quick", 10);
+    ASSERT_GT(scanId, 0);
+    FileRecord r;
+    r.name = "a.txt";
+    r.path = "/a.txt";
+    r.sizeBytes = 1;
+    r.source = "mft";
+    ASSERT_TRUE(store_.insertFilesBatch(scanId, {r}));
+
+    const auto dir = std::filesystem::temp_directory_path() /
+                     std::filesystem::u8path("byteback_csv_ş_" + std::to_string(testPid()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / std::filesystem::u8path("sonuç.csv");
+
+    int64_t rows = 0;
+    std::string err;
+    EXPECT_TRUE(store_.exportCsv(scanId, file.u8string(), {}, csvHeader(), "x", "-", &rows, &err)) << err;
+    EXPECT_EQ(rows, 1);
+    EXPECT_TRUE(std::filesystem::exists(file));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }
 
 TEST(SeedFileRecord, ParseMftRefAcceptsNonNegativeInteger) {

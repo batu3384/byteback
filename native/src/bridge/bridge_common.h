@@ -56,12 +56,23 @@ struct ScanContext {
     uint64_t generation = 0;
     std::atomic<uint64_t> lastScannedSectors{0};
     std::atomic<bool> dbFlushFailed{false};
+    // Latest scan checkpoint; written at most once a second and only after
+    // the buffered records it covers (writeScanCheckpoint in bridge_scan.cpp).
+    std::atomic<bool> checkpointMeta{false};
+    std::atomic<uint64_t> checkpointCarve{0};
+    std::atomic<bool> checkpointPending{false};
+    std::chrono::steady_clock::time_point lastCheckpointWrite{}; // guarded by bufferMutex
+    // Resumed in the metadata phase: the old rows of this scan are dropped
+    // when the first new record arrives.
+    std::atomic<bool> clearRecordsOnFirstFile{false};
 };
 
 struct ImagerContext {
     byteback::DiskImager imager;
     byteback::DiskReader raidReader;
     Napi::ThreadSafeFunction tsfn;
+    // The disk-busy token of this run; given back exactly once.
+    std::atomic<bool> holdsHeavyOp{true};
 };
 
 struct ContentSearchContext {

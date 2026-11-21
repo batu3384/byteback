@@ -8,6 +8,7 @@
 #include "io/hex_bind.h"
 #include "io/byte_source.h"
 #include "scan/seed_file_record.h"
+#include "recovery/path_util.h"
 #include <atomic>
 #include <algorithm>
 #include <cmath>
@@ -152,17 +153,41 @@ bool flushTimelineBufferLocked(byteback::Engine* engine, ScanContext* context) {
     return true;
 }
 
+// The stored checkpoint must never be ahead of the stored records: records
+// still buffered when the app dies would be skipped by the resume.
+void writeScanCheckpoint(byteback::Engine* engine, ScanContext* context, bool force) {
+    std::lock_guard<std::mutex> lock(context->bufferMutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - context->lastCheckpointWrite < std::chrono::seconds(1)) return;
+    if (!flushFileBufferLocked(engine, context) || !flushTimelineBufferLocked(engine, context)) {
+        context->coordinator.requestStop();
+        return;
+    }
+    if (!context->checkpointPending.exchange(false)) return;
+    context->lastCheckpointWrite = now;
+    engine->getMetadataStore().updateScanCheckpoint(context->scanId, context->checkpointMeta.load(),
+                                                    context->checkpointCarve.load());
+}
+
 int flushScanToDb(BridgeData* bdata, int status) {
     if (!bdata || !bdata->scanContext) return status;
     auto context = bdata->scanContext;
 
     {
         std::lock_guard<std::mutex> lock(context->bufferMutex);
+        bool flushed = true;
         if (!flushFileBufferLocked(&bdata->engine, context.get())) {
             status = 3;
+            flushed = false;
         }
         if (!flushTimelineBufferLocked(&bdata->engine, context.get())) {
             status = 3;
+            flushed = false;
+        }
+        // Throttled checkpoint still pending: every record is stored now.
+        if (flushed && context->checkpointPending.exchange(false)) {
+            bdata->engine.getMetadataStore().updateScanCheckpoint(
+                context->scanId, context->checkpointMeta.load(), context->checkpointCarve.load());
         }
     }
 
@@ -524,7 +549,7 @@ Napi::Value GetAuditLog(const Napi::CallbackInfo& info) {    Napi::Env env = inf
     }
     int maxLines = (info.Length() >= 1 && info[0].IsNumber()) ? info[0].As<Napi::Number>().Int32Value() : 200;
 
-    std::ifstream in(bdata->auditLogPath);
+    std::ifstream in(byteback::utf8Path(bdata->auditLogPath));
     if (!in.is_open()) return Napi::Array::New(env, 0);
 
     std::vector<std::string> tail;
@@ -719,7 +744,8 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
 
     auto context = std::make_shared<ScanContext>();
     context->generation = bdata->nextScanGeneration.fetch_add(1);
-    bdata->scanContext = context;
+    context->checkpointMeta.store(target.metadataComplete);
+    context->checkpointCarve.store(target.carveResumeSector);
 
     int driveIndex = 0;
     if (drivePath == "raid") {
@@ -778,7 +804,13 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             context->scanId, bindPath, evidenceDisks);
     }
     context->dedupIndex.clear();
-    if (resumeScanId > 0) {
+    if (resumeScanId > 0 && !target.metadataComplete) {
+        // Resumed in the metadata phase: the file tables are walked again, so
+        // the old rows must go or every file is listed twice. They go with
+        // the first new record — a resume that cannot open its source keeps
+        // the browsable results.
+        context->clearRecordsOnFirstFile.store(true);
+    } else if (resumeScanId > 0) {
         // N4: accumulate ALL records, then one loadFromRecords — per-page calls
         // re-sorted the growing metadata vector each time (O(pages × n log n)).
         std::vector<byteback::FileRecord> all;
@@ -807,6 +839,12 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
     );
 
     auto onFileFound = [context, engine = &bdata->engine](const byteback::FileRecord& fr) {
+        if (context->clearRecordsOnFirstFile.exchange(false) &&
+            !engine->getMetadataStore().clearScanRecords(context->scanId)) {
+            context->dbFlushFailed.store(true);
+            context->coordinator.requestStop();
+            return;
+        }
         // USN journal records are timeline events, not scannable files:
         // route them to the timeline_events table with the reason bitmap
         // decoded to a dominant event type.
@@ -840,6 +878,10 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             return; // timeline/discovery hints only
         }
 
+        // A resumed carve re-reads the span behind its checkpoint (an open
+        // candidate is re-read from its header): files found again are stored.
+        if (context->dedupIndex.isStoredCarve(fr)) return;
+
         byteback::FileRecord out = fr;
         context->dedupIndex.observe(out);
         context->dedupIndex.markDuplicate(out);
@@ -870,7 +912,7 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
             engine->getMetadataStore().updateScanProgress(context->scanId, current);
             *lastDbProgress = now;
             const char* phasePtr = byteback::g_scanPhase.load(std::memory_order_relaxed);
-            if (phasePtr && std::strcmp(phasePtr, "metadata") == 0 &&
+            if (phasePtr && std::strcmp(phasePtr, "metadata") == 0 && !context->checkpointMeta.load() &&
                 (current == total ||
                  std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastMetaCheckpoint).count() >= 2000)) {
                 // Metadata progress lives in scanned_sectors; carveResumeSector is carve-only.
@@ -914,11 +956,17 @@ Napi::Value StartScan(const Napi::CallbackInfo& info) {
         deliverScanComplete(bdata, context.get(), context->scanId, dbStatus, context->generation);
     };
 
+    // Carve checkpoints arrive per 4 MiB chunk; each write is a synchronous
+    // SQLite commit, so they are folded to one write a second.
     byteback::ScanCheckpointCallback onCheckpoint =
-        [engine = &bdata->engine, checkpointScanId](bool metadataComplete, uint64_t carveResume) {
-            engine->getMetadataStore().updateScanCheckpoint(checkpointScanId, metadataComplete, carveResume);
+        [engine = &bdata->engine, context](bool metadataComplete, uint64_t carveResume) {
+            const bool metaChanged = context->checkpointMeta.exchange(metadataComplete) != metadataComplete;
+            context->checkpointCarve.store(carveResume);
+            context->checkpointPending.store(true);
+            writeScanCheckpoint(engine, context.get(), metaChanged);
         };
 
+    bdata->scanContext = context;
     context->coordinator.startScan(drivePath, scanType, onFileFound, onProgress,
                                    &context->badSectors,
                                    drivePath == "raid" ? bdata->raid : nullptr, onFinished,

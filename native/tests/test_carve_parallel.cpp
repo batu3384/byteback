@@ -4,6 +4,8 @@
 #include "fs/virtual_raid.h"
 #include "scan_coordinator.h"
 #include <gtest/gtest.h>
+#include <utility>
+#include <set>
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -460,4 +462,76 @@ TEST(CarveParallelCoordinator, CloneCarriesXtsFvek) {
     ASSERT_TRUE(plain.readSectors(512, 512, raw.data()).success);
     EXPECT_NE(0, std::memcmp(a.data(), raw.data(), 512)) << "XTS decrypt did not run";
 #endif
+}
+
+// A cancelled parallel carve must not report the whole range list as scanned:
+// that value is stored as the scan position and decides paused vs finished.
+TEST(CarveParallelCoordinator, CancelledParallelCarveDoesNotReportFullProgress) {
+    constexpr size_t kDisk = 64u * 1024 * 1024;
+    auto img = buildMultiPngDisk(kDisk, {1u << 20});
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    const auto ranges = evenRanges(kDisk / 512, 8);
+    setParallelCarveWorkers(4);
+    std::atomic<bool> running{true};
+    uint64_t lastProgress = 0;
+    runCarveScanRanges(reader, [&](const FileRecord& fr) {
+        if (fr.id == -1 && fr.name.empty()) return;
+        running = false; // first carved file: stop right away
+    }, [&](uint64_t cur, uint64_t) {
+        lastProgress = cur;
+    }, &running, nullptr, ranges, 0, true);
+
+    EXPECT_LT(lastProgress, kDisk / 512);
+}
+
+// Stop + resume of a parallel carve must not leave holes. Workers finish
+// ranges out of order, so "sectors scanned so far" is not a resume position:
+// one worker is deep in the big first range while the other has already
+// finished the small ranges behind it.
+TEST(CarveParallelCoordinator, ResumeAfterCancelFindsSameFilesAsOneRun) {
+    constexpr uint64_t kMiB = 1024 * 1024;
+    constexpr uint64_t kDisk = 56 * kMiB;
+    std::vector<size_t> offs;
+    for (uint64_t off = kMiB / 2; off < 40 * kMiB; off += kMiB) offs.push_back(static_cast<size_t>(off));
+    offs.push_back(static_cast<size_t>(48 * kMiB + kMiB / 2)); // stop trigger, 4th range
+    const auto img = buildMultiPngDisk(static_cast<size_t>(kDisk), offs);
+    const std::vector<SectorRange> ranges = {
+        {0, 40 * kMiB / 512},
+        {40 * kMiB / 512, 4 * kMiB / 512},
+        {44 * kMiB / 512, 4 * kMiB / 512},
+        {48 * kMiB / 512, 4 * kMiB / 512},
+        {52 * kMiB / 512, 4 * kMiB / 512},
+    };
+    setParallelCarveWorkers(2);
+
+    using Key = std::pair<uint64_t, uint64_t>; // (startSector, sizeBytes)
+    auto run = [&](uint64_t resumeAt, bool stopAtTrigger, uint64_t& cursorOut) {
+        DiskReader reader;
+        reader.attachMemoryVolume(std::vector<uint8_t>(img));
+        std::set<Key> found;
+        std::atomic<bool> running{true};
+        cursorOut = resumeAt;
+        runCarveScanRanges(reader, [&](const FileRecord& fr) {
+            if (fr.id == -1 && fr.name.empty()) return;
+            found.insert({fr.startSector, fr.sizeBytes});
+            if (stopAtTrigger && fr.startSector >= 48 * kMiB / 512) running = false;
+        }, [](uint64_t, uint64_t) {}, &running, nullptr, ranges, resumeAt, true,
+        [&](uint64_t c) { cursorOut = c; });
+        return found;
+    };
+
+    uint64_t cursor = 0;
+    const auto whole = run(0, false, cursor);
+    ASSERT_EQ(whole.size(), offs.size());
+
+    const auto first = run(0, true, cursor);
+    ASSERT_LT(first.size(), whole.size());
+    uint64_t ignored = 0;
+    const auto second = run(cursor, false, ignored);
+
+    std::set<Key> both = first;
+    both.insert(second.begin(), second.end());
+    EXPECT_EQ(both, whole);
 }

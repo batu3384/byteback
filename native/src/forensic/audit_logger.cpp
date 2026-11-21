@@ -1,4 +1,5 @@
 #include "forensic/audit_logger.h"
+#include "recovery/path_util.h"
 #include <iomanip>
 #include <sstream>
 #include <chrono>
@@ -219,9 +220,31 @@ void AuditLogger::Initialize(const std::string& logFilePath) {
     if (logFile_.is_open()) {
         logFile_.close();
     }
-    logFile_.open(logFilePath, std::ios::app);
+    // The file is appended across launches: continue the chain from its last
+    // link, or the verifier reports every relaunch as tampering.
+    const std::filesystem::path path = byteback::utf8Path(logFilePath);
+    previousHash_ = std::string(64, '0');
+    bool tornTail = false;
+    {
+        std::ifstream in(path, std::ios::binary);
+        const std::string marker = " | ChainHash: ";
+        std::string line;
+        while (std::getline(in, line)) {
+            tornTail = in.eof(); // last line ended without a newline
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const size_t pos = line.rfind(marker);
+            if (pos == std::string::npos) continue;
+            const std::string stored = line.substr(pos + marker.size());
+            if (stored.size() == 64 && stored.find_first_not_of("0123456789abcdef") == std::string::npos) {
+                previousHash_ = stored;
+            }
+        }
+    }
+    logFile_.open(path, std::ios::app);
     if (!logFile_) {
         std::cerr << "Failed to open audit log file: " << logFilePath << std::endl;
+    } else if (tornTail) {
+        logFile_ << "\n"; // a crash-torn tail must not swallow the next entry
     }
 }
 
@@ -379,7 +402,7 @@ void AuditLogger::ProcessQueue() {
 
 AuditChainVerifyResult VerifyAuditChainFile(const std::string& path) {
     AuditChainVerifyResult res;
-    std::ifstream in(path);
+    std::ifstream in(byteback::utf8Path(path));
     if (!in.is_open()) {
         res.detail = "open failed";
         return res;

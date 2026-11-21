@@ -9,10 +9,12 @@
 // one session (fresh temp file) and verifies determinism by recomputing the
 // expected links with the (now RFC-verified) CalculateSHA256 itself.
 #include "forensic/audit_logger.h"
+#include "test_temp_path.h"
 
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -427,4 +429,97 @@ TEST(AuditChain, BridgeEventsJoinChainTaggedJsAndRejectBadInput) {
     }
     local.Shutdown();
     ::remove(path.c_str());
+}
+
+// A relaunch appends to the same log file. The new session must continue the
+// chain from the file's last ChainHash — restarting from the genesis link
+// makes the verifier report every second launch as tampering.
+TEST(AuditChain, ReopenedLogContinuesChainAcrossSessions) {
+    const std::string path = bytebackTestTemp("byteback_audit_reopen", ".log").string();
+    { std::ofstream f(path, std::ios::trunc); } // start clean
+
+    {
+        AuditLogger first;
+        first.Initialize(path);
+        first.LogEvent("SESSION_START | n=1");
+        first.LogEvent("SCAN_END | scanId=1");
+        first.Shutdown();
+    }
+    {
+        AuditLogger second; // next app launch: same file, fresh logger
+        second.Initialize(path);
+        second.LogEvent("SESSION_START | n=2");
+        second.Shutdown();
+    }
+
+    auto r = forensic::VerifyAuditChainFile(path);
+    EXPECT_TRUE(r.ok) << r.detail << " at line " << r.brokenAt;
+    EXPECT_EQ(r.entries, 3);
+    EXPECT_EQ(r.brokenAt, 0);
+    ::remove(path.c_str());
+}
+
+// A crash can leave a torn final line with no newline. The next session must
+// start its first entry on a fresh line and still chain from the last
+// complete link, so only the torn line itself fails verification.
+TEST(AuditChain, ReopenAfterTornTailStartsOnFreshLine) {
+    const std::string path = bytebackTestTemp("byteback_audit_torn_reopen", ".log").string();
+    { std::ofstream f(path, std::ios::trunc); }
+
+    {
+        AuditLogger first;
+        first.Initialize(path);
+        first.LogEvent("SESSION_START | n=1");
+        first.Shutdown();
+    }
+    { std::ofstream f(path, std::ios::app); f << "[2026-01-01T00:00:00Z] EVENT | SCAN_STA"; } // torn, no '\n'
+    {
+        AuditLogger second;
+        second.Initialize(path);
+        second.LogEvent("SESSION_START | n=2");
+        second.Shutdown();
+    }
+
+    std::ifstream in(path);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty()) lines.push_back(line);
+    }
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_EQ(lines[1], "[2026-01-01T00:00:00Z] EVENT | SCAN_STA");
+
+    // Session 2's link folds session 1's hash, not the genesis zeros.
+    const std::string marker = " | ChainHash: ";
+    const std::string h1 = lines[0].substr(lines[0].rfind(marker) + marker.size());
+    const size_t pos = lines[2].rfind(marker);
+    ASSERT_NE(pos, std::string::npos);
+    const std::string toHash = h1 + lines[2].substr(0, pos);
+    EXPECT_EQ(AuditLogger::CalculateSHA256(reinterpret_cast<const uint8_t*>(toHash.data()), toHash.size()),
+              lines[2].substr(pos + marker.size()));
+    ::remove(path.c_str());
+}
+
+// userData lives under the Windows profile, and profile names carry non-ASCII
+// letters (ş, ğ, ı, ...). The path arrives as UTF-8; the log must open there.
+TEST(AuditChain, OpensLogUnderNonAsciiUtf8Path) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     std::filesystem::u8path("byteback_audit_ş_" + std::to_string(bytebackTestPid()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "audit.log";
+    const std::string pathUtf8 = file.u8string();
+
+    {
+        AuditLogger local;
+        local.Initialize(pathUtf8);
+        local.LogEvent("RECOVER_BEGIN | fileId=1"); // critical: on disk when the call returns
+        local.Shutdown();
+    }
+
+    EXPECT_TRUE(std::filesystem::exists(file));
+    auto r = forensic::VerifyAuditChainFile(pathUtf8);
+    EXPECT_TRUE(r.ok) << r.detail;
+    EXPECT_EQ(r.entries, 1);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

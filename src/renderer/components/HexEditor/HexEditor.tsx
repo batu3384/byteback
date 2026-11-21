@@ -503,7 +503,7 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
           <div className="template-fields">
             <div><strong>0x00:</strong> <span className="field-accent">"FILE"</span> {t('hex.signature')}</div>
             <div><strong>0x04:</strong> {data[4] + (data[5] << 8)} {t('hex.updateArrayOffset')}</div>
-            <div><strong>0x16:</strong> {data[22] === 0x01 ? t('hex.inUse') : t('scan.deleted')}</div>
+            <div><strong>0x16:</strong> {data[22] & 0x01 ? t('hex.inUse') : t('scan.deleted')}</div>
           </div>
         </div>
       )}
@@ -540,10 +540,10 @@ function HexEditor({ driveIndex, sectorSize = 512, scanBusy, volumePath, forceDi
             </div>
             
             <div className="hex-body">
-              {Array.from({ length: 32 }).map((_, row) => {
+              {Array.from({ length: Math.ceil(data.length / 16) }).map((_, row) => {
                 const rowOffset = row * 16
+                // Whole sector (4Kn too), no invented 00 padding after a short read.
                 const rowData = data.slice(rowOffset, rowOffset + 16)
-                while (rowData.length < 16) rowData.push(0)
 
                 return (
                   <div key={row} className="hex-row">

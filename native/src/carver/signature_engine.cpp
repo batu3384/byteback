@@ -5,6 +5,7 @@
 #include "carver/content_classifier.h"
 #include "carver/embedded_metadata.h"
 #include "crypto/byteback_md5.h"
+#include "recovery/path_util.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -245,7 +246,7 @@ namespace {
 bool appendSignaturesFromJson(std::vector<FileSignature>& signatures,
                               const std::string& jsonPath,
                               const std::function<std::vector<uint8_t>(const std::string&)>& hexToBytes) {
-    std::ifstream file(jsonPath);
+    std::ifstream file(utf8Path(jsonPath));
     if (!file.is_open()) return false;
 
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -692,9 +693,11 @@ bool CarvingEngine::scanRange(DiskReader& reader, uint64_t firstSector, uint64_t
     // the parallelism bought nothing. The compiled transition table (below)
     // recovers the throughput instead.
     const bool ok = scanRangeSingle(reader, firstSector, rangeEndSector, callback, isRunning, 0, 0, nullptr);
+    if (isRunning && !(*isRunning)) return ok; // cancelled: the range end was not reached
     FileRecord done;
     done.id = -1;
     done.startSector = rangeEndSector;
+    done.endSector = rangeEndSector;
     callback(done);
     return ok;
 }
@@ -1150,6 +1153,12 @@ bool CarvingEngine::scanRangeSingle(DiskReader& reader, uint64_t firstSector, ui
         FileRecord progressTick;
         progressTick.id = -1;
         progressTick.startSector = sub.sector + sub.sectors;
+        // endSector = safe resume point: a scan restarted there misses nothing.
+        // An open carve, or a header straddling this boundary, must be re-read.
+        uint64_t safeSector = sub.sector + sub.sectors;
+        if (currentState != 0 && safeSector > firstSector) --safeSector;
+        if (!activeCarves.empty()) safeSector = std::min(safeSector, activeCarves.begin()->second.startSector);
+        progressTick.endSector = safeSector;
         emit(progressTick);
         } // sub-reads
     }

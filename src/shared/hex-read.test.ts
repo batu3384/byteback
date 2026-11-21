@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  resultSourceNeedsRaid,
+  SCAN_IMAGE_DRIVE_INDEX,
   hexDataOrNull,
   hexUsesRaidBackend,
   isHexDriveIndex,
@@ -97,5 +99,16 @@ describe('mftAttrTypeLabel', () => {
     expect(mftAttrTypeLabel(0x80)).toBe('$DATA')
     expect(mftAttrTypeLabel(0x30)).toBe('$FILE_NAME')
     expect(mftAttrTypeLabel(0x10)).toBe('$STANDARD_INFORMATION')
+  })
+})
+
+describe('resultSourceNeedsRaid', () => {
+  it('only the assembled-RAID sentinel needs a live array', () => {
+    expect(resultSourceNeedsRaid(-1)).toBe(true)
+    expect(resultSourceNeedsRaid(null)).toBe(true)
+  })
+  it('an evidence-image scan (-2) and a PhysicalDrive read without RAID', () => {
+    expect(resultSourceNeedsRaid(SCAN_IMAGE_DRIVE_INDEX)).toBe(false)
+    expect(resultSourceNeedsRaid(0)).toBe(false)
   })
 })

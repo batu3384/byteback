@@ -412,13 +412,13 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
         size_t stripe_index = logical_block_index / (num_disks_ - 2);
         size_t block_in_stripe = logical_block_index % (num_disks_ - 2);
 
-        raid_layout::Raid6Map pq = raid_layout::raid6Disks(stripe_index, static_cast<uint32_t>(num_disks_));
+        raid_layout::Raid6Map pq = raid_layout::raid6Disks(stripe_index, static_cast<uint32_t>(num_disks_), raid5_algorithm_);
         size_t p_disk = pq.pDisk;
         size_t q_disk = pq.qDisk;
 
         // Map the logical data block to a physical slot: walk disk order,
         // skipping P and Q positions (raid_layout.cpp owns the placement).
-        size_t data_disk = raid_layout::raid6DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe), static_cast<uint32_t>(num_disks_));
+        size_t data_disk = raid_layout::raid6DataDisk(stripe_index, static_cast<uint32_t>(block_in_stripe), static_cast<uint32_t>(num_disks_), raid5_algorithm_);
 
         uint64_t stripe_base = static_cast<uint64_t>(stripe_index) * block_size_;
         size_t read_len = std::min(length - res_idx, block_size_ - offset_in_block);
@@ -440,13 +440,8 @@ std::vector<uint8_t> VirtualRaid::read_raid6(size_t offset, size_t length) const
             }
 
             auto slotOf = [&](size_t disk) -> int {
-                int slot = 0;
-                for (size_t i = 0; i < num_disks_; ++i) {
-                    if (i == p_disk || i == q_disk) continue;
-                    if (i == disk) return slot;
-                    slot++;
-                }
-                return -1;
+                return static_cast<int>(raid_layout::raid6QSlot(
+                    stripe_index, static_cast<uint32_t>(disk), static_cast<uint32_t>(num_disks_), raid5_algorithm_));
             };
 
             if (failedData == 1) {

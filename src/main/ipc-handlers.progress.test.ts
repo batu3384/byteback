@@ -9,6 +9,7 @@ vi.mock('electron', () => ({
 }))
 
 import { clampInt, scanProgressPayload, sanitizeRaidIndices, sanitizeRaidImagePaths, startScanDrivePath } from './ipc-handlers'
+import { imagingProgressPayload } from './ipc-utils'
 
 // Main once dropped phaseCurrent/phaseTotal from native progress events, leaving
 // the ScanView phase % dead despite the renderer reading them (bridge_scan.cpp
@@ -88,5 +89,26 @@ describe('startScanDrivePath', () => {
     expect(startScanDrivePath(-2, 'C:\\case\\disk.img')).toBe('image')
     expect(startScanDrivePath(-1)).toBe('raid')
     expect(startScanDrivePath(3)).toBe('3')
+  })
+})
+
+describe('imagingProgressPayload', () => {
+  it('a finished run with an MD5 is complete', () => {
+    expect(imagingProgressPayload({ current: 8, total: 8, md5: 'ab', badSectors: 0 }))
+      .toEqual({ current: 8, total: 8, md5: 'ab', badSectors: 0 })
+  })
+
+  it('the final tick of a stopped run carries no MD5 and is reported as cancelled', () => {
+    expect(imagingProgressPayload({ current: 8, total: 8, md5: '', badSectors: 0 }))
+      .toEqual({ current: 8, total: 8, badSectors: 0, status: 'cancelled' })
+  })
+
+  it('forwards the unreadable-sector count the engine reports', () => {
+    expect(imagingProgressPayload({ current: 2, total: 8, badSectors: 3 }))
+      .toEqual({ current: 2, total: 8, badSectors: 3 })
+  })
+
+  it('the failure tick (0/0) stays a failure, not a cancel', () => {
+    expect(imagingProgressPayload({ current: 0, total: 0 })).toEqual({ current: 0, total: 0, badSectors: 0 })
   })
 })

@@ -11,6 +11,7 @@ void DedupIndex::clear() {
     carvePending_.clear();
     metaPrefixMaxEnd_.clear();
     carvePrefixMaxEnd_.clear();
+    storedCarves_.clear();
     sorted_ = true;
     carveSorted_ = true;
 }
@@ -35,6 +36,16 @@ bool DedupIndex::isMetadataSource(const std::string& source) {
 
 bool DedupIndex::isCarveSource(const std::string& source) {
     return source == "carver" || source == "carver_bgc";
+}
+
+// Every carve-family row: carver, carver_bgc, carver_duplicate, and the raid_ forms.
+static bool isCarveFamilySource(const std::string& source) {
+    return source.rfind("carver", 0) == 0 || source.rfind("raid_carver", 0) == 0;
+}
+
+bool DedupIndex::isStoredCarve(const FileRecord& fr) const {
+    if (!isCarveFamilySource(fr.source)) return false;
+    return storedCarves_.count({fr.startSector, fr.startByteOffset, fr.sizeBytes}) != 0;
 }
 
 bool DedupIndex::sectorsOverlap(uint64_t aStart, uint64_t aEnd, uint64_t bStart, uint64_t bEnd) {
@@ -68,6 +79,9 @@ void DedupIndex::observe(const FileRecord& fr) {
 
 void DedupIndex::loadFromRecords(const std::vector<FileRecord>& records) {
     for (const auto& fr : records) {
+        if (isCarveFamilySource(fr.source)) {
+            storedCarves_.insert({fr.startSector, fr.startByteOffset, fr.sizeBytes});
+        }
         if (isCarveSource(fr.source)) {
             Entry e;
             e.startSector = fr.startSector;

@@ -220,7 +220,7 @@ function ScanView({
         ? t('scan.paused')
         : isFailed
           ? t('scan.failed')
-          : tFormat('scan.driveScanning', { drive: driveIndex === -1 ? t('scan.raid') : String(driveIndex) })
+          : tFormat('scan.driveScanning', { drive: driveIndex === -1 ? t('scan.raid') : driveIndex === -2 ? t('scan.evidenceImage') : String(driveIndex) })
   // Profile name: i18n key when the profile exists in the dictionary, engine
   // label otherwise (shared/scan-profiles labels are TR-only).
   const profileKey = `profile.${scanType}.label`

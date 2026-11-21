@@ -232,7 +232,7 @@ bool raid6Consistent(uint64_t si, uint32_t n, const std::vector<std::vector<uint
         uint8_t q = 0;
         for (uint32_t j = 0; j + 2 < n; ++j) {
             const uint32_t disk = raid_layout::raid6DataDisk(si, j, n);
-            q ^= raid6_math::gfMul(blocks[disk][b], raid6_math::gfPow(static_cast<int>(j)));
+            q ^= raid6_math::gfMul(blocks[disk][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(si, disk, n))));
         }
         if (q != blocks[pq.qDisk][b]) return false;
     }
@@ -691,7 +691,7 @@ bool tryMdadmGeometry(const std::vector<DiskReader*>& members, RaidGeometry& out
     case 10: level = RaidLevel::RAID10; break;
     default: return false;
     }
-    if (level == RaidLevel::RAID5 && a.kernelLayout > 3) return false;
+    if ((level == RaidLevel::RAID5 || level == RaidLevel::RAID6) && a.kernelLayout > 3) return false;
     if (level == RaidLevel::RAID5 && members.size() < 3) return false;
     if (level == RaidLevel::RAID6 && members.size() < 4) return false;
     if (level == RaidLevel::RAID10 && (members.size() < 4 || (members.size() % 2) != 0))
@@ -722,7 +722,8 @@ bool tryMdadmGeometry(const std::vector<DiskReader*>& members, RaidGeometry& out
     out.blockSize = (level == RaidLevel::RAID1 || level == RaidLevel::JBOD) ? 0 : stripe;
     out.dataOffsetSectors = a.dataOffsetSectors;
     out.confidence = 1.0;
-    if (level == RaidLevel::RAID5) out.raid5Algorithm = raid5AlgoFromMdadmLayout(a.kernelLayout);
+    if (level == RaidLevel::RAID5 || level == RaidLevel::RAID6)
+        out.raid5Algorithm = raid5AlgoFromMdadmLayout(a.kernelLayout);
     out.memberOrder = std::move(order);
     return true;
 }

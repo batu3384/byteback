@@ -40,7 +40,7 @@ window.api                 native-bridge.ts          |
 | `forensic/` | Audit log + NSRL MD5 set | `audit_logger.cpp`, `nsrl_lookup.cpp` |
 | `smart/` | ATA SMART + NVMe health log | `smart_monitor.cpp` |
 | `bridge/` | NAPI bindings by concern | `bridge_{drives,scan,imager,wipe,ops}.cpp`, `napi_bridge.cpp` |
-| `security/` | File/free-space wipe; PhysicalDrive serial gate | `data_shredder.cpp` |
+| `security/` | File/free-space wipe; PhysicalDrive serial + system-disk gate | `data_shredder.cpp` |
 
 ## Correctness assurance
 

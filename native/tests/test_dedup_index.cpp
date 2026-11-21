@@ -204,3 +204,39 @@ TEST(DedupIndex, LoadFromRecordsRehydratesContentHashes) {
     EXPECT_TRUE(idx.markDuplicate(again));
     EXPECT_EQ(again.source, "carver_duplicate");
 }
+
+// A resumed carve re-reads the span behind its checkpoint and finds the same
+// files again. Rows already stored for this scan must be recognised exactly —
+// not re-inserted as extra "duplicate" rows that inflate every count.
+TEST(DedupIndex, StoredCarveIsRecognisedAfterResumeHydrate) {
+    FileRecord stored = makeRec("carver", 100, 108);
+    stored.sizeBytes = 4096;
+    FileRecord storedDup = makeRec("carver_duplicate", 300, 308);
+    storedDup.sizeBytes = 4096;
+    FileRecord meta = makeRec("ntfs_mft", 500, 508);
+    meta.sizeBytes = 4096;
+
+    DedupIndex idx;
+    idx.loadFromRecords({stored, storedDup, meta});
+
+    FileRecord again = makeRec("carver", 100, 108);
+    again.sizeBytes = 4096;
+    EXPECT_TRUE(idx.isStoredCarve(again));
+    FileRecord againDup = makeRec("carver", 300, 308); // re-found before dedup marks it
+    againDup.sizeBytes = 4096;
+    EXPECT_TRUE(idx.isStoredCarve(againDup));
+
+    FileRecord otherSize = makeRec("carver", 100, 116);
+    otherSize.sizeBytes = 8192;
+    EXPECT_FALSE(idx.isStoredCarve(otherSize));
+    FileRecord otherOffset = again;
+    otherOffset.startByteOffset = 7;
+    EXPECT_FALSE(idx.isStoredCarve(otherOffset));
+    FileRecord carveOverMeta = makeRec("carver", 500, 508); // same span as a metadata row: not a stored carve
+    carveOverMeta.sizeBytes = 4096;
+    EXPECT_FALSE(idx.isStoredCarve(carveOverMeta));
+    EXPECT_FALSE(idx.isStoredCarve(meta));
+
+    idx.clear();
+    EXPECT_FALSE(idx.isStoredCarve(again));
+}

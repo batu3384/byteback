@@ -92,42 +92,17 @@ TEST(Raid5Layout, RightAsymmetricDataSkipsParityInDiskOrder) {
     EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::RightAsymmetric), 3u);
 }
 
-TEST(Raid5Layout, RightSymmetricWalksTowardDiskZero) {
-    EXPECT_EQ(raid5DataDisk(0, 0, 4, Raid5Algorithm::RightSymmetric), 3u);
+// Linux md ALGORITHM_RIGHT_SYMMETRIC (raid5.c raid5_compute_sector):
+// pd = stripe % n, data = (pd + 1 + k) % n — data follows parity upward.
+TEST(Raid5Layout, RightSymmetricDataFollowsParityLikeMd) {
+    EXPECT_EQ(raid5DataDisk(0, 0, 4, Raid5Algorithm::RightSymmetric), 1u);
     EXPECT_EQ(raid5DataDisk(0, 1, 4, Raid5Algorithm::RightSymmetric), 2u);
-    EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::RightSymmetric), 1u);
+    EXPECT_EQ(raid5DataDisk(0, 2, 4, Raid5Algorithm::RightSymmetric), 3u);
+    EXPECT_EQ(raid5DataDisk(1, 0, 4, Raid5Algorithm::RightSymmetric), 2u);
+    EXPECT_EQ(raid5DataDisk(1, 2, 4, Raid5Algorithm::RightSymmetric), 0u);
 }
 
-// ---- RAID 6 (adjacent P/Q rotating together, N=5) ----
-TEST(Raid6Layout, ParityRotationTable) {
-    auto m0 = raid6Disks(0, 5); // P=4, Q=3
-    EXPECT_EQ(m0.pDisk, 4u); EXPECT_EQ(m0.qDisk, 3u);
-    auto m1 = raid6Disks(1, 5); // P=3, Q=2
-    EXPECT_EQ(m1.pDisk, 3u); EXPECT_EQ(m1.qDisk, 2u);
-    auto m2 = raid6Disks(2, 5);
-    EXPECT_EQ(m2.pDisk, 2u); EXPECT_EQ(m2.qDisk, 1u);
-    auto m3 = raid6Disks(3, 5);
-    EXPECT_EQ(m3.pDisk, 1u); EXPECT_EQ(m3.qDisk, 0u);
-    auto m4 = raid6Disks(4, 5); // P wraps to 0, Q wraps to the last disk
-    EXPECT_EQ(m4.pDisk, 0u); EXPECT_EQ(m4.qDisk, 4u);
-    auto m5 = raid6Disks(5, 5); // period = N
-    EXPECT_EQ(m5.pDisk, 4u); EXPECT_EQ(m5.qDisk, 3u);
-}
-
-TEST(Raid6Layout, DataDisksSkipBothParities) {
-    // Stripe 0 (P=4, Q=3): slots 0..2 -> disks 0,1,2.
-    EXPECT_EQ(raid6DataDisk(0, 0, 5), 0u);
-    EXPECT_EQ(raid6DataDisk(0, 1, 5), 1u);
-    EXPECT_EQ(raid6DataDisk(0, 2, 5), 2u);
-    // Stripe 1 (P=3, Q=2): slots -> 0,1,4.
-    EXPECT_EQ(raid6DataDisk(1, 0, 5), 0u);
-    EXPECT_EQ(raid6DataDisk(1, 1, 5), 1u);
-    EXPECT_EQ(raid6DataDisk(1, 2, 5), 4u);
-    // Stripe 4 (P=0, Q=4): slots -> 1,2,3.
-    EXPECT_EQ(raid6DataDisk(4, 0, 5), 1u);
-    EXPECT_EQ(raid6DataDisk(4, 2, 5), 3u);
-}
-
+// ---- RAID 6 (Linux md layouts, P then Q, N=5) ----
 TEST(Raid6Layout, EveryStripeUsesEachDiskOnce) {
     for (uint64_t s = 0; s < 5; ++s) {
         auto m = raid6Disks(s, 5);
@@ -177,4 +152,30 @@ TEST(Raid1eLayout, NearThreeDiskTable) {
     auto f = raid1eCopy(2, 1, 3);
     EXPECT_EQ(f.disk, 2u);
     EXPECT_EQ(f.row, 1u);
+}
+
+// Linux md RAID 6 layouts (raid5.c raid5_compute_sector), N=5.
+TEST(Raid6Layout, MdLeftSymmetricMatchesKernel) {
+    // stripe 0: P=4, Q=0, data 1,2,3; stripe 1: P=3, Q=4, data 0,1,2
+    auto m0 = raid6Disks(0, 5, Raid5Algorithm::LeftSymmetric);
+    EXPECT_EQ(m0.pDisk, 4u); EXPECT_EQ(m0.qDisk, 0u);
+    EXPECT_EQ(raid6DataDisk(0, 0, 5, Raid5Algorithm::LeftSymmetric), 1u);
+    EXPECT_EQ(raid6DataDisk(0, 2, 5, Raid5Algorithm::LeftSymmetric), 3u);
+    auto m2 = raid6Disks(2, 5, Raid5Algorithm::LeftSymmetric); // P=2, Q=3, data 4,0,1
+    EXPECT_EQ(m2.qDisk, 3u);
+    EXPECT_EQ(raid6DataDisk(2, 0, 5, Raid5Algorithm::LeftSymmetric), 4u);
+    EXPECT_EQ(raid6QSlot(2, 4, 5, Raid5Algorithm::LeftSymmetric), 0u);
+}
+
+TEST(Raid6Layout, MdLeftAsymmetricMatchesKernel) {
+    // stripe 0: Q D D D P; stripe 2: D D P Q D with Q slots counted after Q
+    auto m0 = raid6Disks(0, 5);
+    EXPECT_EQ(m0.pDisk, 4u); EXPECT_EQ(m0.qDisk, 0u);
+    EXPECT_EQ(raid6DataDisk(0, 0, 5), 1u);
+    auto m2 = raid6Disks(2, 5);
+    EXPECT_EQ(m2.pDisk, 2u); EXPECT_EQ(m2.qDisk, 3u);
+    EXPECT_EQ(raid6DataDisk(2, 0, 5), 0u);
+    EXPECT_EQ(raid6DataDisk(2, 2, 5), 4u);
+    EXPECT_EQ(raid6QSlot(2, 4, 5), 0u); // first slot is the disk right after Q
+    EXPECT_EQ(raid6QSlot(2, 0, 5), 1u);
 }

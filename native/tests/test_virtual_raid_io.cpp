@@ -159,7 +159,8 @@ TEST(VirtualRaidIo, Raid6RecoversAfterTwoDataDiskFailures) {
             uint8_t p = 0, q = 0;
             for (size_t j = 0; j < N - 2; ++j) {
                 p ^= data[j][b];
-                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(
+                    s, raid_layout::raid6DataDisk(s, static_cast<uint32_t>(j), static_cast<uint32_t>(N)), static_cast<uint32_t>(N)))));
             }
             images[pq.pDisk][s * BS + b] = p;
             images[pq.qDisk][s * BS + b] = q;
@@ -218,7 +219,8 @@ TEST(VirtualRaidIo, Raid6RecoversWhenPDiskFailsAlone) {
             uint8_t p = 0, q = 0;
             for (size_t j = 0; j < N - 2; ++j) {
                 p ^= data[j][b];
-                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(
+                    s, raid_layout::raid6DataDisk(s, static_cast<uint32_t>(j), static_cast<uint32_t>(N)), static_cast<uint32_t>(N)))));
             }
             images[pq.pDisk][s * BS + b] = p;
             images[pq.qDisk][s * BS + b] = q;
@@ -262,7 +264,8 @@ TEST(VirtualRaidIo, Raid6QSyndromeReconstructsWhenPAndDataFail) {
             uint8_t p = 0, q = 0;
             for (size_t j = 0; j < N - 2; ++j) {
                 p ^= data[j][b];
-                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(
+                    s, raid_layout::raid6DataDisk(s, static_cast<uint32_t>(j), static_cast<uint32_t>(N)), static_cast<uint32_t>(N)))));
             }
             images[pq.pDisk][s * BS + b] = p;
             images[pq.qDisk][s * BS + b] = q;

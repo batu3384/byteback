@@ -41,7 +41,7 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const [status, setStatus] = useState<ImagerStatusMessage | null>(imagingActive ? { key: 'imager.running' } : null)
   const [elapsed, setElapsed] = useState(0)
-  const [latencies, setLatencies] = useState<number[]>([]) // EKG Chart Data
+  const [badSectors, setBadSectors] = useState(0)
   const [format, setFormat] = useState<'raw' | 'ewf'>('raw')
   const [imageMd5, setImageMd5] = useState<string>('')
   const [formError, setFormError] = useState<string | null>(null)
@@ -51,7 +51,6 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
   const [raidStateError, setRaidStateError] = useState<string | null>(null)
 
   const timerRef = useRef<NodeJS.Timeout | null>(null)
-  const lastProgressTimeRef = useRef<number>(0)
   // A trailing progress event after the user cancelled must not flip the
   // status back to "complete"/"failed" — the cancel message stays.
   const cancelledRef = useRef(false)
@@ -94,7 +93,8 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
   useEffect(() => {
     let cleanupProgress: (() => void) | undefined
     if (window.api && window.api.onImagingProgress) {
-      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string, status?: 'cancelled' }) => {
+      cleanupProgress = window.api.onImagingProgress((data: { current: number, total: number, md5?: string, error?: string, status?: 'cancelled', badSectors?: number }) => {
+        if (typeof data.badSectors === 'number' && data.badSectors > 0) setBadSectors(data.badSectors)
         if (data.status === 'cancelled') {
           // Explicit terminal marker from main on stop — the native abort path
           // emits no completion tick, so this is the authoritative end event.
@@ -116,19 +116,7 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
         }
         setProgress(data)
 
-        setLatencies(prev => {
-          const now = Date.now();
-          const lastTime = lastProgressTimeRef.current || now;
-          const delta = now - lastTime;
-          lastProgressTimeRef.current = now;
 
-          // Avoid 0ms spikes on first run
-          const finalLatency = delta > 0 && delta < 1000 ? delta : 15;
-
-          const next = [...prev, finalLatency];
-          if (next.length > 50) next.shift(); // Keep last 50 reads
-          return next;
-        });
 
         if (data.current >= data.total && data.total > 0) {
           setStatus({ key: 'imager.done' })
@@ -174,6 +162,7 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
     setProgress({ current: 0, total: 0 })
     setElapsed(0)
     setImageMd5('')
+    setBadSectors(0)
 
     window.api.startImaging(args.driveIndex, destPath, format, args.volumePath)
   }
@@ -386,31 +375,11 @@ function ImagerView({ imagingActive, onImagingStateChange, scanVolumePath, spann
               </div>
             )}
 
-            {/* Predictive Latency Pulse Chart */}
-            <div className="latency-chart-container">
-              <div className="latency-chart-head">
-                <span className="latency-chart-label">
-                  <Activity size={14} /> {t('imager.latencyChart')}
-                </span>
-                <span className={`latency-chart-value${latencies[latencies.length - 1] > 100 ? ' is-high' : ''}`}>
-                  {tFormat('imager.instant', { n: String(latencies.length > 0 ? latencies[latencies.length - 1] : 0) })}
-                </span>
-              </div>
-              <div className="latency-chart">
-                {latencies.map((val, idx) => {
-                  const heightPct = Math.min(100, (val / 200) * 100);
-                  const isHigh = val > 100;
-                  return (
-                    <div 
-                      key={idx} 
-                      className={`latency-bar${isHigh ? ' is-high' : ''}`}
-                      style={{ height: `${heightPct}%` }}
-                      title={`${val} ms`}
-                    />
-                  )
-                })}
-              </div>
-            </div>
+            {badSectors > 0 && (
+              <InlineAlert variant="warning" testId="imager-bad-sectors">
+                {tFormat('imager.badSectors', { n: formatInt(badSectors) })}
+              </InlineAlert>
+            )}
           </div>
         )}
       </div>

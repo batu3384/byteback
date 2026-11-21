@@ -15,32 +15,51 @@ uint32_t raid5DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t nu
                        Raid5Algorithm algo) {
     uint32_t parity = raid5ParityDisk(stripeIndex, numDisks, algo);
     if (numDisks == 0) return 0;
-    if (algo == Raid5Algorithm::LeftSymmetric) return (parity + 1u + blockInStripe) % numDisks;
-    if (algo == Raid5Algorithm::RightSymmetric) {
-        return (parity + numDisks - 1u - blockInStripe) % numDisks;
+    // Both symmetric layouts start the data right after parity (md raid5.c).
+    if (algo == Raid5Algorithm::LeftSymmetric || algo == Raid5Algorithm::RightSymmetric) {
+        return (parity + 1u + blockInStripe) % numDisks;
     }
     uint32_t disk = blockInStripe;
     if (disk >= parity) ++disk;
     return disk % numDisks;
 }
 
-Raid6Map raid6Disks(uint64_t stripeIndex, uint32_t numDisks) {
+namespace {
+bool isSymmetric(Raid5Algorithm a) {
+    return a == Raid5Algorithm::LeftSymmetric || a == Raid5Algorithm::RightSymmetric;
+}
+} // namespace
+
+Raid6Map raid6Disks(uint64_t stripeIndex, uint32_t numDisks, Raid5Algorithm algo) {
     Raid6Map m{};
     if (numDisks == 0) return m;
-    m.pDisk = (numDisks - 1) - static_cast<uint32_t>(stripeIndex % numDisks);
-    m.qDisk = (m.pDisk == 0) ? (numDisks - 1) : (m.pDisk - 1);
+    const uint32_t r = static_cast<uint32_t>(stripeIndex % numDisks);
+    const bool right = algo == Raid5Algorithm::RightAsymmetric || algo == Raid5Algorithm::RightSymmetric;
+    m.pDisk = right ? r : (numDisks - 1) - r;
+    m.qDisk = (m.pDisk + 1) % numDisks;
     return m;
 }
 
-uint32_t raid6DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks) {
-    Raid6Map m = raid6Disks(stripeIndex, numDisks);
-    uint32_t seen = 0;
-    for (uint32_t i = 0; i < numDisks; ++i) {
+uint32_t raid6DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks,
+                       Raid5Algorithm algo) {
+    if (numDisks < 3) return 0;
+    const Raid6Map m = raid6Disks(stripeIndex, numDisks, algo);
+    if (isSymmetric(algo)) return (m.pDisk + 2u + blockInStripe) % numDisks;
+    if (m.pDisk == numDisks - 1) return blockInStripe + 1;          // Q D D D P
+    return blockInStripe >= m.pDisk ? blockInStripe + 2 : blockInStripe; // D D P Q D
+}
+
+uint32_t raid6QSlot(uint64_t stripeIndex, uint32_t disk, uint32_t numDisks, Raid5Algorithm algo) {
+    if (numDisks < 3) return 0;
+    const Raid6Map m = raid6Disks(stripeIndex, numDisks, algo);
+    const uint32_t d0 = m.qDisk == numDisks - 1 ? 0 : m.qDisk + 1;
+    uint32_t slot = 0;
+    for (uint32_t k = 0, i = d0; k < numDisks; ++k, i = (i + 1) % numDisks) {
         if (i == m.pDisk || i == m.qDisk) continue;
-        if (seen == blockInStripe) return i;
-        ++seen;
+        if (i == disk) return slot;
+        ++slot;
     }
-    return 0; // blockInStripe out of range — caller's stripe math is wrong
+    return 0; // P/Q disk: no data slot
 }
 
 uint32_t raid10Pair(uint64_t blockIndex, uint32_t numDisks) {

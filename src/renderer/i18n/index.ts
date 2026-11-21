@@ -237,6 +237,7 @@ const STRINGS: Record<string, Entry> = {
   'scan.path': { tr: 'Yol', en: 'Path' },
   'scan.noFiles': { tr: 'Henüz dosya bulunamadı...', en: 'No files found yet...' },
   'scan.sector': { tr: 'Sektör', en: 'Sector' },
+  'scan.evidenceImage': { tr: 'kanıt imajı', en: 'evidence image' },
   'scan.driveScanning': { tr: 'Sürücü {drive} taranıyor', en: 'Scanning drive {drive}' },
   'scan.noProgress': { tr: 'ilerleme yok', en: 'no progress' },
   'scan.calculating': { tr: 'hesaplanıyor', en: 'calculating' },
@@ -577,8 +578,7 @@ const STRINGS: Record<string, Entry> = {
   'imager.elapsed': { tr: 'Geçen Süre: {t}', en: 'Elapsed: {t}' },
   'imager.sectorProgress': { tr: 'Sektör: {cur} / {total}', en: 'Sector: {cur} / {total}' },
   'imager.md5Title': { tr: 'İmaj Bütünlük Doğrulaması (Zincirleme Sorumluluk)', en: 'Image Integrity Verification (Chain of Custody)' },
-  'imager.latencyChart': { tr: 'G/Ç Gecikme Grafiği (I/O Latency)', en: 'I/O Latency Chart' },
-  'imager.instant': { tr: 'Anlık: {n} ms', en: 'Instant: {n} ms' },
+  'imager.badSectors': { tr: '{n} sektör okunamadı; imajda bu sektörler sıfırla dolduruldu.', en: '{n} sectors could not be read; they are zero-filled in the image.' },
 
   // ShredderView
   'shred.freeSpaceFailed': { tr: 'Boş alan imhası başarısız', en: 'Free-space wipe failed' },

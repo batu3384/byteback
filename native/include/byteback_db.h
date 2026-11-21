@@ -238,6 +238,8 @@ public:
     /** Latest scan with status complete (1) or paused (4); -1 if none. */
     int64_t getLatestUsableScanId();
     bool clearAllScanData();
+    // Drop one scan's file and timeline rows; the scan row stays.
+    bool clearScanRecords(int64_t scanId);
     bool incrementRecovered(int64_t scanId);
 
     // Unified timeline (USN journal and other event sources)

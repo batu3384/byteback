@@ -9,6 +9,7 @@ import {
   shouldEmitAuditReportSection,
   auditReportLinesKind,
   auditReportChainKind,
+  reportStamp,
   type AuditChainStatus,
 } from '../../../shared/report-audit';
 import InlineAlert from '../InlineAlert';
@@ -120,8 +121,7 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ scanId, scanElapsed, 
     setGenerating(true);
     try {
       const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
-      const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
+      const { date: dateStr, time: timeStr } = reportStamp(now);
 
       // Real audit-log tail: the hash-chained forensic log maintained by the
       // native engine (scan/imaging/wipe events). Embedded verbatim so the
@@ -220,7 +220,7 @@ ${chainLine}
   <tr><th>${t('report.metricTh')}</th><th>${t('report.valueTh')}</th></tr>
   <tr><td>${t('report.totalFilesTd')}</td><td>${totalFiles}</td></tr>
   <tr><td>${t('report.deletedTd')}</td><td>${summary?.deletedFiles ?? 0}</td></tr>
-  <tr><td>${t('report.allocatedTd')}</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0))}</td></tr>
+  <tr><td>${t('report.allocatedTd')}</td><td>${Math.max(0, totalFiles - (summary?.deletedFiles ?? 0) - (summary?.carvedFiles ?? 0))}</td></tr>
       <tr><td>${t('report.scanDurationTd')}</td><td>${reportElapsedSec} ${t('report.secondsSuffix')}</td></tr>
   <tr><td>${t('report.timelineEventsTd')}</td><td>${summary?.timelineEvents ?? 0}</td></tr>
   <tr><td>${t('report.usnOpsTd')}</td><td>${summary?.usnCreates ?? 0} / ${summary?.usnDeletes ?? 0} / ${summary?.usnRenames ?? 0}</td></tr>
@@ -279,7 +279,7 @@ ${body}
   const downloadReport = () => {
     if (!reportHtml) return;
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
+    const dateStr = reportStamp(now).date;
     const blob = new Blob([reportHtml], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

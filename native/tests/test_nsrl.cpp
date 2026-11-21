@@ -1,6 +1,9 @@
 #include "forensic/nsrl_lookup.h"
 
+#include "test_temp_path.h"
+
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -64,4 +67,23 @@ TEST(NsrlLookup, OfficialRdsUsesMd5ColumnNotSha1) {
     EXPECT_EQ(nsrl.size(), 1u);
     EXPECT_TRUE(nsrl.contains("d41d8cd98f00b204e9800998ecf8427e"));
     cleanupNsrl(path);
+}
+
+TEST(NsrlLookup, LoadsListFromNonAsciiUtf8Path) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     std::filesystem::u8path("byteback_nsrl_ş_" + std::to_string(bytebackTestPid()));
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "hashes.txt";
+    {
+        std::ofstream out(file);
+        out << "d41d8cd98f00b204e9800998ecf8427e\n";
+    }
+
+    {
+        NsrlLookup nsrl;
+        EXPECT_TRUE(nsrl.loadFromFile(file.u8string()));
+        EXPECT_EQ(nsrl.size(), 1u);
+    } // closes the sidecar DB before the folder is removed
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

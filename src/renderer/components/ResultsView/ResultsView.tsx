@@ -8,7 +8,7 @@ import HonestyBanners from '../HonestyBanners'
 import { diskBusyMessage } from '../../../shared/scan-required'
 import { isDestOnScannedDrive, isDestOnRaidMemberDrive } from '../../../shared/recover-dest-guard'
 import { previewDataUrl, resolvePreviewImageMime } from '../../../shared/preview-utils'
-import { probeRaidState } from '../../../shared/hex-read'
+import { probeRaidState, resultSourceNeedsRaid } from '../../../shared/hex-read'
 import { useI18n, tFormat, formatInt } from '../../i18n'
 import InlineAlert from '../InlineAlert'
 import ResultsPreviewPanel from './ResultsPreviewPanel'
@@ -186,7 +186,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy, onShowMft }: Re
     }
     const raidProbe = await probeRaidState(window.api?.getRaidState)
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
-    if (effectiveDrive < 0) {
+    if (resultSourceNeedsRaid(driveIndex)) {
       if (raidProbe.status === 'unread') {
         setPreview({ success: false, error: t('results.raidStateFailed') })
         return
@@ -495,7 +495,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy, onShowMft }: Re
     }
     const raidState = raidProbe.state
     const effectiveDrive = driveIndex !== null ? driveIndex : -1
-    if (effectiveDrive < 0 && !raidState.active) {
+    if (resultSourceNeedsRaid(driveIndex) && !raidState.active) {
       setRecoverReport(t('results.recoverNeedsDrive'))
       return
     }
@@ -735,7 +735,7 @@ function ResultsView({ filesFound, driveIndex, scanId, scanBusy, onShowMft }: Re
       }
       const raidProbe = await probeRaidState(window.api?.getRaidState)
       const effectiveDrive = driveIndex !== null ? driveIndex : -1
-      if (effectiveDrive < 0) {
+      if (resultSourceNeedsRaid(driveIndex)) {
         if (raidProbe.status === 'unread' || !raidProbe.state.active) return
       }
       if (!window.api?.readFilePreview) return

@@ -3,6 +3,7 @@
 #include "byteback_io.h"
 #include "crypto/byteback_md5.h"
 
+#include "test_temp_path.h"
 #include <gtest/gtest.h>
 #include <cstdio>
 #include <cstring>
@@ -79,8 +80,10 @@ namespace {
 // Writes `sectors` sectors of a counter pattern, then aborts mid-stream and
 // checks every WRITTEN segment stays readable (no digest/done, headers patched).
 void abortAndVerifyReadable(int expectedSegments, uint64_t writtenSectors) {
-    const char* p1 = "abort_ewf.E01";
-    const char* p2 = "abort_ewf.E02";
+    const std::string s1 = bytebackTestTemp("abort_ewf", ".E01").string(); // per-process: ctest runs tests in parallel
+    const char* p1 = s1.c_str();
+    const std::string s2 = bytebackTestTemp("abort_ewf", ".E02").string();
+    const char* p2 = s2.c_str();
     ::remove(p1);
     ::remove(p2);
 

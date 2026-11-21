@@ -97,6 +97,12 @@ void runCarveScan(DiskReader& reader,
 // two ranges is flushed at its range end by design). This is the seam the
 // parallel carve phase (workers over disjoint ranges, clonable reader) hangs
 // on, and the test entry point for determinism/cancel coverage.
+// Carve resume cursor: sectors of the range list (cumulative, in list order)
+// that are finished — every file starting before it was already reported.
+// Feed it back as resumeCarveSector. It trails the progress value while a
+// candidate file is still open.
+using CarveResumeCallback = std::function<void(uint64_t carveResumeSector)>;
+
 void runCarveScanRanges(DiskReader& reader,
                         FileSystemParser::FileRecordCallback onFileFound,
                         ScanProgressCallback onProgress,
@@ -104,7 +110,8 @@ void runCarveScanRanges(DiskReader& reader,
                         std::vector<uint64_t>* badSectorOut,
                         std::vector<SectorRange> ranges,
                         uint64_t resumeCarveSector = 0,
-                        bool allowParallelCarve = true);
+                        bool allowParallelCarve = true,
+                        CarveResumeCallback onResumeCursor = nullptr);
 
 // Metadata quick scan followed by signature carving (professional "deep" mode).
 using ScanCheckpointCallback = std::function<void(bool metadataComplete, uint64_t carveResumeSector)>;

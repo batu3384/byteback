@@ -85,7 +85,8 @@ std::vector<std::vector<uint8_t>> buildRaid6(uint32_t n, size_t stripes, size_t 
             uint8_t p = 0, q = 0;
             for (uint32_t j = 0; j + 2 < n; ++j) {
                 p ^= data[j][b];
-                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(j)));
+                q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(
+                    raid_layout::raid6QSlot(s, raid_layout::raid6DataDisk(s, j, n), n))));
             }
             images[pq.pDisk][offsetBytes + s * sb + b] = p;
             images[pq.qDisk][offsetBytes + s * sb + b] = q;

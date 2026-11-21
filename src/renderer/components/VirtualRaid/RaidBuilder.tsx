@@ -206,7 +206,6 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           variant: 'success',
           message: tFormat('raid.builtOk', { type: raidType, cap: capGb, n: String(res.numDisks) }),
         });
-        if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         setAssembled(false);
         const why = res && res.error ? tFormat('raid.errorSuffix', { err: res.error }) : '';
@@ -252,7 +251,6 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           variant: 'success',
           message: tFormat('raid.lvmOk', { cap: capGb, n: String(res.numDisks) }),
         });
-        if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         setAssembled(false);
         const why = res && res.error ? tFormat('raid.errorSuffix', { err: res.error }) : '';
@@ -298,7 +296,6 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
           variant: 'success',
           message: tFormat('raid.ldmOk', { cap: capGb, n: String(res.numDisks) }),
         });
-        if (onStartRaidScan) onStartRaidScan('quick');
       } else {
         setAssembled(false);
         const why = res && res.error ? tFormat('raid.errorSuffix', { err: res.error }) : '';
@@ -416,7 +413,7 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                   <option key={n} value={n}>{formatRaidStripe(n)}</option>
                 ))}
               </select>
-              {raidType === 'RAID 5' && (
+              {(raidType === 'RAID 5' || raidType === 'RAID 6') && (
                 <select
                   className="raid-type-select"
                   data-testid="raid5-algorithm-select"
@@ -551,6 +548,18 @@ const RaidBuilder: React.FC<RaidBuilderProps> = ({ onStartRaidScan }) => {
                 </>
               )}
             </button>
+            {/* Scan only when the examiner says so: an automatic quick scan
+                left the page before failed members could be marked. */}
+            {assembled && onStartRaidScan && (
+              <>
+                <button type="button" className="btn-secondary" data-testid="raid-scan-quick" onClick={() => onStartRaidScan('quick')}>
+                  {t('profile.quick.label')}
+                </button>
+                <button type="button" className="btn-primary" data-testid="raid-scan-deep" onClick={() => onStartRaidScan('deep')}>
+                  {t('profile.deep.label')}
+                </button>
+              </>
+            )}
             <p className="raid-hint">
               {t('raid.hint')}
             </p>

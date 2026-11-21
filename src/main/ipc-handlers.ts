@@ -17,8 +17,8 @@ import { registerScanDbIpcHandlers } from './ipc-handlers-scan-db'
 import { registerRecoverIpcHandlers } from './ipc-handlers-recover'
 import { destOnEvidenceError, lastEvidenceDisksIncludes, setLastEvidenceDisks } from './ipc-evidence-context'
 import { assertBoundDriveIndex, assertDriveIndex } from './ipc-guards'
-import { clampInt, sanitizeCsvFileName, scanProgressPayload, sanitizeRaidImagePaths, sanitizeRaidIndices, startScanDrivePath } from './ipc-utils'
-import { wipeSerialMatches } from './wipe-serial'
+import { clampInt, imagingProgressPayload, sanitizeCsvFileName, scanProgressPayload, sanitizeRaidImagePaths, sanitizeRaidIndices, startScanDrivePath } from './ipc-utils'
+import { wipeHitsProtectedVolume, wipeSerialMatches } from './wipe-serial'
 
 export {
   clampInt,
@@ -580,11 +580,7 @@ export function registerIpcHandlers(): void {
           // total===0 is the native failure tick (0,0); current>=total the
           // completion tick — both end the run, so window close can rely on it.
           if (data.total === 0 || data.current >= data.total) imagingLive = false
-          event.reply('imaging-progress', {
-            current: data.current,
-            total: data.total,
-            md5: data.md5 ?? undefined,
-          })
+          event.reply('imaging-progress', imagingProgressPayload(data))
         }
       }
 
@@ -615,9 +611,8 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[IPC] stop-imaging error:', err)
     }
-    // Explicit terminal marker: the native abort path never emits the
-    // completion tick, so without this the renderer would infer "cancelled"
-    // only from the absence of further events.
+    // Explicit terminal marker right away; the engine's own final tick of the
+    // stopped run follows and is mapped to the same status.
     event.reply('imaging-progress', { current: 0, total: 0, status: 'cancelled' })
   })
 
@@ -768,6 +763,14 @@ export function registerIpcHandlers(): void {
         return { ok: false, error: 'İmaj sürerken disk imha edilemez' }
       }
       const engine = getEngine()
+      // The disk holding Windows or this app's evidence store is never a wipe target.
+      const protectedLetters = [...new Set([process.env.SystemDrive ?? 'C:', app.getPath('userData')]
+        .map((p) => /^([A-Za-z]):/.exec(p)?.[1]?.toUpperCase())
+        .filter((l): l is string => !!l))]
+      if (wipeHitsProtectedVolume(driveIndex, protectedLetters.map((l) => engine.resolveVolume(l)))) {
+        appendSessionLog('WIPE_FAIL', `physical dest_rejected system_disk drive=${driveIndex}`)
+        return { ok: false, error: 'Bu disk Windows veya Byteback veri klasörünü barındırıyor; imha edilemez' }
+      }
       const drives = engine.listDrives()
       const target = drives.find((d) => d.index === driveIndex)
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]

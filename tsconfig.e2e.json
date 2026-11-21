@@ -7,8 +7,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["e2e/**/*"],
-  "exclude": ["e2e/**/*.spec.ts"]
+  "include": [
+    "e2e/**/*",
+    "src/shared/types.ts"
+  ]
 }

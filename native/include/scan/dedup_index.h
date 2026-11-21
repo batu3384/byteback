@@ -2,7 +2,9 @@
 
 #include "byteback_db.h"
 #include <cstdint>
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -15,6 +17,9 @@ public:
     void loadFromRecords(const std::vector<FileRecord>& records);
     void ensureSorted();
     bool markDuplicate(FileRecord& fr);
+    // True when loadFromRecords saw this exact carve (same start and size):
+    // a resumed scan found a file it had already stored.
+    bool isStoredCarve(const FileRecord& fr) const;
 
 private:
     struct Entry {
@@ -68,6 +73,8 @@ private:
     // dedup. Size must match too: the hash covers first min(64KB, size) bytes,
     // so equal prefixes of different-sized files are NOT duplicates.
     std::unordered_map<std::string, uint64_t> contentHashes_;
+    // (startSector, startByteOffset, sizeBytes) of carve rows loaded on resume.
+    std::set<std::tuple<uint64_t, uint64_t, uint64_t>> storedCarves_;
 };
 
 } // namespace byteback

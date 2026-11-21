@@ -529,7 +529,7 @@ void plantRaid6Payload(std::vector<uint8_t>& a, std::vector<uint8_t>& b, std::ve
             if (src + sb > imgs[disk]->size()) return;
             for (size_t k = 0; k < sb; ++k) {
                 pAcc[k] ^= (*imgs[disk])[src + k];
-                qAcc[k] ^= raid6_math::gfMul((*imgs[disk])[src + k], raid6_math::gfPow(static_cast<int>(j)));
+                qAcc[k] ^= raid6_math::gfMul((*imgs[disk])[src + k], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(s, disk, n))));
             }
         }
         const uint64_t dstP = off + s * sb;

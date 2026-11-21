@@ -1,4 +1,5 @@
 #include "forensic/nsrl_lookup.h"
+#include "recovery/path_util.h"
 #include "sqlite3.h"
 
 #include <cctype>
@@ -50,7 +51,7 @@ bool NsrlLookup::normalizeMd5(std::string& hex) {
 }
 
 bool NsrlLookup::loadFromFile(const std::string& path) {
-    std::ifstream in(path);
+    std::ifstream in(byteback::utf8Path(path));
     if (!in.is_open()) return false;
 
     if (!ensureDb(sqlitePathFor(path))) return false;

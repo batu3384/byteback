@@ -80,9 +80,10 @@ not on lab fixture counts alone.
   path for split fragments (sector-stepped, per-scan budget). CPU only; no
   CUDA/OpenCL PFAC.
 - **RAID** — 0/1/5/6/10 with GF(2⁸) Reed–Solomon double parity, sector-aligned
-  reads. RAID 0 zero-fills bad stripes (scan continues); RAID 1 tries mirror;
-  RAID 5/6 uses parity. Members can be marked failed via `fail_disk` (NAPI +
-  RAID UI).
+  reads. Stripe maps follow Linux `drivers/md/raid5.c`, including all four
+  mdadm RAID 6 layouts. RAID 0 zero-fills bad stripes (scan continues); RAID 1
+  tries mirror; RAID 5/6 uses parity. Members can be marked failed via
+  `fail_disk` (NAPI + RAID UI).
 - **Imaging** — RAW (dd) and **E01 (EWF)** with inline MD5. E01 supports
   multi-segment chains (`.E01` → `.E02`) with per-segment uint32 tables.
 - **SMART** — ATA attributes and NVMe Health Information Log; SSD/TRIM warning.
@@ -201,8 +202,10 @@ scan/image/wipe/content-search serialized via `heavyOps`.
 - Recovery and imaging write only to user-chosen destinations. Recover rejects
   renderer-supplied `runs`; SQLite `fileId` + `scanId` are required.
 - Full-disk PhysicalDrive wipe: Shredder UI + serial confirmation + OS dialog.
-  Native layer refuses without serial match. File/free-space wipe still rejects
-  device paths (CA-001). SSD wipe is not NIST 800-88 sanitization.
+  Native layer refuses without serial match, and refuses the disk hosting the
+  Windows system volume or the Byteback data folder outright. File/free-space
+  wipe still rejects device paths (CA-001). SSD wipe is not NIST 800-88
+  sanitization.
 - NSRL path is chosen via main-process file dialog, not from renderer input.
 
 ## GitHub

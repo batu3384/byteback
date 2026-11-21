@@ -79,7 +79,7 @@ declare global {
 
       startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf', volumePath?: string) => void
       stopImaging: () => void
-      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled' }) => void) => () => void
+      onImagingProgress: (callback: (data: { current: number; total: number; md5?: string; error?: string; status?: 'cancelled'; badSectors?: number }) => void) => () => void
 
       getSmartStatus: (driveIndex: number) => Promise<SmartStatus>
       getDataPaths: () => Promise<{

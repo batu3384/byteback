@@ -4,6 +4,7 @@ import {
   auditReportLinesKind,
   shouldEmitAuditReportSection,
   type AuditReportProbe,
+  reportStamp,
 } from './report-audit'
 
 const okChain = { ok: true, entries: 12, brokenAt: -1, detail: '' }
@@ -50,5 +51,12 @@ describe('audit report honesty', () => {
     const p = probe({ lines: ['SCAN | id=1'], chain: brokenChain })
     expect(auditReportChainKind(p)).toBe('broken')
     expect(shouldEmitAuditReportSection(p)).toBe(true)
+  })
+})
+
+describe('reportStamp', () => {
+  it('uses the local calendar day and clock, not the UTC day', () => {
+    const d = new Date(2026, 10, 21, 1, 30, 5) // 01:30 local — still the previous day in UTC east of Greenwich
+    expect(reportStamp(d)).toEqual({ date: '2026-11-21', time: '01:30:05' })
   })
 })

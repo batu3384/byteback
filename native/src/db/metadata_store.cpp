@@ -2,6 +2,7 @@
 #include "db/runs_codec.h"
 #include "scan/discovery_sources.h"
 #include "search/content_search.h"
+#include "recovery/path_util.h"
 #include "../../third_party/sqlite3.h"
 #include <ctime>
 #include <cstdio>
@@ -260,14 +261,18 @@ bool ensureFtsIndex(sqlite3* db) {
     )";
     if (sqlite3_exec(db, ftsSql, nullptr, nullptr, nullptr) != SQLITE_OK) return false;
 
+    // files_fts stores its own content, so rows leave it with a plain DELETE.
+    // The FTS5 'delete' command is only for external-content tables: used
+    // here it made every DELETE/UPDATE on files fail with "SQL logic error".
+    // Drop first — databases created earlier still carry the old trigger body.
     const char* triggers = R"(
         CREATE TRIGGER IF NOT EXISTS files_fts_ai AFTER INSERT ON files BEGIN
           INSERT INTO files_fts(rowid, scan_id, name, path, extension)
           VALUES (new.id, new.scan_id, new.name, COALESCE(new.path,''), COALESCE(new.extension,''));
         END;
-        CREATE TRIGGER IF NOT EXISTS files_fts_ad AFTER DELETE ON files BEGIN
-          INSERT INTO files_fts(files_fts, rowid, scan_id, name, path, extension)
-          VALUES('delete', old.id, old.scan_id, old.name, old.path, old.extension);
+        DROP TRIGGER IF EXISTS files_fts_ad;
+        CREATE TRIGGER files_fts_ad AFTER DELETE ON files BEGIN
+          DELETE FROM files_fts WHERE rowid = old.id;
         END;
     )";
     sqlite3_exec(db, triggers, nullptr, nullptr, nullptr);
@@ -277,7 +282,7 @@ bool ensureFtsIndex(sqlite3* db) {
     sqlite3_exec(db, "DROP TRIGGER IF EXISTS files_fts_au;", nullptr, nullptr, nullptr);
     const char* au = R"(
         CREATE TRIGGER files_fts_au AFTER UPDATE OF name, path, extension ON files BEGIN
-          INSERT INTO files_fts(files_fts, rowid) VALUES('delete', old.id);
+          DELETE FROM files_fts WHERE rowid = old.id;
           INSERT INTO files_fts(rowid, scan_id, name, path, extension)
           VALUES (new.id, new.scan_id, new.name, COALESCE(new.path,''), COALESCE(new.extension,''));
         END;
@@ -949,14 +954,22 @@ bool MetadataStore::exportCsv(int64_t scanId, const std::string& destPath, const
         return false;
     }
 
+#ifdef _WIN32
+    std::FILE* out = _wfopen(utf8Path(destPath).c_str(), L"wb"); // fopen would read the UTF-8 path as ANSI
+#else
     std::FILE* out = std::fopen(destPath.c_str(), "wb");
+#endif
+    auto removeDest = [&] {
+        std::error_code ec;
+        std::filesystem::remove(utf8Path(destPath), ec);
+    };
     if (!out) {
         if (errOut) *errOut = "cannot open destination file for writing";
         return false;
     }
     auto fail = [&](const std::string& msg) {
         std::fclose(out);
-        std::remove(destPath.c_str());
+        removeDest();
         if (errOut) *errOut = msg;
         return false;
     };
@@ -1023,7 +1036,7 @@ bool MetadataStore::exportCsv(int64_t scanId, const std::string& destPath, const
             const std::string msg = sqlite3_errmsg(db_);
             stepLock.unlock();
             std::fclose(out);
-            std::remove(destPath.c_str());
+            removeDest();
             if (errOut) *errOut = "SQLite error: " + msg;
             return false;
         }
@@ -1159,6 +1172,38 @@ int64_t MetadataStore::getLatestUsableScanId() {
     if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return id;
+}
+
+bool MetadataStore::clearScanRecords(int64_t scanId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_) return false;
+    // Content-index tables exist only after a content search; a missing table
+    // is fine, a failed delete of the core rows is not.
+    static const char* kOptional[] = {
+        "DELETE FROM content_chunk_fts WHERE file_id IN (SELECT id FROM files WHERE scan_id = ?)",
+        "DELETE FROM content_fts WHERE rowid IN (SELECT id FROM files WHERE scan_id = ?)",
+    };
+    static const char* kCore[] = {
+        "DELETE FROM files WHERE scan_id = ?", // files_fts follows via trigger
+        "DELETE FROM timeline_events WHERE scan_id = ?",
+    };
+    auto run = [&](const char* sql) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+        sqlite3_bind_int64(stmt, 1, scanId);
+        const int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        return rc == SQLITE_DONE;
+    };
+    if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+    for (const char* sql : kOptional) run(sql);
+    bool ok = true;
+    for (const char* sql : kCore) ok = ok && run(sql);
+    if (!ok || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
 }
 
 bool MetadataStore::clearAllScanData() {

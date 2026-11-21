@@ -1,4 +1,5 @@
 #include "byteback_db.h"
+#include "test_temp_path.h"
 
 #include <gtest/gtest.h>
 #include <cstdio>
@@ -9,7 +10,7 @@ using byteback::MetadataStore;
 class CaseInfoTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        dbPath_ = "test_case_info.db";
+        dbPath_ = bytebackTestTemp("test_case_info", ".db").string(); // per-process: ctest runs tests in parallel
         std::remove(dbPath_.c_str());
         ASSERT_TRUE(store_.open(dbPath_));
     }

@@ -589,7 +589,8 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         }
 
         sector += sectorsToRead;
-        if (onProgress) onProgress(sector, totalSectors);
+        // The completion tick (current == total) is sent once, after the image is final.
+        if (onProgress && sector < totalSectors) onProgress(sector, totalSectors);
     }
 
     if (!writeOk) {

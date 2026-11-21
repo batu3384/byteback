@@ -16,8 +16,10 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
 
     if (bdata->imagerContext) {
         bdata->imagerContext->imager.stopImaging();
+        // A finished run already gave its token back; releasing it again here
+        // would take the token of whatever disk operation runs now.
+        if (bdata->imagerContext->holdsHeavyOp.exchange(false)) bdata->endHeavyOp();
         bdata->imagerContext.reset();
-        bdata->endHeavyOp();
     }
 
     if (!bdata->tryBeginHeavyOp()) {
@@ -103,7 +105,7 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
         tsfnPost(context->tsfn, callback);
         if (current >= total) {
             context->tsfn.Release();
-            bdata->endHeavyOp();
+            if (context->holdsHeavyOp.exchange(false)) bdata->endHeavyOp();
         }
     };
 

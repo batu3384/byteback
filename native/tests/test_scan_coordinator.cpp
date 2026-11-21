@@ -13,8 +13,10 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace byteback;
@@ -563,4 +565,80 @@ TEST(ScanCoordinator, RawImagePathFindsFat16TestTxt) {
         if (n.find("TEST") != std::string::npos) found = true;
     }
     EXPECT_TRUE(found) << "RAW image scan must expose FAT16 TEST.TXT";
+}
+
+namespace {
+
+// (startSector, sizeBytes) of a carved record — names carry a per-run counter.
+using CarveKey = std::pair<uint64_t, uint64_t>;
+
+struct CarveOnlyRun {
+    std::set<CarveKey> found;
+    uint64_t lastProgress = 0;
+    uint64_t total = 0;
+    uint64_t checkpoint = 0;
+};
+
+// Carve-only scan that requests a stop after `stopAfterTicks` progress ticks
+// (0 = run to the end). `checkpoint` is what the bridge would persist.
+CarveOnlyRun runCarveOnly(DiskReader& reader, uint64_t resumeAt, int stopAfterTicks) {
+    CarveOnlyRun out;
+    out.checkpoint = resumeAt;
+    ScanTarget target;
+    target.metadataComplete = true;
+    target.carveResumeSector = resumeAt;
+    std::atomic<bool> running{true};
+    int ticks = 0;
+    runCarveOnlyScan(reader,
+        [&](const FileRecord& fr) {
+            if (fr.source == "carver" || fr.source == "carver_bgc") out.found.insert({fr.startSector, fr.sizeBytes});
+        },
+        [&](uint64_t current, uint64_t total) {
+            out.lastProgress = current;
+            out.total = total;
+            if (stopAfterTicks > 0 && current > 0 && ++ticks >= stopAfterTicks) running = false;
+        },
+        &running, nullptr, {}, target,
+        [&](bool, uint64_t carveResume) { out.checkpoint = carveResume; });
+    return out;
+}
+
+} // namespace
+
+// A stop in the middle of the carve phase must leave the bar and the stored
+// checkpoint where the scan really is. Reporting 100% marks the scan as
+// "stopped at the end": it can no longer be resumed and the rest is skipped.
+TEST(ScanCoordinator, CarveOnlyStoppedMidCarveKeepsHonestPosition) {
+    constexpr size_t kDisk = 32u * 1024 * 1024; // eight 4 MiB carve chunks
+    DiskReader reader;
+    reader.attachMemoryVolume(std::vector<uint8_t>(kDisk, 0));
+
+    const auto run = runCarveOnly(reader, 0, 1);
+    ASSERT_GT(run.total, 0u);
+    EXPECT_LT(run.lastProgress, run.total / 2);
+    EXPECT_LT(run.checkpoint, run.total / 2);
+}
+
+// Stop + resume must find exactly what one uninterrupted run finds — also the
+// file whose header was read before the stop and whose footer comes after it.
+TEST(ScanCoordinator, CarveOnlyResumeAfterStopFindsSameFilesAsOneRun) {
+    constexpr size_t kChunk = 4u * 1024 * 1024; // carver read chunk
+    constexpr size_t kDisk = 4 * kChunk;
+    std::vector<uint8_t> disk(kDisk, 0);
+    const auto png = byteback::testfix::buildMinimalValidPng();
+    const size_t offs[] = {1u << 20, kChunk - 30, 3 * kChunk + 4096};
+    for (size_t off : offs) std::memcpy(disk.data() + off, png.data(), png.size());
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(disk));
+
+    const auto whole = runCarveOnly(reader, 0, 0);
+    ASSERT_EQ(whole.found.size(), 3u);
+
+    const auto first = runCarveOnly(reader, 0, 1);
+    ASSERT_LT(first.lastProgress, first.total);
+    const auto second = runCarveOnly(reader, first.checkpoint, 0);
+
+    std::set<CarveKey> both = first.found;
+    both.insert(second.found.begin(), second.found.end());
+    EXPECT_EQ(both, whole.found);
 }

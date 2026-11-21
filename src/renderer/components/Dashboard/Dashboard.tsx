@@ -378,6 +378,8 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
+            // BitLocker unlock reads a PhysicalDrive; an evidence image is LUKS-only here.
+            disabled={recoveryDrive === SCAN_IMAGE_DRIVE_INDEX}
             onClick={async () => {
               if (!window.api?.setBitLockerPassword) {
                 setUserPasswordStatus(t('dash.noApiShort'))
@@ -407,6 +409,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
           <button
             type="button"
             className="btn-secondary"
+            disabled={recoveryDrive === SCAN_IMAGE_DRIVE_INDEX}
             onClick={async () => {
               if (!window.api?.setBitLockerRecoveryPassword) {
                 setRecoveryStatus(t('dash.noApiShort'))
@@ -691,7 +694,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
             <div>
               <h3>{t('dash.pausedTitle')}</h3>
               <p>
-                {tFormat('dash.pausedMeta', { drive: String(pausedSession.driveIndex), type: pausedSession.scanType, pct: String(scanProgressPercent(pausedSession)), scanned: String(pausedSession.scannedSectors), total: String(pausedSession.totalSectors) })}
+                {tFormat('dash.pausedMeta', { drive: pausedSession.driveIndex === SCAN_IMAGE_DRIVE_INDEX ? t('scan.evidenceImage') : String(pausedSession.driveIndex), type: pausedSession.scanType, pct: String(scanProgressPercent(pausedSession)), scanned: String(pausedSession.scannedSectors), total: String(pausedSession.totalSectors) })}
                 {!scanShowsMetadataResume(pausedSession) ? '' : ` · ${t('dash.metadataResume')}`}
                 {pausedSession.metadataComplete && (pausedSession.carveResumeSector ?? 0) > 0
                   ? ` · ${tFormat('dash.carveResume', { sector: formatInt(pausedSession.carveResumeSector!) })}`
@@ -712,7 +715,8 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               type="button"
               className="btn-primary"
               data-testid="resume-scan-btn"
-              disabled={scanBusy}
+              // Native refuses to resume a quick scan (it restarts instead).
+              disabled={scanBusy || pausedSession.scanType === 'quick'}
               onClick={() => {
                 void (async () => {
                   if (!onStartScan) return

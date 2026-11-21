@@ -147,6 +147,35 @@ TEST(DiskImagerTest, RawImageMatchesSourceAndMd5) {
     std::filesystem::remove(dest);
 }
 
+// current == total is the "finished" signal: the bridge releases its JS
+// callback and the disk-busy token on it and reports the MD5. It must come
+// exactly once, after the image is final — not also after the last chunk.
+TEST(DiskImagerTest, CompletionTickArrivesOnceAfterImageIsFinal) {
+    const auto vol = makeVolume(64, 0x22);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+
+    const std::string dest = bytebackTestTemp("bb_img_tick", ".raw").string();
+    DiskImager imager;
+    std::atomic<int> completionTicks{0};
+    std::atomic<bool> md5Missing{false};
+    std::atomic<bool> fileMissing{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (total == 0 || cur < total) return;
+        ++completionTicks;
+        if (imager.lastImageMd5().empty()) md5Missing = true;
+        if (!std::filesystem::exists(dest)) fileMissing = true; // .part not promoted yet
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 200 && completionTicks == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+
+    EXPECT_EQ(completionTicks.load(), 1);
+    EXPECT_FALSE(md5Missing.load());
+    EXPECT_FALSE(fileMissing.load());
+    std::filesystem::remove(dest);
+}
+
 TEST(DiskImagerTest, RawImageWritesUtf8DestDir) {
     const auto vol = makeVolume(8, 0x5A);
     std::vector<uint8_t> copy = vol;

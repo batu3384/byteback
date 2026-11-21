@@ -32,17 +32,26 @@ uint32_t raid5ParityDisk(uint64_t stripeIndex, uint32_t numDisks,
 uint32_t raid5DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks,
                        Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
 
-// RAID 6 — P and Q are adjacent and rotate together: P = RAID-5-style parity,
-// Q sits immediately below P (wrapping to the last disk when P is disk 0).
+// RAID 6 — Linux md layouts (drivers/md/raid5.c raid5_compute_sector).
+// Q sits right after P. Asymmetric: data fills the other disks in index
+// order. Symmetric: data starts right after Q and wraps. Left: P starts on
+// the last disk and steps down; right: P starts on disk 0 and steps up.
 struct Raid6Map {
     uint32_t pDisk;
     uint32_t qDisk;
 };
-Raid6Map raid6Disks(uint64_t stripeIndex, uint32_t numDisks);
+Raid6Map raid6Disks(uint64_t stripeIndex, uint32_t numDisks,
+                    Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
 
-// RAID 6 — physical data disk for the logical block within the stripe,
-// skipping BOTH parity positions (disk order).
-uint32_t raid6DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks);
+// RAID 6 — physical data disk for the logical block within the stripe.
+uint32_t raid6DataDisk(uint64_t stripeIndex, uint32_t blockInStripe, uint32_t numDisks,
+                       Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
+
+// RAID 6 — Q-syndrome slot of a data disk: Q = XOR of g^slot * D. md counts
+// slots from the disk after Q (disk 0 when Q is the last disk), wrapping and
+// skipping P and Q (raid6_d0 / raid6_idx_to_slot).
+uint32_t raid6QSlot(uint64_t stripeIndex, uint32_t disk, uint32_t numDisks,
+                    Raid5Algorithm algo = Raid5Algorithm::LeftAsymmetric);
 
 // RAID 10 — stripe of mirror pairs: block b lives on pair (b % (N/2));
 // the pair's members are disks 2*pair and 2*pair+1 (either serves a read).

@@ -225,57 +225,13 @@
   user-select: all;
 }
 
-.latency-chart-container {
-  margin-top: 24px;
-  padding: 16px;
-  background-color: var(--well-bg);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--panel-border);
-}
 
-.latency-chart-head {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  font-size: 0.85rem;
-}
 
-.latency-chart-label {
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 
-.latency-chart-value {
-  font-family: monospace;
-  color: var(--success-green);
-}
 
-.latency-chart-value.is-high {
-  color: var(--alert-red);
-}
 
-.latency-chart {
-  display: flex;
-  align-items: flex-end;
-  height: 60px;
-  gap: 2px;
-  overflow: hidden;
-}
 
-.latency-bar {
-  flex: 1;
-  background-color: var(--accent-blue);
-  opacity: 0.8;
-  min-height: 2px;
-  transition: height 0.1s ease-out;
-  border-radius: 1px 1px 0 0;
-}
 
-.latency-bar.is-high {
-  background-color: var(--alert-red);
-}
 
 .progress-stats {
   display: flex;

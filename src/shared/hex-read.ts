@@ -35,6 +35,12 @@ export function isHexDriveIndex(v: unknown): v is number {
     && (v === HEX_RAID_DRIVE_INDEX || v === SCAN_IMAGE_DRIVE_INDEX || v >= 0)
 }
 
+/** Results bound to the assembled RAID (-1, or no drive at all) need a live
+ *  array; image scans (-2) and PhysicalDrive scans read their own source. */
+export function resultSourceNeedsRaid(driveIndex: number | null): boolean {
+  return driveIndex === null || driveIndex === HEX_RAID_DRIVE_INDEX
+}
+
 /** RAID assembly is opt-in. A live array must not hijack member/volume hex. */
 export function hexUsesRaidBackend(raidActive: boolean, driveIndex: number): boolean {
   return raidActive && driveIndex === HEX_RAID_DRIVE_INDEX
