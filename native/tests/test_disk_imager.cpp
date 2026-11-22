@@ -362,21 +362,67 @@ TEST(DiskImagerTest, DeadChunksSkipAheadZeroesUnreadSpan) {
     imager.stopImaging();
     ASSERT_TRUE(done.load());
 
-    // 8 chunks read-failed (512) + one skipped chunk (64) — the skip proves
-    // the imager did not bisect the ninth span.
-    EXPECT_EQ(imager.badSectorReads(), 9 * static_cast<uint64_t>(chunk));
+    // 8 chunks read-failed (512) + one skipped chunk (64). The skip span
+    // was never actually faulted, so the trimming pass recovers it:
+    // 576 counted → 64 tail-trimmed back → 512 remain bad.
+    EXPECT_EQ(imager.badSectorReads(), 8 * static_cast<uint64_t>(chunk));
 
     std::ifstream in(dest, std::ios::binary);
     std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
     ASSERT_EQ(out.size(), vol.size());
-    // Sectors 0..575 are zero — including 512..575 which was readable but
-    // skipped by the dead-streak rule.
-    for (size_t s = 0; s < 9 * chunk; ++s)
+    // Sectors 0..511 are zero (still faulted at trim time). 512..575 was
+    // skipped-then-zeroed but the trim pass read it back — REAL data now.
+    for (size_t s = 0; s < 8 * chunk; ++s)
         EXPECT_EQ(out[s * 512], 0) << "sector " << s;
-    // Everything after the skipped span is real data again.
-    EXPECT_EQ(std::memcmp(out.data() + 9 * chunk * 512, vol.data() + 9 * chunk * 512,
-                          (kSectors - 9 * chunk) * 512), 0);
+    EXPECT_EQ(std::memcmp(out.data() + 8 * chunk * 512, vol.data() + 8 * chunk * 512,
+                          (kSectors - 8 * chunk) * 512), 0);
+    std::filesystem::remove(dest);
+}
+
+// Trimming pass: after the main run, the imager retries up to 64 sectors
+// at each failed run's edges and patches recovered bytes into the .part.
+// A flaky drive that reads on retry must yield real data, not zeros.
+TEST(DiskImagerTest, TrimmingPassRecoversSkippedEdgeSectors) {
+    constexpr uint32_t chunk = 64;
+    constexpr size_t kSectors = chunk * 20; // 1280
+    const auto vol = makeVolume(kSectors, 0x77);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+    reader.setMemoryFaultRange(0, 8 * chunk); // 8 dead chunks → skip ahead
+
+    const std::string dest = bytebackTestTemp("bb_img_trim", ".raw").string();
+    DiskImager imager;
+    imager.setChunkSectorsForTest(chunk);
+    std::atomic<bool> done{false};
+    std::atomic<bool> cleared{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (!cleared.load() && cur >= 9 * chunk) {
+            // Dead span fully behind the cursor: the flaky drive "recovers"
+            // so the trimming pass sees readable sectors.
+            reader.setMemoryFaultRange(0, 0);
+            cleared = true;
+        }
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 400 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    // Failed runs merge to {0,576}; head trim recovers 0..63, tail trim
+    // 512..575 — 576 - 128 = 448 sectors remain bad.
+    EXPECT_EQ(imager.badSectorReads(), 448u);
+
+    std::ifstream in(dest, std::ios::binary);
+    std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    ASSERT_EQ(out.size(), vol.size());
+    // Trimmed edges are REAL data now; only the still-dead middle is zero.
+    EXPECT_EQ(std::memcmp(out.data(), vol.data(), 64 * 512), 0);
+    for (size_t s = 64; s < 512; ++s) EXPECT_EQ(out[s * 512], 0) << "sector " << s;
+    EXPECT_EQ(std::memcmp(out.data() + 512 * 512, vol.data() + 512 * 512,
+                          (kSectors - 512) * 512), 0);
     std::filesystem::remove(dest);
 }
 

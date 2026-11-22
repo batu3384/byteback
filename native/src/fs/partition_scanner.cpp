@@ -431,9 +431,10 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
         if (std::memcmp(buffer.data() + 82, "FAT32   ", 8) == 0 &&
             buffer[510] == 0x55 && buffer[511] == 0xAA) {
             info.type = "FAT32";
-        } else if (std::memcmp(buffer.data() + 54, "FAT16   ", 8) == 0 &&
-                   buffer[510] == 0x55 && buffer[511] == 0xAA) {
-            info.type = "FAT16";
+        } else if (buffer[510] == 0x55 && buffer[511] == 0xAA &&
+                   (std::memcmp(buffer.data() + 54, "FAT16   ", 8) == 0 ||
+                    std::memcmp(buffer.data() + 54, "FAT12   ", 8) == 0)) {
+            info.type = buffer[54 + 3] == '1' && buffer[54 + 4] == '2' ? "FAT12" : "FAT16";
         } else if (std::memcmp(buffer.data() + 3, "ReFS\x00\x00\x00\x00", 8) == 0) {
             info.type = "ReFS";
             return true;
@@ -484,8 +485,11 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
                 const uint16_t hfsMagic = static_cast<uint16_t>((sb[1024] << 8) | sb[1025]);
                 if (hfsMagic == 0x482B || hfsMagic == 0x4858) {
                     info.type = "HFS+";
-                    const uint32_t blkSz = be32(sb + 1024 + 36);
-                    const uint32_t totalBlocks = be32(sb + 1024 + 40);
+                    // HFSPlusVolumeHeader: blockSize @40, totalBlocks @44
+                    // (+36 is folderCount — reading it as blockSize yields
+                    // garbage sizes).
+                    const uint32_t blkSz = be32(sb + 1024 + 40);
+                    const uint32_t totalBlocks = be32(sb + 1024 + 44);
                     info.sizeInSectors = blkSz >= sectorSize
                         ? (uint64_t)totalBlocks * (blkSz / sectorSize) : 0;
                     return true;

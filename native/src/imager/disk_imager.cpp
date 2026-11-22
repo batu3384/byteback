@@ -674,6 +674,74 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             writeResumeSidecar(sidePath, srcKey,
                                totalSectors * sectorSize, sector * sectorSize, sectorSize, rawMd5);
         } else {
+            // Trimming pass (RAW only) — ddrescue's return trip. Skipped
+            // spans were zero-filled WITHOUT ever being read; dead-zone
+            // edges are where marginal data most often survives, so retry
+            // up to 64 sectors at each failed run's head and tail, patch
+            // recovered sectors into the seekable .part, and re-digest
+            // the file (patched bytes invalidate the streaming hash).
+            // Bounded: at most 2*64 retries per run, one read each.
+            // EWF is stream-only and keeps honest zeros + acquiry errors.
+            std::string md5Hex;
+            bool rehash = false;
+            if (isRunning_ && !failedSectorRuns.empty()) {
+                std::fstream part(utf8Path(partPath),
+                                  std::ios::binary | std::ios::in | std::ios::out);
+                if (part) {
+                    // Merge adjacent runs first — per-chunk failure pushes
+                    // arrive as separate runs; trimming each under its own
+                    // edge budget would retry far more than 2*64 sectors.
+                    failedSectorRuns = mergeSectorRuns(std::move(failedSectorRuns));
+                    constexpr uint64_t kTrimEdge = 64;
+                    std::vector<uint8_t> sbuf(sectorSize);
+                    std::vector<std::pair<uint64_t, uint64_t>> stillBad;
+                    uint64_t recovered = 0;
+                    auto patch = [&](uint64_t s) -> bool {
+                        auto res = reader.readSectors(s * sectorSize, sectorSize, sbuf.data());
+                        if (!readComplete(res, sectorSize)) return false;
+                        part.seekp(static_cast<std::streamoff>(s * sectorSize));
+                        part.write(reinterpret_cast<const char*>(sbuf.data()), sectorSize);
+                        return part.good();
+                    };
+                    for (const auto& run : failedSectorRuns) {
+                        uint64_t first = run.first;
+                        uint64_t end = run.first + run.second;
+                        uint64_t n = 0;
+                        while (first < end && n < kTrimEdge && isRunning_) {
+                            if (!patch(first)) break;
+                            ++first; ++n; ++recovered;
+                        }
+                        n = 0;
+                        while (end > first && n < kTrimEdge && isRunning_) {
+                            if (!patch(end - 1)) break;
+                            --end; ++n; ++recovered;
+                        }
+                        if (first < end) stillBad.push_back({first, end - first});
+                    }
+                    part.flush();
+                    part.close();
+                    if (recovered > 0) {
+                        badSectorReads_.fetch_sub(recovered);
+                        failedSectorRuns = mergeSectorRuns(std::move(stillBad));
+                        rehash = true;
+                    }
+                }
+            }
+            if (rehash) {
+                std::ifstream in(utf8Path(partPath), std::ios::binary);
+                crypto::Md5 md5;
+                std::vector<char> rbuf(1 << 20);
+                while (in) {
+                    in.read(rbuf.data(), static_cast<std::streamsize>(rbuf.size()));
+                    const std::streamsize got = in.gcount();
+                    if (got > 0) md5.update(reinterpret_cast<const uint8_t*>(rbuf.data()),
+                                          static_cast<size_t>(got));
+                }
+                md5Hex = md5.finalHex();
+            } else {
+                md5Hex = rawMd5.finalHex();
+            }
+
             // Success: promote .part over the destination (removing any old
             // destination first — same overwrite policy as before) and clear
             // the resume bookkeeping.
@@ -687,7 +755,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             }
             ec.clear();
             std::filesystem::remove(utf8Path(sidePath), ec);
-            lastImageMd5_ = rawMd5.finalHex();
+            lastImageMd5_ = md5Hex;
         }
     }
 
