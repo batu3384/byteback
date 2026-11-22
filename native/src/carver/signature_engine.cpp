@@ -428,6 +428,109 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("Windows Icon", ".ico", "Image", {0x00, 0x00, 0x01, 0x00}, {}, 10 * 1024 * 1024);
     addSig("WebAssembly", ".wasm", "Executable", {0x00, 0x61, 0x73, 0x6D}, {}, 100 * 1024 * 1024);
     addSig("Compiled Help CHM", ".chm", "Document", {0x49, 0x54, 0x53, 0x46}, {}, 200 * 1024 * 1024);
+
+    // --- Executables / bytecode -------------------------------------------------
+    addSig("ELF Executable", ".elf", "Executable", {0x7F, 0x45, 0x4C, 0x46}, {}, 512ULL * 1024 * 1024);
+    addSig("Mach-O 32 LE", ".macho", "Executable", {0xCE, 0xFA, 0xED, 0xFE}, {}, 256 * 1024 * 1024);
+    addSig("Mach-O 64 LE", ".macho", "Executable", {0xCF, 0xFA, 0xED, 0xFE}, {}, 256 * 1024 * 1024);
+    addSig("Mach-O 32 BE", ".macho", "Executable", {0xFE, 0xED, 0xFA, 0xCE}, {}, 256 * 1024 * 1024);
+    addSig("Mach-O 64 BE", ".macho", "Executable", {0xFE, 0xED, 0xFA, 0xCF}, {}, 256 * 1024 * 1024);
+    // 0xCAFE BABE is shared by Java class AND Mach-O fat — emitted once as .class.
+    addSig("Java Class", ".class", "Executable", {0xCA, 0xFE, 0xBA, 0xBE}, {}, 50 * 1024 * 1024);
+    addSig("Android DEX", ".dex", "Executable", {0x64, 0x65, 0x78, 0x0A, 0x30, 0x33, 0x35, 0x00}, {}, 200 * 1024 * 1024);
+    addSig("Python Bytecode 2.x", ".pyc", "Executable", {0x42, 0x0D, 0x0D, 0x0A}, {}, 20 * 1024 * 1024);
+    addSig("Python Bytecode 3.4-3.7", ".pyc", "Executable", {0x55, 0x0D, 0x0D, 0x0A}, {}, 20 * 1024 * 1024);
+    addSig("Python Bytecode 3.8+", ".pyc", "Executable", {0x6F, 0x0D, 0x0D, 0x0A}, {}, 20 * 1024 * 1024);
+    addSig("Lua Bytecode", ".luac", "Executable", {0x1B, 0x4C, 0x75, 0x61}, {}, 20 * 1024 * 1024);
+    addSig("Erlang BEAM", ".beam", "Executable", {0x46, 0x4F, 0x52, 0x31}, {}, 50 * 1024 * 1024);
+    addSig("NSIS Installer", ".exe", "Executable", {0xEF, 0xBE, 0xAD, 0xDE, 0x4E, 0x75, 0x6C, 0x6C, 0x73, 0x6F, 0x66, 0x74, 0x49, 0x6E, 0x73, 0x74}, {}, 2ULL * 1024 * 1024 * 1024);
+
+    // --- Archives / filesystems-in-a-file ---------------------------------------
+    addSig("Windows WIM Image", ".wim", "Archive", {0x4D, 0x53, 0x57, 0x49, 0x4D}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("LHA Archive lh5", ".lha", "Archive", {0x2D, 0x6C, 0x68, 0x35, 0x2D}, {}, 100 * 1024 * 1024);
+    addSig("LHA Archive lh6", ".lha", "Archive", {0x2D, 0x6C, 0x68, 0x36, 0x2D}, {}, 100 * 1024 * 1024);
+    addSig("LHA Archive lh0", ".lha", "Archive", {0x2D, 0x6C, 0x68, 0x30, 0x2D}, {}, 100 * 1024 * 1024);
+    addSig("StuffIt SIT", ".sit", "Archive", {0x53, 0x49, 0x54, 0x21}, {}, 500 * 1024 * 1024);
+    addSig("cpio newc", ".cpio", "Archive", {0x30, 0x37, 0x30, 0x37, 0x30, 0x31}, {}, 1ULL * 1024 * 1024 * 1024);
+    addSig("LZFSE Compressed", ".lzfse", "Archive", {0x62, 0x76, 0x78, 0x32}, {}, 500 * 1024 * 1024);
+    addSig("SquashFS BE", ".sqfs", "DiskImage", {0x73, 0x71, 0x73, 0x68}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("CramFS", ".cramfs", "DiskImage", {0x45, 0x3D, 0xCD, 0x28}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("UBIFS Image", ".ubi", "DiskImage", {0x31, 0x18, 0x10, 0x06}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("Android Sparse Img", ".img", "DiskImage", {0x3A, 0xFF, 0x26, 0xED}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("Android Boot Img", ".img", "DiskImage", {0x41, 0x4E, 0x44, 0x52, 0x4F, 0x49, 0x44, 0x21}, {}, 512 * 1024 * 1024);
+    addSig("CHD MAME Image", ".chd", "DiskImage", {0x4D, 0x43, 0x6F, 0x6D, 0x70, 0x72, 0x48, 0x44}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("CISO PSP Image", ".cso", "DiskImage", {0x43, 0x49, 0x53, 0x4F}, {}, 10ULL * 1024 * 1024 * 1024);
+    addSig("WBFS Wii Image", ".wbfs", "DiskImage", {0x57, 0x42, 0x46, 0x53}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("Dolphin RVZ Image", ".rvz", "DiskImage", {0x52, 0x56, 0x5A, 0x01}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("PS3 PKG Package", ".pkg", "Archive", {0x7F, 0x50, 0x4B, 0x47}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("Doom IWAD", ".wad", "Misc", {0x49, 0x57, 0x41, 0x44}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Doom PWAD", ".wad", "Misc", {0x50, 0x57, 0x41, 0x44}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Quake BSP", ".bsp", "Misc", {0x49, 0x42, 0x53, 0x50}, {}, 512 * 1024 * 1024);
+    addSig("UF2 Firmware", ".uf2", "Misc", {0x55, 0x46, 0x32, 0x0A}, {}, 64 * 1024 * 1024);
+    addSig("PS3 PUP Update", ".pup", "Misc", {0x53, 0x43, 0x45, 0x00}, {}, 2ULL * 1024 * 1024 * 1024);
+
+    // --- Media -------------------------------------------------------------------
+    addSig("MXF Video", ".mxf", "Video", {0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01, 0x0D, 0x01, 0x02}, {}, 8ULL * 1024 * 1024 * 1024);
+    addSig("RED Camera R3D", ".r3d", "Video", {0x52, 0x45, 0x44, 0x32}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("DPX Frame", ".dpx", "Video", {0x53, 0x44, 0x50, 0x58}, {}, 100 * 1024 * 1024);
+    addSig("DPX Frame BE", ".dpx", "Video", {0x58, 0x50, 0x44, 0x53}, {}, 100 * 1024 * 1024);
+    addSig("DSD DSF Audio", ".dsf", "Audio", {0x44, 0x53, 0x44, 0x20}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("RF64 WAV", ".wav", "Audio", {0x52, 0x46, 0x36, 0x34}, {}, 8ULL * 1024 * 1024 * 1024);
+    addSig("RIFX WAV BE", ".wav", "Audio", {0x52, 0x49, 0x46, 0x58}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("W64 Sonic Foundry", ".w64", "Audio", {0x72, 0x69, 0x66, 0x66}, {}, 4ULL * 1024 * 1024 * 1024);
+    addSig("Musepack SV8", ".mpc", "Audio", {0x4D, 0x50, 0x43, 0x4B}, {}, 512 * 1024 * 1024);
+    addSig("DTS Audio", ".dts", "Audio", {0x7F, 0xFE, 0x80, 0x01}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Impulse Tracker", ".it", "Audio", {0x49, 0x4D, 0x50, 0x4D}, {}, 100 * 1024 * 1024);
+    addSig("SID Tune PSID", ".sid", "Audio", {0x50, 0x53, 0x49, 0x44}, {}, 10 * 1024 * 1024);
+    addSig("SID Tune RSID", ".sid", "Audio", {0x52, 0x53, 0x49, 0x44}, {}, 10 * 1024 * 1024);
+    addSig("VGM Audio", ".vgm", "Audio", {0x56, 0x67, 0x6D, 0x20}, {}, 100 * 1024 * 1024);
+    addSig("SNES SPC", ".spc", "Audio", {0x53, 0x4E, 0x45, 0x53, 0x2D, 0x53, 0x50, 0x43}, {}, 10 * 1024 * 1024);
+
+    // --- Images -------------------------------------------------------------------
+    addSig("QOI Image", ".qoi", "Image", {0x71, 0x6F, 0x69, 0x66}, {}, 500 * 1024 * 1024);
+    addSig("Khronos KTX2", ".ktx2", "Image", {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Khronos KTX", ".ktx", "Image", {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x31, 0x31, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("DirectDraw DDS", ".dds", "Image", {0x44, 0x44, 0x53, 0x20}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("JPEG-XL Container", ".jxl", "Image", {0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Apple ICNS Icon", ".icns", "Image", {0x69, 0x63, 0x6E, 0x73}, {}, 100 * 1024 * 1024);
+    addSig("PCX Image v5", ".pcx", "Image", {0x0A, 0x05, 0x01}, {}, 100 * 1024 * 1024);
+    addSig("PCX Image v2.8", ".pcx", "Image", {0x0A, 0x02, 0x01}, {}, 100 * 1024 * 1024);
+    addSig("DjVu Document", ".djvu", "Document", {0x41, 0x54, 0x26, 0x54, 0x46, 0x4F, 0x52, 0x4D}, {}, 500 * 1024 * 1024);
+    addSig("Microsoft LIT", ".lit", "Document", {0x49, 0x54, 0x4F, 0x4C, 0x49, 0x54, 0x4C, 0x53}, {}, 500 * 1024 * 1024);
+    addSig("AutoCAD DWF", ".dwf", "Document", {0x28, 0x44, 0x57, 0x46, 0x20}, {}, 500 * 1024 * 1024);
+    addSig("Finale Score", ".mus", "Document", {0x45, 0x4E, 0x49, 0x47, 0x4D, 0x41}, {}, 100 * 1024 * 1024);
+    addSig("Sibelius Score", ".sib", "Document", {0x0F, 0x53, 0x49, 0x42, 0x45, 0x4C, 0x49, 0x55, 0x53}, {}, 100 * 1024 * 1024);
+    addSig("FBX 3D Binary", ".fbx", "Document", {0x4B, 0x61, 0x79, 0x64, 0x61, 0x72, 0x61, 0x20, 0x46, 0x42, 0x58, 0x20, 0x42, 0x69, 0x6E, 0x61, 0x72, 0x79, 0x20, 0x20}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("TrueType Collection", ".ttc", "Font", {0x74, 0x74, 0x63, 0x66}, {}, 100 * 1024 * 1024);
+    addSig("Berkeley DB", ".db", "Database", {0x00, 0x05, 0x31, 0x62}, {}, 10ULL * 1024 * 1024 * 1024);
+    addSig("SQLite WAL", ".wal", "Database", {0x37, 0x7F, 0x06, 0x82}, {}, 10ULL * 1024 * 1024 * 1024);
+    addSig("SQLite WAL v2", ".wal", "Database", {0x37, 0x7F, 0x06, 0x83}, {}, 10ULL * 1024 * 1024 * 1024);
+    addSig("Snoop Capture", ".snoop", "Network", {0x73, 0x6E, 0x6F, 0x6F, 0x70, 0x00}, {}, 1ULL * 1024 * 1024 * 1024);
+    addSig("PCap BE", ".pcap", "Network", {0xA1, 0xB2, 0xC3, 0xD4}, {}, 1ULL * 1024 * 1024 * 1024);
+
+    // --- Forensic artifacts ---------------------------------------------------------
+    addSig("EWF2 Ex01 Image", ".ex01", "DiskImage", {0x4C, 0x56, 0x46, 0x09, 0x0D, 0x0A, 0xFF, 0x00}, {}, 4ULL * 1024 * 1024 * 1024 * 1024);
+    addSig("LUKS Volume", ".luks", "System", {0x4C, 0x55, 0x4B, 0x53, 0xBA, 0xBE}, {}, 64 * 1024);
+    addSig("BitLocker FVE", ".fve", "System", {0x2D, 0x46, 0x56, 0x45, 0x2D}, {}, 64 * 1024);
+    addSig("Hibernation File", ".sys", "System", {0x68, 0x69, 0x62, 0x72}, {}, 64ULL * 1024 * 1024 * 1024);
+    addSig("Hibernation HIBR", ".sys", "System", {0x48, 0x49, 0x42, 0x52}, {}, 64ULL * 1024 * 1024 * 1024);
+    addSig("Windows Minidump", ".dmp", "System", {0x4D, 0x44, 0x4D, 0x50}, {}, 10ULL * 1024 * 1024 * 1024);
+    addSig("Windows Full Dump", ".dmp", "System", {0x50, 0x41, 0x47, 0x45, 0x44, 0x55, 0x4D, 0x50}, {}, 64ULL * 1024 * 1024 * 1024);
+    addSig("Windows Full Dump 64", ".dmp", "System", {0x50, 0x41, 0x47, 0x45, 0x44, 0x55, 0x36, 0x34}, {}, 64ULL * 1024 * 1024 * 1024);
+    addSig("VMware Suspend", ".vmss", "System", {0xD2, 0xBE, 0xD2, 0xBE}, {}, 64ULL * 1024 * 1024 * 1024);
+    addSig("NTFS INDX Record", ".indx", "System", {0x49, 0x4E, 0x44, 0x58}, {}, 64 * 1024);
+    addSig("NTFS LogFile RCRD", ".rcrd", "System", {0x52, 0x43, 0x52, 0x44}, {}, 64 * 1024);
+    addSig("NTFS LogFile RSTR", ".rstr", "System", {0x52, 0x53, 0x54, 0x52}, {}, 64 * 1024);
+    addSig("IE index.dat", ".dat", "System", {0x43, 0x6C, 0x69, 0x65, 0x6E, 0x74, 0x20, 0x55, 0x72, 0x6C, 0x43, 0x61, 0x63, 0x68, 0x65}, {}, 1ULL * 1024 * 1024 * 1024);
+    addSig("Android Backup", ".ab", "Archive", {0x41, 0x4E, 0x44, 0x52, 0x4F, 0x49, 0x44, 0x20, 0x42, 0x41, 0x43, 0x4B, 0x55, 0x50}, {}, 20ULL * 1024 * 1024 * 1024);
+    addSig("Apple Binary Plist", ".plist", "System", {0x62, 0x70, 0x6C, 0x69, 0x73, 0x74}, {}, 100 * 1024 * 1024);
+    addSig("Apple DS_Store", ".ds_store", "System", {0x42, 0x75, 0x64, 0x31}, {}, 10 * 1024 * 1024);
+    addSig("Apple Keychain", ".keychain", "System", {0x6B, 0x79, 0x63, 0x68}, {}, 1ULL * 1024 * 1024 * 1024);
+    addSig("AppleDouble File", ".ad", "System", {0x00, 0x05, 0x16, 0x07}, {}, 100 * 1024 * 1024);
+    addSig("macOS FSEvents", ".fsevents", "System", {0x31, 0x53, 0x4C, 0x44}, {}, 100 * 1024 * 1024);
+    addSig("macOS FSEvents v2", ".fsevents", "System", {0x32, 0x53, 0x4C, 0x44}, {}, 100 * 1024 * 1024);
+    addSig("Chrome CRX", ".crx", "Archive", {0x43, 0x72, 0x32, 0x34}, {}, 500 * 1024 * 1024);
+    addSig("Firefox mozlz4", ".mozlz4", "Archive", {0x6D, 0x6F, 0x7A, 0x4C, 0x7A, 0x34, 0x30}, {}, 100 * 1024 * 1024);
 }
 
 void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {
