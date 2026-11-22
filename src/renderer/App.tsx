@@ -50,6 +50,7 @@ function App(): React.ReactElement {
   const [engineError, setEngineError] = useState<string | null>(null)
   const [sessionNote, setSessionNote] = useState<{ summary: string; path: string; lines: string[]; code: SessionLogCode } | null>(null)
   const [hydrateError, setHydrateError] = useState<string | null>(null)
+  const [userdataOnEvidence, setUserdataOnEvidence] = useState(false)
   // CA-032: imaging runs in the main process; the flag survives navigation so
   // the progress card re-appears when the user returns to the imager page.
   const [imagingActive, setImagingActive] = useState(false)
@@ -147,6 +148,7 @@ function App(): React.ReactElement {
     // Setup Global IPC Listeners ONLY ONCE
     let cleanupProgress: (() => void) | undefined
     let cleanupComplete: (() => void) | undefined
+    let cleanupWarn: (() => void) | undefined
     let cleanupImaging: (() => void) | undefined
 
     if (window.api && window.api.onScanProgress) {
@@ -214,6 +216,12 @@ function App(): React.ReactElement {
       })
     }
 
+    if (window.api && window.api.onScanWarning) {
+      cleanupWarn = window.api.onScanWarning((data) => {
+        if (data?.code === 'userdataOnEvidence') setUserdataOnEvidence(true)
+      })
+    }
+
     // W6: imaging completion/error must reset the App-level flag even while
     // the imager page is unmounted — its own listener dies with the page and
     // the flag would stick true until restart.
@@ -226,6 +234,7 @@ function App(): React.ReactElement {
     return () => {
       if (cleanupProgress) cleanupProgress()
       if (cleanupComplete) cleanupComplete()
+      if (cleanupWarn) cleanupWarn()
       if (cleanupImaging) cleanupImaging()
     }
   }, [])
@@ -506,6 +515,11 @@ function App(): React.ReactElement {
           {hydrateError && (
             <InlineAlert variant="error" testId="scan-hydrate-error">
               {hydrateError}
+            </InlineAlert>
+          )}
+          {userdataOnEvidence && (
+            <InlineAlert variant="warning" testId="userdata-on-evidence" onDismiss={() => setUserdataOnEvidence(false)}>
+              {t('dash.userdataOnEvidence')}
             </InlineAlert>
           )}
           {sessionNote && sessionLogShowsBanner(sessionNote.code) && (

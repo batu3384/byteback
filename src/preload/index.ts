@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('scan-complete', handler)
     return () => ipcRenderer.removeListener('scan-complete', handler)
   },
+  onScanWarning: (callback: (data: { code: string; driveIndex?: number }) => void) => {
+    const handler = (event: IpcRendererEvent, data: any) => callback(data)
+    ipcRenderer.on('scan-warning', handler)
+    return () => ipcRenderer.removeListener('scan-warning', handler)
+  },
   
   startImaging: (driveIndex: number, destPath: string, format?: 'raw' | 'ewf', volumePath?: string) =>
     ipcRenderer.send('start-imaging', driveIndex, destPath, format, volumePath),

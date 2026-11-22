@@ -373,11 +373,16 @@ void walkCommittedJbd2(const std::vector<uint8_t>& jbuf, uint32_t blockSize,
             continue;
         }
         std::vector<uint32_t> tags;
+        // Tag size is set by journal features (s_feature_incompat @ +44):
+        // csum_v3 (0x10) fixes 16-byte tag3; 64bit (0x2) adds t_blocknr_high
+        // to the 8-byte tag. Anything else is the classic 8-byte tag.
+        const uint32_t incompat = jbd2Be32(sb + 40);
+        const size_t tagSize = (incompat & 0x10) ? 16 : (incompat & 0x2) ? 12 : 8;
         size_t tagOff = 12;
-        while (tagOff + 8 <= blockSize) {
+        while (tagOff + tagSize <= blockSize) {
             const uint32_t tblock = jbd2Be32(p + tagOff);
             const uint32_t tflags = jbd2Be32(p + tagOff + 4);
-            tagOff += 8;
+            tagOff += tagSize;
             if ((tflags & kJbd2FlagSameUuid) == 0) {
                 if (tagOff + 16 > blockSize) break;
                 tagOff += 16;
@@ -786,7 +791,14 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         for (const auto& run : journalMeta.runs) {
             if (isRunning && !(*isRunning)) break;
             uint64_t runBytes = run.sectorCount * static_cast<uint64_t>(sectorSize);
-            if (runBytes == 0 || runBytes > 8ull * 1024 * 1024) continue;
+            // ext4 journals are ~128 MiB+ in a single extent; the old 8 MiB
+            // cap silently disabled the only content-recovery path on almost
+            // every real filesystem. Cap only by memory, and flag it.
+            if (runBytes == 0) continue;
+            if (runBytes > 256ull * 1024 * 1024) {
+                journalUnread = true;
+                continue;
+            }
             const size_t at = jbuf.size();
             jbuf.resize(at + static_cast<size_t>(runBytes));
             auto jres = reader.readSectors(run.startSector * sectorSize,
@@ -805,23 +817,42 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
         std::unordered_map<uint32_t, size_t> fsToOff;
         for (const auto& a : applied) fsToOff[a.fsBlock] = a.jbufOff;
 
-        uint64_t itable = 0;
-        if (num_groups > 0 && gdt_buffer.size() >= desc_size) {
-            const auto* gd0 = reinterpret_cast<const Ext4_GroupDesc*>(gdt_buffer.data());
-            itable = gd0->bg_inode_table_lo;
-        }
         const uint32_t inodesPerBlk = inode_size ? (block_size / inode_size) : 0;
         const uint32_t itableBlocks = inodesPerBlk
             ? (inodes_per_group + inodesPerBlk - 1) / inodesPerBlk : 0;
+        // Journal copies of inode-table blocks can belong to ANY block group,
+        // not just group 0 — most inodes live elsewhere.
+        auto itableGroup = [&](uint32_t fsBlock) -> int32_t {
+            if (inodesPerBlk == 0) return -1;
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                if ((g + 1) * desc_size > gdt_buffer.size()) break;
+                const auto* gd = reinterpret_cast<const Ext4_GroupDesc*>(
+                    gdt_buffer.data() + g * desc_size);
+                uint64_t it = gd->bg_inode_table_lo;
+                if (desc_size > 32)
+                    it |= static_cast<uint64_t>(gd->bg_inode_table_hi) << 32;
+                if (it != 0 && fsBlock >= it && fsBlock < it + itableBlocks)
+                    return static_cast<int32_t>(g);
+            }
+            return -1;
+        };
+        auto itableStart = [&](int32_t g) -> uint64_t {
+            const auto* gd = reinterpret_cast<const Ext4_GroupDesc*>(
+                gdt_buffer.data() + g * desc_size);
+            uint64_t it = gd->bg_inode_table_lo;
+            if (desc_size > 32) it |= static_cast<uint64_t>(gd->bg_inode_table_hi) << 32;
+            return it;
+        };
 
         std::unordered_map<uint32_t, InodeMeta> jInodes;
         for (const auto& a : applied) {
             if (a.jbufOff + block_size > jbuf.size()) continue;
             const uint8_t* p = jbuf.data() + a.jbufOff;
-            const bool inItable = itable != 0 && inodesPerBlk > 0 && a.fsBlock >= itable &&
-                                  a.fsBlock < itable + itableBlocks;
-            if (inItable) {
-                const uint32_t first = 1 + static_cast<uint32_t>((a.fsBlock - itable) * inodesPerBlk);
+            const int32_t itg = itableGroup(a.fsBlock);
+            if (itg >= 0) {
+                const uint64_t it = itableStart(itg);
+                const uint32_t first = static_cast<uint32_t>(itg) * inodes_per_group +
+                    1 + static_cast<uint32_t>((a.fsBlock - it) * inodesPerBlk);
                 for (uint32_t i = 0; i < inodesPerBlk; ++i) {
                     const auto* ino = reinterpret_cast<const Ext4_Inode*>(p + i * inode_size);
                     if ((ino->i_mode & 0xF000) != 0x8000) continue;
@@ -829,7 +860,13 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                     m.size = ino->i_size_lo;
                     m.deleted = ino->i_links_count == 0 || ino->i_dtime != 0;
                     FileRecord::DataRun run{};
-                    auto dit = fsToOff.find(ino->i_block[0]);
+                    // ext4: i_block[0] is the extent header magic (0xF30A),
+                    // not a block pointer; the first extent's ee_start_lo
+                    // sits at i_block[5]. ext2/3 direct blocks stay on [0].
+                    uint32_t dataBlock = ino->i_block[0];
+                    if ((dataBlock & 0xFFFFu) == 0xF30Au) // eh_magic: extent tree
+                        dataBlock = ino->i_block[5];      // first extent ee_start_lo
+                    auto dit = fsToOff.find(dataBlock);
                     if (dit != fsToOff.end() &&
                         jbufOffToRun(journalMeta.runs, sectorSize, dit->second, block_size, run)) {
                         m.runs.push_back(run);
@@ -841,9 +878,7 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
 
         for (const auto& a : applied) {
             if (a.jbufOff + block_size > jbuf.size()) continue;
-            const bool inItable = itable != 0 && inodesPerBlk > 0 && a.fsBlock >= itable &&
-                                  a.fsBlock < itable + itableBlocks;
-            if (inItable) continue;
+            if (itableGroup(a.fsBlock) >= 0) continue;
             const uint8_t* p = jbuf.data() + a.jbufOff;
             size_t pos = 0;
             while (pos + sizeof(Ext4_Dirent) <= block_size) {

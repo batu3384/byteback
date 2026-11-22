@@ -72,6 +72,7 @@ declare global {
       stopScan: () => void
       onScanProgress: (callback: ProgressCallback) => () => void
       onScanComplete: (callback: ScanCompleteCallback) => () => void
+      onScanWarning: (callback: (data: { code: string; driveIndex?: number }) => void) => () => void
       removeAllScanListeners: () => void
       /** e2e-only: seed a completed scan + records into the app DB; returns scanId. */
       seedScanFixture: (files: Array<Record<string, unknown>>, imagePath?: string) => Promise<number>

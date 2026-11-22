@@ -19,6 +19,7 @@ struct RecoveryResult {
     std::string error;
     std::string md5Hash;
     bool zeroFilled = false; // at least one read was padded/failed
+    bool allZeros = true;    // no non-zero byte recovered yet (TRIM/overwrite hint)
     int validationScore = -1; // -1 = not checked; 0..100 when carve validation ran
     std::string validationError;
     std::string repairedPath; // sidecar; destPath stays the recovered bytes

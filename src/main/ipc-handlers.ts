@@ -16,6 +16,7 @@ import { assertDbReady, dbInitErrorMessage, getDbStatusPayload, isDbReady, setDb
 import { registerScanDbIpcHandlers } from './ipc-handlers-scan-db'
 import { registerRecoverIpcHandlers } from './ipc-handlers-recover'
 import { destOnEvidenceError, lastEvidenceDisksIncludes, setLastEvidenceDisks } from './ipc-evidence-context'
+import { isDestOnEvidence } from '../shared/recover-dest-guard'
 import { assertBoundDriveIndex, assertDriveIndex } from './ipc-guards'
 import { clampInt, imagingProgressPayload, sanitizeCsvFileName, scanProgressPayload, sanitizeRaidImagePaths, sanitizeRaidIndices, startScanDrivePath } from './ipc-utils'
 import { wipeHitsProtectedVolume, wipeSerialMatches } from './wipe-serial'
@@ -180,6 +181,21 @@ export function registerIpcHandlers(): void {
       }
 
       const drivePath = startScanDrivePath(driveIndex, imagePath)
+      // userData (db, logs, thumbs) writes to disk during the scan — if it
+      // lives on the evidence disk, the app itself can overwrite deleted
+      // data. Warn; scanning stays allowed because system-disk scans are the
+      // primary use case.
+      if (driveIndex >= 0 && !imagePath) {
+        try {
+          const raid = engine.getRaidState()
+          const members = raid.active ? (raid.memberDriveIndices ?? []) : []
+          if (isDestOnEvidence(app.getPath('userData'), driveIndex, members,
+                               (letter) => engine.resolveVolume(letter))) {
+            appendSessionLog('EVIDENCE_RISK', `userData volume on scanned disk ${driveIndex}`)
+            event.sender.send('scan-warning', { code: 'userdataOnEvidence', driveIndex })
+          }
+        } catch { /* the warning path must never block a scan */ }
+      }
       const evidence = Array.isArray(scanOptions?.evidenceDiskIndices)
         ? scanOptions.evidenceDiskIndices.filter((n) => Number.isInteger(n) && n >= 0)
         : []

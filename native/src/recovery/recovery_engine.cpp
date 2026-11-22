@@ -35,6 +35,33 @@ bool applyUniquePath(RecoveryResult& result, const std::string& destDir, const s
     return true;
 }
 
+// Bisect a failing read down to single sectors so one bad sector loses a
+// sector, not the whole chunk (same policy as imager/carver). Failed leaves
+// are zero-filled in place; zeroFilled marks that it happened.
+void resilientRead(DiskReader& reader, uint64_t off, uint32_t want, uint8_t* dst,
+                   uint32_t sectorSize, bool& zeroFilled) {
+    struct Sub { uint64_t off; uint32_t len; };
+    std::vector<Sub> stack{{off, want}};
+    while (!stack.empty()) {
+        const Sub s = stack.back();
+        stack.pop_back();
+        auto res = reader.readBytes(s.off, s.len, dst + (s.off - off));
+        const bool ok = res.success && res.bytesRead >= s.len;
+        if (!ok && s.len > sectorSize) {
+            uint32_t half = (s.len / 2) / sectorSize * sectorSize;
+            if (half == 0) half = sectorSize;
+            stack.push_back({s.off + half, s.len - half});
+            stack.push_back({s.off, half});
+            continue;
+        }
+        if (res.paddedZeros) zeroFilled = true;
+        if (!ok) {
+            std::memset(dst + (s.off - off), 0, s.len);
+            zeroFilled = true;
+        }
+    }
+}
+
 void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::string& md5,
                         const FileRecord& record, bool cancelled) {
     result.bytesRecovered = bytes;
@@ -52,6 +79,14 @@ void finishRecoverWrite(RecoveryResult& result, uint64_t bytes, const std::strin
         if (result.error.empty()) result.error = "short or padded read; output is incomplete";
         return;
     }
+    if (bytes > 0 && result.allZeros) {
+        // Every byte read back as zero: on TRIMmed SSDs this is the mark of
+        // destroyed data, not a successful recovery.
+        result.success = false;
+        if (result.error.empty())
+            result.error = "recovered content is entirely zeros (TRIMmed or overwritten)";
+        return;
+    }
     result.success = true;
     applyPostRecoveryValidation(result, record);
 }
@@ -65,10 +100,13 @@ namespace {
 // supports: the total span of the record's data runs; when no runs exist, a
 // hard sanity ceiling. A claimed 2^40 used to reach inflated.resize() and die
 // on std::bad_alloc.
-constexpr uint64_t kMaxRecoveryClaimBytes = 16ull << 30; // 16 GiB sanity ceiling
+// The runs are the evidence: trust their full span (large VHD/PST/video
+// files legitimately exceed any fixed ceiling). The ceiling only guards a
+// record with NO runs backing its size claim.
+constexpr uint64_t kMaxRecoveryClaimBytes = 4ull << 40; // 4 TiB absolute ceiling
 
 uint64_t evidenceClampedSize(const FileRecord& record, uint32_t sectorSize) {
-    uint64_t cap = kMaxRecoveryClaimBytes;
+    uint64_t cap = record.runs.empty() ? (16ull << 30) : kMaxRecoveryClaimBytes;
     if (!record.runs.empty()) {
         uint64_t span = 0;
         bool first = true;
@@ -184,6 +222,9 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
         }
         uint64_t n = record.residentData.size();
         if (record.sizeBytes > 0) n = std::min(n, record.sizeBytes);
+        if (std::any_of(record.residentData.begin(), record.residentData.end(),
+                        [](uint8_t b) { return b != 0; }))
+            result.allZeros = false;
         outFile.write(reinterpret_cast<const char*>(record.residentData.data()),
                       static_cast<std::streamsize>(n));
         crypto::Md5 md5ctx;
@@ -232,78 +273,100 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
 
     crypto::Md5 md5ctx;
 
-    // CA-005 fix: LZNT1-compressed $DATA must be inflated before writing;
-    // the raw on-disk bytes are not the file. Stream the compressed runs
-    // into one buffer (capped), decompress, write up to realSize.
+    // CA-005 fix: LZNT1-compressed $DATA must be inflated before writing.
+    // NTFS compresses each compression unit (16 clusters = 64 KiB at 4 KiB
+    // clusters) INDEPENDENTLY: a unit is stored as one LZNT1 stream in fewer
+    // clusters, written raw when compression does not pay, or left sparse for
+    // all-zero data. Concatenating runs and inflating once truncates at the
+    // first unit's zero padding — each run is decoded separately here.
     if (record.compressed) {
-        const uint64_t kMaxCompressedBuffer = 64ull * 1024 * 1024; // 64 MiB cap
-        uint64_t compressedLen = 0;
+        const uint64_t cuBytes = 65536; // standard NTFS CU: log 4 × 4 KiB clusters
+        uint64_t bytesWritten = 0;
+        std::vector<char> zeros(static_cast<size_t>(std::min<uint64_t>(cuBytes, 1u << 20)), 0);
         for (const auto& run : record.runs) {
-            if (run.startSector == UINT64_MAX) continue; // sparse: contributes zeros
-            compressedLen += (uint64_t)run.sectorCount * sectorSize;
-        }
-        if (compressedLen > 0 && compressedLen <= kMaxCompressedBuffer) {
-            // CA-009: readSectors rounds the read length UP to sector
-            // boundaries; today every `want` is already a sector multiple
-            // (runs are sectorCount*sectorSize), but the invariant is implicit
-            // — pay one sector of slack so a future byte-exact contributor
-            // cannot overflow the tail.
-            std::vector<uint8_t> compressed(static_cast<size_t>(compressedLen) + sectorSize);
-            uint64_t filled = 0;
-            for (const auto& run : record.runs) {
-                if (isRunning && !(*isRunning)) break;
-                if (run.startSector == UINT64_MAX) {
-                    // Sparse gap inside a compressed stream reads as zeros.
-                    uint64_t gap = (uint64_t)run.sectorCount * sectorSize;
-                    uint64_t take = std::min(gap, compressedLen - filled);
-                    std::memset(compressed.data() + filled, 0, static_cast<size_t>(take));
-                    filled += take;
+            if (isRunning && !(*isRunning)) break;
+            if (bytesWritten >= totalBytes) break;
+            if (run.startSector == UINT64_MAX) {
+                uint64_t toZero = std::min<uint64_t>(
+                    dataRunPayloadBytes(run, sectorSize, 0), totalBytes - bytesWritten);
+                while (toZero > 0) {
+                    uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(toZero, zeros.size()));
+                    outFile.write(zeros.data(), n);
+                    md5ctx.update(reinterpret_cast<const uint8_t*>(zeros.data()), n);
+                    bytesWritten += n;
+                    toZero -= n;
+                    if (onProgress) onProgress(bytesWritten, totalBytes);
+                }
+                continue;
+            }
+            const uint64_t runBytes = static_cast<uint64_t>(run.sectorCount) * sectorSize;
+            if (runBytes < cuBytes) {
+                // Allocated part of one compressed unit.
+                std::vector<uint8_t> compressed(static_cast<size_t>(runBytes) + sectorSize);
+                auto res = reader.readSectors(run.startSector * sectorSize,
+                                              static_cast<uint32_t>(runBytes),
+                                              compressed.data());
+                if (!res.success || res.bytesRead < runBytes || res.paddedZeros) {
+                    result.zeroFilled = true;
                     continue;
                 }
-                uint64_t want = (uint64_t)run.sectorCount * sectorSize;
-                want = std::min(want, compressedLen - filled);
-                if (want == 0) break;
-                auto res = reader.readSectors(run.startSector * sectorSize,
-                                              static_cast<uint32_t>(((want + sectorSize - 1) / sectorSize) * sectorSize),
-                                              compressed.data() + filled);
-                if (!res.success || res.bytesRead < want || res.paddedZeros) {
-                    std::memset(compressed.data() + filled, 0, static_cast<size_t>(want));
-                    result.zeroFilled = true;
+                const uint64_t wantOut = std::min<uint64_t>(cuBytes, totalBytes - bytesWritten);
+                std::vector<uint8_t> inflated(static_cast<size_t>(std::max<uint64_t>(wantOut, 4096)));
+                int outLen = ntfs::lznt1Decompress(compressed.data(), res.bytesRead,
+                                                   inflated.data(), inflated.size());
+                if (outLen < 0) {
+                    outFile.close();
+                    result.error = "NTFS LZNT1 decompression failed";
+                    result.success = false;
+                    return result;
                 }
-                filled += want;
-            }
-
-            std::vector<uint8_t> inflated;
-            // CA-031: the inflate buffer is bounded by the clamp above and by
-            // a hard 1 GiB allocator ceiling — LZNT1 output for a stream that
-            // passed the 64 MiB compressed gate stays well inside it, and a
-            // hostile sizeBytes can no longer reach a multi-TiB resize.
-            const uint64_t kMaxInflateBytes = 1ull << 30;
-            const uint64_t inflateBytes =
-                std::max<uint64_t>(std::min<uint64_t>(totalBytes, kMaxInflateBytes), 4096);
-            inflated.resize(static_cast<size_t>(inflateBytes));
-            int outLen = ntfs::lznt1Decompress(compressed.data(), filled,
-                                               inflated.data(), inflated.size());
-            if (outLen >= 0) {
-                uint64_t writeLen = std::min<uint64_t>(totalBytes, static_cast<uint64_t>(outLen));
+                const uint64_t writeLen = std::min<uint64_t>(wantOut, static_cast<uint64_t>(outLen));
+                if (writeLen == 0) break;
+                if (std::any_of(inflated.begin(), inflated.begin() + writeLen,
+                                [](uint8_t b) { return b != 0; }))
+                    result.allZeros = false;
                 outFile.write(reinterpret_cast<const char*>(inflated.data()),
                               static_cast<std::streamsize>(writeLen));
                 md5ctx.update(inflated.data(), static_cast<size_t>(writeLen));
-                outFile.close();
-                finishRecoverWrite(result, writeLen, md5ctx.finalHex(), record,
-                                   isRunning && !(*isRunning));
-                return result;
+                bytesWritten += writeLen;
+                if (onProgress) onProgress(bytesWritten, totalBytes);
+            } else {
+                // One or more raw (uncompressed) units: copy clusters.
+                uint64_t got = 0;
+                while (got < runBytes && bytesWritten < totalBytes) {
+                    if (isRunning && !(*isRunning)) break;
+                    const uint32_t want = static_cast<uint32_t>(
+                        std::min<uint64_t>(runBytes - got, readChunk));
+                    auto res = reader.readSectors(run.startSector * sectorSize + got, want,
+                                                  poolBuf->data());
+                    if (!res.success || res.bytesRead == 0) {
+                        result.zeroFilled = true;
+                        const uint32_t zeroSize = want;
+                        outFile.write(zeros.data(), std::min<uint64_t>(zeroSize, zeros.size()));
+                        md5ctx.update(reinterpret_cast<const uint8_t*>(zeros.data()),
+                                      std::min<uint64_t>(zeroSize, zeros.size()));
+                        bytesWritten += zeroSize;
+                        got += zeroSize;
+                        continue;
+                    }
+                    if (res.paddedZeros) result.zeroFilled = true;
+                    const uint32_t writeSize = static_cast<uint32_t>(
+                        std::min<uint64_t>(res.bytesRead, totalBytes - bytesWritten));
+                    if (result.allZeros &&
+                        std::any_of(poolBuf->data(), poolBuf->data() + writeSize,
+                                    [](uint8_t b) { return b != 0; }))
+                        result.allZeros = false;
+                    outFile.write(reinterpret_cast<const char*>(poolBuf->data()), writeSize);
+                    md5ctx.update(poolBuf->data(), writeSize);
+                    bytesWritten += writeSize;
+                    got += res.bytesRead;
+                    if (onProgress) onProgress(bytesWritten, totalBytes);
+                }
             }
-            outFile.close();
-            result.error = "NTFS LZNT1 decompression failed";
-            result.success = false;
-            return result;
         }
-        // CA-027: above the cap we refuse instead of silently writing the raw
-        // compressed bytes as "recovered" file content.
         outFile.close();
-        result.success = false;
-        result.error = "compressed stream too large to inflate (>64 MiB cap); raw bytes not written";
+        finishRecoverWrite(result, bytesWritten, md5ctx.finalHex(), record,
+                           isRunning && !(*isRunning));
         return result;
     }
 
@@ -357,21 +420,14 @@ RecoveryResult RecoveryEngine::recoverFile(DiskReader& reader, const FileRecord&
             // Align to sector
             toRead = ((toRead + sectorSize - 1) / sectorSize) * sectorSize;
 
-            auto res = reader.readSectors(runOffsetBytes + runBytesRead, toRead, poolBuf->data());
-            
-            if (!res.success || res.bytesRead == 0) {
-                result.zeroFilled = true;
-                uint32_t zeroSize = (uint32_t)std::min({(uint64_t)toRead, remainFile, remainRun});
-                std::vector<char> zeros(zeroSize, 0);
-                outFile.write(zeros.data(), zeroSize);
-                md5ctx.update(reinterpret_cast<const uint8_t*>(zeros.data()), zeroSize);
-                bytesWritten += zeroSize;
-                runBytesRead += zeroSize;
-                continue;
-            }
-            if (res.paddedZeros) result.zeroFilled = true;
+            resilientRead(reader, runOffsetBytes + runBytesRead, toRead,
+                          poolBuf->data(), sectorSize, result.zeroFilled);
 
-            uint32_t writeSize = (uint32_t)std::min({(uint64_t)res.bytesRead, remainFile, remainRun});
+            uint32_t writeSize = (uint32_t)std::min({(uint64_t)toRead, remainFile, remainRun});
+            if (result.allZeros &&
+                std::any_of(poolBuf->data(), poolBuf->data() + writeSize,
+                            [](uint8_t b) { return b != 0; }))
+                result.allZeros = false;
             outFile.write(reinterpret_cast<const char*>(poolBuf->data()), writeSize);
             md5ctx.update(poolBuf->data(), writeSize);
             
@@ -444,21 +500,16 @@ RecoveryResult RecoveryEngine::recoverCarvedFile(DiskReader& reader, const FileR
 
         const uint32_t toRead = (uint32_t)std::min((uint64_t)readChunk, totalBytes - bytesWritten);
 
-        // readBytes handles mid-sector alignment internally.
-        auto res = reader.readBytes(startOffset + bytesWritten, toRead, poolBuf->data());
+        // readBytes handles mid-sector alignment internally; bisect failures
+        // down to single sectors so one bad sector loses a sector only.
+        resilientRead(reader, startOffset + bytesWritten, toRead, poolBuf->data(),
+                      sectorSize, result.zeroFilled);
 
-        if (!res.success || res.bytesRead == 0) {
-            result.zeroFilled = true;
-            uint32_t zeroSize = std::min(toRead, (uint32_t)(totalBytes - bytesWritten));
-            std::vector<char> zeros(zeroSize, 0);
-            outFile.write(zeros.data(), zeroSize);
-            md5ctx.update(reinterpret_cast<const uint8_t*>(zeros.data()), zeroSize);
-            bytesWritten += zeroSize;
-            continue;
-        }
-        if (res.paddedZeros) result.zeroFilled = true;
-
-        uint32_t writeSize = (uint32_t)std::min((uint64_t)res.bytesRead, totalBytes - bytesWritten);
+        uint32_t writeSize = (uint32_t)std::min((uint64_t)toRead, totalBytes - bytesWritten);
+        if (result.allZeros &&
+            std::any_of(poolBuf->data(), poolBuf->data() + writeSize,
+                        [](uint8_t b) { return b != 0; }))
+            result.allZeros = false;
         outFile.write(reinterpret_cast<const char*>(poolBuf->data()), writeSize);
         md5ctx.update(poolBuf->data(), writeSize);
 
