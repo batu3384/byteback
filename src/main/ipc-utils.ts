@@ -49,10 +49,9 @@ export function sanitizeRaidImagePaths(v: unknown, max: number): string[] {
   return [...new Set(valid)]
 }
 
-/** Native imaging tick -> renderer payload. current >= total ends the run: a
- *  finished image always carries its MD5, a stopped one never does, so the
- *  final tick without an MD5 is a cancel, not a success. */
-export function imagingProgressPayload(data: { current: number; total: number; md5?: string; badSectors?: number }): {
+/** Native imaging tick -> renderer payload. current >= total ends the run;
+ *  the native `stopped` flag — not a missing MD5 — decides cancel vs done. */
+export function imagingProgressPayload(data: { current: number; total: number; md5?: string; badSectors?: number; stopped?: boolean }): {
   current: number
   total: number
   md5?: string
@@ -60,6 +59,6 @@ export function imagingProgressPayload(data: { current: number; total: number; m
   status?: 'cancelled'
 } {
   const out = { current: data.current, total: data.total, badSectors: Number(data.badSectors) || 0 }
-  if (data.total > 0 && data.current >= data.total && !data.md5) return { ...out, status: 'cancelled' }
+  if (data.total > 0 && data.current >= data.total && data.stopped === true) return { ...out, status: 'cancelled' }
   return data.md5 ? { ...out, md5: data.md5 } : out
 }

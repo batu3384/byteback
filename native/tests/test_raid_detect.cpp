@@ -71,13 +71,14 @@ std::vector<std::vector<uint8_t>> buildRaid5(uint32_t n, size_t stripes, size_t 
 
 // N-member RAID6 images: P = XOR of data, Q = XOR of gfMul(data, g^slot).
 std::vector<std::vector<uint8_t>> buildRaid6(uint32_t n, size_t stripes, size_t sb,
-                                             uint64_t offsetBytes, uint32_t seed) {
+                                             uint64_t offsetBytes, uint32_t seed,
+                                             raid_layout::Raid5Algorithm algo = raid_layout::Raid5Algorithm::LeftAsymmetric) {
     std::vector<std::vector<uint8_t>> images(n, std::vector<uint8_t>(offsetBytes + stripes * sb, 0));
     for (uint64_t s = 0; s < stripes; ++s) {
-        const auto pq = raid_layout::raid6Disks(s, n);
+        const auto pq = raid_layout::raid6Disks(s, n, algo);
         std::vector<std::vector<uint8_t>> data(n - 2, std::vector<uint8_t>(sb));
         for (uint32_t j = 0; j + 2 < n; ++j) {
-            const uint32_t disk = raid_layout::raid6DataDisk(s, j, n);
+            const uint32_t disk = raid_layout::raid6DataDisk(s, j, n, algo);
             fillPseudo(data[j], seed + static_cast<uint32_t>(s * 197u + j * 29u));
             std::memcpy(images[disk].data() + offsetBytes + s * sb, data[j].data(), sb);
         }
@@ -86,7 +87,7 @@ std::vector<std::vector<uint8_t>> buildRaid6(uint32_t n, size_t stripes, size_t 
             for (uint32_t j = 0; j + 2 < n; ++j) {
                 p ^= data[j][b];
                 q ^= raid6_math::gfMul(data[j][b], raid6_math::gfPow(static_cast<int>(
-                    raid_layout::raid6QSlot(s, raid_layout::raid6DataDisk(s, j, n), n))));
+                    raid_layout::raid6QSlot(s, raid_layout::raid6DataDisk(s, j, n, algo), n, algo))));
             }
             images[pq.pDisk][offsetBytes + s * sb + b] = p;
             images[pq.qDisk][offsetBytes + s * sb + b] = q;
@@ -159,6 +160,33 @@ TEST(RaidDetect, DetectsRaid6NotRaid5) {
     EXPECT_EQ(g.level, RaidLevel::RAID6); // RAID5 candidates must score below floor
     EXPECT_EQ(g.blockSize, kStripe);
     EXPECT_EQ(g.dataOffsetSectors, 0u);
+    EXPECT_GE(g.confidence, 0.90);
+}
+
+TEST(RaidDetect, DetectsRaid6LeftSymmetricWithoutMetadata) {
+    // mdadm's default RAID6 layout is left-symmetric; with the superblock
+    // wiped the probe must still find the array, not just left-asymmetric.
+    constexpr size_t kStripe = 64 * kKiB;
+    auto members = openMembers(buildRaid6(4, 10, kStripe, 0, 0xA11CE,
+                                          raid_layout::Raid5Algorithm::LeftSymmetric));
+    RaidGeometry g;
+    ASSERT_TRUE(detectRaidGeometry(raw(members), g));
+    EXPECT_EQ(g.level, RaidLevel::RAID6);
+    EXPECT_EQ(g.raid5Algorithm, raid_layout::Raid5Algorithm::LeftSymmetric);
+    EXPECT_GE(g.confidence, 0.90);
+}
+
+TEST(RaidDetect, DetectsRaid6RightDirectionWithoutMetadata) {
+    // Parity syndromes cannot tell symmetric from asymmetric within one
+    // rotation direction: the detector must still find the array and pick
+    // the symmetric variant (mdadm convention) when no FS signature decides.
+    constexpr size_t kStripe = 64 * kKiB;
+    auto members = openMembers(buildRaid6(4, 10, kStripe, 0, 0xBADA55,
+                                          raid_layout::Raid5Algorithm::RightSymmetric));
+    RaidGeometry g;
+    ASSERT_TRUE(detectRaidGeometry(raw(members), g));
+    EXPECT_EQ(g.level, RaidLevel::RAID6);
+    EXPECT_EQ(g.raid5Algorithm, raid_layout::Raid5Algorithm::RightSymmetric);
     EXPECT_GE(g.confidence, 0.90);
 }
 

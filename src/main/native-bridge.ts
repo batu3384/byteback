@@ -40,6 +40,7 @@ interface BytebackEngine {
   listPartitions(driveIndex: number): PartitionInfo[]
   resolveVolume(letter: string): ResolvedVolume | null
   listVolumeLetters(): string[]
+  getSystemDriveLetter(): string | null
   initDatabase(path: string): boolean
   getFileCount(scanId: number, filter?: import('../shared/ipc-contract').FileListFilter): number
   getFilesPage(scanId: number, offset: number, limit: number, filter?: import('../shared/ipc-contract').FileListFilter): FileRecord[]

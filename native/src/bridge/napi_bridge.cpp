@@ -17,6 +17,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getSmartStatus", Napi::Function::New(env, GetSmartStatus));
     exports.Set("resolveVolume", Napi::Function::New(env, ResolveVolume));
     exports.Set("listVolumeLetters", Napi::Function::New(env, ListVolumeLetters));
+    exports.Set("getSystemDriveLetter", Napi::Function::New(env, GetSystemDriveLetter));
     exports.Set("searchHex", Napi::Function::New(env, SearchHex));
     exports.Set("getMftRecord", Napi::Function::New(env, GetMftRecord));
 

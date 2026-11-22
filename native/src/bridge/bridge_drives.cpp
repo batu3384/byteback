@@ -7,6 +7,10 @@
 #include "io/byte_source.h"
 #include "search/hex_search.h"
 #include "fs/mft_record_view.h"
+#ifdef _WIN32
+#define NOMINMAX // windows.h min/max macros break std::min/std::max below
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -529,6 +533,24 @@ Napi::Value ResolveVolume(const Napi::CallbackInfo& info) {
         disks[i] = Napi::Number::New(env, resolved->diskNumbers[i]);
     obj.Set("diskNumbers", disks);
     return obj;
+#endif
+    NAPI_CATCH
+}
+
+// The Windows system volume letter from the OS (GetSystemDirectoryW), not
+// from an env var — a wipe guard must not be spoofable via process env.
+Napi::Value GetSystemDriveLetter(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NAPI_TRY
+#ifndef _WIN32
+    return env.Null();
+#else
+    wchar_t dir[32768]{};
+    if (GetSystemDirectoryW(dir, 32768) == 0) return env.Null();
+    const wchar_t l = dir[0];
+    if (!((l >= L'A' && l <= L'Z') || (l >= L'a' && l <= L'z'))) return env.Null();
+    char narrow[3] = {static_cast<char>(towupper(l)), ':', '\0'};
+    return Napi::String::New(env, narrow);
 #endif
     NAPI_CATCH
 }

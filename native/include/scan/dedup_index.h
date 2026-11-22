@@ -20,6 +20,9 @@ public:
     // True when loadFromRecords saw this exact carve (same start and size):
     // a resumed scan found a file it had already stored.
     bool isStoredCarve(const FileRecord& fr) const;
+    // Every carve-family row: carver, carver_bgc, carver_duplicate and the
+    // raid_ forms — the single definition shared by tagging and dedup.
+    static bool isCarveFamilySource(const std::string& source);
 
 private:
     struct Entry {

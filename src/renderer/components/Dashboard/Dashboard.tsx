@@ -717,6 +717,7 @@ function Dashboard({ onStartScan, onAction, onOpenPausedResults, onClearScanData
               data-testid="resume-scan-btn"
               // Native refuses to resume a quick scan (it restarts instead).
               disabled={scanBusy || pausedSession.scanType === 'quick'}
+              title={pausedSession.scanType === 'quick' ? t('dash.quickNoResume') : undefined}
               onClick={() => {
                 void (async () => {
                   if (!onStartScan) return

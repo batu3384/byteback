@@ -1187,18 +1187,20 @@ bool MetadataStore::clearScanRecords(int64_t scanId) {
         "DELETE FROM files WHERE scan_id = ?", // files_fts follows via trigger
         "DELETE FROM timeline_events WHERE scan_id = ?",
     };
-    auto run = [&](const char* sql) {
+    auto run = [&](const char* sql, bool optional) {
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+        // A prepare failure is how "table does not exist" shows up — only
+        // acceptable for the content-index tables, and only at prepare.
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return optional;
         sqlite3_bind_int64(stmt, 1, scanId);
         const int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         return rc == SQLITE_DONE;
     };
     if (sqlite3_exec(db_, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
-    for (const char* sql : kOptional) run(sql);
     bool ok = true;
-    for (const char* sql : kCore) ok = ok && run(sql);
+    for (const char* sql : kOptional) ok = run(sql, true) && ok;
+    for (const char* sql : kCore) ok = run(sql, false) && ok;
     if (!ok || sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         sqlite3_exec(db_, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;

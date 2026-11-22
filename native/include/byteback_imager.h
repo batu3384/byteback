@@ -47,6 +47,11 @@ public:
     // computed on the fly for both formats but only surfaced for EWF).
     std::string lastImageMd5() const { return lastImageMd5_; }
 
+    // True when the last run ended before its source was fully read. The
+    // bridge reports this explicitly — a completed image whose digest is
+    // absent for any reason must not be misread as a cancel.
+    bool lastRunStopped() const { return lastRunStopped_.load(); }
+
     // CA-006 fix: setReverseImaging/setMaxRetries were declared but never
     // implemented or called — dead API removed instead of being faked.
     // CA-007: read-failure telemetry surfaced to the UI.
@@ -70,6 +75,7 @@ private:
     std::atomic<uint64_t> badSectorReads_{0};
     std::atomic<uint32_t> chunkSectorsOverride_{0};
     std::string lastImageMd5_;
+    std::atomic<bool> lastRunStopped_{false};
 };
 
 } // namespace byteback

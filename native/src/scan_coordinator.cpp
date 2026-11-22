@@ -1,4 +1,5 @@
 #include "scan_coordinator.h"
+#include "scan/dedup_index.h"
 #include "scan_progress.h"
 #include "io/volume_mapper_win.h"
 #include "fs/partition_scanner.h"
@@ -353,8 +354,9 @@ void tagRaidScanSource(FileRecord& fr, const DiskReader& reader) {
     // Honesty sentinels must keep their source so LIKE filters still match.
     if (fr.source.size() >= 7 && fr.source.compare(fr.source.size() - 7, 7, "_unread") == 0) return;
     if (fr.source.rfind("raid_", 0) == 0) return;
-    // Carve rows keep their source: recovery, dedup and the carved counts key on "carver*".
-    if (fr.source.rfind("carver", 0) == 0) return;
+    // Carve rows keep their source: recovery, dedup and the carved counts key
+    // on the carve family (single definition lives in DedupIndex).
+    if (DedupIndex::isCarveFamilySource(fr.source)) return;
     fr.source = "raid_" + fr.source;
 }
 
@@ -1189,14 +1191,18 @@ void runCarveScanRangesImpl(DiskReader& reader,
                     consume(item);
                 }
                 if (workerFailed) {
-                    // Ceiling: a worker that died mid-range leaves that range
-                    // partially scanned (matches a cancelled scan's honesty).
+                    // A worker that died mid-range leaves that range
+                    // partially scanned: position and resume cursor stay
+                    // where work actually finished, so a resume re-reads the
+                    // gap (matches a cancelled scan's honesty).
                     std::cerr << "[byteback] parallel carve: a worker failed; "
                                  "results may be a subset" << std::endl;
-                }
-                // A stopped scan keeps its real position: reporting the full
-                // total would store "finished" for a scan that is not.
-                if (!stopped()) {
+                    onProgress(meter.tick(beforeWork + doneSum), progressTotal);
+                    reportCursor(firstOpen == work.size() ? cursor
+                                                          : work[firstOpen].cursorBase + safeRel[firstOpen]);
+                } else if (!stopped()) {
+                    // A stopped scan keeps its real position: reporting the
+                    // full total would store "finished" for an unfinished run.
                     onProgress(meter.tick(progressTotal), progressTotal);
                     reportCursor(cursor);
                 }

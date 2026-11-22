@@ -135,6 +135,7 @@ Napi::Value ReadSectors(const Napi::CallbackInfo& info);
 Napi::Value GetSmartStatus(const Napi::CallbackInfo& info);
 Napi::Value ResolveVolume(const Napi::CallbackInfo& info);
 Napi::Value ListVolumeLetters(const Napi::CallbackInfo& info);
+Napi::Value GetSystemDriveLetter(const Napi::CallbackInfo& info);
 Napi::Value SearchHex(const Napi::CallbackInfo& info);
 Napi::Value GetMftRecord(const Napi::CallbackInfo& info);
 

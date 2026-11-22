@@ -218,8 +218,9 @@ bool scoreRaid1eCopies(const std::vector<DiskReader*>& members, uint64_t memberS
     return passesConfidence(conf, total, kRaid1Floor);
 }
 
-bool raid6Consistent(uint64_t si, uint32_t n, const std::vector<std::vector<uint8_t>>& blocks) {
-    const auto pq = raid_layout::raid6Disks(si, n);
+bool raid6Consistent(uint64_t si, uint32_t n, const std::vector<std::vector<uint8_t>>& blocks,
+                     raid_layout::Raid5Algorithm algo) {
+    const auto pq = raid_layout::raid6Disks(si, n, algo);
     std::vector<size_t> data;
     data.reserve(n - 2);
     for (uint32_t i = 0; i < n; ++i)
@@ -231,8 +232,8 @@ bool raid6Consistent(uint64_t si, uint32_t n, const std::vector<std::vector<uint
     for (size_t b = 0; b < len; ++b) {
         uint8_t q = 0;
         for (uint32_t j = 0; j + 2 < n; ++j) {
-            const uint32_t disk = raid_layout::raid6DataDisk(si, j, n);
-            q ^= raid6_math::gfMul(blocks[disk][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(si, disk, n))));
+            const uint32_t disk = raid_layout::raid6DataDisk(si, j, n, algo);
+            q ^= raid6_math::gfMul(blocks[disk][b], raid6_math::gfPow(static_cast<int>(raid_layout::raid6QSlot(si, disk, n, algo))));
         }
         if (q != blocks[pq.qDisk][b]) return false;
     }
@@ -412,6 +413,7 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
     // When boot/MBR/NTFS/FAT/ext magics land, fsSignatureScore picks the
     // geometry that reconstructs them. RAID6 Q-syndrome already pins size.
     std::vector<RaidGeometry> raid5Pass;
+    std::vector<RaidGeometry> raid6Pass;
     auto evalParity = [&](RaidLevel level, size_t stripeBytes) {
         for (uint64_t offSectors : kDataOffsetSectors) {
             const uint64_t offBytes = offSectors * kSector;
@@ -419,7 +421,14 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
             const uint64_t nStripes = (memberSize - offBytes) / stripeBytes;
             const size_t nSamples = static_cast<size_t>(std::min<uint64_t>(kMaxSamples, nStripes));
             std::vector<std::vector<uint8_t>> blocks(n);
-            size_t leftHits = 0, rightHits = 0, raid6Hits = 0, total = 0;
+            size_t leftHits = 0, rightHits = 0, total = 0;
+            static const raid_layout::Raid5Algorithm kAlgos[] = {
+                raid_layout::Raid5Algorithm::LeftAsymmetric,
+                raid_layout::Raid5Algorithm::RightAsymmetric,
+                raid_layout::Raid5Algorithm::LeftSymmetric,
+                raid_layout::Raid5Algorithm::RightSymmetric,
+            };
+            size_t raid6Hits[4] = {0, 0, 0, 0};
             for (size_t k = 0; k < nSamples; ++k) {
                 const uint64_t si = k * nStripes / nSamples;
                 const uint64_t off = offBytes + si * stripeBytes;
@@ -429,7 +438,10 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
                 if (!ok) continue; // skip samples with any failed member read
                 ++total;
                 if (level == RaidLevel::RAID6) {
-                    if (raid6Consistent(si, static_cast<uint32_t>(n), blocks)) ++raid6Hits;
+                    // No metadata here, so the layout is unknown: a NAS array
+                    // (mdadm default is left-symmetric) must still score.
+                    for (size_t a = 0; a < 4; ++a)
+                        if (raid6Consistent(si, static_cast<uint32_t>(n), blocks, kAlgos[a])) ++raid6Hits[a];
                 } else {
                     if (raid5Consistent(si, static_cast<uint32_t>(n), blocks,
                                         raid_layout::Raid5Algorithm::LeftAsymmetric))
@@ -446,10 +458,20 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
                 RaidGeometry cand{level, stripeBytes, offSectors, conf};
                 cand.raid5Algorithm = algo;
                 if (level == RaidLevel::RAID5) raid5Pass.push_back(cand);
+                if (level == RaidLevel::RAID6) raid6Pass.push_back(cand);
                 consider(cand);
             };
-            if (level == RaidLevel::RAID6) emit(raid6Hits, raid_layout::Raid5Algorithm::LeftAsymmetric);
-            else {
+            if (level == RaidLevel::RAID6) {
+                // P/Q syndrome cannot tell symmetric from asymmetric of the
+                // same rotation — both score identical hits. Emit the
+                // symmetric variant first so an unresolvable tie defaults to
+                // the mdadm layout convention; FS-signature refinement below
+                // still overrides when a filesystem is readable.
+                emit(raid6Hits[2], kAlgos[2]); // LeftSymmetric (mdadm default)
+                emit(raid6Hits[3], kAlgos[3]); // RightSymmetric
+                emit(raid6Hits[0], kAlgos[0]); // LeftAsymmetric
+                emit(raid6Hits[1], kAlgos[1]); // RightAsymmetric
+            } else {
                 emit(leftHits, raid_layout::Raid5Algorithm::LeftAsymmetric);
                 emit(rightHits, raid_layout::Raid5Algorithm::RightAsymmetric);
             }
@@ -462,7 +484,9 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
         if (n >= 4)
             for (size_t sb : kStripeSizes) evalParity(RaidLevel::RAID6, sb);
 
-        if (have && out.level == RaidLevel::RAID5 && !raid5Pass.empty()) {
+        const std::vector<RaidGeometry>& parityPass =
+            (out.level == RaidLevel::RAID6) ? raid6Pass : raid5Pass;
+        if (have && (out.level == RaidLevel::RAID5 || out.level == RaidLevel::RAID6) && !parityPass.empty()) {
             auto raid5Fs = [&](RaidGeometry& c) {
                 static const raid_layout::Raid5Algorithm kAlgos[] = {
                     raid_layout::Raid5Algorithm::LeftAsymmetric,
@@ -487,7 +511,7 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
             };
             int bestFs = raid5Fs(out);
             RaidGeometry best = out;
-            for (auto c : raid5Pass) {
+            for (auto c : parityPass) {
                 const int fs = raid5Fs(c);
                 if (fs > bestFs) {
                     best = c;

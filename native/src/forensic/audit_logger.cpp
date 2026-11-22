@@ -234,6 +234,9 @@ void AuditLogger::Initialize(const std::string& logFilePath) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             const size_t pos = line.rfind(marker);
             if (pos == std::string::npos) continue;
+            // The hash is the line's last field; a marker inside logged
+            // content (e.g. a path) is not the chain head.
+            if (pos + marker.size() + 64 != line.size()) continue;
             const std::string stored = line.substr(pos + marker.size());
             if (stored.size() == 64 && stored.find_first_not_of("0123456789abcdef") == std::string::npos) {
                 previousHash_ = stored;

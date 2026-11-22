@@ -16,6 +16,22 @@ see [docs/release-checklist.md](docs/release-checklist.md) before tagging `v1.0.
 - Safety: a PhysicalDrive holding Windows or the Byteback data folder cannot be wiped.
 - UI: image-scan results can be previewed/recovered; report uses local date and "allocated" excludes carved rows; hex view shows full 4Kn sectors; RAID scans start on request (quick or deep).
 
+### Fixed (adversarial review, 2026-11-22)
+
+- RAID 6 detection without metadata now scores all four mdadm layouts; parity
+  ties prefer the symmetric (mdadm-default) variant and FS signatures still
+  refine the choice.
+- Parallel carve: a dead worker no longer stores a "complete" position —
+  progress and the resume cursor stop where work actually finished.
+- Wipe guard resolves the Windows system volume via `GetSystemDirectoryW`
+  (new `getSystemDriveLetter` binding), not a spoofable env var.
+- Imaging: the cancel signal is an explicit native `stopped` flag; a finished
+  image is no longer inferred from a missing MD5.
+- `clearScanRecords` only tolerates a missing content-index table at prepare;
+  a failing delete is a real error. Audit reopen accepts a chain hash only at
+  end of line. Carve-family source prefix now has a single definition.
+  Paused quick scans explain why resume is disabled.
+
 ### Security & reliability (audit 2026-10-28)
 
 - Filename search: `contentRegexQueryOk` guard in native bridge and metadata store (ReDoS parity with content search); IPC pre-check via `src/shared/content-regex-query.ts`.

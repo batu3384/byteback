@@ -98,9 +98,14 @@ describe('imagingProgressPayload', () => {
       .toEqual({ current: 8, total: 8, md5: 'ab', badSectors: 0 })
   })
 
-  it('the final tick of a stopped run carries no MD5 and is reported as cancelled', () => {
-    expect(imagingProgressPayload({ current: 8, total: 8, md5: '', badSectors: 0 }))
+  it('the final tick of a stopped run is reported as cancelled', () => {
+    expect(imagingProgressPayload({ current: 8, total: 8, md5: '', badSectors: 0, stopped: true }))
       .toEqual({ current: 8, total: 8, badSectors: 0, status: 'cancelled' })
+  })
+
+  it('a finished run without an MD5 is still complete, not cancelled', () => {
+    expect(imagingProgressPayload({ current: 8, total: 8, md5: '', badSectors: 0, stopped: false }))
+      .toEqual({ current: 8, total: 8, badSectors: 0 })
   })
 
   it('forwards the unreadable-sector count the engine reports', () => {

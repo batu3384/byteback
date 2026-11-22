@@ -88,6 +88,7 @@ const STRINGS: Record<string, Entry> = {
   'dash.volumeLetterLabel': { tr: 'Mantıksal sürücü harfi', en: 'Logical drive letter' },
   'dash.pausedTitle': { tr: 'Yarım Kalan Tarama', en: 'Unfinished Scan' },
   'dash.viewPausedResults': { tr: 'Sonuçları gör', en: 'View results' },
+  'dash.quickNoResume': { tr: 'Hızlı tarama kaldığı yerden devam edemez; yeniden başlatılır', en: 'A quick scan restarts instead of resuming' },
   'dash.resume': { tr: 'Devam et', en: 'Resume' },
   'dash.scanRunningTitle': { tr: 'Tarama sürüyor', en: 'Scan running' },
   'profile.quick.label': { tr: 'Hızlı', en: 'Quick' },

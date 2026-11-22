@@ -95,10 +95,12 @@ Napi::Value StartImaging(const Napi::CallbackInfo& info) {
             obj.Set("total", Napi::Number::New(env, static_cast<double>(total)));
             // CA-007: read-failure telemetry for the imaging session.
             obj.Set("badSectors", Napi::Number::New(env, static_cast<double>(imagerPtr->badSectorReads())));
-            // On completion, surface the image MD5 (EWF images are hashed on
-            // the fly; empty for raw images).
+            // On completion, surface the image MD5 and the explicit stop flag
+            // (a finished image must not be inferred "cancelled" from a
+            // missing digest).
             if (current >= total) {
                 obj.Set("md5", Napi::String::New(env, imagerPtr->lastImageMd5()));
+                obj.Set("stopped", Napi::Boolean::New(env, imagerPtr->lastRunStopped()));
             }
             jsCallback.Call({obj});
         };

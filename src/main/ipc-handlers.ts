@@ -763,8 +763,10 @@ export function registerIpcHandlers(): void {
         return { ok: false, error: 'İmaj sürerken disk imha edilemez' }
       }
       const engine = getEngine()
-      // The disk holding Windows or this app's evidence store is never a wipe target.
-      const protectedLetters = [...new Set([process.env.SystemDrive ?? 'C:', app.getPath('userData')]
+      // The disk holding Windows or this app's evidence store is never a wipe
+      // target. The system letter comes from the OS, not env: a spoofable
+      // SystemDrive would silently unprotect the real Windows disk.
+      const protectedLetters = [...new Set([engine.getSystemDriveLetter?.() ?? process.env.SystemDrive ?? 'C:', app.getPath('userData')]
         .map((p) => /^([A-Za-z]):/.exec(p)?.[1]?.toUpperCase())
         .filter((l): l is string => !!l))]
       if (wipeHitsProtectedVolume(driveIndex, protectedLetters.map((l) => engine.resolveVolume(l)))) {

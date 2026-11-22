@@ -183,6 +183,7 @@ void DiskImager::startImaging(int driveIndex, const std::string& destPath, Progr
     stopImaging();
     isRunning_ = true;
     lastImageMd5_.clear();
+    lastRunStopped_.store(false);
     imagingThread_ = std::thread(&DiskImager::imagingWorker, this, driveIndex, destPath, onProgress, format, ewfOpts,
                                  volumePath);
 }
@@ -193,6 +194,7 @@ void DiskImager::startImagingFromReader(DiskReader& reader, const std::string& d
     stopImaging();
     isRunning_ = true;
     lastImageMd5_.clear();
+    lastRunStopped_.store(false);
     // Lifetime contract: `reader` is captured by reference and MUST outlive
     // the imaging thread (until stopImaging() joins it or the run completes).
     // Production uses this for assembled RAID (ImagerContext::raidReader);
@@ -650,7 +652,8 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
 
     // Completion tick (current == total) is the caller's end-of-job signal
     // (the NAPI bridge releases its ThreadSafeFunction on it), so it is sent
-    // even for a cancelled run — the empty lastImageMd5() marks it unverified.
+    // even for a cancelled run — lastRunStopped marks it unverified.
+    lastRunStopped_.store(stoppedEarly);
     if (onProgress) onProgress(totalSectors, totalSectors);
     isRunning_ = false;
 }
