@@ -411,6 +411,23 @@ void loadEmbeddedSignatures(std::vector<FileSignature>& signatures) {
     addSig("OneNote Package", ".one", "Document", {0xE4, 0x52, 0x5C, 0x7B, 0x8C, 0xD9, 0xA7, 0x4D}, {}, 500 * 1024 * 1024);
     addSig("Adobe InDesign", ".indd", "Document", {0x06, 0x06, 0xED, 0xFD, 0xD5, 0x06, 0xE2, 0x17}, {}, 500 * 1024 * 1024);
     addSig("Blender Blend", ".blend", "Document", {0x42, 0x4C, 0x45, 0x4E, 0x44, 0x45, 0x52}, {}, 500 * 1024 * 1024);
+
+    // ============================================================
+    // Audit gap-fill: common forensic targets that had no signature
+    // ============================================================
+    addSig("Photoshop PSD", ".psd", "Image", {0x38, 0x42, 0x50, 0x53}, {}, 2ULL * 1024 * 1024 * 1024);
+    addSig("Photoshop PSB", ".psb", "Image", {0x38, 0x42, 0x50, 0x42}, {}, 8ULL * 1024 * 1024 * 1024);
+    // PE/EXE: "MZ" alone is a 2-byte micro-header; the standard linker
+    // DOS stub begins MZ 90 00 03 — real binaries only, no text matches.
+    addSig("Windows PE/EXE", ".exe", "Executable", {0x4D, 0x5A, 0x90, 0x00, 0x03}, {}, 512ULL * 1024 * 1024);
+    // ISO 9660: PVD = 0x01 + "CD001" at 0x8000 — carving starts at the
+    // descriptor, so the 32 KiB system area is lost but the image mounts.
+    addSig("ISO 9660 CD Image", ".iso", "DiskImage", {0x01, 0x43, 0x44, 0x30, 0x30, 0x31}, {}, 8ULL * 1024 * 1024 * 1024);
+    addSig("AutoCAD DWG", ".dwg", "Document", {0x41, 0x43, 0x31, 0x30}, {}, 500ULL * 1024 * 1024);
+    addSig("PostScript/EPS", ".eps", "Document", {0x25, 0x21, 0x50, 0x53, 0x2D, 0x41, 0x64, 0x6F, 0x62, 0x65}, {0x25, 0x25, 0x45, 0x4F, 0x46}, 100 * 1024 * 1024);
+    addSig("Windows Icon", ".ico", "Image", {0x00, 0x00, 0x01, 0x00}, {}, 10 * 1024 * 1024);
+    addSig("WebAssembly", ".wasm", "Executable", {0x00, 0x61, 0x73, 0x6D}, {}, 100 * 1024 * 1024);
+    addSig("Compiled Help CHM", ".chm", "Document", {0x49, 0x54, 0x53, 0x46}, {}, 200 * 1024 * 1024);
 }
 
 void appendFtypMediaSignatures(std::vector<FileSignature>& signatures) {

@@ -397,6 +397,41 @@ TEST(PartitionScan, UnreadBootIsNotNoLostPartitions) {
         << "empty lost-partition list after unread I/O is not “no partitions”";
 }
 
+// Y8: found partitions must carry their real size from the boot sector
+// (NTFS @+0x28), and filesystems without a 0x55AA boot marker (XFS, APFS)
+// must still be identified by their own signatures.
+TEST(PartitionScan, LostPartitionCarriesSizeAndCoversMoreFilesystems) {
+    constexpr uint64_t kOff = 2048;
+    auto img = makeImage(kOff + 64);
+    uint8_t* b = img.data() + kOff * 512;
+    std::memcpy(b + 3, "NTFS    ", 8);
+    b[510] = 0x55; b[511] = 0xAA;
+    const uint64_t total = 123456;
+    std::memcpy(b + 0x28, &total, 8);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    PartitionScanner scanner(&reader);
+    auto found = scanner.scanForPartitions(64);
+    const PartitionInfo* ntfs = nullptr;
+    for (const auto& p : found) if (p.type == "NTFS") ntfs = &p;
+    ASSERT_TRUE(ntfs != nullptr);
+    EXPECT_EQ(ntfs->sizeInSectors, total);
+
+    auto img2 = makeImage(64);
+    std::memcpy(img2.data(), "XFSB", 4);
+    img2[4] = 0; img2[5] = 0; img2[6] = 0x10; img2[7] = 0; // blocksize 4096
+    const uint64_t dblocks = 1000;
+    for (int i = 0; i < 8; ++i) img2[8 + i] = static_cast<uint8_t>(dblocks >> (8 * (7 - i)));
+    DiskReader reader2;
+    reader2.attachMemoryVolume(std::move(img2));
+    PartitionScanner scanner2(&reader2);
+    auto found2 = scanner2.scanForPartitions(1);
+    ASSERT_EQ(found2.size(), 1u);
+    EXPECT_EQ(found2[0].type, "XFS");
+    EXPECT_EQ(found2[0].sizeInSectors, dblocks * 8); // 4096-byte blocks
+}
+
 TEST(PartitionScan, UnreadExtSuperblockIsNotSilentSkip) {
     auto img = makeImage(128);
     writeExt4Superblock(img, 0);

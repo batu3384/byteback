@@ -383,87 +383,139 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
     uint32_t sectorSize = reader_->getSectorSize();
 
     std::vector<uint8_t> buffer(sectorSize);
-    std::vector<uint8_t> extBuffer(2048); // For reading 2 sectors for EXT superblock
+    std::vector<uint8_t> extBuffer(2048); // For reading 2 sectors for EXT/HFS superblock
 
-    for (uint64_t sector = 0; sector < totalSectors; sector += stepSectors) {
-        if (progressCallback) {
-            progressCallback(sector, totalSectors);
-        }
+    auto rd16 = [](const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); };
+    auto rd32 = [](const uint8_t* p) {
+        return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    };
+    auto rd64 = [](const uint8_t* p) {
+        uint64_t v = 0;
+        std::memcpy(&v, p, 8);
+        return v;
+    };
+    auto be32 = [](const uint8_t* p) {
+        return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+    };
+    auto be64 = [](const uint8_t* p) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+        return v;
+    };
 
+    auto probeSector = [&](uint64_t sector, PartitionInfo& info) -> bool {
         auto res = reader_->readSectors(sector * sectorSize, sectorSize, buffer.data());
         if (!readComplete(res, sectorSize)) {
             scanUnread_ = true;
-            continue;
+            return false;
         }
-
-        bool found = false;
-        PartitionInfo info;
         info.startSector = sector;
         info.sizeInSectors = 0;
         info.isActive = false;
 
-        // NTFS: 'NTFS' at +3, 0x55AA at +510
-        if (std::memcmp(buffer.data() + 3, "NTFS    ", 8) == 0 && 
+        // NTFS: 'NTFS' at +3, 0x55AA at +510; total sectors @+0x28
+        if (std::memcmp(buffer.data() + 3, "NTFS    ", 8) == 0 &&
             buffer[510] == 0x55 && buffer[511] == 0xAA) {
             info.type = "NTFS";
-            found = true;
+            info.sizeInSectors = rd64(buffer.data() + 0x28);
+            return true;
         }
-        // exFAT: 'EXFAT' at +3
-        else if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) == 0) {
+        // exFAT: 'EXFAT' at +3; volume length in sectors @+72
+        if (std::memcmp(buffer.data() + 3, "EXFAT   ", 8) == 0) {
             info.type = "exFAT";
-            found = true;
+            info.sizeInSectors = rd64(buffer.data() + 72);
+            return true;
         }
-        // FAT32: 'FAT32' at +82, 0x55AA at +510
-        else if (std::memcmp(buffer.data() + 82, "FAT32   ", 8) == 0 && 
-                 buffer[510] == 0x55 && buffer[511] == 0xAA) {
+        // FAT32: 'FAT32' at +82; FAT16: 'FAT16' at +54 — total sectors
+        // u16 @+19 (0 → u32 @+32). ReFS: 'ReFS' at +3.
+        if (std::memcmp(buffer.data() + 82, "FAT32   ", 8) == 0 &&
+            buffer[510] == 0x55 && buffer[511] == 0xAA) {
             info.type = "FAT32";
-            found = true;
-        }
-        // FAT16: 'FAT16' at +54, 0x55AA at +510
-        else if (std::memcmp(buffer.data() + 54, "FAT16   ", 8) == 0 && 
-                 buffer[510] == 0x55 && buffer[511] == 0xAA) {
+        } else if (std::memcmp(buffer.data() + 54, "FAT16   ", 8) == 0 &&
+                   buffer[510] == 0x55 && buffer[511] == 0xAA) {
             info.type = "FAT16";
-            found = true;
-        }
-        else if (looksLikeLvm2Label(buffer.data(), buffer.size())) {
+        } else if (std::memcmp(buffer.data() + 3, "ReFS\x00\x00\x00\x00", 8) == 0) {
+            info.type = "ReFS";
+            return true;
+        } else if (std::memcmp(buffer.data(), "XFSB", 4) == 0) {
+            info.type = "XFS";
+            const uint32_t blkSz = be32(buffer.data() + 4);
+            const uint64_t dblocks = be64(buffer.data() + 8);
+            if (blkSz >= sectorSize && (blkSz % sectorSize) == 0)
+                info.sizeInSectors = dblocks * (blkSz / sectorSize);
+            return true;
+        } else if (std::memcmp(buffer.data() + 32, "NXSB", 4) == 0) {
+            info.type = "APFS";
+            const uint32_t blkSz = rd32(buffer.data() + 36);
+            const uint64_t blocks = rd64(buffer.data() + 48);
+            if (blkSz >= sectorSize && (blkSz % sectorSize) == 0)
+                info.sizeInSectors = blocks * (blkSz / sectorSize);
+            return true;
+        } else if (looksLikeLvm2Label(buffer.data(), buffer.size())) {
             uint64_t labSec = 0;
             std::memcpy(&labSec, buffer.data() + 8, 8);
             info.startSector = (sector >= labSec) ? sector - labSec : sector;
             info.type = "LVM2 PV";
-            found = true;
-        }
-        else if (looksLikeSpacedb(buffer.data(), buffer.size())) {
+            return true;
+        } else if (looksLikeSpacedb(buffer.data(), buffer.size())) {
             info.type = "Storage Spaces";
-            found = true;
-        }
-        else {
-            // Check EXT superblock (requires reading at least 1024 bytes)
+            return true;
+        } else {
+            // EXT superblock + HFS+ volume header both sit at +1024 — one
+            // 2048-byte read covers either (4Kn sector already spans it).
+            const uint8_t* sb = nullptr;
             if (sectorSize >= 2048) {
-                uint16_t magic = *reinterpret_cast<uint16_t*>(buffer.data() + 1024 + 0x38);
-                if (magic == 0xEF53) {
-                    info.type = "EXT";
-                    found = true;
-                }
+                sb = buffer.data();
             } else {
                 auto extRes = reader_->readSectors(sector * sectorSize, 2048, extBuffer.data());
-                if (!readComplete(extRes, 2048)) {
-                    scanUnread_ = true;
-                } else {
-                    uint16_t magic = *reinterpret_cast<uint16_t*>(extBuffer.data() + 1024 + 0x38);
-                    if (magic == 0xEF53) {
-                        info.type = "EXT";
-                        found = true;
-                    }
+                if (!readComplete(extRes, 2048)) scanUnread_ = true;
+                else sb = extBuffer.data();
+            }
+            if (sb) {
+                if (sb[1024 + 0x38] == 0x53 && sb[1024 + 0x39] == 0xEF) {
+                    info.type = "EXT";
+                    const uint32_t blocks = rd32(sb + 1024 + 4);
+                    const uint32_t logBlk = rd32(sb + 1024 + 24);
+                    const uint64_t blkSz = 1024ull << (logBlk & 0xFFFF);
+                    info.sizeInSectors = blkSz >= sectorSize
+                        ? (uint64_t)blocks * (blkSz / sectorSize) : 0;
+                    return true;
+                }
+                const uint16_t hfsMagic = static_cast<uint16_t>((sb[1024] << 8) | sb[1025]);
+                if (hfsMagic == 0x482B || hfsMagic == 0x4858) {
+                    info.type = "HFS+";
+                    const uint32_t blkSz = be32(sb + 1024 + 36);
+                    const uint32_t totalBlocks = be32(sb + 1024 + 40);
+                    info.sizeInSectors = blkSz >= sectorSize
+                        ? (uint64_t)totalBlocks * (blkSz / sectorSize) : 0;
+                    return true;
                 }
             }
+            return false;
         }
+        // FAT16/FAT32 shared tail: total sectors u16 @+19 else u32 @+32.
+        info.sizeInSectors = rd16(buffer.data() + 19);
+        if (info.sizeInSectors == 0) info.sizeInSectors = rd32(buffer.data() + 32);
+        return true;
+    };
 
-        if (found) {
-            partitions.push_back(info);
-            // Optionally could advance sector by a large amount if we can read volume size from boot sector
+    // Step in BYTES capped at 1 MiB — 512-sector steps skip real partition
+    // starts on 4Kn disks (512 × 4096 = 2 MiB alignment error).
+    const uint64_t maxStep = std::max<uint64_t>(1, (1024 * 1024) / sectorSize);
+    const uint64_t step = std::min<uint64_t>(stepSectors, maxStep);
+    for (uint64_t sector = 0; sector < totalSectors; sector += step) {
+        if (progressCallback) progressCallback(sector, totalSectors);
+        PartitionInfo info;
+        if (probeSector(sector, info)) partitions.push_back(info);
+    }
+    // Legacy CHS alignment (sector 63, 2048-strided) — pre-Vista MBR disks.
+    if (partitions.empty()) {
+        for (uint64_t sector = 63; sector < totalSectors; sector += step) {
+            PartitionInfo info;
+            if (probeSector(sector, info)) partitions.push_back(info);
         }
     }
-    
+
     if (progressCallback) {
         progressCallback(totalSectors, totalSectors);
     }

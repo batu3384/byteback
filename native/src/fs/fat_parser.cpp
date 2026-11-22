@@ -227,10 +227,12 @@ bool applyBackupFatChain(FileRecord& fr, DiskReader& reader, uint64_t fatStartSe
 
 // Deleted dirent still names firstCluster + size; FAT often already 0. chainRuns
 // then stops after one cluster. Contiguous undelete from the first cluster,
-// but stop before a cluster that looks like a different file (JPEG SOI, etc).
-void fillDeletedFatRuns(FileRecord& fr, DiskReader& reader, uint32_t firstCluster,
-                        uint64_t fileSize, uint32_t sectorsPerCluster,
-                        uint64_t dataStartSector, uint32_t bytesPerSector) {
+// but stop before a cluster that looks like a different file (JPEG SOI, etc)
+// OR a cluster still ALLOCATED in the FAT — it belongs to a live file and
+// gluing it in would mix another file's content into this recovery.
+void fillDeletedFatRuns(FileRecord& fr, DiskReader& reader, uint64_t fatStartSector,
+                        uint32_t firstCluster, uint64_t fileSize, uint32_t sectorsPerCluster,
+                        uint64_t dataStartSector, uint32_t bytesPerSector, int fatBits) {
     if (firstCluster < 2 || fileSize == 0 || sectorsPerCluster == 0 || bytesPerSector == 0) return;
     const uint64_t clusterBytes = static_cast<uint64_t>(sectorsPerCluster) * bytesPerSector;
     uint64_t nClus = (fileSize + clusterBytes - 1) / clusterBytes;
@@ -239,6 +241,8 @@ void fillDeletedFatRuns(FileRecord& fr, DiskReader& reader, uint32_t firstCluste
     uint64_t keep = 1;
     for (uint64_t i = 1; i < nClus; ++i) {
         const uint32_t cl = firstCluster + static_cast<uint32_t>(i);
+        const uint32_t fatVal = readFatEntry(reader, fatStartSector, bytesPerSector, fatBits, cl);
+        if (fatVal != fat::kFatUnread && fatVal != 0) break; // allocated to a live file
         const uint64_t sec = dataStartSector + static_cast<uint64_t>(cl - 2) * sectorsPerCluster;
         if (clusterStartsNewFile(reader, sec, bytesPerSector)) break;
         keep = i + 1;
@@ -542,8 +546,9 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                     if (!applyBackupFatChain(fr, reader, fatStartSector, fatSize, bpb->numFATs, bps,
                                              fatBits, firstCluster, bpb->sectorsPerCluster,
                                              dataStartSector, entry->fileSize, &thisUnread)) {
-                        fillDeletedFatRuns(fr, reader, firstCluster, entry->fileSize,
-                                           bpb->sectorsPerCluster, dataStartSector, bps);
+                        fillDeletedFatRuns(fr, reader, fatStartSector, firstCluster,
+                                           entry->fileSize, bpb->sectorsPerCluster,
+                                           dataStartSector, bps, fatBits);
                     }
                 }
                 applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
@@ -670,8 +675,9 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                             if (!applyBackupFatChain(fr, reader, fatStartSector, fatSize, bpb->numFATs, bps,
                                                      32, firstCluster, bpb->sectorsPerCluster,
                                                      dataStartSector, entry->fileSize, &thisUnread)) {
-                                fillDeletedFatRuns(fr, reader, firstCluster, entry->fileSize,
-                                                   bpb->sectorsPerCluster, dataStartSector, bps);
+                                fillDeletedFatRuns(fr, reader, fatStartSector, firstCluster,
+                                                   entry->fileSize, bpb->sectorsPerCluster,
+                                                   dataStartSector, bps, 32);
                             }
                         }
                         applyFatDeletedChainHint(fr, entry->fileSize, bps, deleted);
@@ -821,8 +827,9 @@ void FATParser::parseExFAT(byteback::DiskReader& reader, uint64_t partitionOffse
                     if (!applyBackupFatChain(fr, reader, fatStartSector, bpb->fatLength, bpb->numFats,
                                              bytesPerSector, 32, pending.firstCluster, spc,
                                              dataStartSector, pending.dataLength, &thisUnread)) {
-                        fillDeletedFatRuns(fr, reader, pending.firstCluster, pending.dataLength, spc,
-                                           dataStartSector, bytesPerSector);
+                        fillDeletedFatRuns(fr, reader, fatStartSector, pending.firstCluster,
+                                           pending.dataLength, spc, dataStartSector,
+                                           bytesPerSector, 32);
                     }
                 }
             }

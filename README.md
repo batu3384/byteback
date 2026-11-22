@@ -73,7 +73,7 @@ not on lab fixture counts alone.
   and PVD volume identifier (`udf_pvd_id`) and file set identifier
   (`udf_fsd_id`). File Entry Modification Date fills `modifiedAt`; Extended
   File Entry Create Date fills `createdAt`.
-- **Carving** — Aho–Corasick signature scan (150 built-in signatures: embedded
+- **Carving** — Aho–Corasick signature scan (~160 built-in signatures: embedded
   engine + curated `resources/signatures-extended.json` / `-supplement.json`;
   the set is validation-focused — text-magic signatures are intentionally
   excluded because they only generate phantom results),

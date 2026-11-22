@@ -339,6 +339,47 @@ TEST(DiskImagerTest, BadRegionZeroedGranularly) {
     std::filesystem::remove(dest);
 }
 
+// Y4: after 8 consecutive fully-dead chunks the imager skips ahead instead
+// of bisecting every dead sector. The skipped span is written as zeros and
+// counted as failed — provable because this span held READABLE data.
+TEST(DiskImagerTest, DeadChunksSkipAheadZeroesUnreadSpan) {
+    constexpr uint32_t chunk = 64;
+    constexpr size_t kSectors = chunk * 20; // 1280
+    const auto vol = makeVolume(kSectors, 0x77);
+    std::vector<uint8_t> copy = vol;
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(copy));
+    reader.setMemoryFaultRange(0, 8 * chunk); // exactly 8 dead chunks
+
+    const std::string dest = bytebackTestTemp("bb_img_skip", ".raw").string();
+    DiskImager imager;
+    imager.setChunkSectorsForTest(chunk);
+    std::atomic<bool> done{false};
+    imager.startImagingFromReader(reader, dest, [&](uint64_t cur, uint64_t total) {
+        if (cur == total) done = true;
+    }, ImageFormat::Raw);
+    for (int i = 0; i < 400 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    imager.stopImaging();
+    ASSERT_TRUE(done.load());
+
+    // 8 chunks read-failed (512) + one skipped chunk (64) — the skip proves
+    // the imager did not bisect the ninth span.
+    EXPECT_EQ(imager.badSectorReads(), 9 * static_cast<uint64_t>(chunk));
+
+    std::ifstream in(dest, std::ios::binary);
+    std::vector<uint8_t> out((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    ASSERT_EQ(out.size(), vol.size());
+    // Sectors 0..575 are zero — including 512..575 which was readable but
+    // skipped by the dead-streak rule.
+    for (size_t s = 0; s < 9 * chunk; ++s)
+        EXPECT_EQ(out[s * 512], 0) << "sector " << s;
+    // Everything after the skipped span is real data again.
+    EXPECT_EQ(std::memcmp(out.data() + 9 * chunk * 512, vol.data() + 9 * chunk * 512,
+                          (kSectors - 9 * chunk) * 512), 0);
+    std::filesystem::remove(dest);
+}
+
 // D3: sectors that failed during acquisition are carried into the E01's
 // acquiry-error section and round-trip through EwfReader::acquiryErrors().
 TEST(DiskImagerAcquiryErrors, FaultRangeLandsInEwfErrorSection) {

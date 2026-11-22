@@ -526,12 +526,14 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
 
     uint64_t sector = startSector;
     bool writeOk = true;
+    uint64_t deadChunkStreak = 0;
 
     while (sector < totalSectors) {
         if (!isRunning_) break;
 
         uint32_t sectorsToRead = std::min<uint64_t>(chunkSectors, totalSectors - sector);
         uint32_t bytesToRead = sectorsToRead * sectorSize;
+        uint64_t chunkFailedSectors = 0;
 
         // CA-037: a failed 16MB chunk used to be zero-filled wholesale — one
         // bad sector silently punched a 16MB hole in the forensic image.
@@ -555,6 +557,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
             }
             if (!res.success || res.bytesRead == 0) {
                 badSectorReads_.fetch_add(sub.sectors);
+                chunkFailedSectors += sub.sectors;
                 std::memset(dst, 0, want);
                 failedSectorRuns.push_back({sub.sector, sub.sectors}); // D1
                 continue;
@@ -568,6 +571,7 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
                 const size_t missing = want - res.bytesRead;
                 std::memset(dst + res.bytesRead, 0, missing);
                 badSectorReads_.fetch_add(missing / sectorSize);
+                chunkFailedSectors += missing / sectorSize;
                 failedSectorRuns.push_back({sub.sector + res.bytesRead / sectorSize,
                                             missing / sectorSize}); // D1 (approx tail)
             }
@@ -591,6 +595,43 @@ void DiskImager::imagingRun(DiskReader& reader, const std::string& destPath, Pro
         }
 
         sector += sectorsToRead;
+
+        // ddrescue-style skip: after 8 consecutive fully-dead chunks, jump
+        // ahead an exponentially-growing span instead of bisecting every
+        // dead sector — a dead 16 MiB chunk otherwise costs ~65k timed-out
+        // reads. Skipped spans are written as zeros and marked failed, so
+        // the image stays byte-exact and honest.
+        if (chunkFailedSectors == sectorsToRead) {
+            ++deadChunkStreak;
+            if (deadChunkStreak >= 8 && sector < totalSectors) {
+                uint64_t leftSectors = chunkSectors *
+                    (1ull << std::min<uint64_t>(deadChunkStreak - 8, 6));
+                leftSectors = std::min(leftSectors, totalSectors - sector);
+                std::memset(poolBuf->data(), 0, bytesToRead);
+                uint64_t wroteSectors = 0;
+                while (wroteSectors < leftSectors && isRunning_) {
+                    const uint32_t ns = static_cast<uint32_t>(
+                        std::min<uint64_t>(leftSectors - wroteSectors, sectorsToRead));
+                    const uint32_t nb = ns * sectorSize;
+                    if (ewf) {
+                        if (!ewf->write(poolBuf->data(), nb)) { writeOk = false; break; }
+                    } else {
+                        rawOut.write(reinterpret_cast<const char*>(poolBuf->data()), nb);
+                        rawMd5.update(poolBuf->data(), nb);
+                        if (!rawOut.good()) { writeOk = false; break; }
+                    }
+                    wroteSectors += ns;
+                }
+                if (!writeOk) break;
+                badSectorReads_.fetch_add(wroteSectors);
+                failedSectorRuns.push_back({sector, wroteSectors});
+                sector += wroteSectors;
+                continue;
+            }
+        } else {
+            deadChunkStreak = 0;
+        }
+
         // The completion tick (current == total) is sent once, after the image is final.
         if (onProgress && sector < totalSectors) onProgress(sector, totalSectors);
     }
