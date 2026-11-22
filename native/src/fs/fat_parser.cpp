@@ -462,9 +462,11 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
     bool isFat32 = countOfClusters >= 65525;
     bool chainUnread = false;
     
-    std::vector<uint32_t> dirClusters;
+    // {cluster, directory path} — path context rides with the cluster so
+    // nested files emit real paths instead of a flattened "/".
+    std::vector<std::pair<uint32_t, std::string>> dirClusters;
     if (isFat32) {
-        dirClusters.push_back(bpb->rootCluster);
+        dirClusters.push_back({bpb->rootCluster, ""});
     } else {
         // Parse FAT16 root dir sequentially. Long File Name (LFN) entries
         // precede their 8.3 short entry in reverse ordinal order; we buffer
@@ -513,7 +515,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
 
             uint32_t firstCluster = entry->fstClusLO | (entry->fstClusHI << 16);
             if (entry->attr & 0x10) {
-                if (name != "." && name != "..") dirClusters.push_back(firstCluster);
+                if (name != "." && name != "..") dirClusters.push_back({firstCluster, "/" + name});
             } else {
                 // CA-002: emit real sector runs from the FAT chain instead of
                 // leaking the raw cluster number into startSector.
@@ -532,7 +534,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                     : runs16.front().startSector;
                 fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
                 fr.runs = std::move(runs16);
-                fr.path = "/";
+                fr.path = "/" + name;
                 fr.status = status;
                 fr.confidence = confidence;
                 if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
@@ -592,7 +594,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
         // never enter a directory cluster we processed before.
         std::unordered_set<uint32_t> visitedDirs;
         while (!dirClusters.empty()) {
-            uint32_t currentCluster = dirClusters.back();
+            const auto [currentCluster, curPath] = dirClusters.back();
             dirClusters.pop_back();
             if (!visitedDirs.insert(currentCluster).second) continue;
 
@@ -644,7 +646,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
 
                     uint32_t firstCluster = entry->fstClusLO | (entry->fstClusHI << 16);
                     if (entry->attr & 0x10) {
-                        dirClusters.push_back(firstCluster);
+                        dirClusters.push_back({firstCluster, curPath + "/" + name});
                     } else {
                         bool thisUnread = false;
                         auto runs32 = buildRunsFromChain(reader, fatStartSector, bps, 32,
@@ -660,7 +662,7 @@ void FATParser::parseFAT(byteback::DiskReader& reader, uint64_t partitionOffset,
                             : runs32.front().startSector;
                         fr.endSector = fr.startSector + (uint32_t)((entry->fileSize + bps * bpb->sectorsPerCluster - 1) / (bps * bpb->sectorsPerCluster)) * bpb->sectorsPerCluster;
                         fr.runs = std::move(runs32);
-                        fr.path = "/";
+                        fr.path = curPath + "/" + name;
                         fr.status = status;
                         fr.confidence = confidence;
                         if (deleted && fatRunBytes(fr.runs, bps) < entry->fileSize &&
