@@ -100,7 +100,7 @@ void emitCatalogUnread(FileSystemParser::FileRecordCallback& callback,
 constexpr uint64_t kApfsTypeDirRec = 9;
 constexpr uint64_t kApfsTypeFileExtent = 8;
 constexpr uint64_t kApfsTypeInode = 3;
-constexpr uint32_t kObjBtreeNode = 2;
+constexpr uint32_t kObjBtreeNode = 3; // APFS_OBJECT_TYPE_BTREE_NODE
 
 void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
                 const std::string& volName, uint64_t off, uint64_t blockSize, uint32_t sectorSize) {
@@ -118,118 +118,252 @@ void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
     callback(fr);
 }
 
-void scanBtreeNodeForCatalog(const uint8_t* block, uint32_t blockSize, uint64_t partitionOffsetBytes,
-                             uint64_t blockOff, uint32_t sectorSize, int& fileIndex,
-                             FileSystemParser::FileRecordCallback& callback,
-                             std::unordered_set<std::string>& seenNames,
-                             const char* source) {
-    if (blockSize < 64) return;
-    uint32_t otype = readLe32(block + 24) & 0xFFFFu;
-    if (otype != kObjBtreeNode) return;
-    uint16_t level = static_cast<uint16_t>(block[34] | (block[35] << 8));
-    if (level != 0) return;
-    uint32_t nkeys = readLe32(block + 36);
-    if (nkeys == 0 || nkeys > 4096) return;
+// ---- Real APFS B-tree layout -------------------------------------------
+// obj_phys header: 32 B, o_type u32 @24 (OBJECT_TYPE_MASK 0xFFFF).
+// btree_node_phys: btn_flags u16 @32 (leaf=2, fixedKV=4), btn_level u16 @34,
+// btn_nkeys u32 @36, table of contents at +56.
+//   non-fixed KV (FS catalog): TOC = kvoff{k u16,v u16}; key forward from
+//   btn_data(+56)+k, value BACKWARD from node end (blockSize - v).
+//   fixed KV (omap): TOC = kvloc{ nloc{off,len}, nloc{off,len} }; key and
+//   value both BACKWARD from node end.
+// FS key starts with j_key u64: type = >>60, object id = & OBJ_ID_MASK.
+// dir_rec key oid is the PARENT dir inode; value holds the file's inode id.
+constexpr uint16_t kBtnRoot = 0x0001;
+constexpr uint16_t kBtnLeaf = 0x0002;
+constexpr uint16_t kBtnFixedKv = 0x0004;
 
-    struct DirHit {
-        uint64_t oid = 0;
-        std::string name;
-    };
-    std::vector<DirHit> dirs;
-    std::unordered_map<uint64_t, std::vector<FileRecord::DataRun>> extents;
-    struct InodeTimes {
-        int64_t created = 0;
-        int64_t modified = 0;
-    };
-    std::unordered_map<uint64_t, InodeTimes> times;
+struct ApfsDirRec {
+    uint64_t parentOid = 0;
+    uint64_t inodeId = 0;
+    std::string name;
+    int64_t dateAdded = 0;
+    bool fromStaleTree = false;
+};
+struct ApfsInode {
+    uint64_t parentId = 0;
+    int64_t created = 0;
+    int64_t modified = 0;
+    uint64_t size = 0;
+    uint16_t mode = 0;
+};
+struct ApfsAccum {
+    std::vector<ApfsDirRec> dirRecs;
+    std::unordered_map<uint64_t, ApfsInode> inodes;
+    // inode -> (logical offset, run) so extents assemble in file order.
+    std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, FileRecord::DataRun>>> extents;
+    std::unordered_set<std::string> emitted; // "inode/name" dedup
+};
 
-    for (uint32_t i = 56; i + 16 < blockSize; i += 8) {
-        uint64_t hdr = readLe64(block + i);
-        uint64_t typ = hdr >> 48;
-        uint64_t oid = hdr & ((1ull << 48) - 1);
+// Parse ONE leaf node's TOC; accumulate catalog entries. Returns false when
+// the block is not an APFS btree leaf (caller ignores it silently).
+bool collectCatalogNode(const uint8_t* block, uint32_t blockSize,
+                        uint64_t partitionOffsetBytes, uint32_t sectorSize,
+                        ApfsAccum& acc, bool fromStaleTree) {
+    if (blockSize < 80) return false;
+    const uint32_t otype = readLe32(block + 24) & 0xFFFFu;
+    if (otype != kObjBtreeNode) return false;
+    const uint16_t btnFlags = static_cast<uint16_t>(block[32] | (block[33] << 8));
+    if (!(btnFlags & kBtnLeaf)) return false;
+    if (block[34] != 0 || block[35] != 0) return false; // btn_level == 0
+    const uint32_t nkeys = readLe32(block + 36);
+    if (nkeys == 0 || nkeys > 4096) return false;
+    const bool fixedKv = (btnFlags & kBtnFixedKv) != 0;
+    const size_t tocStride = fixedKv ? 4 : 8;
+    if (56 + static_cast<size_t>(nkeys) * tocStride > blockSize) return false;
+    // Keys grow forward from the end of the TOC (btn_data + table_space.len);
+    // values grow backward from node end (minus the 40 B btree_info if root).
+    const uint32_t tableLen = static_cast<uint16_t>(block[0x2A] | (block[0x2B] << 8));
+    const uint64_t keysStart = 56ull + tableLen;
+    const uint64_t valsStart = blockSize - ((btnFlags & kBtnRoot) ? 40 : 0);
+
+    for (uint32_t i = 0; i < nkeys; ++i) {
+        uint64_t keyOff = 0, valOff = 0, valLen = 0;
+        if (fixedKv) { // kvoff {k u16, v u16}
+            const size_t e = 56 + static_cast<size_t>(i) * 4;
+            const uint16_t k = static_cast<uint16_t>(block[e] | (block[e + 1] << 8));
+            const uint16_t v = static_cast<uint16_t>(block[e + 2] | (block[e + 3] << 8));
+            keyOff = keysStart + k;
+            valOff = v != 0xFFFF ? valsStart - v : 0;
+            valLen = blockSize;
+        } else { // kvloc {k{off,len}, v{off,len}}
+            const size_t e = 56 + static_cast<size_t>(i) * 8;
+            const uint16_t ko = static_cast<uint16_t>(block[e] | (block[e + 1] << 8));
+            const uint16_t vo = static_cast<uint16_t>(block[e + 4] | (block[e + 5] << 8));
+            const uint16_t vl = static_cast<uint16_t>(block[e + 6] | (block[e + 7] << 8));
+            keyOff = keysStart + ko;
+            valOff = vo != 0xFFFF ? valsStart - vo : 0;
+            valLen = vl;
+        }
+        if (keyOff + 8 > blockSize || valOff + 8 > blockSize) continue;
+        if (!fixedKv) {
+            if (valOff + valLen > valsStart) continue;
+            valLen = std::min<uint64_t>(valLen, blockSize - valOff);
+        }
+        const uint8_t* key = block + keyOff;
+        const uint8_t* val = block + valOff;
+        const uint64_t jkey = readLe64(key);
+        const uint64_t typ = jkey >> 60;
+        const uint64_t oid = jkey & ((1ull << 60) - 1);
+
         if (typ == kApfsTypeDirRec) {
-            uint32_t nlh = readLe32(block + i + 8);
-            uint32_t nlen = nlh & 0x3FFu;
-            if (nlen < 2 || nlen > 255 || i + 12 + nlen > blockSize) continue;
-            if (block[i + 12 + nlen - 1] != 0) continue;
-            std::string name(reinterpret_cast<const char*>(block + i + 12), nlen - 1);
-            if (name.empty() || seenNames.count(name)) continue;
-            dirs.push_back({oid, name});
-        } else if (typ == kApfsTypeFileExtent && i + 24 < blockSize) {
-            uint64_t lenFlags = readLe64(block + i + 8);
-            uint64_t len = lenFlags & ((1ull << 56) - 1);
-            uint64_t phys = readLe64(block + i + 16);
+            // apfs_drec_hashed_key: hdr(8) + name_len_and_hash u32 + name.
+            // Non-hashed apfs_drec_key uses u16 name_len → name at +10.
+            uint32_t nlen = readLe32(key + 8) & 0x3FFu;
+            size_t nameOff = keyOff + 12;
+            if (nlen == 0 || nlen > 255 || nameOff + nlen > blockSize) {
+                nlen = static_cast<uint16_t>(key[8] | (key[9] << 8));
+                nameOff = keyOff + 10;
+            }
+            if (nlen == 0 || nameOff + nlen > blockSize) continue;
+            std::string name(reinterpret_cast<const char*>(block + nameOff), nlen);
+            while (!name.empty() && name.back() == '\0') name.pop_back();
+            if (name.empty()) continue;
+            if (valOff + 8 > blockSize) continue;
+            ApfsDirRec rec;
+            rec.parentOid = oid;
+            rec.inodeId = readLe64(val);
+            if (valOff + 16 <= blockSize) {
+                const uint64_t ns = readLe64(val + 8);
+                if (ns >= 1000000000ull) rec.dateAdded = static_cast<int64_t>(ns / 1000000000ull);
+            }
+            rec.name = std::move(name);
+            rec.fromStaleTree = fromStaleTree;
+            acc.dirRecs.push_back(std::move(rec));
+        } else if (typ == kApfsTypeFileExtent) {
+            // key: j_key(8) + logical_addr u64; val: len_flags u64 + phys u64
+            if (keyOff + 16 > blockSize || valOff + 16 > blockSize) continue;
+            const uint64_t logical = readLe64(key + 8);
+            const uint64_t len = readLe64(val) & ((1ull << 56) - 1);
+            const uint64_t phys = readLe64(val + 8);
             if (phys == 0 || len == 0) continue;
             FileRecord::DataRun run;
             run.startSector = (partitionOffsetBytes + phys * blockSize) / sectorSize;
             run.sectorCount = (len + sectorSize - 1) / sectorSize;
             if (run.sectorCount == 0) run.sectorCount = 1;
-            extents[oid].push_back(run);
-        } else if (typ == kApfsTypeInode && i + 40 <= blockSize) {
-            InodeTimes t;
-            const uint64_t cns = readLe64(block + i + 24);
-            const uint64_t mns = readLe64(block + i + 32);
-            if (cns >= 1000000000ull) t.created = static_cast<int64_t>(cns / 1000000000ull);
-            if (mns >= 1000000000ull) t.modified = static_cast<int64_t>(mns / 1000000000ull);
-            if (t.created != 0 || t.modified != 0) times[oid] = t;
+            acc.extents[oid].push_back({logical, run});
+        } else if (typ == kApfsTypeInode) {
+            // j_inode_val: parent@0, create@16, mod@24, mode u16@80, usize@88
+            ApfsInode ino;
+            if (valOff + 8 <= blockSize) ino.parentId = readLe64(val);
+            if (valOff + 32 <= blockSize) {
+                const uint64_t cns = readLe64(val + 16);
+                const uint64_t mns = readLe64(val + 24);
+                if (cns >= 1000000000ull) ino.created = static_cast<int64_t>(cns / 1000000000ull);
+                if (mns >= 1000000000ull) ino.modified = static_cast<int64_t>(mns / 1000000000ull);
+            }
+            if (valOff + 82 <= blockSize) ino.mode = static_cast<uint16_t>(val[80] | (val[81] << 8));
+            if (valOff + 96 <= blockSize) ino.size = readLe64(val + 88);
+            acc.inodes[oid] = ino;
         }
     }
+    return true;
+}
 
-    for (const auto& d : dirs) {
-        seenNames.insert(d.name);
+// Emit accumulated catalog as FileRecords with real paths. Directory names
+// come from dir_rec values (inode id of the dir); parents from dir_rec keys.
+void flushApfsCatalog(ApfsAccum& acc, int& fileIndex,
+                      FileSystemParser::FileRecordCallback& callback) {
+    // inode -> (parent oid, own name) — only for inodes that are directories
+    // named by a dir_rec.
+    std::unordered_map<uint64_t, std::pair<uint64_t, std::string>> dirInfo;
+    std::unordered_set<uint64_t> dirOids;
+    for (const auto& d : acc.dirRecs) {
+        if (d.inodeId == 0) continue;
+        // Only a dir path needs this; storing all is harmless.
+        dirInfo[d.inodeId] = {d.parentOid, d.name};
+        dirOids.insert(d.parentOid);
+    }
+    std::unordered_map<uint64_t, std::string> pathMemo;
+    auto dirPath = [&](uint64_t ino) -> std::string {
+        auto cached = pathMemo.find(ino);
+        if (cached != pathMemo.end()) return cached->second;
+        std::vector<std::string> segs;
+        std::unordered_set<uint64_t> hops{ino};
+        uint64_t node = ino;
+        for (int h = 0; h < 64 && node != 0 && node != 2; ++h) {
+            auto it = dirInfo.find(node);
+            if (it == dirInfo.end()) break;
+            segs.push_back(it->second.second);
+            node = it->second.first;
+            if (!hops.insert(node).second) break;
+        }
+        std::string out;
+        for (auto rit = segs.rbegin(); rit != segs.rend(); ++rit) out += "/" + *rit;
+        pathMemo[ino] = out;
+        return out;
+    };
+
+    for (const auto& d : acc.dirRecs) {
+        const std::string dedupKey = std::to_string(d.inodeId) + "\x1f" + d.name;
+        if (!acc.emitted.insert(dedupKey).second) continue;
+
+        const auto iit = acc.inodes.find(d.inodeId);
+        const ApfsInode* ino = iit != acc.inodes.end() ? &iit->second : nullptr;
+
+        std::vector<FileRecord::DataRun> runs;
+        uint64_t size = ino ? ino->size : 0;
+        auto eit = acc.extents.find(d.inodeId);
+        if (eit != acc.extents.end()) {
+            auto ordered = eit->second;
+            std::sort(ordered.begin(), ordered.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+            uint64_t end = 0;
+            for (const auto& lr : ordered) {
+                runs.push_back(lr.second);
+                end = std::max(end, lr.first + lr.second.sectorCount * 512ull);
+            }
+            if (size == 0) size = end;
+        }
+
         FileRecord fr;
         fr.id = fileIndex++;
+        fr.parentId = static_cast<int64_t>(d.parentOid);
         fr.name = d.name;
-        fr.path = "/apfs/" + d.name;
-        fr.startSector = blockOff / sectorSize;
-        fr.endSector = fr.startSector + 1;
-        fr.status = 0;
-        fr.confidence = 70;
-        fr.category = "Document";
-        fr.source = source ? source : "apfs_file";
-        if (fr.source == kApfsOmapDeletedSource) fr.confidence = 48;
-        auto tt = times.find(d.oid);
-        if (tt != times.end()) {
-            fr.createdAt = tt->second.created;
-            fr.modifiedAt = tt->second.modified;
-        }
-        auto it = extents.find(d.oid);
-        if (it != extents.end() && !it->second.empty()) {
-            fr.runs = it->second;
-            fr.startSector = fr.runs.front().startSector;
+        size_t dotPos = fr.name.find_last_of('.');
+        fr.extension = (dotPos != std::string::npos && dotPos + 1 < fr.name.size())
+                       ? fr.name.substr(dotPos + 1) : "";
+        const bool isDir = (ino && (ino->mode & 0xF000) == 0x4000) ||
+                           dirOids.count(d.inodeId) != 0;
+        fr.path = dirPath(d.parentOid) + "/" + d.name;
+        fr.sizeBytes = isDir ? 0 : size;
+        fr.runs = runs;
+        if (!runs.empty()) {
+            fr.startSector = runs.front().startSector;
             uint64_t total = 0;
-            for (const auto& r : fr.runs) total += r.sectorCount;
+            for (const auto& r : runs) total += r.sectorCount;
             fr.endSector = fr.startSector + total;
-            uint64_t bytes = 0;
-            for (const auto& r : fr.runs) bytes += static_cast<uint64_t>(r.sectorCount) * sectorSize;
-            fr.sizeBytes = bytes;
-            fr.confidence = 85;
         }
+        fr.status = d.fromStaleTree ? 0 : 1;
+        fr.confidence = d.fromStaleTree ? 48 : (runs.empty() ? 70 : 85);
+        fr.category = isDir ? "Folder" : "Document";
+        fr.source = d.fromStaleTree ? kApfsOmapDeletedSource : "apfs_file";
+        fr.createdAt = ino && ino->created ? ino->created : d.dateAdded;
+        fr.modifiedAt = ino ? ino->modified : 0;
         callback(fr);
     }
 
-    for (const auto& kv : extents) {
-        bool attached = false;
-        for (const auto& d : dirs) {
-            if (d.oid == kv.first) {
-                attached = true;
-                break;
-            }
-        }
-        if (attached) continue;
-        const auto& runs = kv.second;
-        if (runs.empty()) continue;
+    // Extents whose inode has no dir_rec still carry recoverable data —
+    // emit them as unnamed extent records instead of dropping the runs.
+    std::unordered_set<uint64_t> namedInodes;
+    for (const auto& d : acc.dirRecs) namedInodes.insert(d.inodeId);
+    for (const auto& kv : acc.extents) {
+        if (namedInodes.count(kv.first)) continue;
+        auto ordered = kv.second;
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
         FileRecord fr;
         fr.id = fileIndex++;
         fr.name = "extent_" + std::to_string(kv.first);
         fr.path = "/apfs/extent/" + std::to_string(kv.first);
-        fr.sizeBytes = 0;
-        for (const auto& r : runs) fr.sizeBytes += static_cast<uint64_t>(r.sectorCount) * sectorSize;
-        fr.runs = runs;
-        fr.startSector = runs.front().startSector;
         uint64_t total = 0;
-        for (const auto& r : runs) total += r.sectorCount;
+        for (const auto& lr : ordered) {
+            fr.runs.push_back(lr.second);
+            total += lr.second.sectorCount;
+        }
+        if (fr.runs.empty()) continue;
+        fr.startSector = fr.runs.front().startSector;
         fr.endSector = fr.startSector + total;
+        fr.sizeBytes = total * 512ull;
         fr.status = 0;
         fr.confidence = 60;
         fr.category = "Document";
@@ -256,9 +390,13 @@ bool tryApsbAt(DiskReader& reader, uint64_t off, uint32_t blockSize, uint32_t se
     return true;
 }
 
+// Walk an omap b-tree: leaf entries fill oidMap (oid -> paddr), internal
+// entries hold child oids that get resolved through the map afterwards.
 void walkOmapBtree(DiskReader& reader, uint64_t partitionOffsetBytes, uint64_t blockSize,
-                   uint64_t blockCount, uint64_t blockNum, std::vector<uint64_t>& paddrs,
-                   std::unordered_set<uint64_t>& visited, bool& unread) {
+                   uint64_t blockCount, uint64_t blockNum,
+                   std::unordered_map<uint64_t, uint64_t>& oidMap,
+                   std::unordered_set<uint64_t>& visited, bool& unread,
+                   std::vector<uint64_t>& pendingChildren) {
     if (blockNum == 0 || blockNum >= blockCount || visited.count(blockNum)) return;
     visited.insert(blockNum);
     std::vector<uint8_t> blk;
@@ -270,19 +408,42 @@ void walkOmapBtree(DiskReader& reader, uint64_t partitionOffsetBytes, uint64_t b
     if (blk.size() < 80) return;
     uint32_t otype = readLe32(blk.data() + 24) & 0xFFFFu;
     if (otype != kObjBtreeNode) return;
+    const uint16_t tableLen = static_cast<uint16_t>(blk[0x2A] | (blk[0x2B] << 8));
+    const uint64_t keysStart = 56ull + tableLen;
     uint16_t level = static_cast<uint16_t>(blk[34] | (blk[35] << 8));
     uint32_t nkeys = readLe32(blk.data() + 36);
     if (nkeys == 0 || nkeys > 4096) return;
+    // omap nodes are fixed-KV: TOC entries are kvoff {k u16, v u16}; keys
+    // forward from btn_data+table_space.len, values backward from node end.
+    // Leaf value = 16 B apfs_omap_val {flags u32, size u32, paddr u64};
+    // non-leaf value = 8 B child oid.
+    std::vector<uint64_t> children;
     for (uint32_t i = 0; i < nkeys; ++i) {
-        uint32_t off = 56 + i * 24;
-        if (off + 24 > blockSize) break;
-        uint64_t val = readLe64(blk.data() + off + 16);
-        if (val == 0 || val >= blockCount) continue;
+        const size_t e = 56 + static_cast<size_t>(i) * 4;
+        if (e + 4 > blockSize) break;
+        const uint16_t ko = static_cast<uint16_t>(blk[e] | (blk[e + 1] << 8));
+        const uint16_t vo = static_cast<uint16_t>(blk[e + 2] | (blk[e + 3] << 8));
+        if (vo < 8 || vo > blockSize) continue;
+        const uint64_t voff = blockSize - vo;
         if (level == 0) {
-            paddrs.push_back(val);
+            if (voff + 16 > blockSize || keysStart + ko + 8 > blockSize) continue;
+            const uint64_t oid = readLe64(blk.data() + keysStart + ko); // omap_key.ok_oid
+            const uint64_t paddr = readLe64(blk.data() + voff + 8);     // omap_val.ov_paddr
+            if (oid != 0 && paddr > 0 && paddr < blockCount) oidMap[oid] = paddr;
         } else {
-            walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, val, paddrs, visited, unread);
+            const uint64_t childOid = readLe64(blk.data() + voff);
+            if (childOid != 0) children.push_back(childOid);
         }
+    }
+    // Resolve child oids through the map built so far; unresolved ones are
+    // retried by the caller after the whole tree is collected.
+    for (uint64_t c : children) {
+        auto it = oidMap.find(c);
+        if (it != oidMap.end())
+            walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount,
+                          it->second, oidMap, visited, unread, pendingChildren);
+        else
+            pendingChildren.push_back(c);
     }
 }
 
@@ -298,10 +459,14 @@ void collectOmapLeafPaddrs(const uint8_t* block, uint32_t blockSize, uint64_t bl
     if (level != 0) return;
     uint32_t nkeys = readLe32(block + 36);
     if (nkeys == 0 || nkeys > 4096) return;
+    // fixed-KV kvoff: leaf value = apfs_omap_val, paddr at +8, backward
+    // from node end.
     for (uint32_t i = 0; i < nkeys; ++i) {
-        uint32_t off = 56 + i * 24;
-        if (off + 24 > blockSize) break;
-        uint64_t paddr = readLe64(block + off + 16);
+        const size_t e = 56 + static_cast<size_t>(i) * 4;
+        if (e + 4 > blockSize) break;
+        const uint16_t vo = static_cast<uint16_t>(block[e + 2] | (block[e + 3] << 8));
+        if (vo < 16 || vo > blockSize) continue;
+        uint64_t paddr = readLe64(block + blockSize - vo + 8);
         if (paddr > 0) paddrs.push_back(paddr);
     }
 }
@@ -371,7 +536,7 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
     int volumeIndex = 0;
     int fileIndex = 1000;
     std::unordered_set<uint64_t> seenVol;
-    std::unordered_set<std::string> seenNames;
+    ApfsAccum apfs;
     bool blockUnread = false;
     bool catalogUnread = false;
 
@@ -404,8 +569,8 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
             tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol,
                       callback, blockUnread);
         }
-        scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
-                                off, sectorSize, fileIndex, callback, seenNames, "apfs_file");
+        collectCatalogNode(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
+                           sectorSize, apfs, false);
     }
 
     // nx_omap_oid is at NXSB+64; 0xA0 was the pre-spec probe offset — keep it
@@ -415,7 +580,7 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
         omapOid = (nx.size() >= 0xA8) ? readLe64(nx.data() + 0xA0) : 0;
     }
     uint64_t oidTreeOid = (nx.size() >= 0xB0) ? readLe64(nx.data() + 0xA8) : 0;
-    auto walkBtreeRoot = [&](uint64_t rootOid, const char* catSource) {
+    auto walkBtreeRoot = [&](uint64_t rootOid, bool staleTree) {
         if (rootOid == 0 || rootOid >= blockCount) return;
         std::vector<uint8_t> rootBlk;
         if (!readBlock(reader, partitionOffsetBytes + rootOid * blockSize, static_cast<uint32_t>(blockSize), rootBlk)) {
@@ -427,11 +592,28 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
             uint64_t named = readLe64(rootBlk.data() + 48);
             if (named > 0 && named < blockCount) treeOid = named;
         }
-        std::vector<uint64_t> paddrs;
+        std::unordered_map<uint64_t, uint64_t> oidMap;
         std::unordered_set<uint64_t> visitedOmap;
-        walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, treeOid, paddrs, visitedOmap,
-                      blockUnread);
-        for (uint64_t paddr : paddrs) {
+        std::vector<uint64_t> pending;
+        walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount, treeOid, oidMap,
+                      visitedOmap, blockUnread, pending);
+        // Internal entries reference child oids; resolve them now that the
+        // leaf map exists. Bounded retries — unresolvable children are lost.
+        for (int round = 0; round < 4 && !pending.empty(); ++round) {
+            std::vector<uint64_t> next;
+            next.swap(pending);
+            for (uint64_t c : next) {
+                auto it = oidMap.find(c);
+                if (it != oidMap.end())
+                    walkOmapBtree(reader, partitionOffsetBytes, blockSize, blockCount,
+                                  it->second, oidMap, visitedOmap, blockUnread, pending);
+                else
+                    pending.push_back(c);
+            }
+        }
+        for (const auto& kv : oidMap) {
+            if (isRunning && !(*isRunning)) break;
+            uint64_t paddr = kv.second;
             if (isRunning && !(*isRunning)) break;
             if (paddr < probe) continue;
             uint64_t off = partitionOffsetBytes + paddr * blockSize;
@@ -443,12 +625,12 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
                 tryApsbAt(reader, off, static_cast<uint32_t>(blockSize), sectorSize, volumeIndex, seenVol,
                           callback, blockUnread);
             }
-            scanBtreeNodeForCatalog(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
-                                    off, sectorSize, fileIndex, callback, seenNames, catSource);
+            collectCatalogNode(block.data(), static_cast<uint32_t>(blockSize), partitionOffsetBytes,
+                               sectorSize, apfs, staleTree);
         }
     };
-    walkBtreeRoot(omapOid, "apfs_file");
-    if (oidTreeOid != 0 && oidTreeOid != omapOid) walkBtreeRoot(oidTreeOid, "apfs_file");
+    walkBtreeRoot(omapOid, false);
+    if (oidTreeOid != 0 && oidTreeOid != omapOid) walkBtreeRoot(oidTreeOid, false);
 
     // nx_xp_desc_blocks u32 @0x68, nx_xp_desc_base u64 @0x70 (apfs.h nx_superblock).
     const uint32_t descBlocks = (nx.size() >= 0x6C) ? readLe32(nx.data() + 0x68) : 0;
@@ -469,9 +651,11 @@ bool walkApfsContainer(DiskReader& reader, uint64_t partitionOffsetBytes,
             uint64_t stale = readLe64(desc.data() + 0x40);
             if (stale == 0 || stale >= blockCount) stale = readLe64(desc.data() + 0xA0);
             if (stale == 0 || stale >= blockCount || stale == omapOid) continue;
-            walkBtreeRoot(stale, kApfsOmapDeletedSource);
+            walkBtreeRoot(stale, true);
         }
     }
+
+    flushApfsCatalog(apfs, fileIndex, callback);
 
     if (nxUnread) emitNxsbUnread(callback, partitionOffsetBytes, sectorSize);
     if (blockUnread) emitBlockUnread(callback, partitionOffsetBytes, sectorSize);

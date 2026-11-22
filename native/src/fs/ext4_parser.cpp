@@ -698,7 +698,8 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     struct PendingEmit {
         uint32_t ino;
         uint32_t parentIno;
-        const InodeMeta* meta;
+        InodeMeta meta;   // value copy — jInodes dies before flushEmits()
+        bool hasMeta;
         int confidence;
         int status;
         const char* source;
@@ -708,7 +709,9 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     auto emitFile = [&](const std::string& name, uint32_t ino, const InodeMeta* meta,
                         int confidence, int status, uint32_t parentIno,
                         const char* source = "ext4_dirent") {
-        pending.push_back({ino, parentIno, meta, confidence, status, source, name});
+        PendingEmit pe{ino, parentIno, {}, meta != nullptr, confidence, status, source, name};
+        if (meta) pe.meta = *meta;
+        pending.push_back(std::move(pe));
     };
 
     // Directory inode -> (parent dir inode, name) for path reconstruction.
@@ -846,11 +849,11 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             fr.extension = (dotPos != std::string::npos && dotPos + 1 < pe.name.size())
                            ? pe.name.substr(dotPos + 1) : "";
             fr.path = dirPath(pe.parentIno) + "/" + pe.name;
-            fr.sizeBytes = pe.meta ? pe.meta->size : 0;
-            if (pe.meta && !pe.meta->runs.empty()) {
-                fr.startSector = pe.meta->runs.front().startSector;
-                fr.endSector = pe.meta->runs.back().startSector + pe.meta->runs.back().sectorCount;
-                fr.runs = pe.meta->runs;
+            fr.sizeBytes = pe.hasMeta ? pe.meta.size : 0;
+            if (pe.hasMeta && !pe.meta.runs.empty()) {
+                fr.startSector = pe.meta.runs.front().startSector;
+                fr.endSector = pe.meta.runs.back().startSector + pe.meta.runs.back().sectorCount;
+                fr.runs = pe.meta.runs;
             } else {
                 fr.startSector = 0;
                 fr.endSector = 0;
@@ -859,8 +862,8 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             fr.confidence = pe.confidence;
             fr.category = "File";
             fr.source = pe.source;
-            fr.createdAt = pe.meta ? pe.meta->crtime : 0;
-            fr.modifiedAt = pe.meta ? pe.meta->mtime : 0;
+            fr.createdAt = pe.hasMeta ? pe.meta.crtime : 0;
+            fr.modifiedAt = pe.hasMeta ? pe.meta.mtime : 0;
             callback(fr);
         }
     };

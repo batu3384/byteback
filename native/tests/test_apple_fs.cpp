@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 using namespace byteback;
@@ -1104,6 +1105,90 @@ void writeLe64At(uint8_t* p, uint64_t v) {
     for (int i = 0; i < 8; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
 }
 
+void writeLe16At(uint8_t* p, uint16_t v) {
+    p[0] = static_cast<uint8_t>(v);
+    p[1] = static_cast<uint8_t>(v >> 8);
+}
+
+static void writeLe32p(uint8_t* p, uint32_t v) {
+    for (int i = 0; i < 4; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
+}
+
+// Real APFS catalog leaf: kvloc TOC at +56 (8 B per key {k.off,k.len,
+// v.off,v.len}), keys forward from btn_data+table_space.len, values
+// backward from node end.
+struct ApfsLeaf {
+    ApfsLeaf(uint8_t* node, uint32_t bs, uint32_t keyCount)
+        : n(node), bs(bs), tableLen(keyCount * 8) {
+        writeLe32p(n + 24, 3);        // APFS_OBJECT_TYPE_BTREE_NODE
+        n[32] = 2;                    // BTNODE_LEAF (variable kv)
+        n[34] = n[35] = 0;            // level 0
+        writeLe32p(n + 36, keyCount); // btn_nkeys
+        writeLe16At(n + 0x28, 0);                     // table_space.off
+        writeLe16At(n + 0x2A, tableLen);              // table_space.len
+    }
+    void add(const uint8_t* key, uint32_t klen, const uint8_t* val, uint32_t vlen) {
+        std::memcpy(n + 56 + tableLen + keyUsed, key, klen);
+        valUsed += (vlen + 3) & ~3u;
+        std::memcpy(n + bs - valUsed, val, vlen);
+        uint8_t* e = n + 56 + nkeys * 8;
+        writeLe16At(e + 0, static_cast<uint16_t>(keyUsed));
+        writeLe16At(e + 2, static_cast<uint16_t>(klen));
+        writeLe16At(e + 4, static_cast<uint16_t>(valUsed));
+        writeLe16At(e + 6, static_cast<uint16_t>(vlen));
+        keyUsed += (klen + 3) & ~3u;
+        ++nkeys;
+    }
+    uint8_t* n;
+    uint32_t bs;
+    uint16_t tableLen;
+    uint32_t nkeys = 0;
+    uint32_t keyUsed = 0;
+    uint32_t valUsed = 0;
+};
+
+// Real APFS omap leaf: fixed-KV → kvoff TOC (4 B {k,v}); omap_key 16 B
+// {oid,xid} forward, omap_val 16 B {flags,size,paddr} backward.
+struct ApfsOmapLeaf {
+    ApfsOmapLeaf(uint8_t* node, uint32_t bs, uint32_t keyCount)
+        : n(node), bs(bs), tableLen(keyCount * 4) {
+        writeLe32p(n + 24, 3);
+        n[32] = 6;                    // LEAF | FIXED_KV_SIZE
+        n[34] = n[35] = 0;
+        writeLe32p(n + 36, keyCount);
+        writeLe16At(n + 0x28, 0);
+        writeLe16At(n + 0x2A, tableLen);
+    }
+    void add(uint64_t oid, uint64_t paddr) {
+        writeLe64At(n + 56 + tableLen + keyUsed, oid);      // ok_oid
+        writeLe64At(n + 56 + tableLen + keyUsed + 8, 0);    // ok_xid
+        uint8_t* v = n + bs - 16 - valUsed;
+        writeLe32p(v, 0);                                   // ov_flags
+        writeLe32p(v + 4, bs);                              // ov_size
+        writeLe64At(v + 8, paddr);                          // ov_paddr
+        uint8_t* e = n + 56 + nkeys * 4;
+        writeLe16At(e + 0, static_cast<uint16_t>(keyUsed));
+        writeLe16At(e + 2, static_cast<uint16_t>(valUsed + 16));
+        keyUsed += 16;
+        valUsed += 16;
+        ++nkeys;
+    }
+    uint8_t* n;
+    uint32_t bs;
+    uint16_t tableLen;
+    uint32_t nkeys = 0;
+    uint32_t keyUsed = 0;
+    uint32_t valUsed = 0;
+};
+
+// dir_rec hashed key: j_key (DIR_REC<<60 | parentOid) + name_len_and_hash
+// u32 (len low 10 bits) + name.
+static void apfsDirRecKey(uint8_t* key, uint64_t parentOid, const char* name, uint32_t nameLen) {
+    writeLe64At(key, (9ull << 60) | parentOid);
+    writeLe32p(key + 8, nameLen);
+    std::memcpy(key + 12, name, nameLen);
+}
+
 TEST(ApfsContainer, CatalogEmitsHashedDirRec) {
     const uint32_t bs = 4096;
     std::vector<uint8_t> img(8 * bs, 0);
@@ -1112,16 +1197,12 @@ TEST(ApfsContainer, CatalogEmitsHashedDirRec) {
     writeLe64At(img.data() + 40, 8);
 
     uint8_t* node = img.data() + 2 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 1);
-    const uint64_t hdr = (9ull << 48) | 7ull;
-    writeLe64At(node + 56, hdr);
-    const char* name = "note.txt";
-    const uint32_t nlen = 9;
-    writeLe32(node + 64, nlen);
-    std::memcpy(node + 68, name, 8);
-    node[68 + 8] = 0;
+    ApfsLeaf leaf(node, bs, 1);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "note.txt\0", 9); // 8 chars + NUL
+    uint8_t val[24]{};
+    writeLe64At(val, 7); // apfs_drec_val.file_id
+    leaf.add(key, 21, val, 18);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1141,19 +1222,17 @@ TEST(ApfsContainer, InodeModTimeSetsModifiedAt) {
     writeLe64At(img.data() + 40, 8);
 
     uint8_t* node = img.data() + 2 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 2);
-    const uint64_t dirHdr = (9ull << 48) | 7ull;
-    writeLe64At(node + 56, dirHdr);
-    const char* name = "note.txt";
-    const uint32_t nlen = 9;
-    writeLe32(node + 64, nlen);
-    std::memcpy(node + 68, name, 8);
-    node[68 + 8] = 0;
-    const uint64_t inoHdr = (3ull << 48) | 7ull;
-    writeLe64At(node + 88, inoHdr);
-    writeLe64At(node + 88 + 8 + 24, 1577923200ull * 1000000000ull);
+    ApfsLeaf leaf(node, bs, 2);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "note.txt\0", 9);
+    uint8_t val[96]{};
+    writeLe64At(val, 7);
+    leaf.add(key, 21, val, 18);
+    uint8_t inoKey[8]{};
+    writeLe64At(inoKey, (3ull << 60) | 7ull);
+    uint8_t inoVal[96]{};
+    writeLe64At(inoVal + 24, 1577923200ull * 1000000000ull); // apfs_inode_val.mod_time
+    leaf.add(inoKey, 8, inoVal, 96);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1173,19 +1252,17 @@ TEST(ApfsContainer, InodeCreateTimeSetsCreatedAt) {
     writeLe64At(img.data() + 40, 8);
 
     uint8_t* node = img.data() + 2 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 2);
-    const uint64_t dirHdr = (9ull << 48) | 7ull;
-    writeLe64At(node + 56, dirHdr);
-    const char* name = "note.txt";
-    const uint32_t nlen = 9;
-    writeLe32(node + 64, nlen);
-    std::memcpy(node + 68, name, 8);
-    node[68 + 8] = 0;
-    const uint64_t inoHdr = (3ull << 48) | 7ull;
-    writeLe64At(node + 88, inoHdr);
-    writeLe64At(node + 88 + 8 + 16, 1577923200ull * 1000000000ull);
+    ApfsLeaf leaf(node, bs, 2);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "note.txt\0", 9);
+    uint8_t val[96]{};
+    writeLe64At(val, 7);
+    leaf.add(key, 21, val, 18);
+    uint8_t inoKey[8]{};
+    writeLe64At(inoKey, (3ull << 60) | 7ull);
+    uint8_t inoVal[96]{};
+    writeLe64At(inoVal + 16, 1577923200ull * 1000000000ull); // apfs_inode_val.create_time
+    leaf.add(inoKey, 8, inoVal, 96);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1205,19 +1282,19 @@ TEST(ApfsContainer, DirRecWithExtentAttachesRuns) {
     writeLe64At(img.data() + 40, 8);
 
     uint8_t* node = img.data() + 2 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 2);
-    const uint64_t dirHdr = (9ull << 48) | 42ull;
-    writeLe64At(node + 56, dirHdr);
-    const char* name = "data.bin";
-    writeLe32(node + 64, 9);
-    std::memcpy(node + 68, name, 8);
-    node[68 + 8] = 0;
-    const uint64_t extHdr = (8ull << 48) | 42ull;
-    writeLe64At(node + 88, extHdr);
-    writeLe64At(node + 96, 8192);
-    writeLe64At(node + 104, 4);
+    ApfsLeaf leaf(node, bs, 2);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "data.bin\0", 9);
+    uint8_t val[24]{};
+    writeLe64At(val, 42); // drec_val.file_id
+    leaf.add(key, 21, val, 18);
+    uint8_t extKey[16]{};
+    writeLe64At(extKey, (8ull << 60) | 42ull); // FILE_EXTENT, inode 42
+    writeLe64At(extKey + 8, 0);                // logical_addr
+    uint8_t extVal[24]{};
+    writeLe64At(extVal, 8192);                 // len_and_flags
+    writeLe64At(extVal + 8, 4);                // phys_block_num
+    leaf.add(extKey, 16, extVal, 24);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1240,12 +1317,14 @@ TEST(ApfsContainer, FileExtentEmitsRecoverableRuns) {
     writeLe64At(img.data() + 40, 8);
 
     uint8_t* node = img.data() + 2 * bs;
-    writeLe32(node + 24, 2);
-    writeLe32(node + 36, 1);
-    const uint64_t hdr = (8ull << 48) | 1ull;
-    writeLe64At(node + 56, hdr);
-    writeLe64At(node + 64, 4096);
-    writeLe64At(node + 72, 3);
+    ApfsLeaf leaf(node, bs, 1);
+    uint8_t extKey[16]{};
+    writeLe64At(extKey, (8ull << 60) | 1ull);
+    writeLe64At(extKey + 8, 0);
+    uint8_t extVal[24]{};
+    writeLe64At(extVal, 4096);
+    writeLe64At(extVal + 8, 3);
+    leaf.add(extKey, 16, extVal, 24);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1269,26 +1348,19 @@ TEST(ApfsContainer, OmapFollowsPaddrPast256Probe) {
     writeLe64At(img.data() + 0xA0, 5);
 
     uint8_t* omap = img.data() + 5 * bs;
-    writeLe64At(omap + 48, 6);
+    writeLe64At(omap + 48, 6); // om_tree_oid -> root paddr (physical omap)
 
     uint8_t* tree = img.data() + 6 * bs;
-    writeLe32(tree + 24, 2);
-    writeLe32(tree + 36, 1);
-    writeLe64At(tree + 56, 1);
-    writeLe64At(tree + 64, 1);
-    writeLe64At(tree + 72, 300);
+    ApfsOmapLeaf omapLeaf(tree, bs, 1);
+    omapLeaf.add(100, 300); // catalog node oid 100 -> paddr 300
 
     uint8_t* node = img.data() + 300 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 1);
-    const uint64_t hdr = (9ull << 48) | 7ull;
-    writeLe64At(node + 56, hdr);
-    const char* name = "far.txt";
-    const uint32_t nlen = 8;
-    writeLe32(node + 64, nlen);
-    std::memcpy(node + 68, name, 7);
-    node[68 + 7] = 0;
+    ApfsLeaf leaf(node, bs, 1);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "far.txt\0", 8);
+    uint8_t val[24]{};
+    writeLe64At(val, 7);
+    leaf.add(key, 20, val, 18);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1383,26 +1455,19 @@ TEST(ApfsContainer, SpecOffsetsResolveOmapAndVolumes) {
     writeLe64At(img.data() + 0x40, 5);    // nx_omap_oid (spec)
 
     uint8_t* omap = img.data() + 5 * bs;
-    writeLe64At(omap + 48, 6); // b-tree root block
+    writeLe64At(omap + 48, 6); // om_tree_oid
 
     uint8_t* tree = img.data() + 6 * bs;
-    writeLe32(tree + 24, 2);  // object type: B-tree node
-    writeLe32(tree + 36, 1);  // 1 key
-    writeLe64At(tree + 56, 1);
-    writeLe64At(tree + 64, 1);
-    writeLe64At(tree + 72, 300); // leaf paddr past the 256-block probe
+    ApfsOmapLeaf omapLeaf(tree, bs, 1);
+    omapLeaf.add(100, 300); // leaf paddr past the 256-block probe
 
     uint8_t* node = img.data() + 300 * bs;
-    writeLe32(node + 24, 2);
-    node[32] = 2;
-    writeLe32(node + 36, 1);
-    const uint64_t hdr = (9ull << 48) | 7ull;
-    writeLe64At(node + 56, hdr);
-    const char* name = "far.txt";
-    const uint32_t nlen = 8;
-    writeLe32(node + 64, nlen);
-    std::memcpy(node + 68, name, 7);
-    node[68 + 7] = 0;
+    ApfsLeaf leaf(node, bs, 1);
+    uint8_t key[24]{};
+    apfsDirRecKey(key, 2, "far.txt\0", 8);
+    uint8_t val[24]{};
+    writeLe64At(val, 7);
+    leaf.add(key, 20, val, 18);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1484,20 +1549,16 @@ TEST(ApfsContainer, CheckpointOmapEmitsDeletedFile) {
     uint8_t* liveOmap = img.data() + 5 * bs;
     writeLe64At(liveOmap + 48, 6);
     uint8_t* liveTree = img.data() + 6 * bs;
-    writeLe32(liveTree + 24, 2);
-    writeLe32(liveTree + 36, 1);
-    writeLe64At(liveTree + 56, 1);
-    writeLe64At(liveTree + 64, 1);
-    writeLe64At(liveTree + 72, 300);
+    ApfsOmapLeaf liveOmapLeaf(liveTree, bs, 1);
+    liveOmapLeaf.add(100, 300);
 
     uint8_t* liveNode = img.data() + 300 * bs;
-    writeLe32(liveNode + 24, 2);
-    liveNode[32] = 2;
-    writeLe32(liveNode + 36, 1);
-    writeLe64At(liveNode + 56, (9ull << 48) | 7ull);
-    writeLe32(liveNode + 64, 9);
-    std::memcpy(liveNode + 68, "live.txt", 8);
-    liveNode[76] = 0;
+    ApfsLeaf liveLeaf(liveNode, bs, 1);
+    uint8_t liveKey[24]{};
+    apfsDirRecKey(liveKey, 2, "live.txt\0", 9);
+    uint8_t liveVal[24]{};
+    writeLe64At(liveVal, 7);
+    liveLeaf.add(liveKey, 21, liveVal, 18);
 
     uint8_t* xp = img.data() + 8 * bs;
     std::memcpy(xp + 32, "NXSB", 4);
@@ -1508,20 +1569,16 @@ TEST(ApfsContainer, CheckpointOmapEmitsDeletedFile) {
     uint8_t* staleOmap = img.data() + 9 * bs;
     writeLe64At(staleOmap + 48, 11);
     uint8_t* staleTree = img.data() + 11 * bs;
-    writeLe32(staleTree + 24, 2);
-    writeLe32(staleTree + 36, 1);
-    writeLe64At(staleTree + 56, 1);
-    writeLe64At(staleTree + 64, 1);
-    writeLe64At(staleTree + 72, 301);
+    ApfsOmapLeaf staleOmapLeaf(staleTree, bs, 1);
+    staleOmapLeaf.add(200, 301);
 
     uint8_t* staleNode = img.data() + 301 * bs;
-    writeLe32(staleNode + 24, 2);
-    staleNode[32] = 2;
-    writeLe32(staleNode + 36, 1);
-    writeLe64At(staleNode + 56, (9ull << 48) | 8ull);
-    writeLe32(staleNode + 64, 9);
-    std::memcpy(staleNode + 68, "gone.dat", 8);
-    staleNode[76] = 0;
+    ApfsLeaf staleLeaf(staleNode, bs, 1);
+    uint8_t staleKey[24]{};
+    apfsDirRecKey(staleKey, 2, "gone.dat\0", 9);
+    uint8_t staleVal[24]{};
+    writeLe64At(staleVal, 8);
+    staleLeaf.add(staleKey, 21, staleVal, 18);
 
     DiskReader reader;
     reader.attachMemoryVolume(std::move(img));
@@ -1538,4 +1595,48 @@ TEST(ApfsContainer, CheckpointOmapEmitsDeletedFile) {
     EXPECT_EQ(gone.status, 0);
     EXPECT_GE(gone.confidence, 40);
     EXPECT_LE(gone.confidence, 55);
+}
+
+// Same filename under two different parents must emit both records with
+// distinct real paths — dir_rec keys carry the parent oid, values the
+// child's inode id.
+TEST(ApfsContainer, SameNameDifferentParentKeepsBothPaths) {
+    const uint32_t bs = 4096;
+    std::vector<uint8_t> img(8 * bs, 0);
+    std::memcpy(img.data() + 32, "NXSB", 4);
+    writeLe32(img.data() + 36, bs);
+    writeLe64At(img.data() + 40, 8);
+
+    uint8_t* node = img.data() + 2 * bs;
+    ApfsLeaf leaf(node, bs, 3);
+    // dir inode 20 named "Sub", parented at root dir oid 2.
+    uint8_t dirKey[24]{};
+    apfsDirRecKey(dirKey, 2, "Sub\0", 4);
+    uint8_t dirVal[24]{};
+    writeLe64At(dirVal, 20);
+    leaf.add(dirKey, 16, dirVal, 18);
+    // "dup.txt" at root (parent 2) -> inode 10.
+    uint8_t k1[24]{};
+    apfsDirRecKey(k1, 2, "dup.txt\0", 8);
+    uint8_t v1[24]{};
+    writeLe64At(v1, 10);
+    leaf.add(k1, 20, v1, 18);
+    // "dup.txt" inside Sub (parent 20) -> inode 11.
+    uint8_t k2[24]{};
+    apfsDirRecKey(k2, 20, "dup.txt\0", 8);
+    uint8_t v2[24]{};
+    writeLe64At(v2, 11);
+    leaf.add(k2, 20, v2, 18);
+
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+    std::unordered_set<std::string> paths;
+    std::atomic<bool> running{true};
+    walkApfsContainer(reader, 0, 0, [&](const FileRecord& fr) {
+        if (fr.source == "apfs_file" && fr.name == "dup.txt") paths.insert(fr.path);
+    }, &running);
+    const size_t rootCnt = paths.count("/dup.txt");
+    const size_t subCnt = paths.count("/Sub/dup.txt");
+    EXPECT_EQ(rootCnt, 1u);
+    EXPECT_EQ(subCnt, 1u);
 }
