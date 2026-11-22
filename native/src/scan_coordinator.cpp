@@ -616,6 +616,12 @@ void runQuickScan(DiskReader& reader,
                 }
                 break;
             }
+            case VolumeFsKind::Btrfs: {
+                BtrfsParser btrfs;
+                if (btrfs.scanAt(reader, callbackWrapper, isRunning, offsetBytes, partSizeBytes))
+                    anyFsScanned = true;
+                break;
+            }
             case VolumeFsKind::Iso9660: {
                 Iso9660Parser iso;
                 if (iso.scanAt(reader, callbackWrapper, isRunning, offsetBytes)) anyFsScanned = true;

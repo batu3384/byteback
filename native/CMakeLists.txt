@@ -112,6 +112,7 @@ set(SOURCES
   src/fs/raid_layout.cpp
   src/fs/raid_detect.cpp
   src/fs/xfs_parser.cpp
+  src/fs/btrfs_parser.cpp
   src/imager/disk_imager.cpp
   src/crypto/md5.cpp
   src/crypto/aes_xts.cpp
@@ -236,6 +237,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_fuzz_vhd_extract.cpp
     tests/test_virtual_raid_io.cpp
     tests/test_xfs_parser.cpp
+    tests/test_btrfs_parser.cpp
     tests/test_raid_detect.cpp
     tests/test_signature_carve.cpp
     tests/test_signature_coverage.cpp
@@ -319,6 +321,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/fs/virtual_raid.cpp
     src/fs/raid_detect.cpp
     src/fs/xfs_parser.cpp
+    src/fs/btrfs_parser.cpp
     src/scan_coordinator.cpp
     src/scan/dedup_index.cpp
     src/carver/signature_engine.cpp

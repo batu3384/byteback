@@ -62,6 +62,17 @@ VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, ui
         return VolumeFsKind::Xfs;
     }
 
+    // Btrfs: first 64 KiB is reserved/zero; superblock at +64KiB carries
+    // magic "_BHRfS_M" at +0x40 (btrfs_super_block.magic).
+    {
+        std::vector<uint8_t> bsb(4096);
+        auto bres = reader.readSectors(partitionOffsetBytes + 64 * 1024, 4096, bsb.data());
+        if (bres.success && bres.bytesRead >= 4096 &&
+            std::memcmp(bsb.data() + 0x40, "_BHRfS_M", 8) == 0) {
+            return VolumeFsKind::Btrfs;
+        }
+    }
+
     uint32_t hfsRead = ((1024 + 2 + sectorSize - 1) / sectorSize) * sectorSize;
     std::vector<uint8_t> hfsBuf(hfsRead);
     if (!readComplete(reader.readSectors(partitionOffsetBytes, hfsRead, hfsBuf.data()), hfsRead)) {
@@ -462,6 +473,19 @@ std::vector<PartitionInfo> PartitionScanner::scanForPartitions(uint32_t stepSect
             info.type = "Storage Spaces";
             return true;
         } else {
+            // Btrfs: partition lead 64 KiB is reserved/zero — an all-zero
+            // probe sector is the signature, so read the superblock at +64K.
+            if (std::all_of(buffer.begin(), buffer.end(), [](uint8_t b) { return b == 0; })) {
+                std::vector<uint8_t> bsb(4096);
+                auto bres = reader_->readSectors(sector * sectorSize + 64 * 1024, 4096, bsb.data());
+                if (bres.success && bres.bytesRead >= 4096 &&
+                    std::memcmp(bsb.data() + 0x40, "_BHRfS_M", 8) == 0) {
+                    info.type = "Btrfs";
+                    const uint64_t total = rd64(bsb.data() + 0x70);
+                    info.sizeInSectors = (total + sectorSize - 1) / sectorSize;
+                    return true;
+                }
+            }
             // EXT superblock + HFS+ volume header both sit at +1024 — one
             // 2048-byte read covers either (4Kn sector already spans it).
             const uint8_t* sb = nullptr;

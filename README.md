@@ -65,6 +65,16 @@ not on lab fixture counts alone.
   discovery, APSB volume, btree leaf drec (`source=apfs_file`) and file extent
   runs (`apfs_extent`). Inode `j_inode_val` create/mod times fill `createdAt`/`modifiedAt`. Catalog: `nx_fs_oid` + first 256 blocks + recursive omap
   btree (not a full container snapshot walk).
+- **Btrfs** — superblock @64KiB (backups @64MiB/@256GiB fallback), chunk-map
+  translation (sys_chunk_array + chunk tree; single-device stripes —
+  multi-device RAID5/6 volumes are refused honestly, not mistranslated),
+  root-tree subvolume walk, full fs-tree item parse: inode size/timestamps,
+  INODE_REF real paths (subvolume-prefixed), regular/prealloc extent runs,
+  compressed extents flagged (`btrfs_extent_compressed`, confidence penalty —
+  run bytes are compressed, not plaintext). Deleted-file recovery via
+  BTRFS_NUM_BACKUP_ROOTS older-generation trees (`btrfs_stale_root`) —
+  every node read validates `bytenr`+fsid so relocated CoW garbage is never
+  emitted as a record. Unreadable nodes surface a `btrfs_unread` sentinel.
 - **ISO 9660 / UDF** — PVD `CD001`, Joliet, Rock Ridge `NM`+`SL` (`iso9660_rr_sl`),
   PVD/Joliet volume identifier (`iso9660_vol_id`),
   El Torito `BOOT.IMG`, multi-extent `byteCount`. Directory recording date

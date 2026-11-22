@@ -10,7 +10,7 @@ namespace byteback {
 
 // Boot-sector probe at a partition offset (not partition-table type strings).
 // Unread: I/O fail or zero-pad. Not the same as Unknown (complete read, no magic).
-enum class VolumeFsKind { Unknown, Ntfs, ExFat, Fat, Ext4, Apfs, Hfs, Refs, Xfs, Lvm, Iso9660, Udf, Luks, Spaces, Unread };
+enum class VolumeFsKind { Unknown, Ntfs, ExFat, Fat, Ext4, Apfs, Hfs, Refs, Xfs, Lvm, Iso9660, Udf, Luks, Spaces, Btrfs, Unread };
 
 VolumeFsKind probeVolumeAt(DiskReader& reader, uint64_t partitionOffsetBytes, uint32_t sectorSize);
 
