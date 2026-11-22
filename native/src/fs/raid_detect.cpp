@@ -187,6 +187,74 @@ int fsSignatureScore(const std::vector<DiskReader*>& members, const RaidGeometry
     }
 }
 
+// Second discriminator for candidates a parity syndrome cannot separate:
+// symmetric vs asymmetric of the same rotation keep identical P (and Q)
+// positions but permute data-block order, so a file signature that straddles
+// a stripe-chunk boundary only continues correctly under the true layout.
+// Votes on well-structured magics (JPEG/PNG/ELF/PDF/ZIP); non-crossing hits
+// validate identically under every candidate and are ignored.
+int signatureContinuityScore(const std::vector<DiskReader*>& members, const RaidGeometry& g) {
+    if (g.blockSize == 0) return 0;
+    if (g.level != RaidLevel::RAID5 && g.level != RaidLevel::RAID6) return 0;
+    std::vector<std::shared_ptr<DiskReader>> wrap;
+    wrap.reserve(members.size());
+    for (DiskReader* m : members)
+        wrap.emplace_back(m, [](DiskReader*) {});
+    try {
+        VirtualRaid raid(g.level, wrap, g.blockSize, g.dataOffsetSectors * kSector, g.raid5Algorithm);
+        const size_t sb = g.blockSize;
+        const size_t window = sb * 4;
+        const uint64_t span = raid.capacity();
+        if (span < window) return 0;
+        int pass = 0, fail = 0;
+        // magic, sigLen, then the continuation bytes required right after it.
+        const struct { uint8_t sig[8]; uint8_t sigLen; uint8_t cont[8]; uint8_t contLen; } kSigs[] = {
+            {{0xFF, 0xD8}, 2, {0xFF}, 1},                                          // JPEG SOI -> marker
+            {{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, 8,
+             {0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R'}, 8},                     // PNG -> len+IHDR
+            {{0x7F, 'E', 'L', 'F'}, 4, {0x01}, 1},                                 // ELF32 (02=ELF64 loose)
+            {{'%', 'P', 'D', 'F'}, 4, {'-'}, 1},                                   // PDF header
+            {{'P', 'K', 0x03, 0x04}, 4, {0x0A}, 1},                                // ZIP local hdr (0x14 loose)
+        };
+        const uint64_t regions = 8;
+        for (uint64_t r = 0; r < regions; ++r) {
+            const uint64_t off = (regions > 1) ? (span - window) * r / (regions - 1) : 0;
+            const uint64_t base = off - (off % sb);
+            auto buf = raid.read(base, static_cast<uint32_t>(std::min<uint64_t>(window, span - base)));
+            if (buf.size() < sb) continue;
+            // Only the last 16 bytes of a chunk can hold a signature whose
+            // continuation crosses the boundary — scan just that zone.
+            for (size_t ce = sb; ce <= buf.size(); ce += sb) {
+                const size_t lo = ce > 16 ? ce - 16 : 0;
+                for (size_t p = lo; p + 2 <= std::min(ce, buf.size()); ++p) {
+                    for (const auto& k : kSigs) {
+                        if (p + k.sigLen > buf.size() ||
+                            std::memcmp(buf.data() + p, k.sig, k.sigLen) != 0)
+                            continue;
+                        const size_t need = p + k.sigLen + k.contLen;
+                        if (need <= ce || need > buf.size()) continue; // not crossing / no data
+                        bool ok = true;
+                    for (uint8_t b = 0; b < k.contLen; ++b) {
+                        const uint8_t want = k.cont[b];
+                        const uint8_t got = buf[p + k.sigLen + b];
+                        if (b == 0 && k.sigLen == 4 && k.sig[0] == 0x7F) {
+                            if (got != 0x01 && got != 0x02) { ok = false; break; }
+                        } else if (b == 0 && k.sig[0] == 'P' && k.sig[1] == 'K') {
+                            if (got != 0x0A && got != 0x14) { ok = false; break; }
+                        } else if (got != want) { ok = false; break; }
+                    }
+                    if (ok) ++pass; else ++fail;
+                    break;
+                }
+                }
+            }
+        }
+        return pass - fail;
+    } catch (...) {
+        return 0;
+    }
+}
+
 bool scoreRaid1eCopies(const std::vector<DiskReader*>& members, uint64_t memberSize, size_t sb,
                        uint64_t offBytes, double& conf) {
     conf = 0;
@@ -520,6 +588,27 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
             }
             out = best;
             out.fsConfirmed = bestFs > 0;
+            if (bestFs == 0) {
+                // Nothing arbitrated the layout: vote on file-magic
+                // continuity across chunk boundaries. A positive score
+                // beats the symmetric-default tie convention; zero keeps it.
+                int bestSig = signatureContinuityScore(members, out);
+                auto sigA = out.raid5Algorithm;
+                for (auto a : {raid_layout::Raid5Algorithm::LeftAsymmetric,
+                               raid_layout::Raid5Algorithm::LeftSymmetric,
+                               raid_layout::Raid5Algorithm::RightAsymmetric,
+                               raid_layout::Raid5Algorithm::RightSymmetric}) {
+                    if (a == out.raid5Algorithm) continue;
+                    RaidGeometry t = out;
+                    t.raid5Algorithm = a;
+                    const int sc = signatureContinuityScore(members, t);
+                    if (sc > bestSig) {
+                        bestSig = sc;
+                        sigA = a;
+                    }
+                }
+                if (bestSig > 0) out.raid5Algorithm = sigA;
+            }
         }
     }
 

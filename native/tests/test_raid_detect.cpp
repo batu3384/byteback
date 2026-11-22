@@ -139,6 +139,38 @@ TEST(RaidDetect, DetectsRaid5BlockSizeAndConfidence) {
     EXPECT_FALSE(g.fsConfirmed);
 }
 
+// A file signature straddling a logical chunk boundary only continues
+// correctly under the true layout — enough to overturn the symmetric-default
+// tie when parity and FS signatures cannot tell the layouts apart.
+TEST(RaidDetect, FileMagicContinuityPicksTrueLeftAsymmetric) {
+    constexpr size_t kStripe = kMiB;
+    constexpr raid_layout::Raid5Algorithm kAlgo = raid_layout::Raid5Algorithm::LeftAsymmetric;
+    auto images = buildRaid5(3, 12, kStripe, 0, 0xDEAD, 0, kAlgo);
+    // JPEG SOI at the end of logical stripe-chunk (s=4, last data slot),
+    // marker byte at the start of the next logical chunk (s=5, slot 0).
+    const uint32_t d0 = raid_layout::raid5DataDisk(4, 1, 3, kAlgo);
+    images[d0][4 * kStripe + kStripe - 2] = 0xFF;
+    images[d0][4 * kStripe + kStripe - 1] = 0xD8;
+    const uint32_t d1 = raid_layout::raid5DataDisk(5, 0, 3, kAlgo);
+    images[d1][5 * kStripe + 0] = 0xFF;
+    images[d1][5 * kStripe + 1] = 0xE0;
+    for (uint64_t s : {4ull, 5ull}) { // re-seal parity after the edits
+        const uint32_t p = raid_layout::raid5ParityDisk(s, 3, kAlgo);
+        uint8_t* pb = images[p].data() + s * kStripe;
+        std::memset(pb, 0, kStripe);
+        for (uint32_t k = 0; k + 1 < 3; ++k) {
+            const uint32_t d = raid_layout::raid5DataDisk(s, k, 3, kAlgo);
+            for (size_t b = 0; b < kStripe; ++b) pb[b] ^= images[d][s * kStripe + b];
+        }
+    }
+    auto members = openMembers(images);
+    RaidGeometry g;
+    ASSERT_TRUE(detectRaidGeometry(raw(members), g));
+    EXPECT_EQ(g.level, RaidLevel::RAID5);
+    EXPECT_EQ(g.raid5Algorithm, kAlgo);
+    EXPECT_EQ(g.blockSize, kStripe);
+}
+
 TEST(RaidDetect, DetectsRaid5LeftSymmetricWithoutMetadata) {
     // mdadm's default RAID5 layout is left-symmetric; parity syndromes
     // cannot distinguish it from left-asymmetric, so the detector must

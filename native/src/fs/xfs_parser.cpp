@@ -458,9 +458,11 @@ void WalkUnlinked(WalkCtx& ctx, const XfsParser::FileCallback& cb, std::set<uint
         for (int b = 0; b < kBuckets; ++b) {
             uint32_t agino = Be32(agi.data() + kUnlinkedOff + static_cast<size_t>(b) * 4);
             int hops = 0;
+            std::set<uint64_t> chainSeen; // a cyclic chain stops itself, not the cap
             while (agino != 0 && hops++ < kMaxHops) {
                 if (agino > agMask) break;
                 const uint64_t ino = (static_cast<uint64_t>(ag) << ctx.sb.agblklog) | agino;
+                if (!chainSeen.insert(ino).second) break;
                 std::vector<uint8_t> raw;
                 if (!ReadInodeAt(*ctx.reader, ctx.partOffset, ctx.sb, ino, &raw)) break;
                 const uint32_t next = (raw.size() >= 100) ? Be32(raw.data() + 96) : 0;

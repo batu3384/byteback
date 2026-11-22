@@ -116,9 +116,13 @@ struct CatalogCtx {
     bool emittedLimit = false;
     bool catalogUnread = false;
     bool emittedVolName = false;
-    // ponytail: hard node-visit budget instead of a visited set; a crafted
-    // B-tree can otherwise fan out exponentially within the depth cap.
+    // ponytail: visited sets stop cycles/fanout at the source; the global
+    // budget remains only as a memory guard for genuinely huge trees.
+    // Catalog nodes persist; extent nodes reset per file (the shared
+    // overflow B-tree is re-walked for every file with many extents).
     size_t nodesVisited = 0;
+    std::unordered_set<uint32_t> visitedNodes;
+    std::unordered_set<uint32_t> extentWalkNodes;
 };
 
 constexpr size_t kHfsMaxNodeVisits = 1u << 20;
@@ -136,6 +140,7 @@ bool appendOverflowExtents(CatalogCtx& ctx, uint32_t fileId, uint16_t forkType, 
 
     HfsFork extra;
     uint32_t root = ctx.extentsFileFork.extents.front().startBlock;
+    ctx.extentWalkNodes.clear();
     if (!walkExtentNode(ctx, root, 0, fileId, forkType, extra)) return false;
     for (const auto& e : extra.extents) {
         if (e.blockCount > 0) fork.extents.push_back(e);
@@ -168,6 +173,7 @@ bool walkExtentNode(CatalogCtx& ctx, uint32_t block, int depth,
                     uint32_t fileId, uint16_t forkType, HfsFork& fork) {
     if (ctx.isRunning && !(*ctx.isRunning)) return false;
     if (depth > 24) return true;
+    if (!ctx.extentWalkNodes.insert(block).second) return true;
     if (++ctx.nodesVisited > kHfsMaxNodeVisits) return false;
 
     std::vector<uint8_t> node;
@@ -388,6 +394,7 @@ bool scanUnusedLeafSlack(CatalogCtx& ctx, const uint8_t* node, uint32_t blockSiz
 bool walkCatalogNode(CatalogCtx& ctx, uint32_t block, int depth) {
     if (ctx.isRunning && !(*ctx.isRunning)) return false;
     if (depth > 24) return true;
+    if (!ctx.visitedNodes.insert(block).second) return true;
     if (++ctx.nodesVisited > kHfsMaxNodeVisits) return false;
 
     std::vector<uint8_t> node;
