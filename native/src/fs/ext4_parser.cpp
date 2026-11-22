@@ -186,6 +186,7 @@ struct InodeMeta {
     int64_t crtime = 0;
     int64_t mtime = 0;
     bool deleted = false;
+    bool isDir = false;
 };
 } // namespace
 
@@ -667,6 +668,7 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 meta.crtime = inode->i_crtime;
                 meta.mtime = inode->i_mtime;
                 meta.deleted = !allocated;
+                meta.isDir = is_directory;
 
                 if (inode->i_flags & EXT4_EXTENTS_FLAG) {
                     collectExtentRuns(reader, reinterpret_cast<const uint8_t*>(inode->i_block),
@@ -691,35 +693,68 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
     }
 
     // ---- Pass 2: walk directory blocks -> real names, parents, deleted slack ----
-    auto emitFile = [&](const std::string& name, uint32_t ino, const InodeMeta* meta, int confidence, int status,
+    // Emits are buffered so paths can be resolved AFTER all directory parents
+    // are discovered — a child's dirent may be read before its parent dir's.
+    struct PendingEmit {
+        uint32_t ino;
+        uint32_t parentIno;
+        const InodeMeta* meta;
+        int confidence;
+        int status;
+        const char* source;
+        std::string name;
+    };
+    std::vector<PendingEmit> pending;
+    auto emitFile = [&](const std::string& name, uint32_t ino, const InodeMeta* meta,
+                        int confidence, int status, uint32_t parentIno,
                         const char* source = "ext4_dirent") {
-        FileRecord fr;
-        fr.id = ino;
-        fr.parentId = 0;
-        fr.name = name;
-        size_t dotPos = name.find_last_of('.');
-        fr.extension = (dotPos != std::string::npos && dotPos + 1 < name.size())
-                       ? name.substr(dotPos + 1) : "";
-        fr.path = "/" + name; // placeholder; ext4 lacks parent ids in dirents
-        fr.sizeBytes = meta ? meta->size : 0;
-        if (meta && !meta->runs.empty()) {
-            fr.startSector = meta->runs.front().startSector;
-            fr.endSector = meta->runs.back().startSector + meta->runs.back().sectorCount;
-            fr.runs = meta->runs;
-        } else {
-            fr.startSector = 0;
-            fr.endSector = 0;
-        }
-        fr.status = status;
-        fr.confidence = confidence;
-        fr.category = "File";
-        fr.source = source;
-        fr.createdAt = meta ? meta->crtime : 0;
-        fr.modifiedAt = meta ? meta->mtime : 0;
-        callback(fr);
+        pending.push_back({ino, parentIno, meta, confidence, status, source, name});
     };
 
+    // Directory inode -> (parent dir inode, name) for path reconstruction.
+    // Mode bit decides "is a dir" — an empty dir has no runs but still names
+    // children that were deleted before their content blocks were reused.
+    std::unordered_map<uint32_t, uint32_t> dirParent;
+    std::unordered_map<uint32_t, std::string> dirName;
+
+    // Dedup per (parent directory, name): a live IMG_0001.JPG in /a must not
+    // suppress a deleted IMG_0001.JPG in /b.
     std::unordered_set<std::string> seenNames;
+    auto seen = [&](uint32_t parentIno, const std::string& n) {
+        return !seenNames.insert(std::to_string(parentIno) + '\x1f' + n).second;
+    };
+    auto namePrintable = [](const uint8_t* p, size_t len) {
+        for (size_t i = 0; i < len; ++i)
+            if (p[i] < 0x20 || p[i] == '/') return false;
+        return true;
+    };
+
+    // ext4 merges a deleted dirent's rec_len into its predecessor — the old
+    // dirent survives in slack inside the live entry. Scan that slack at
+    // 4-byte alignment for plausible dirent headers.
+    auto scanSlack = [&](const uint8_t* base, size_t from, size_t to, uint32_t parentIno) {
+        for (size_t s = from; s + sizeof(Ext4_Dirent) <= to; s += 4) {
+            const Ext4_Dirent* d = reinterpret_cast<const Ext4_Dirent*>(base + s);
+            if (d->rec_len < 8 || d->rec_len > to - s) continue;
+            if (d->name_len == 0 || d->name_len > d->rec_len - sizeof(Ext4_Dirent)) continue;
+            if (d->file_type > 7) continue;
+            const uint8_t* np = base + s + sizeof(Ext4_Dirent);
+            if (!namePrintable(np, d->name_len)) continue;
+            std::string nm(reinterpret_cast<const char*>(np), d->name_len);
+            if (nm == "." || nm == ".." || seen(parentIno, nm)) continue;
+            if (d->inode != 0) {
+                auto mit = inodeMap.find(d->inode);
+                if (mit != inodeMap.end()) {
+                    if (!mit->second.deleted) continue; // stale shadow of a live name
+                    emitFile(nm, d->inode, &mit->second, 60, 0, parentIno, "ext4_slack");
+                } else {
+                    emitFile(nm, d->inode, nullptr, 35, 0, parentIno, "ext4_slack");
+                }
+            } else {
+                emitFile(nm, 0, nullptr, 30, 0, parentIno, "ext4_slack");
+            }
+        }
+    };
 
     std::vector<uint8_t> dirBuf;
     for (uint32_t dirIno : dirInodes) {
@@ -746,33 +781,89 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 if (de->name_len > 0 && de->name_len < de->rec_len) {
                     std::string name(reinterpret_cast<const char*>(dirBuf.data() + pos + sizeof(Ext4_Dirent)),
                                      de->name_len);
-                    bool nameOk = true;
-                    for (char c : name) {
-                        if (static_cast<unsigned char>(c) < 0x20 || c == '/') { nameOk = false; break; }
-                    }
 
-                    if (nameOk && name != "." && name != "..") {
-                        if (de->inode != 0) {
-                            auto mit = inodeMap.find(de->inode);
-                            if (mit != inodeMap.end()) {
-                                const InodeMeta& meta = mit->second;
+                    if (namePrintable(dirBuf.data() + pos + sizeof(Ext4_Dirent), de->name_len)
+                        && name != "." && name != "..") {
+                        auto dmit = de->inode != 0 ? inodeMap.find(de->inode) : inodeMap.end();
+                        if (dmit != inodeMap.end() && dmit->second.isDir) {
+                            // Directory named inside dirIno: record its parent.
+                            dirName[de->inode] = name;
+                            dirParent[de->inode] = dirIno;
+                        }
+                        if (de->inode != 0 && !seen(dirIno, name)) {
+                            if (dmit != inodeMap.end()) {
+                                const InodeMeta& meta = dmit->second;
                                 emitFile(name, de->inode, &meta,
                                          meta.deleted ? 60 : 95,
-                                         meta.deleted ? 0 : 1);
+                                         meta.deleted ? 0 : 1, dirIno);
                             } else {
-                                emitFile(name, de->inode, nullptr, 50, 1);
+                                emitFile(name, de->inode, nullptr, 50, 1, dirIno);
                             }
-                            seenNames.insert(name);
-                        } else if (de->file_type == 1 /*EXT4_FT_REG_FILE*/) {
-                            emitFile(name, 0, nullptr, 45, 0);
-                            seenNames.insert(name);
+                        } else if (de->inode == 0 && de->file_type == 1 /*EXT4_FT_REG_FILE*/
+                                   && !seen(dirIno, name)) {
+                            emitFile(name, 0, nullptr, 45, 0, dirIno);
                         }
                     }
+
+                    // Deleted dirents live in this entry's slack tail.
+                    const size_t minLen = (sizeof(Ext4_Dirent) + de->name_len + 3) & ~size_t(3);
+                    if (pos + minLen < pos + de->rec_len)
+                        scanSlack(dirBuf.data(), pos + minLen, pos + de->rec_len, dirIno);
                 }
                 pos += de->rec_len;
             }
         }
     }
+
+    // Resolve buffered emits now that every directory parent is known.
+    auto flushEmits = [&]() {
+        std::unordered_map<uint32_t, std::string> dirPathMemo;
+        auto dirPath = [&](uint32_t ino) -> std::string {
+            auto cached = dirPathMemo.find(ino);
+            if (cached != dirPathMemo.end()) return cached->second;
+            std::vector<std::string> segs;
+            std::unordered_set<uint32_t> hops{ino};
+            uint32_t node = ino;
+            for (int h = 0; h < 64 && node != 0 && node != 2; ++h) {
+                auto pn = dirParent.find(node);
+                auto nn = dirName.find(node);
+                if (pn == dirParent.end() || nn == dirName.end()) break;
+                segs.push_back(nn->second);
+                node = pn->second;
+                if (!hops.insert(node).second) break;
+            }
+            std::string out;
+            for (auto rit = segs.rbegin(); rit != segs.rend(); ++rit) out += "/" + *rit;
+            dirPathMemo[ino] = out;
+            return out;
+        };
+        for (const auto& pe : pending) {
+            FileRecord fr;
+            fr.id = pe.ino;
+            fr.parentId = pe.parentIno;
+            fr.name = pe.name;
+            size_t dotPos = pe.name.find_last_of('.');
+            fr.extension = (dotPos != std::string::npos && dotPos + 1 < pe.name.size())
+                           ? pe.name.substr(dotPos + 1) : "";
+            fr.path = dirPath(pe.parentIno) + "/" + pe.name;
+            fr.sizeBytes = pe.meta ? pe.meta->size : 0;
+            if (pe.meta && !pe.meta->runs.empty()) {
+                fr.startSector = pe.meta->runs.front().startSector;
+                fr.endSector = pe.meta->runs.back().startSector + pe.meta->runs.back().sectorCount;
+                fr.runs = pe.meta->runs;
+            } else {
+                fr.startSector = 0;
+                fr.endSector = 0;
+            }
+            fr.status = pe.status;
+            fr.confidence = pe.confidence;
+            fr.category = "File";
+            fr.source = pe.source;
+            fr.createdAt = pe.meta ? pe.meta->crtime : 0;
+            fr.modifiedAt = pe.meta ? pe.meta->mtime : 0;
+            callback(fr);
+        }
+    };
 
     if (dirUnread) {
         FileRecord fr;
@@ -887,19 +978,18 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 if (de->name_len > 0 && de->name_len < de->rec_len) {
                     std::string name(reinterpret_cast<const char*>(p + pos + sizeof(Ext4_Dirent)),
                                      de->name_len);
-                    bool nameOk = true;
-                    for (char c : name) {
-                        if (static_cast<unsigned char>(c) < 0x20 || c == '/') { nameOk = false; break; }
-                    }
-                    if (nameOk && name != "." && name != ".." && !seenNames.count(name)) {
+                    if (namePrintable(p + pos + sizeof(Ext4_Dirent), de->name_len)
+                        && name != "." && name != ".." && !seen(0, name)) {
                         const InodeMeta* meta = nullptr;
                         auto iit = jInodes.find(de->inode);
                         if (iit != jInodes.end() && !iit->second.runs.empty()) meta = &iit->second;
                         if (meta) {
-                            emitFile(name, de->inode, meta, 48, 0, "ext4_journal_replay");
-                            seenNames.insert(name);
+                            emitFile(name, de->inode, meta, 48, 0, 0, "ext4_journal_replay");
                         }
                     }
+                    const size_t minLen = (sizeof(Ext4_Dirent) + de->name_len + 3) & ~size_t(3);
+                    if (pos + minLen < pos + de->rec_len)
+                        scanSlack(p, pos + minLen, pos + de->rec_len, 0);
                 }
                 pos += de->rec_len;
             }
@@ -916,19 +1006,20 @@ bool Ext4Parser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
                 if (de->name_len > 0 && de->name_len < de->rec_len) {
                     std::string name(reinterpret_cast<const char*>(p + pos + sizeof(Ext4_Dirent)),
                                      de->name_len);
-                    bool nameOk = true;
-                    for (char c : name) {
-                        if (static_cast<unsigned char>(c) < 0x20 || c == '/') { nameOk = false; break; }
+                    if (namePrintable(p + pos + sizeof(Ext4_Dirent), de->name_len)
+                        && name != "." && name != ".." && !seen(0, name)) {
+                        emitFile(name, de->inode, nullptr, 40, 0, 0, "ext4_journal");
                     }
-                    if (nameOk && name != "." && name != ".." && !seenNames.count(name)) {
-                        emitFile(name, de->inode, nullptr, 40, 0, "ext4_journal");
-                        seenNames.insert(name);
-                    }
+                    const size_t minLen = (sizeof(Ext4_Dirent) + de->name_len + 3) & ~size_t(3);
+                    if (pos + minLen < pos + de->rec_len)
+                        scanSlack(p, pos + minLen, pos + de->rec_len, 0);
                 }
                 pos += de->rec_len;
             }
         }
     }
+
+    flushEmits();
 
     if (journalUnread) {
         FileRecord fr;

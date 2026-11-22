@@ -427,6 +427,73 @@ inline std::vector<uint8_t> buildExt4JournalReplayVolume() {
     return img;
 }
 
+// ext4 exercising deleted-dirent slack + directory paths:
+//   /note.txt -> 13 live, /subdir -> 14 dir, /dup.txt -> 18 live
+//   /subdir/photo.jpg -> 15 live, /subdir/old.dat -> 16 deleted (slack only)
+//   /subdir/dup.txt -> 17 deleted (same name as the live root file)
+inline std::vector<uint8_t> buildExt4SlackPathVolume() {
+    auto img = buildExt4Volume();
+    constexpr uint32_t bs = 1024;
+
+    auto writeInode = [&](uint32_t ino, uint16_t mode, uint32_t size,
+                          uint32_t block, uint16_t links = 1) {
+        size_t off = 5 * bs + (ino - 1) * 128;
+        writeLe16(img, off + 0x00, mode);
+        writeLe16(img, off + 0x18, links);
+        writeLe32(img, off + 0x04, size);
+        writeLe32(img, off + 0x28, block); // i_block[0]
+    };
+    writeInode(14, 0x4000, bs, 8, 2);   // subdir at block 8
+    writeInode(15, 0x8000, 8, 9);       // photo.jpg data at block 9
+    writeInode(16, 0x8000, 4, 10, 0);   // old.dat deleted (links=0)
+    writeInode(17, 0x8000, 4, 11, 0);   // dup.txt deleted
+    writeInode(18, 0x8000, 4, 12);      // dup.txt live
+
+    // Root dir block 3: note.txt (existing) + subdir + dup.txt + tail fill.
+    size_t dir = 3 * bs;
+    size_t e = dir + 16;               // after "note.txt" dirent (rec_len 16)
+    writeLe32(img, e + 0x00, 14);
+    writeLe16(img, e + 0x04, 16);
+    img[e + 0x06] = 6;
+    img[e + 0x07] = 2;                 // DIR
+    std::memcpy(img.data() + e + 8, "subdir", 6);
+    e += 16;
+    writeLe32(img, e + 0x00, 18);
+    writeLe16(img, e + 0x04, 16);
+    img[e + 0x06] = 7;
+    img[e + 0x07] = 1;
+    std::memcpy(img.data() + e + 8, "dup.txt", 7);
+    e += 16;
+    // Final entry soaks up the block tail (real ext4 layout).
+    writeLe32(img, e + 0x00, 0);
+    writeLe16(img, e + 0x04, static_cast<uint16_t>(dir + bs - e));
+    img[e + 0x06] = 0;
+
+    // Subdir block 8: one live dirent photo.jpg whose rec_len covers the
+    // whole block; deleted "old.dat" and "dup.txt" dirents sit in its slack.
+    size_t sd = 8 * bs;
+    writeLe32(img, sd + 0x00, 15);
+    writeLe16(img, sd + 0x04, static_cast<uint16_t>(bs));
+    img[sd + 0x06] = 9;
+    img[sd + 0x07] = 1;
+    std::memcpy(img.data() + sd + 8, "photo.jpg", 9);
+    size_t s = sd + 20; // minLen for name_len 9 = 8+9+3&~3 = 20
+    writeLe32(img, s + 0x00, 16);
+    writeLe16(img, s + 0x04, 20);
+    img[s + 0x06] = 7;
+    img[s + 0x07] = 1;
+    std::memcpy(img.data() + s + 8, "old.dat", 7);
+    s += 20;
+    writeLe32(img, s + 0x00, 17);
+    writeLe16(img, s + 0x04, 20);
+    img[s + 0x06] = 7;
+    img[s + 0x07] = 1;
+    std::memcpy(img.data() + s + 8, "dup.txt", 7);
+
+    std::memcpy(img.data() + 9 * bs, "subdata!", 8);
+    return img;
+}
+
 inline void writeLe64(std::vector<uint8_t>& img, size_t off, uint64_t v) {
     for (int i = 0; i < 8; ++i) img[off + i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFF);
 }

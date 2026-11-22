@@ -303,3 +303,46 @@ TEST(Ext4Parser, UnreadExtentChildIsSentinelNotEmptyDirectory) {
     EXPECT_FALSE(sawNote) << "unread extent child must not parse as an empty successful directory";
     EXPECT_TRUE(sawUnread);
 }
+
+TEST(Ext4Parser, SlackDirentAndPathsPreserved) {
+    auto img = byteback::testfix::buildExt4SlackPathVolume();
+    DiskReader reader;
+    reader.attachMemoryVolume(std::move(img));
+
+    std::vector<FileRecord> recs;
+    std::atomic<bool> running{true};
+    Ext4Parser ext4;
+    ASSERT_TRUE(ext4.scan(reader, [&](const FileRecord& fr) {
+        if (fr.category == "File") recs.push_back(fr);
+    }, &running));
+
+    auto find = [&](const char* name, const char* path) -> const FileRecord* {
+        for (const auto& r : recs) {
+            if (r.name == name && r.path == path) return &r;
+        }
+        return nullptr;
+    };
+
+    // Deleted dirent must surface from the live entry's slack tail.
+    const FileRecord* old = find("old.dat", "/subdir/old.dat");
+    ASSERT_NE(old, nullptr) << "deleted dirent must be recovered from slack";
+    EXPECT_EQ(old->status, 0);
+    EXPECT_EQ(old->source, std::string("ext4_slack"));
+
+    // Real directory path, not the old "/" placeholder.
+    const FileRecord* photo = find("photo.jpg", "/subdir/photo.jpg");
+    ASSERT_NE(photo, nullptr);
+    EXPECT_EQ(photo->parentId, 14);
+
+    // Same name in two dirs must not dedup away: live /dup.txt and
+    // deleted /subdir/dup.txt both survive.
+    bool sawLiveRootDup = false;
+    bool sawDeletedSubdirDup = false;
+    for (const auto& r : recs) {
+        if (r.name != "dup.txt") continue;
+        if (r.path == "/dup.txt" && r.status == 1) sawLiveRootDup = true;
+        if (r.path == "/subdir/dup.txt" && r.status == 0) sawDeletedSubdirDup = true;
+    }
+    EXPECT_TRUE(sawLiveRootDup);
+    EXPECT_TRUE(sawDeletedSubdirDup);
+}

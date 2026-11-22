@@ -1416,3 +1416,46 @@ TEST(SeedFileRecord, ImagePathRejectsDevices) {
     EXPECT_FALSE(isSeedEvidenceImagePath("/dev/sda"));
     EXPECT_FALSE(isSeedEvidenceImagePath(""));
 }
+
+TEST_F(MetadataStoreTest, OverlappedDeletedConfidenceRescaled) {
+    int64_t scanId = store_.createScan(0, "quick", 1000);
+
+    FileRecord live;
+    live.name = "live.bin";
+    live.source = "ntfs_mft";
+    live.status = 1;                    // allocated
+    live.confidence = 95;
+    live.runs = {{100, 10}};            // sectors 100-109
+    ASSERT_GT(store_.insertFile(scanId, live), 0);
+
+    FileRecord dead;
+    dead.name = "dead.bin";
+    dead.source = "ntfs_mft";
+    dead.status = 0;                    // deleted
+    dead.confidence = 80;
+    dead.runs = {{105, 10}};            // half its span (105-109) overlaps live
+    ASSERT_GT(store_.insertFile(scanId, dead), 0);
+
+    FileRecord free_;
+    free_.name = "free.bin";
+    free_.source = "ntfs_mft";
+    free_.status = 0;
+    free_.confidence = 80;
+    free_.runs = {{500, 10}};           // no overlap — untouched
+    ASSERT_GT(store_.insertFile(scanId, free_), 0);
+
+    ASSERT_TRUE(store_.completeScan(scanId, 1));
+
+    auto page = store_.getFiles(scanId, 0, 10);
+    ASSERT_EQ(page.size(), 3u);
+    for (const auto& f : page) {
+        if (f.name == "dead.bin") {
+            // 50% overlap → cap at round(0.5*95)=48; existing 80 > 48 → 48.
+            EXPECT_EQ(f.confidence, 48);
+        } else if (f.name == "free.bin") {
+            EXPECT_EQ(f.confidence, 80) << "unoverlapped record must keep confidence";
+        } else {
+            EXPECT_EQ(f.confidence, 95);
+        }
+    }
+}

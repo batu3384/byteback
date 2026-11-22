@@ -11,6 +11,7 @@
 #include <regex>
 #include <cctype>
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -761,7 +762,86 @@ bool MetadataStore::completeScan(int64_t scanId, int status) {
     sqlite3_bind_int64(stmt, 3, scanId);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE && status == 1) markOverlappedDeleted(scanId);
     return rc == SQLITE_DONE;
+}
+
+// Deleted records whose data runs overlap live-file runs had their clusters
+// reallocated — content is partially or fully overwritten. Rescale their
+// confidence so the UI/recovery order reflects that (Recuva "poor"/"excellent"
+// style): confidence := min(conf, round((1-overlap) * 95)).
+bool MetadataStore::markOverlappedDeleted(int64_t scanId) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    if (!db_) return false;
+    std::vector<std::pair<uint64_t, uint64_t>> live;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT runs_json FROM files WHERE scan_id=? AND status=1 AND runs_json != ''",
+            -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(stmt, 1, scanId);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto runs = deserializeRuns(safe_column_text(stmt, 0));
+        for (const auto& r : runs) {
+            if (r.sectorCount > 0)
+                live.emplace_back(r.startSector, r.startSector + r.sectorCount);
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (live.empty()) return true;
+
+    std::sort(live.begin(), live.end());
+    std::vector<std::pair<uint64_t, uint64_t>> iv;
+    for (const auto& p : live) {
+        if (!iv.empty() && p.first <= iv.back().second)
+            iv.back().second = std::max(iv.back().second, p.second);
+        else
+            iv.push_back(p);
+    }
+    live.clear();
+    live.shrink_to_fit();
+
+    sqlite3_stmt* sel = nullptr;
+    sqlite3_stmt* upd = nullptr;
+    if (sqlite3_prepare_v2(db_,
+            "SELECT id, runs_json, confidence FROM files WHERE scan_id=? AND status=0 AND runs_json != ''",
+            -1, &sel, nullptr) != SQLITE_OK ||
+        sqlite3_prepare_v2(db_, "UPDATE files SET confidence=? WHERE id=?",
+                           -1, &upd, nullptr) != SQLITE_OK) {
+        sqlite3_finalize(sel);
+        sqlite3_finalize(upd);
+        return false;
+    }
+    sqlite3_bind_int64(sel, 1, scanId);
+    sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr);
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        auto runs = deserializeRuns(safe_column_text(sel, 1));
+        uint64_t total = 0, covered = 0;
+        for (const auto& r : runs) {
+            if (r.sectorCount == 0) continue;
+            const uint64_t rs = r.startSector, re = r.startSector + r.sectorCount;
+            total += r.sectorCount;
+            for (const auto& m : iv) {
+                if (m.first >= re) break;
+                if (m.second <= rs) continue;
+                covered += std::min(m.second, re) - std::max(m.first, rs);
+            }
+        }
+        if (total == 0 || covered == 0) continue;
+        const double frac = std::min(1.0, static_cast<double>(covered) / total);
+        const int64_t id = sqlite3_column_int64(sel, 0);
+        const int cur = sqlite3_column_int(sel, 2);
+        const int scaled = static_cast<int>(std::lround((1.0 - frac) * 95.0));
+        const int next = std::min(cur, scaled);
+        if (next >= cur) continue;
+        sqlite3_bind_int(upd, 1, next);
+        sqlite3_bind_int64(upd, 2, id);
+        sqlite3_step(upd);
+        sqlite3_reset(upd);
+    }
+    sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr);
+    sqlite3_finalize(sel);
+    sqlite3_finalize(upd);
+    return true;
 }
 
 int64_t MetadataStore::reclaimOrphanRunningScans() {

@@ -181,6 +181,8 @@ public:
     bool updateScanCheckpoint(int64_t scanId, bool metadataComplete, uint64_t carveResumeSector);
     bool setScanRunning(int64_t scanId);
     bool completeScan(int64_t scanId, int status);
+    // Rescale confidence of deleted records whose runs overlap live runs.
+    bool markOverlappedDeleted(int64_t scanId);
     // Previous process died with status=Running. Mark those rows paused so UI can resume.
     int64_t reclaimOrphanRunningScans();
     ScanState getScanState(int64_t scanId);
