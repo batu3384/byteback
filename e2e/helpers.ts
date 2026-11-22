@@ -13,6 +13,17 @@ export interface LaunchedApp {
 }
 
 /**
+ * Environment for a spawned app: isolated userData + e2e flag.
+ * ELECTRON_RUN_AS_NODE is stripped — if it leaks in from a CI/dev shell,
+ * electron.exe runs as plain node and every launch "fails to launch".
+ */
+export function e2eEnv(userData: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, BYTEBACK_USER_DATA: userData, BYTEBACK_E2E: '1' }
+  delete env.ELECTRON_RUN_AS_NODE
+  return env
+}
+
+/**
  * Launch the app with a fresh, isolated userData directory: DB, localStorage
  * and language choice cannot leak between tests.
  */
@@ -21,7 +32,7 @@ export async function launchApp(): Promise<LaunchedApp> {
   const app = await electron.launch({
     args: [mainJs],
     cwd: root,
-    env: { ...process.env, BYTEBACK_USER_DATA: userData, BYTEBACK_E2E: '1' },
+    env: e2eEnv(userData),
   })
   const win = await app.firstWindow()
   await expect(win.getByRole('heading', { name: 'Byteback' })).toBeVisible({ timeout: 30_000 })

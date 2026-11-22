@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test'
 import path from 'node:path'
-import { launchApp, closeApp, mainJs } from './helpers'
+import { launchApp, closeApp, mainJs, e2eEnv } from './helpers'
 
 const root = path.join(__dirname, '..')
 
@@ -15,7 +15,7 @@ test('second instance exits on the single-instance lock', async () => {
       second = await electron.launch({
         args: [mainJs],
         cwd: root,
-        env: { ...process.env, BYTEBACK_USER_DATA: userData, BYTEBACK_E2E: '1' },
+        env: e2eEnv(userData),
       })
     } catch {
       // The quitting instance can drop the debug endpoint mid-launch — that
