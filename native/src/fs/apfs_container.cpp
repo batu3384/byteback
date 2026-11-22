@@ -122,10 +122,11 @@ void emitVolume(FileSystemParser::FileRecordCallback& callback, int volumeIndex,
 // obj_phys header: 32 B, o_type u32 @24 (OBJECT_TYPE_MASK 0xFFFF).
 // btree_node_phys: btn_flags u16 @32 (leaf=2, fixedKV=4), btn_level u16 @34,
 // btn_nkeys u32 @36, table of contents at +56.
-//   non-fixed KV (FS catalog): TOC = kvoff{k u16,v u16}; key forward from
-//   btn_data(+56)+k, value BACKWARD from node end (blockSize - v).
-//   fixed KV (omap): TOC = kvloc{ nloc{off,len}, nloc{off,len} }; key and
-//   value both BACKWARD from node end.
+//   non-fixed KV (FS catalog): TOC = kvloc{ nloc{off,len}, nloc{off,len} } —
+//   8 B entries; key forward from btn_data(+56)+table_space.len+k.off,
+//   value BACKWARD from node end (valsStart - v.off, len = v.len).
+//   fixed KV (omap): TOC = kvoff{k u16, v u16} — 4 B entries; key forward
+//   from keys start + k, value BACKWARD from node end (valsStart - v).
 // FS key starts with j_key u64: type = >>60, object id = & OBJ_ID_MASK.
 // dir_rec key oid is the PARENT dir inode; value holds the file's inode id.
 constexpr uint16_t kBtnRoot = 0x0001;
@@ -208,6 +209,9 @@ bool collectCatalogNode(const uint8_t* block, uint32_t blockSize,
         if (typ == kApfsTypeDirRec) {
             // apfs_drec_hashed_key: hdr(8) + name_len_and_hash u32 + name.
             // Non-hashed apfs_drec_key uses u16 name_len → name at +10.
+            // The +12 guard covers BOTH the hashed u32 at +8 and the plain
+            // u16 at +8 (a name that can't fit is rejected by the len check).
+            if (keyOff + 12 > blockSize) continue;
             uint32_t nlen = readLe32(key + 8) & 0x3FFu;
             size_t nameOff = keyOff + 12;
             if (nlen == 0 || nlen > 255 || nameOff + nlen > blockSize) {

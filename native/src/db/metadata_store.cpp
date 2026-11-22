@@ -782,7 +782,9 @@ bool MetadataStore::markOverlappedDeleted(int64_t scanId) {
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         auto runs = deserializeRuns(safe_column_text(stmt, 0));
         for (const auto& r : runs) {
-            if (r.sectorCount > 0)
+            // UINT64_MAX is the sparse-hole sentinel — adding count to it
+            // wraps into a bogus [huge, tiny] interval.
+            if (r.sectorCount > 0 && r.startSector != UINT64_MAX)
                 live.emplace_back(r.startSector, r.startSector + r.sectorCount);
         }
     }
@@ -817,7 +819,9 @@ bool MetadataStore::markOverlappedDeleted(int64_t scanId) {
         auto runs = deserializeRuns(safe_column_text(sel, 1));
         uint64_t total = 0, covered = 0;
         for (const auto& r : runs) {
-            if (r.sectorCount == 0) continue;
+            // Sparse holes (UINT64_MAX) hold no physical data — they cannot
+            // be overwritten and must not count toward the overlap fraction.
+            if (r.sectorCount == 0 || r.startSector == UINT64_MAX) continue;
             const uint64_t rs = r.startSector, re = r.startSector + r.sectorCount;
             total += r.sectorCount;
             for (const auto& m : iv) {
