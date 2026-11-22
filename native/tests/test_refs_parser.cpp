@@ -112,7 +112,7 @@ TEST(RefsParser, RejectsNonRefsBoot) {
     EXPECT_FALSE(probeRefsBoot(img.data(), img.size(), bps, spc));
 }
 
-TEST(RefsParser, IntegrityResidentFileAndRecoverValidation) {
+TEST(RefsParser, DirentNamesAreDiscoveryOnlyNoResidentPayload) {
     constexpr uint32_t cluster = 4096;
     constexpr uint64_t superOff = 30ull * cluster;
     std::vector<uint8_t> img(superOff + cluster * 2, 0);
@@ -130,10 +130,11 @@ TEST(RefsParser, IntegrityResidentFileAndRecoverValidation) {
     page[2] = 0x01;
     page[3] = 0x00;
     embedUtf16Name(page, 4, "integrity.txt");
+    // Bytes past the name may look like the old fabricated trailer — the
+    // parser must NOT turn them into recoverable resident data.
     const char payload[] = "refs integrity payload";
     const size_t payloadLen = sizeof(payload) - 1;
-    const uint64_t fileCrc = refsCrc64Ecma(reinterpret_cast<const uint8_t*>(payload), payloadLen);
-    writeLe64(img, cluster + 128, fileCrc);
+    writeLe64(img, cluster + 128, refsCrc64Ecma(reinterpret_cast<const uint8_t*>(payload), payloadLen));
     writeLe16(img, cluster + 136, static_cast<uint16_t>(payloadLen));
     std::memcpy(page + 144, payload, payloadLen);
 
@@ -144,23 +145,14 @@ TEST(RefsParser, IntegrityResidentFileAndRecoverValidation) {
     std::atomic<bool> running{true};
     RefsParser refs;
     ASSERT_TRUE(refs.scan(reader, [&](const FileRecord& fr) {
-        if (fr.source == "refs" && fr.name == "integrity.txt") found = fr;
+        if (fr.name == "integrity.txt") found = fr;
     }, &running));
     ASSERT_EQ(found.name, "integrity.txt");
-    EXPECT_EQ(found.confidence, 92);
-    EXPECT_EQ(found.integrityChecksum, fileCrc);
-    ASSERT_EQ(found.residentData.size(), payloadLen);
-
-    const auto dest = (std::filesystem::temp_directory_path() / "byteback_refs_integrity_out").string();
-    std::filesystem::remove_all(dest);
-    std::filesystem::create_directories(dest);
-
-    RecoveryEngine engine;
-    auto res = engine.recoverFile(reader, found, dest);
-    EXPECT_TRUE(res.success) << res.error;
-    EXPECT_EQ(res.validationScore, 90);
-
-    std::filesystem::remove_all(dest);
+    EXPECT_EQ(found.source, std::string("refs_volume"));
+    EXPECT_TRUE(found.residentData.empty())
+        << "ReFS dir names are discovery-only — no fabricated resident data";
+    EXPECT_LE(found.confidence, 30);
+    EXPECT_EQ(found.sizeBytes, 0u);
 }
 
 TEST(RefsParser, SupbChecksumFailureLowersVolumeConfidence) {

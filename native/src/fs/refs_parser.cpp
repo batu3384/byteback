@@ -83,24 +83,14 @@ void scanMetadataPageForEntries(const uint8_t* page, size_t pageSize, uint64_t p
         fr.startSector = pageOffsetBytes / sectorSize;
         fr.endSector = fr.startSector + std::max<uint64_t>(1, pageSize / sectorSize);
         fr.status = 0;
-        fr.confidence = 65;
+        // Discovery-only: the 0x30 0x00 key prefix + UTF-16 name heuristic
+        // lists plausible directory names on real ReFS 3.x, but data runs are
+        // NOT resolved — confidence stays low so nothing here reads as a
+        // recoverable file. A fabricated integrity trailer used to attach
+        // pseudo-resident bytes here; it was removed, not kept as a feature.
+        fr.confidence = 30;
         fr.category = "Document";
         fr.source = "refs_volume";
-
-        // Optional integrity-stream trailer: +128 checksum, +136 payload len, +144 payload bytes.
-        if (i + 144 < pageSize) {
-            const uint64_t storedCrc = readLe64(page + i + 128);
-            const uint16_t payloadLen = readLe16(page + i + 136);
-            if (storedCrc != 0 && payloadLen > 0 &&
-                static_cast<size_t>(i) + 144u + payloadLen <= pageSize) {
-                fr.source = "refs";
-                fr.residentData.assign(page + i + 144, page + i + 144 + payloadLen);
-                fr.sizeBytes = payloadLen;
-                fr.integrityChecksum = storedCrc;
-                const uint64_t got = refsCrc64Ecma(fr.residentData.data(), fr.residentData.size());
-                fr.confidence = (got == storedCrc) ? 92 : 30;
-            }
-        }
         callback(fr);
     }
 }

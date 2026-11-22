@@ -47,9 +47,10 @@ not on lab fixture counts alone.
 - **XFS** — dir2/dir3 walk, AG1 backup super, unlinked inodes. `sb_fname`
   (12 bytes @108) is discovery-only (`xfs_vol_name`). Inode `di_mtime.t_sec`
   fills `modifiedAt`.
-- **ReFS** — boot/SUPB probe, ministore metadata walk, integrity-stream
-  CRC64-ECMA validation (SUPB self-check + resident file trailer). Backup
-  SUPB at last cluster when cluster 30 magic is wiped.
+- **ReFS** — boot/SUPB probe + ministore metadata walk with CRC64-ECMA
+  page validation (SUPB self-check). Directory names are discovery-only
+  (confidence ≤30, `refs_volume`); file content recovery is not supported.
+  Backup SUPB at last cluster when cluster 30 magic is wiped.
 - **E01 read** — local multi-segment `.E01`→`.E02` chains on `DiskReader`
   (`attachEwfImage` / `attachRawFile`). The examiner file picker accepts only
   local paths; HTTP Range helpers exist in the engine but are not wired to IPC
