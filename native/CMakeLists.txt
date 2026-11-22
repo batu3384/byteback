@@ -116,6 +116,7 @@ set(SOURCES
   src/imager/disk_imager.cpp
   src/crypto/md5.cpp
   src/crypto/aes_xts.cpp
+  src/crypto/aes_kwp.cpp
   src/crypto/aes_ccm.cpp
   src/crypto/sha256.cpp
   src/carver/signature_engine.cpp
@@ -245,6 +246,7 @@ if(BYTEBACK_BUILD_TESTS)
     tests/test_carve_policy.cpp
     tests/test_process_util.cpp
     tests/test_aes_ccm.cpp
+    tests/test_aes_kwp.cpp
     tests/test_disk_imager.cpp
     tests/test_memory_pool.cpp
     tests/test_ntfs_thumbcache.cpp
@@ -275,6 +277,7 @@ if(BYTEBACK_BUILD_TESTS)
     src/forensic/nsrl_lookup.cpp
     src/crypto/md5.cpp
     src/crypto/aes_xts.cpp
+    src/crypto/aes_kwp.cpp
     src/crypto/aes_ccm.cpp
     src/crypto/sha256.cpp
     src/imager/ewf_writer.cpp
