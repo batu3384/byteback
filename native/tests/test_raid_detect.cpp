@@ -48,17 +48,18 @@ void fillPseudo(std::vector<uint8_t>& img, uint32_t seed) {
 // every offset candidate pass trivially).
 std::vector<std::vector<uint8_t>> buildRaid5(uint32_t n, size_t stripes, size_t sb,
                                              uint64_t offsetBytes, uint32_t seed,
-                                             uint32_t reservationSeed = 0) {
+                                             uint32_t reservationSeed = 0,
+                                             raid_layout::Raid5Algorithm algo = raid_layout::Raid5Algorithm::LeftAsymmetric) {
     std::vector<std::vector<uint8_t>> images(n, std::vector<uint8_t>(offsetBytes + stripes * sb, 0));
     if (reservationSeed != 0)
         for (auto& img : images)
             for (uint64_t i = 0; i < offsetBytes; ++i)
                 img[i] = static_cast<uint8_t>(mix32(static_cast<uint32_t>(i) ^ reservationSeed) >> 24);
     for (uint64_t s = 0; s < stripes; ++s) {
-        const uint32_t p = raid_layout::raid5ParityDisk(s, n);
+        const uint32_t p = raid_layout::raid5ParityDisk(s, n, algo);
         std::vector<uint8_t> acc(sb, 0);
         for (uint32_t blk = 0; blk + 1 < n; ++blk) {
-            const uint32_t disk = raid_layout::raid5DataDisk(s, blk, n);
+            const uint32_t disk = raid_layout::raid5DataDisk(s, blk, n, algo);
             std::vector<uint8_t> data(sb);
             fillPseudo(data, seed + static_cast<uint32_t>(s * 131u + blk * 17u));
             for (size_t b = 0; b < sb; ++b) acc[b] ^= data[b];
@@ -136,6 +137,21 @@ TEST(RaidDetect, DetectsRaid5BlockSizeAndConfidence) {
     EXPECT_GE(g.confidence, 0.90);
     EXPECT_LE(g.confidence, 1.0);
     EXPECT_FALSE(g.fsConfirmed);
+}
+
+TEST(RaidDetect, DetectsRaid5LeftSymmetricWithoutMetadata) {
+    // mdadm's default RAID5 layout is left-symmetric; parity syndromes
+    // cannot distinguish it from left-asymmetric, so the detector must
+    // report the mdadm-default variant when no FS signature decides.
+    constexpr size_t kStripe = kMiB;
+    auto members = openMembers(buildRaid5(3, 12, kStripe, 0, 0xCAFE, 0,
+                                          raid_layout::Raid5Algorithm::LeftSymmetric));
+    RaidGeometry g;
+    ASSERT_TRUE(detectRaidGeometry(raw(members), g));
+    EXPECT_EQ(g.level, RaidLevel::RAID5);
+    EXPECT_EQ(g.raid5Algorithm, raid_layout::Raid5Algorithm::LeftSymmetric);
+    EXPECT_EQ(g.blockSize, kStripe);
+    EXPECT_GE(g.confidence, 0.90);
 }
 
 TEST(RaidDetect, DetectsRaid5With1MiBControllerOffset) {

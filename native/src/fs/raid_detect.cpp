@@ -421,13 +421,14 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
             const uint64_t nStripes = (memberSize - offBytes) / stripeBytes;
             const size_t nSamples = static_cast<size_t>(std::min<uint64_t>(kMaxSamples, nStripes));
             std::vector<std::vector<uint8_t>> blocks(n);
-            size_t leftHits = 0, rightHits = 0, total = 0;
+            size_t total = 0;
             static const raid_layout::Raid5Algorithm kAlgos[] = {
                 raid_layout::Raid5Algorithm::LeftAsymmetric,
                 raid_layout::Raid5Algorithm::RightAsymmetric,
                 raid_layout::Raid5Algorithm::LeftSymmetric,
                 raid_layout::Raid5Algorithm::RightSymmetric,
             };
+            size_t raid5Hits[4] = {0, 0, 0, 0};
             size_t raid6Hits[4] = {0, 0, 0, 0};
             for (size_t k = 0; k < nSamples; ++k) {
                 const uint64_t si = k * nStripes / nSamples;
@@ -443,12 +444,11 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
                     for (size_t a = 0; a < 4; ++a)
                         if (raid6Consistent(si, static_cast<uint32_t>(n), blocks, kAlgos[a])) ++raid6Hits[a];
                 } else {
-                    if (raid5Consistent(si, static_cast<uint32_t>(n), blocks,
-                                        raid_layout::Raid5Algorithm::LeftAsymmetric))
-                        ++leftHits;
-                    if (raid5Consistent(si, static_cast<uint32_t>(n), blocks,
-                                        raid_layout::Raid5Algorithm::RightAsymmetric))
-                        ++rightHits;
+                    // Same for RAID5: the P syndrome is position-independent
+                    // over the data set, so symmetric/asymmetric of one
+                    // rotation score identically — all four are candidates.
+                    for (size_t a = 0; a < 4; ++a)
+                        if (raid5Consistent(si, static_cast<uint32_t>(n), blocks, kAlgos[a])) ++raid5Hits[a];
                 }
             }
             if (total == 0) continue;
@@ -461,20 +461,16 @@ bool detectRaidGeometryFixedOrder(const std::vector<DiskReader*>& members, RaidG
                 if (level == RaidLevel::RAID6) raid6Pass.push_back(cand);
                 consider(cand);
             };
-            if (level == RaidLevel::RAID6) {
-                // P/Q syndrome cannot tell symmetric from asymmetric of the
-                // same rotation — both score identical hits. Emit the
-                // symmetric variant first so an unresolvable tie defaults to
-                // the mdadm layout convention; FS-signature refinement below
-                // still overrides when a filesystem is readable.
-                emit(raid6Hits[2], kAlgos[2]); // LeftSymmetric (mdadm default)
-                emit(raid6Hits[3], kAlgos[3]); // RightSymmetric
-                emit(raid6Hits[0], kAlgos[0]); // LeftAsymmetric
-                emit(raid6Hits[1], kAlgos[1]); // RightAsymmetric
-            } else {
-                emit(leftHits, raid_layout::Raid5Algorithm::LeftAsymmetric);
-                emit(rightHits, raid_layout::Raid5Algorithm::RightAsymmetric);
-            }
+            // Parity syndrome cannot tell symmetric from asymmetric of the
+            // same rotation — both score identical hits. Emit the symmetric
+            // variant first so an unresolvable tie defaults to the mdadm
+            // layout convention (default: left-symmetric); FS-signature
+            // refinement below still overrides when a filesystem is readable.
+            const size_t* hits = (level == RaidLevel::RAID6) ? raid6Hits : raid5Hits;
+            emit(hits[2], kAlgos[2]); // LeftSymmetric (mdadm default)
+            emit(hits[3], kAlgos[3]); // RightSymmetric
+            emit(hits[0], kAlgos[0]); // LeftAsymmetric
+            emit(hits[1], kAlgos[1]); // RightAsymmetric
         }
     };
 
