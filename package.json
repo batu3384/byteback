@@ -86,5 +86,19 @@
       "perMachine": true
     }
   },
-  "author": "Batuhan Yuksel"
+  "author": "Batuhan Yuksel",
+  "overrides": {
+    "@electron/universal": {
+      "minimatch": "^11.0.9"
+    },
+    "app-builder-lib": {
+      "minimatch": "^11.0.9"
+    },
+    "dmg-builder": {
+      "minimatch": "^11.0.9"
+    },
+    "electron-builder-squirrel-windows": {
+      "minimatch": "^11.0.9"
+    }
+  }
 }
