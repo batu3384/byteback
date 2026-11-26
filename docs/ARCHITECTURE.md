@@ -30,12 +30,12 @@ window.api                 native-bridge.ts          |
 
 | Directory | Responsibility | Key files |
 |-----------|----------------|-----------|
-| `io/` | Raw physical disk I/O, bad-sector telemetry | `disk_reader_win.cpp` |
-| `fs/` | Filesystem parsers and layout math | `ntfs_parser.cpp`, `fat_parser.cpp`, `ext4_parser.cpp`, `fat_chain.cpp`, `raid_layout.cpp`, `raid6_math.cpp`, `virtual_raid.cpp`, `partition_scanner.cpp` |
+| `io/` | Raw physical disk I/O, bad-sector telemetry, virtual-disk sources | `disk_reader_win.cpp`, `vhd_source.cpp`, `vhdx_source.cpp` |
+| `fs/` | Filesystem parsers and layout math | `ntfs_parser.cpp`, `fat_parser.cpp`, `ext4_parser.cpp`, `hfs_parser.cpp`, `apfs_container.cpp`, `btrfs_parser.cpp`, `xfs_parser.cpp`, `refs_parser.cpp`, `iso9660_parser.cpp`, `udf_parser.cpp`, `lvm_parser.cpp`, `ldm_parser.cpp`, `luks.cpp`, `bitlocker_unlock.cpp`, `fat_chain.cpp`, `raid_layout.cpp`, `raid6_math.cpp`, `virtual_raid.cpp`, `partition_scanner.cpp` |
 | `carver/` | Signature-based recovery | `signature_engine.cpp`, `bgc.cpp` |
 | `recovery/` | Write recovered files to destination | `recovery_engine.cpp`, `preview_reader.cpp`, `validation.cpp` |
 | `imager/` | Disk imaging | `disk_imager.cpp`, `ewf_writer.cpp`, `ewf_reader.cpp` |
-| `crypto/` | Digests + AES-XTS/CCM + SHA-256 | `md5.cpp`, `aes_xts.cpp`, `aes_ccm.cpp`, `sha256.cpp` |
+| `crypto/` | Digests + AES-XTS/CCM/KW + SHA-256 | `md5.cpp`, `aes_xts.cpp`, `aes_ccm.cpp`, `aes_kwp.cpp`, `sha256.cpp` |
 | `db/` | SQLite metadata store | `metadata_store*.cpp`, `runs_codec.cpp` |
 | `forensic/` | Audit log + NSRL MD5 set | `audit_logger.cpp`, `nsrl_lookup.cpp` |
 | `smart/` | ATA SMART + NVMe health log | `smart_monitor.cpp` |
@@ -45,7 +45,7 @@ window.api                 native-bridge.ts          |
 ## Correctness assurance
 
 Critical math is unit-tested (`native/tests/`; `ctest -C Release` on a typical
-dev machine runs 260+ tests, with optional skips):
+dev machine runs 960+ tests, with optional hardware/bench skips):
 
 - **MD5 / SHA-256** — RFC 1321 / RFC 6234 vectors, chain folding tests.
 - **GF(2⁸) Reed–Solomon** — field axioms, exponent table, two-disk loss recovery.
@@ -61,8 +61,8 @@ decrypt, no GPU PFAC, APFS recursive omap btree not full snapshot, quick NTFS
 ## Runtime assets
 
 - `resources/signatures-extended.json`, `resources/signatures-supplement.json` —
-  curated extension signatures loaded over the ~89 embedded/ftyp set (150 total
-  after the text-magic/duplicate cleanup). `resources/signatures.json` was
+  curated extension signatures loaded over the embedded/ftyp set (~230 total
+  after the parity expansion and duplicate cleanup). `resources/signatures.json` was
   removed: it duplicated the embedded set. A user overlay can still be passed
   explicitly via `loadSignatures(jsonPath)`.
 - `<userData>/byteback.db` — scan metadata (WAL).
