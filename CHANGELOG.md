@@ -5,6 +5,44 @@ see [docs/release-checklist.md](docs/release-checklist.md) before tagging `v1.0.
 
 ## [Unreleased]
 
+### Added (parity round, 2026-11-26)
+
+- Btrfs parser: superblock with backup fallback, chunk-map logical→physical
+  translation, subvolume/root/fs-tree walk, real INODE_REF paths, extent runs,
+  deleted recovery from older-generation backup roots (`btrfs_stale_root`).
+  Multi-device RAID5/6 metadata is refused honestly instead of mistranslated.
+- Carve signature table expanded to ~230 formats: executables (ELF, Mach-O,
+  DEX, .pyc, BEAM), archives (WIM, LHA, cpio, LZFSE), embedded images
+  (SquashFS, UBIFS, Android sparse/boot, CHD, WBFS, RVZ), media (MXF, R3D,
+  DPX, CAF, RF64, DTS) and forensic artifacts (hibernation, minidump/full
+  dump, NTFS INDX/RCRD/RSTR, index.dat, bplist, keychain, fsevents, LUKS,
+  BitLocker, Android backup).
+- RFC 3394 AES Key Wrap/unwrap — FileVault2 KEK prerequisite.
+
+### Fixed (remediation rounds K1–K7 / Y1–Y9, 2026-11-23..26)
+
+- APFS: real B-tree parse (kvloc/kvoff table-of-contents, hashed dir keys,
+  omap oid→paddr deferred resolution, checkpoint/stale scan, parent-oid path
+  reconstruction) — previously no file was recoverable from a real APFS disk.
+- ext4: correct jbd2 tag layout, 256 MiB journal budget, all-group inode table
+  walk, deleted dirent recovery from directory slack, real paths.
+- NTFS: LZNT1 decompression per 64 KiB compression unit; overwritten-cluster
+  detection rescales confidence via live/deleted run overlap.
+- FAT12/16/32: real directory paths; deleted-file chains stop at live-owned
+  clusters instead of gluing foreign data.
+- Imaging: ddrescue-style skip-ahead after 8 consecutive dead chunks, trim
+  pass retries merged failed-run edges and patches `.part` in place with a
+  re-hash; granular bad-sector bisect in recovery reads.
+- Lost-partition scan: filesystem sizes parsed from boot/superblock fields,
+  1 MiB stepping with 63-sector fallback, HFS+/APFS/XFS/ReFS/Btrfs/LDM/LVM
+  signatures; unread sectors no longer scan as empty.
+- Honesty: all-zero (TRIMmed/overwritten) recovery reports failure with an
+  explanation; ReFS is discovery-only rather than fabricated content; carving
+  drops text-magic signatures that produced phantom files.
+- e2e: spawned Electron strips inherited `ELECTRON_RUN_AS_NODE` (CI bug that
+  failed all 45 specs as "process failed to launch").
+
+
 ### Fixed (audit 2026-11-21)
 
 - Audit log: a relaunch continues the hash chain from the last link (it restarted from zeros, so every second session verified as broken).
