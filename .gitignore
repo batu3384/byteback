@@ -46,3 +46,7 @@ release/
 /*.E01
 /*.E02
 /*.E03
+
+# Native test .dd residue (clone/roundtrip fixtures written to cwd)
+/*.dd
+/native/*.dd
