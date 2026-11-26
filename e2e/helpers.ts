@@ -17,8 +17,13 @@ export interface LaunchedApp {
  * ELECTRON_RUN_AS_NODE is stripped — if it leaks in from a CI/dev shell,
  * electron.exe runs as plain node and every launch "fails to launch".
  */
-export function e2eEnv(userData: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, BYTEBACK_USER_DATA: userData, BYTEBACK_E2E: '1' }
+export function e2eEnv(userData: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  env.BYTEBACK_USER_DATA = userData
+  env.BYTEBACK_E2E = '1'
   delete env.ELECTRON_RUN_AS_NODE
   return env
 }
