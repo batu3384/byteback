@@ -83,11 +83,17 @@ function registerThumbProtocol(): void {
 }
 
 function createWindow(): void {
+  // e2e geometry override: CI runners clip windows to their screen size, so
+  // tests pin an exact viewport instead of inheriting host-dependent clipping.
+  const e2eWidth = process.env.BYTEBACK_E2E ? Number(process.env.BYTEBACK_E2E_WIDTH) || 0 : 0
+  const e2eHeight = process.env.BYTEBACK_E2E ? Number(process.env.BYTEBACK_E2E_HEIGHT) || 0 : 0
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 1024,
-    minHeight: 680,
+    width: e2eWidth || 1280,
+    height: e2eHeight || 800,
+    // Pinned e2e geometry must win over design minimums — CI runners clip
+    // windows below them, and tests reproduce that geometry exactly.
+    minWidth: e2eWidth ? 1 : 1024,
+    minHeight: e2eHeight ? 1 : 680,
     title: 'Byteback',
     backgroundColor: '#0D1117',
     show: true,

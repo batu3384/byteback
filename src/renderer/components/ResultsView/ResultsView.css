@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
-  height: 100%;
+  min-height: 100%;
 }
 
 .results-header {
@@ -256,10 +256,22 @@
   vertical-align: middle;
 }
 
+/* Row action buttons must never wrap into multi-line pills — a 3-line-tall
+   button inflates every row and can exceed short scrollports. */
+.show-mft {
+  white-space: nowrap;
+}
+
 .results-scroll {
   flex: 1;
   overflow-y: auto;
   padding: 0 24px;
+  /* Short windows must never collapse the scrollport below usability — the
+     outer .app-content scrolls instead. scroll-padding keeps rows clear of
+     the sticky thead when scrolled into view. */
+  min-height: 150px;
+  scroll-padding-top: 44px;
+  scroll-padding-bottom: 12px;
 }
 
 .results-empty {
