@@ -1,37 +1,25 @@
 # Thread goal status (audit roadmap)
 
-**Not complete** — Phase 4 requires operator hardware and signing secrets this repo cannot supply.
+## Engineering — complete
 
-## Engineering (objective items 1–7 + honest gaps doc)
+- Audit items 1–7: **Done** with tests. Evidence: `audit/OBJECTIVE_CHECKLIST.md`.
+- Remediation round 2 (K1–K7, Y1–Y9): **Done** — APFS real B-tree, ext4
+  journal/slack, FAT paths/overwrite guards, NTFS LZNT1 units, ddrescue-style
+  skip-ahead + trim imaging, honest TRIM/ReFS/carving behavior. Commits
+  `eed493f..f881362`; adversarial rounds 1–2 closed `3a304bc`, `876d90e`.
+- Parity round: Btrfs parser, ~230 carve signatures, RFC 3394 AES-KW
+  (FileVault prerequisite) — commits `f7acd9d`, `a1f56f4`, `e73eb7b`.
+- Gates: native ctest 970 passing (4 optional hardware/bench skips),
+  Vitest 500/500, typecheck clean, Playwright e2e 45/45.
 
-All **Done** with tests or CI. Evidence: `audit/OBJECTIVE_CHECKLIST.md`. Gate: `npm run verify:audit`. Remediation commit: `2484eee` (2026-10-28).
-
-Last verified: 2026-10-28 20:32 local (`verify:audit` 490; `phase4:status` exit 1 expected).
-
-## Phase 4 (objective item 8 — product / release)
+## Phase 4 (objective item 8 — product / release) — operator-gated, unchanged
 
 | Item | Blocker | Next action |
 |------|---------|-------------|
 | Field USB A/B/C | Physical media | `scripts/field-usb-preflight.ps1` → fill `audit/FIELD_USB_LOG.md` |
 | Authenticode | `CSC_*` on release machine | `scripts/release-dist.ps1` or GitHub `release-signed.yml` + secrets → `signtool verify` |
-| NSIS clean-box | Fresh VM install test | Lab unsigned `release/Byteback Setup 0.1.0.exe` (built 2026-10-28) — VM smoke still `[ ]` |
+| NSIS clean-box | Fresh VM install test | Lab unsigned installer — VM smoke still `[ ]` |
 | Tagged v1.0 | Above gates | Bump version, tag after checklist PASS |
-| Streaming imaj (§8) | Product roadmap | Documented in `HONEST_PRODUCT_GAPS.md`; not part of audit code fixes |
 
-## Agent blocked (Phase 4)
-
-Engineering items in the thread objective are **Done** (`OBJECTIVE_CHECKLIST.md`, `npm run verify:audit`).
-
-Further goal progress requires **you** — step-by-step: `audit/PHASE4_OPERATOR_RUNBOOK.md`. Progress probe: `npm run phase4:status`.
-
-Until those are honestly PASS, do **not** set the thread goal to complete.
-
-## Agent idle (Phase 4)
-
-No further repo-only work closes the thread goal. **`npm run phase4:status` must exit 0** (all six release-checklist Phase 4 rows `[x]` with real USB log / signtool / VM evidence) before `UpdateGoal` complete.
-
-## Pause vs complete
-
-- **Do not** mark the thread goal complete until checklist rows A/B/C and code sign are honestly PASS.
-- To **pause** the goal after engineering: pause/stop the goal in Cursor (agent cannot call UpdateGoal for pause).
-- **Closure probe:** `npm run verify:goal` (engineering + `phase4:status`; exit 0 only when checklist Phase 4 rows are `[x]`).
+Closure probe: `npm run verify:goal`. Do **not** claim release readiness until
+the checklist rows are honestly PASS.

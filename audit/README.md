@@ -1,4 +1,8 @@
-# Audit remediation (2026-10-28)
+# Audit remediation
+
+Phase 1–3 + remediation rounds K1–K7/Y1–Y9 + parity round (Btrfs,
+signature expansion, AES-KW): closed. Historical record below; current
+status in `GOAL_STATUS.md` and `HONEST_PRODUCT_GAPS.md`.
 
 | Doc | Purpose |
 |-----|---------|
@@ -6,7 +10,7 @@
 | [NOTES.md](NOTES.md) | Working notes snapshot |
 | [REMEDIATION.md](REMEDIATION.md) | Phase 1–3 done evidence; Phase 4 open |
 | [OBJECTIVE_CHECKLIST.md](OBJECTIVE_CHECKLIST.md) | Thread goal ↔ status |
-| [GOAL_STATUS.md](GOAL_STATUS.md) | Agent blocked on Phase 4 |
+| [GOAL_STATUS.md](GOAL_STATUS.md) | Engineering done; Phase 4 operator-gated |
 | [HONEST_PRODUCT_GAPS.md](HONEST_PRODUCT_GAPS.md) | Non-parity claims |
 | [PHASE4_OPERATOR_RUNBOOK.md](PHASE4_OPERATOR_RUNBOOK.md) | USB / sign / NSIS / tag |
 | [FIELD_USB_LOG.md](FIELD_USB_LOG.md) | Field USB A/B/C evidence template |
