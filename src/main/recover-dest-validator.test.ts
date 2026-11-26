@@ -48,7 +48,7 @@ describe('isBlockedRecoverDest (pure policy)', () => {
   })
 })
 
-describe('validateRecoverDestDir (structural + resolution, Windows host)', () => {
+describe.skipIf(process.platform !== 'win32')('validateRecoverDestDir (structural + resolution, Windows host)', () => {
   it('rejects missing / non-string destinations', () => {
     expect(validateRecoverDestDir('')).toMatchObject({ ok: false, error: ERR_DEST_REQUIRED })
     expect(validateRecoverDestDir('   ')).toMatchObject({ ok: false, error: ERR_DEST_REQUIRED })
