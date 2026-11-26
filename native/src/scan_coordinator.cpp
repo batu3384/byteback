@@ -318,7 +318,7 @@ void remapLdmSpannedRecord(FileRecord& fr, const LdmPrivhead& ph, const std::vec
                 if (take == 0) break;
                 FileRecord::DataRun out{phys, take, 0};
                 if (byteLeft > 0) {
-                    out.byteCount = std::min(byteLeft, take * 512ull);
+                    out.byteCount = std::min<uint64_t>(byteLeft, take * 512ull);
                     byteLeft -= out.byteCount;
                 }
                 if (!mapped.empty() && mapped.back().byteCount == 0 && out.byteCount == 0 &&

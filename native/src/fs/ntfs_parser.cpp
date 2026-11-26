@@ -1600,7 +1600,7 @@ bool NTFSParser::scanAt(DiskReader& reader, FileRecordCallback callback, std::at
             // ponytail: $Bitmap yok — 65536 küme tavan; tam HDD linear değil.
             uint64_t volSectors = scanEndSector > volumeStartSector
                 ? scanEndSector - volumeStartSector : 0;
-            const uint64_t cap = std::min(volSectors,
+            const uint64_t cap = std::min<uint64_t>(volSectors,
                 65536ull * static_cast<uint64_t>(std::max<uint32_t>(sectorsPerCluster, 1)));
             if (volSectors > cap) i30Unread = true;
             unallocWalk.push_back({volumeStartSector, cap});
