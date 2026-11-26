@@ -314,7 +314,7 @@ void flushApfsCatalog(ApfsAccum& acc, int& fileIndex,
             uint64_t end = 0;
             for (const auto& lr : ordered) {
                 runs.push_back(lr.second);
-                end = std::max(end, lr.first + lr.second.sectorCount * 512ull);
+                end = std::max<uint64_t>(end, lr.first + lr.second.sectorCount * 512ull);
             }
             if (size == 0) size = end;
         }
